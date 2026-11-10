@@ -51,6 +51,21 @@ ROADMAP = re.compile(
     r'verified|cleared|settled|public|held|tested|checked|decided)\b'
     r'|\b(?:support|model|implement)\w*(?: \w+){0,2} yet\b'
     r'|\bTODO\b', re.I)
+# A count of a test file's cases goes stale when a case is added or
+# removed, and nothing else on the page changes with it. Name the file
+# and the areas it covers instead.
+TEST_COUNT = re.compile(
+    r'(?<![\w.-])\d[\d,]*\+?\s+(?:(?:qtest|functional|unit|test)\s+)?'
+    r'(?:test\s+)?(?:cases|tests|subtests|test functions)\b', re.I)
+# The same with the count spelled out after a verb that gives a file's
+# cases ("holds three cases"). Only that shape is flagged, so ordinary
+# uses of the word "cases" pass.
+TEST_COUNT_WORD = re.compile(
+    r'\b(?:has|have|holds?|registers?|contains?|carries|runs?)\s+'
+    r'(?:one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|'
+    r'thirteen|fourteen|fifteen|twenty|thirty|forty|fifty|sixty|'
+    r'a (?:dozen|hundred))\s+(?:(?:qtest|functional|unit|test)\s+)?'
+    r'(?:cases|tests|subtests)\b', re.I)
 # Text that quotes a source or a guest message rather than the page's own
 # words: a double-quoted span, which may wrap across lines, and literals.
 QUOTED = re.compile(r'"[^"]*"|\u201c[^\u201d]*\u201d|``.*?``', re.S)
@@ -578,6 +593,13 @@ def lint_page(rel, text):
             add(first + masked.count('\n', 0, m.start()),
                 f'"{" ".join(m.group(0).split())}" reads as a plan; state what the model '
                 'does now, or what the sources leave unknown')
+    for first, para in paragraphs(lines):
+        masked = QUOTED.sub(blank, para)
+        for m in (*TEST_COUNT.finditer(masked),
+                  *TEST_COUNT_WORD.finditer(masked)):
+            add(first + masked.count('\n', 0, m.start()),
+                f'"{" ".join(m.group(0).split())}" counts tests, which '
+                'goes stale; name the test file and what it covers')
     return out
 
 

@@ -660,7 +660,7 @@ frame round, loopback requiring bit 5, a reset re-opening the backend,
 the next-page transmit register, BMCR loopback selecting LBR, the
 restart timing, cancel and repeat cases, the forced-mode link, the
 register subset (reset values, masks, modes, events and address) and
-migration at each restart phase. Two tests assert that the DP83840A is
+migration at each restart phase. Further tests assert that the DP83840A is
 unchanged: bit 5 of register ``0x17`` does not select loopback, and a
 restart behaves as before.
 

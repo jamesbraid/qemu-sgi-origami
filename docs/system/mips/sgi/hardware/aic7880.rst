@@ -217,8 +217,8 @@ Model limits
 Tests
 =====
 
-``tests/qtest/aic7880-test.c`` is the controller's own test, with more
-than 300 cases and a 300 s timeout. Its names show the areas: PCI
+``tests/qtest/aic7880-test.c`` is the controller's own test, with a
+300 s timeout. Its case names show the areas: PCI
 identity (``pci-identity``), command DMA, the function registers, SCB
 pointers and aliases, external SCB RAM, wide selection, the PCI status
 register, host DMA and FIFO thresholds, and the sibling policy

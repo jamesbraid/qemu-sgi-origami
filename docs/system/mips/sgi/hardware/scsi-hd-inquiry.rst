@@ -179,7 +179,7 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-scsi-inquiry-test.h`` holds three cases, ASCII, hex with
+``tests/qtest/sgi-scsi-inquiry-test.h`` has cases for ASCII, hex with
 a qualifier and type, and defaults. It reads the standard INQUIRY data
 with allocation lengths 12, 36, 40, 56 and 96, with CMDDT set, and with a
 nonzero page code and EVPD clear, and checks bytes 0, 8 to 15, 16 to

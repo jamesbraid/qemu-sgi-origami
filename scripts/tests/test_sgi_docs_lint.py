@@ -124,6 +124,18 @@ class DocsLintTests(unittest.TestCase):
         self.assertIn('italic "*Inferred*"',
                       self.messages({'hardware/demo.rst': seealso}))
 
+    def test_literal_test_counts(self):
+        for bad in ('has 31 cases', 'runs 300 tests', 'holds 62 qtest cases',
+                    'holds three cases', 'has twelve tests'):
+            text = GOOD_PART + f'\nThe file {bad} on the part.\n'
+            self.assertIn('counts tests',
+                          self.messages({'hardware/demo.rst': text}), bad)
+        text = GOOD_PART + '\nIRIX 6.5.30 tests run the machine.\n'
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+        text = GOOD_PART + ('\nThe cases cover the aliases and a 300 s '
+                            'timeout; ``has 31 cases`` is quoted.\n')
+        self.assertEqual(self.run_lint({'hardware/demo.rst': text}), [])
+
     def test_literal_text_is_skipped(self):
         for block in ('.. code-block:: text\n\n   *Inferred* output\n',
                       'A dump::\n\n   *Inferred* output\n'):
