@@ -282,6 +282,29 @@ class RegisterTablesTest(unittest.TestCase):
         self.assertEqual(len(errors), 1)
         self.assertIn('skiprow= names no row', errors[0])
 
+    def test_count_expands_a_per_unit_offset(self):
+        text = PAGE.replace('``0x38``', '``0x40 + 0x10*n``').replace(
+            'per machine', '0')
+        marker = MARKER.replace('width=64', 'width=64 count=3')
+        cases, _, _, errors = scan(text, marker=marker)
+        self.assertEqual(errors, [])
+        offsets = [r['offset'] for r in cases[0]['registers']
+                   if r['name'] == 'Prose']
+        self.assertEqual(offsets, ['0x40', '0x50', '0x60'])
+
+    def test_per_unit_offset_without_count_is_an_error(self):
+        text = PAGE.replace('``0x38``', '``0x40 + 0x10*n``').replace(
+            'per machine', '0')
+        _, _, _, errors = scan(text)
+        self.assertEqual(len(errors), 1)
+        self.assertIn('needs count=', errors[0])
+
+    def test_label_names_the_configuration(self):
+        marker = MARKER.replace('width=64', 'width=64 label=second')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        self.assertEqual(cases[0]['label'], 'second')
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])
