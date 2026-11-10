@@ -83,7 +83,9 @@ nothing is skipped by accident. A skip= or expect= offset that matches no
 row is an error, so a stale entry cannot linger.
 Likewise a width=, access=, lane=, xor=, stride=, count=, units= or split=
 that no row uses is an error, a label= is for a table with several
-markers, and bios=blank is for a machine that needs a PROM.
+markers, and bios=blank is for a machine that needs a PROM. A skip reason
+is the cause; a bare "none" is refused, and a Reset cell of "none" is
+printed with the row's Access cell beside it.
 
 A passing test shows the page and the model agree, not that either matches
 the hardware: the rating beside each value says how well it is known.
@@ -236,6 +238,9 @@ def parse_marker(text):
         for item in raw_skip.split(','):
             if item:
                 offset, _, reason = item.partition(':')
+                if reason.lower() == 'none':
+                    raise Error('a skip reason of "none" says nothing; '
+                                'name the cause')
                 options['skip'][int(offset, 0)] = reason
         options['expect'] = {}
         for item in raw_expect.split(','):
@@ -291,6 +296,9 @@ def parse_skiprow(items):
         name, colon, reason = item.rpartition(':')
         if not colon or not name or not reason or name in rows:
             raise ValueError
+        if reason.lower() == 'none':
+            raise Error('a skiprow reason of "none" says nothing; name the '
+                        'cause')
         rows[name] = reason
     return rows
 
@@ -434,6 +442,7 @@ def build(page, table, marker_text, number):
     selected = set()
     skipped_rows = set()
     consumed = set()
+    c_access = column(header, 'access')
     for line, cells in table.rows:
         need = max(c_off, c_reset, c_width or 0, c_name or 0)
         if len(cells) <= need:
@@ -477,6 +486,20 @@ def build(page, table, marker_text, number):
         kind, got = reset_value(cells[c_reset], variant)
         if kind == 'value' and got is None:
             kind, got = 'nothing', cells[c_reset]
+        if kind == 'skip':
+            # A bare "none" does not say why; show the row's own cause.
+            cause = ' '.join(cells[c_access].split()) \
+                if c_access is not None and c_access < len(cells) else ''
+            if cause.lower() in ('', 'none', 'r', 'rw', 'r/w', 'read',
+                                 'read, write'):
+                # The access code alone does not say why; add the note.
+                note_text = re.sub(r':\w+:`[^`]*`|``', '',
+                                   ' '.join(cells[-1].split()))
+                first = re.split(r'(?<=[.;])\s', note_text)[0].rstrip('.;')
+                first = first[:60].strip()
+                cause = f'{cause}: {first}' if cause and first \
+                    else cause or first
+            got = f'{got} ({cause})' if cause else got
         if variant is not None and re.search(
                 r'\bon\s+' + re.escape(variant) + r'\b', cells[c_reset],
                 re.I):
