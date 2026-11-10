@@ -2,8 +2,9 @@
 /*
  * DS1742/DS1744 byte-wide timekeeping SRAM.
  * An optional drive holds the SRAM and calendar; a separate clock
- * reference drive holds an eight-byte magic and wall seconds in little
- * endian, letting the calendar advance across emulator restarts.
+ * reference drive holds an eight-byte magic and the time of the save in
+ * seconds of the -rtc clock, little endian, letting the calendar advance
+ * across emulator restarts.
  * Host restart restores completed calendar state, not an unfinished W/R
  * transaction. The published specification does not define that power-fail
  * latch behavior.
@@ -70,9 +71,13 @@ static int64_t ds1742_ns(void)
     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
-static int64_t ds1742_wall_seconds(void)
+/* The record's time base, as in the M48T35 and DS1685: the -rtc clock. */
+static int64_t ds1742_rtc_seconds(void)
 {
-    return g_get_real_time() / G_USEC_PER_SEC;
+    struct tm tm;
+
+    qemu_get_timedate(&tm, 0);
+    return mktimegm(&tm);
 }
 
 static int64_t ds1742_seconds(DS1742State *s)
@@ -142,7 +147,7 @@ static void ds1742_save_clock(DS1742State *s)
             return;
         }
         memcpy(record, CLOCK_REF_MAGIC, 8);
-        stq_le_p(record + 8, ds1742_wall_seconds());
+        stq_le_p(record + 8, ds1742_rtc_seconds());
         if (blk_pwrite(s->clock_blk, 0, sizeof(record), record, 0) < 0) {
             error_report("ds1742: could not save clock reference");
             return;
@@ -217,7 +222,7 @@ static void ds1742_restore_clock(DS1742State *s, const uint8_t image[8])
         blk_pread(s->clock_blk, 0, sizeof(record), record, 0) >= 0 &&
         !memcmp(record, CLOCK_REF_MAGIC, 8)) {
         saved_at = ldq_le_p(record + 8);
-        elapsed = MAX(ds1742_wall_seconds() - saved_at, 0);
+        elapsed = MAX(ds1742_rtc_seconds() - saved_at, 0);
     } else if (!s->stopped) {
         qemu_log_mask(LOG_UNIMP,
                       "ds1742: no clock reference; restored time cannot advance\n");

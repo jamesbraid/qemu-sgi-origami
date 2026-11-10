@@ -47,7 +47,7 @@
 #define DS1742_PATH     "/machine/peripheral/clock"
 #define DS1742_BASE     UINT64_C(0x10000000)
 
-/* -rtc base for the parts whose record counts the -rtc clock. */
+/* -rtc base: every part's record counts the -rtc clock. */
 #define RTC_BASE        "2026-06-01T12:00:00"
 #define RTC_BASE_SECONDS INT64_C(1780315200)
 #define ELAPSED         7200
@@ -104,7 +104,7 @@ static void record_put(const Files *f, const char *magic, size_t size,
 
 /* The record after the device has exited. */
 static void record_check(const Files *f, const char *magic, size_t size,
-                         bool rtc_clock, int64_t counter)
+                         int64_t counter)
 {
     g_autofree gchar *record = NULL;
     gsize length;
@@ -114,16 +114,8 @@ static void record_check(const Files *f, const char *magic, size_t size,
     g_assert_cmpuint(length, ==, size);
     g_assert_cmpmem(record, 8, magic, 8);
     saved_at = ldq_le_p(record + 8);
-    if (rtc_clock) {
-        /* No clock step ran, so the save is at the -rtc base exactly. */
-        g_assert_cmpint(saved_at, ==, RTC_BASE_SECONDS);
-    } else {
-        /* The wall clock: within a minute of now. */
-        int64_t now = g_get_real_time() / G_USEC_PER_SEC;
-
-        g_assert_cmpint(saved_at, >=, now - 60);
-        g_assert_cmpint(saved_at, <=, now + 60);
-    }
+    /* No clock step ran, so the save is at the -rtc base exactly. */
+    g_assert_cmpint(saved_at, ==, RTC_BASE_SECONDS);
     if (size == 24) {
         g_assert_cmpint(ldq_le_p(record + 16), ==, counter);
     }
@@ -192,7 +184,7 @@ static void test_m48t35(const void *data)
     g_assert_cmphex((uint8_t)saved[M48T35_MARKER], ==, MARKER);
     g_assert_cmpmem(saved + M48T35_CLOCK, sizeof(after), expected,
                     sizeof(after));
-    record_check(&f, "M48TREF1", 16, true, 0);
+    record_check(&f, "M48TREF1", 16, 0);
     files_free(&f);
 }
 
@@ -281,7 +273,7 @@ static void test_ds1685(const void *data)
                                : ds1685_clock[i].unusable);
     }
     /* The counter saved is the running one: the base plus what elapsed. */
-    record_check(&f, "DS168RF1", 24, true,
+    record_check(&f, "DS168RF1", 24,
                  usable ? SAVED_SECONDS + ELAPSED : DS1685_IMAGE_SECONDS);
     files_free(&f);
 }
@@ -289,7 +281,7 @@ static void test_ds1685(const void *data)
 /*
  * DS1742: the clock is the last eight bytes of the part's storage. Byte 0 is
  * control and century (BCD), then seconds, minutes, hours, day of week, date,
- * month and year, all BCD. Its record counts the host's wall clock.
+ * month and year, all BCD.
  */
 #define DS1742_SIZE     0x800
 #define DS1742_CLOCK    0x7f8
@@ -319,9 +311,10 @@ static void test_ds1742(const void *data)
     memcpy(image + DS1742_CLOCK, before, sizeof(before));
     file_put(f.image, image, DS1742_SIZE);
     record_put(&f, usable ? "DS1742R1" : "NOTMAGIC", 16,
-               g_get_real_time() / G_USEC_PER_SEC - ELAPSED, 0);
+               RTC_BASE_SECONDS - ELAPSED, 0);
 
     qts = qtest_initf("-M none -cpu R10000 -S "
+                      "-rtc base=" RTC_BASE ",clock=vm "
                       "-drive if=none,id=nvram,file=%s,format=raw "
                       "-drive if=none,id=nvram-clock,file=%s,format=raw "
                       "-device ds1742,id=clock,drive=nvram,"
@@ -344,7 +337,7 @@ static void test_ds1742(const void *data)
     g_assert_cmphex((uint8_t)saved[0], ==, MARKER);
     g_assert_cmphex((uint8_t)saved[DS1742_CLOCK + 3], ==, expected[3]);
     g_assert_cmpmem(saved + DS1742_CLOCK + 5, 3, expected + 5, 3);
-    record_check(&f, "DS1742R1", 16, false, 0);
+    record_check(&f, "DS1742R1", 16, 0);
     files_free(&f);
 }
 

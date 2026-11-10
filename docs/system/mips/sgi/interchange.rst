@@ -101,10 +101,10 @@ The clock record
 A real part keeps counting from its battery while the machine is off, and a
 file cannot. So each store has a second small file that remembers when the
 image was last saved, and the next open adds the elapsed time to the saved
-calendar. The model does this in place of the battery (*approximation*): it
-counts a host clock, so a machine started with a fixed ``-rtc`` base or
-``clock=vm`` need not advance across downtime, and changing ``-rtc`` between
-runs changes the time added.
+calendar. The model does this in place of the battery (*approximation*): QEMU
+counts the clock ``-rtc`` selects, so a machine started with a fixed ``-rtc``
+base or ``clock=vm`` need not advance across downtime, and changing ``-rtc``
+between runs changes the time added.
 
 All integers are 64-bit signed, little-endian, in seconds. The record is a
 model construct, not a part's register (*approximation*).
@@ -121,10 +121,9 @@ model construct, not a part's register (*approximation*).
    * - ``8``
      - 8
      - The instant of the save, in seconds since 1970-01-01T00:00:00Z. QEMU
-       counts the clock ``-rtc`` selects for the M48T35 and the DS1685 and the
-       host's wall clock for the DS1744. The iris emulator counts the host's
-       wall clock for all three, so the emulators differ on the M48T35 and
-       the DS1685 when ``-rtc`` is not the host clock.
+       counts the clock ``-rtc`` selects for all three parts. The iris
+       emulator counts the host's wall clock, so the emulators differ when
+       ``-rtc`` is not the host clock.
    * - ``16``
      - 8
      - The DS1685 only: the running counter at the save, the guest calendar
@@ -207,9 +206,9 @@ a marker offset is checked unchanged.
      - Last eight bytes of the 2 KiB window: century ``20``, seconds ``00``,
        minutes ``00``, hours ``23``, weekday ``04``, date ``31``, month
        ``12``, year ``25``, in BCD
-     - ``DS1742R1``, then the host's wall clock less 7,200 s
+     - ``DS1742R1``, then ``20 58 1d 6a 00 00 00 00`` (1,780,308,000)
      - Hours ``01``, weekday ``05``, date ``01``, month ``01``, year ``26``;
-       instant within a minute of the host's wall clock
+       record instant ``40 74 1d 6a 00 00 00 00`` (1,780,315,200)
 
 The DS1742 geometry vector is in a 2 KiB window because the test builds the
 bare ``ds1742`` device. The 32 KiB DS1744 offset ``0x7ff8``, where the IP53
