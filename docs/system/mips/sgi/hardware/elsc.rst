@@ -136,6 +136,12 @@ behind A0 low is chosen by control bits ESO, ES1 and ES2. The access
 masks and the reset values other than status are the model's
 (*approximation*); every register is 8 bits.
 
+.. sgi-registers: base=0x20001220000 width=8 skiprow="S1, control:write-only"
+   select="S0', own address|0x8=0x80" select="S2, clock|0x8=0xa0"
+   select="S3, interrupt vector|0x8=0x90" select="S0, data|0x8=0xc0"
+   select="S1, status|0x8=0xc0"
+   qemu="-M origin200"
+
 .. list-table::
    :header-rows: 1
 
