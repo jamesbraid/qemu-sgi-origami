@@ -39,5 +39,6 @@ line /mips64/sn0/origin2000/kona-fill/solid-line/relative
 line /mips64/sn0/origin2000/kona-fill/solid-line/relative6
 line /mips64/sn0/origin2000/kona-fill/solid-line/segment6
 line /mips64/sn0/origin2000/kona-fill/solid-line/control
+line /mips64/sn0/origin2000/kona-fill/solid-line/polyline-remainder
 line /mips64/sn0/origin2000/kona-fill/segment6-control
 line /mips64/sn0/origin2000/kona-fill/relative-line-coordinates

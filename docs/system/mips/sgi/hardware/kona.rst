@@ -764,6 +764,29 @@ rule for pixel centres on an edge, and the sample point, are an
 *approximation*. A capture of a triangle with a vertex half way between
 two grid steps would settle the first.
 
+.. _sgi-kona-x-polylines:
+
+X polylines and points
+~~~~~~~~~~~~~~~~~~~~~~
+
+The polyline tokens ``0x15c`` and ``0x15e`` are seven words each, and the
+single forms ``0x15b`` and ``0x15d`` are one and two words (*established*
+for the sender: all four builds of the X server write the absolute
+remainder as the token and one word, the relative remainder as the token
+and two). What the pipe takes in is *inferred* from the senders alone. The
+token map's count of two is not the absolute single form's framing: a
+two-word read would swallow the first word of the next command after every
+polyline of two to six points. The sender sends the remainder's earlier
+points ahead of the token as data words, one to four of them for a
+polyline of two to five points, and they join the line.
+
+The model takes a polyline token's words as its last
+vertices, after any vertices an earlier data token queued. A polyline
+that has fewer than two vertices in all draws no segment; whether it
+draws its one point is *unknown*, and the model draws it, an
+*approximation*. How the pipe picks line pixels (the tie rule, the end
+point) is *unknown*, so the model's line drawing is an *approximation*.
+
 The background-point tokens ``0x15f`` to ``0x161`` draw each point in the
 GC's background colour without the loaded stipple, which the ordinary
 point tokens apply (*inferred*). Word 4 of the graphics-context load is

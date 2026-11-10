@@ -1840,6 +1840,56 @@ static void test_point_batch(gconstpointer opaque)
     qtest_quit(from);
 }
 
+/*
+ * The X server's absolute polyline remainder: n points (2 to 5) go out as
+ * n - 1 data words and then 0x15b with one word, the last point (the
+ * sender's framing is established; the pipe's consumption is inferred). A
+ * box follows at once. A token framed as two words would take the box's
+ * token address as a point and lose the box.
+ */
+static void test_polyline_remainder(gconstpointer opaque)
+{
+    unsigned points = GPOINTER_TO_UINT(opaque);
+    static const uint32_t data_token[] = { 0, 0x141, 0x142, 0x143, 0x144 };
+    static const unsigned px[] = { 10, 14, 14, 18, 18 };
+    static const unsigned py[] = { 20, 20, 24, 24, 28 };
+    uint32_t gc[13] = { 0xa5000, 0x1ffe, 0, 0x1ffe, 0xf00fff, 0,
+                        0xc, 1, 1, 6, 0, 1, 1 };
+    uint32_t preload[4];
+    FrontRect rect;
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(8, 18), XY(36, 40) }, 2);
+    gc[0] = 0x3c000;
+    kona_command(s, TOKEN_GC, gc, ARRAY_SIZE(gc));
+    for (unsigned i = 0; i < points - 1; i++) {
+        preload[i] = XY(px[i], py[i]);
+    }
+    kona_command(s, data_token[points - 1], preload, points - 1);
+    kona_command(s, 0x15b,
+                 (uint32_t[]) { XY(px[points - 1], py[points - 1]) }, 1);
+    kona_command(s, TOKEN_BOX, (uint32_t[]) { XY(26, 34), XY(30, 38) }, 2);
+
+    front_rect(s, &rect, 8, 18, 35, 39);
+    for (unsigned y = 18; y < 40; y++) {
+        for (unsigned x = 8; x < 36; x++) {
+            bool covered = x >= 26 && x < 30 && y >= 34 && y < 38;
+
+            for (unsigned i = 0; i + 1 < points; i++) {
+                covered |= x >= MIN(px[i], px[i + 1]) &&
+                           x <= MAX(px[i], px[i + 1]) &&
+                           y >= MIN(py[i], py[i + 1]) &&
+                           y <= MAX(py[i], py[i + 1]);
+            }
+            g_assert_cmphex(front_rect_at(&rect, x, y), ==,
+                            covered ? 0x3c : 0xa5);
+        }
+    }
+    g_free(rect.pixels);
+    qtest_quit(s);
+}
+
 static void test_solid_line_batch(gconstpointer opaque)
 {
     unsigned value = GPOINTER_TO_UINT(opaque), shape = value / 16;
@@ -3393,6 +3443,14 @@ int main(int argc, char **argv)
             add_data_case(name, GUINT_TO_POINTER(shape * 16 + mode),
                           test_solid_line_batch);
         }
+    }
+    for (unsigned points = 2; points <= 5; points++) {
+        g_autofree char *name = g_strdup_printf(
+            "sn0/origin2000/kona-fill/solid-line/polyline-remainder/%u",
+            points);
+
+        add_data_case(name, GUINT_TO_POINTER(points),
+                      test_polyline_remainder);
     }
     static const char *segment6_cases[] = {
         "maximum-run", "maximum-run-migrates", "odd-pending", "degenerate",
