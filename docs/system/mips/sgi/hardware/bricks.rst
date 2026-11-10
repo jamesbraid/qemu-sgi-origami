@@ -252,7 +252,7 @@ The entry is the ``origin3000`` machine, topology ``origin3200``. Its
 C-brick values the sources do not settle are model choices:
 
 * The board-identification word is ``0x2``. Product code 0 in bits 15:12
-  is a C-brick (*established*, OpenBSD ``ip27.h``). The low nibble 2
+  is a C-brick (*software expectation*, OpenBSD ``ip27.h``). The low nibble 2
   selects the stock IP35 PROM 6.210's configuration row for a 400 MHz,
   8 MB fit, and the other bits read zero (*approximation*: no C-brick
   has been read).
@@ -323,12 +323,11 @@ cache size or part is. The 500 MHz option is a separate entry
 The processor is a PIMM SGI documents and inventories capture. Established
 (*established*):
 
-* A retained record of three C-bricks with six PIMMs, part numbers
-  ``030-1734-001`` and ``-002``, prints 600 MHz R14000 processors with 8 MB
-  secondary caches at 300 MHz, ``Tap 0xa``, on all 12 processors, at
-  processor revisions 2.4 (ten) and 2.3 (two) (*established* by capture, as
-  a software report: the size is the inventory tool's reading of the
-  processor's Config0 field). No SGI document gives a 600 MHz C-brick PIMM
+* The model fits 600 MHz R14000 processors with 8 MB secondary caches at
+  300 MHz, ``Tap 0xa``, at processor revisions 2.4 and 2.3 on PIMM part
+  numbers ``030-1734-001`` and ``-002``, *inferred*: no registered
+  source holds the record this rests on, and the size would be the
+  inventory tool's reading of the processor's Config0 field. No SGI document gives a 600 MHz C-brick PIMM
   size or part number. A 4 MiB C-brick PIMM is unseen and not offered; the
   PROM's other 600 MHz words (2 and 4 MiB) belong to its Origin 300 and Fuel
   rows, not to the C-brick class.
@@ -355,14 +354,13 @@ The model's values:
   (``0xab85``); it never reads SysClkDiv or SCClkDiv, and its printed
   speeds come from the flash block. The generator holds both the cache size
   and the flash word's low 25 bits to the SS field.
-* PRId is ``0x0f24`` (*established* for the part revision, not read on a
+* PRId is ``0x0f24`` (*inferred* for the part revision, not read on a
   C-brick): Linux prints ``PrId 0x00000f24`` on Origin-class machines and
   IRIX ``hinv`` prints 2.4 on IP35. The captured parts print 2.4 and 2.3 and
   the model uses 2.4; 2.3 (``0x0f23``) is *inferred*. The revision follows
   the part, not the clock.
-* The FPU identification is the R14000 type's ``0x00000900`` (*inferred*: a
-  raw FIR is established only for a 2.4 on an Octane, and none has been
-  read on an IP35), not a value built from the revision. IRIX ``hinv``
+* The FPU identification is the R14000 type's ``0x00000900`` (*inferred*: no raw
+  FIR has been read on any R14000 or on an IP35), not a value built from the revision. IRIX ``hinv``
   prints the FPU revision as the CPU's because the kernel copies PRId into
   the FPU entry, which does not test the FIR; a raw ``0x0900`` would print
   as an R14010 revision 0.0, as IP30 listings do. The FPU revision line
@@ -406,8 +404,8 @@ The processor is a PIMM SGI documents. Established (*established*):
 The model's values:
 
 * The flash configuration block carries machine type 0 and ``0x549ca985``
-  (*established* as the PROM's row for this part, and for an 8 MiB part by
-  the owner's guide and the data sheet), and the board-identification
+  (*software expectation* as the PROM's row for this part; the owner's
+  guide and the data sheet give an 8 MiB part, *established*), and the board-identification
   word's low nibble is 1 (*approximation*: no C-brick flash block or
   register has been read, and 6 reaches the same row).
 * The reset-mode word is the low 25 bits, ``0x009ca985``, and Config0 reads
@@ -420,7 +418,7 @@ The model's values:
   (``0xa985``); it never reads SysClkDiv or SCClkDiv, and its printed
   speeds come from the flash block. The generator holds both the cache size
   and the flash word's low 25 bits to the SS field.
-* PRId is ``0x0f14`` (*established* for the part revision, not read on a
+* PRId is ``0x0f14`` (*inferred* for the part revision, not read on a
   C-brick): Linux prints ``PrId 0x00000f14`` on Origin-class machines and
   IRIX ``hinv`` prints 1.4 on IP35, but no raw PRId has been read from a
   C-brick. The revision follows the part, not the clock: the 1.4 here is the
