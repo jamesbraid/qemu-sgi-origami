@@ -82,9 +82,10 @@ below).
    * - ``0x00``
      - Control (BMCR)
      - ``0x3000``
-     - ``0xff80``
+     - ``0xfd80``
      - none
-     - Bits 6-0 read zero. Address zero also isolates the MII at reset.
+     - Bits 6-0 read zero and bit 9 is never stored. Address zero also
+       isolates the MII at reset.
      - 19-20
    * - ``0x01``
      - Status (BMSR)

@@ -155,8 +155,8 @@ internal loopback, 3 the 100 Mb/s select, 4 the SIA select (or loopback
 collision), 6:5 the destination filter mode, 7 link-failure enable,
 and 14:8, 21:15 and 28:22 the three inter-packet gaps
 :src:`sgi-mace-2.0-spec p. 71`, *established*. The model stores the low
-29 bits and forces bits 31:29 to 1. It uses the filter mode and the link
-failure enable. It does not use duplex, speed or the gaps. Setting
+29 bits and sets bit 29, so the three-bit revision field in bits 31:29
+reads 1. It uses the filter mode and the link failure enable. It does not use duplex, speed or the gaps. Setting
 loopback or SIA logs ``LOG_UNIMP`` and, while either is set, the model
 treats the link as down.
 
@@ -322,7 +322,11 @@ The receive interrupt is on while DMA and the interrupt enable are on and
 the FIFO count differs from the threshold. The specification states this
 as ``!(Threshold != FIFO Count)`` and also as "disabled when equal"
 :src:`sgi-mace-2.0-spec p. 73-74`, which conflict. The model uses the
-inequality, an *approximation*.
+inequality, an *approximation*, and sets the event only while the delay
+register is zero and no gathered cluster is pending; otherwise it waits
+for the delay to expire. The ``o2`` machine selects a variant that sets the
+event only as a frame, or the delay, completes and clears it when the count
+again equals the threshold, also an *approximation*.
 
 PHY management
 ==============

@@ -88,7 +88,8 @@ memory enable, bus master and parity error response
 Linux ORs ``0x1000`` into any four-byte read of configuration register ``0x40``
 on the two onboard controllers, with the comment that the Ultra bit was never
 set for the onboard SCSI chips (``ops-mace.c``), *software expectation*. The
-model has no such fix-up. Register ``0x40`` reads zero.
+model has no such fix-up. Register ``0x40`` reads zero on the ``o2``
+machine, and ``0x600`` after reset when ``external-scb-ram`` is set.
 
 Register map
 ============
@@ -203,8 +204,9 @@ Model limits
 - The ``external-scb-ram``, ``external-scb-size`` and
   ``external-scb-width`` properties model external SCB memory of 1, 2, 4
   or 8 KiB with 8 or 9 data bits. The ``o2`` machine does not set them.
-- Configuration register ``0x40`` reads zero. The model has no counterpart
-  of the Ultra bit Linux ORs in on the O2.
+- Configuration register ``0x40`` reads zero on the ``o2`` machine, and
+  ``0x600`` after reset with ``external-scb-ram`` set. The model has no
+  counterpart of the Ultra bit Linux ORs in on the O2.
 - The ``o2`` machine accepts at most one SCSI disk or CD-ROM, at logical
   unit 0 and target 0 to 6, across both controllers, and refuses hotplug.
 - ``o2-pci-diagnostic`` (QTest only) and ``o2-storage-diagnostic`` (reports
