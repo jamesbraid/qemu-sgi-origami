@@ -47,6 +47,38 @@ static uint64_t read_at(QTestState *qts, uint64_t address, int width)
     g_assert_not_reached();
 }
 
+static void write_at(QTestState *qts, uint64_t address, int width,
+                     uint64_t value)
+{
+    switch (width) {
+    case 8:
+        qtest_writeb(qts, address, value);
+        return;
+    case 16:
+        qtest_writew(qts, address, value);
+        return;
+    case 32:
+        qtest_writel(qts, address, value);
+        return;
+    case 64:
+        qtest_writeq(qts, address, value);
+        return;
+    }
+    g_assert_not_reached();
+}
+
+static void write_steps(QTestState *qts, const QList *steps)
+{
+    const QListEntry *entry;
+
+    QLIST_FOREACH_ENTRY(steps, entry) {
+        const QDict *step = qobject_to(QDict, qlist_entry_obj(entry));
+
+        write_at(qts, hex_of(step, "address"), qdict_get_int(step, "width"),
+                 hex_of(step, "value"));
+    }
+}
+
 static void check_table(gconstpointer data)
 {
     const QDict *table = data;
@@ -66,13 +98,21 @@ static void check_table(gconstpointer data)
                               hex_of(map, "address"));
     }
 
+    /* The writes a guest makes before the device answers. */
+    write_steps(qts, qdict_get_qlist(table, "setup"));
+
     QLIST_FOREACH_ENTRY(registers, entry) {
         const QDict *reg = qobject_to(QDict, qlist_entry_obj(entry));
         int width = qdict_get_int(reg, "width");
         uint64_t want = hex_of(reg, "expect");
-        uint64_t got = read_at(qts, hex_of(reg, "address"), width);
+        uint64_t got;
         const char *note = qdict_get_try_str(reg, "note");
 
+        /* A register behind a selector is chosen just before it is read. */
+        if (qdict_haskey(reg, "select")) {
+            write_steps(qts, qdict_get_qlist(reg, "select"));
+        }
+        got = read_at(qts, hex_of(reg, "address"), width);
         if (note) {
             g_test_message("%s:%" PRId64 ": %s at %s: %s", page,
                            qdict_get_int(reg, "line"),
