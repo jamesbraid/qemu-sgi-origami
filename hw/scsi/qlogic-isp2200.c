@@ -710,17 +710,16 @@ static void isp2200_nvram_deselect(QLogicISP2200State *s)
  * select high, then sixteen data bits out, most significant first, each
  * appearing after a rising edge.
  *
- * Approximation: the command format (start bit, two opcode bits, an
- * eight-bit address) fits a 93C56- or 93C66-class microwire EEPROM in
- * 16-bit mode; 128 words is a 93C56's size. The reviewed datasheet infers
- * "93C66-class" from the format alone, so the part is not identified. The
- * model skips zero bits before the start bit, as a microwire part waits
- * for a one (also inferred), drives no dummy zero before the first data
- * bit, and does not model write, erase or the sequential read a real part
- * continues into the next word. A word address of 128 or more reads
- * 0xffff and logs, whatever a larger part would hold there. Whether the
- * real part drives a dummy bit is unknown, and it only matters to a guest
- * that sends a command shorter than eleven bits.
+ * Approximation: the command format (start bit, two opcode bits, an eight-bit
+ * address) fits a 93C56- or 93C66-class microwire EEPROM in 16-bit mode; 128
+ * words is a 93C56's size. "93C66-class" is inferred from the format alone, so
+ * the part is not identified. The model skips zero bits before the start bit,
+ * as a microwire part waits for a one (also inferred), drives no dummy zero
+ * before the first data bit, and does not model write, erase or the sequential
+ * read a real part continues into the next word. A word address of 128 or more
+ * reads 0xffff and logs, whatever a larger part would hold there. Whether the
+ * real part drives a dummy bit is unknown, and it only matters to a guest that
+ * sends a command shorter than eleven bits.
  */
 static void isp2200_nvram_write(QLogicISP2200State *s, uint16_t val)
 {
@@ -2028,10 +2027,9 @@ static uint16_t isp2200_fc_mailbox(QLogicISP2200State *s, uint16_t cmd,
      */
     case ISP2200_MBOX_GET_PORT_QUEUE:
         /*
-         * Not answered for the adapter's own loop ID: the datasheet has
-         * the driver ask once per discovered port, which the adapter is
-         * not. A guest that asks anyway gets the refusal the port
-         * database gives.
+         * Not answered for the adapter's own loop ID: the driver asks once per
+         * discovered port, which the adapter is not. A guest that asks anyway
+         * gets the refusal the port database gives.
          */
         if (!isp2200_loop_ready(s) || !isp2200_target(s, in[1] >> 8)) {
             return ISP2200_MBOX_COMMAND_ERROR;

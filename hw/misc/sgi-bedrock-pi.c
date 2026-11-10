@@ -447,17 +447,16 @@ static void pi_gfx_stall(SGIBedrockPIState *s, unsigned slot)
 /*
  * ---- Graphics flow control: the interrupt counter ----
  *
- * The SN1 header's rules (the shared block, sgi_pi_gfx_int_advance()):
- * one count per clock while the credit counter is at zero (and below a
- * nonzero bias, the model's choice, so an idle slot sends nothing); at
- * the compare
- * the graphics interrupt, and the compare loaded into the counter;
- * zeroed when the credit counter rises above the bias or software writes
- * it. Which pending bit the counter's interrupt reaches is unknown; the
- * datasheet's position, inferred from the IRIX handler that zeroes the
- * counter, is the same bit 1 + slot as the stall's. Which clock it counts
- * is unknown too: the model counts at the real-time counter's 1.25 MHz,
- * its choice, so IRIX's compare of 20000 is 16 ms of machine time.
+ * The SN1 header's rules (the shared block, sgi_pi_gfx_int_advance()): one
+ * count per clock while the credit counter is at zero (and below a nonzero
+ * bias, the model's choice, so an idle slot sends nothing); at the compare the
+ * graphics interrupt, and the compare loaded into the counter; zeroed when the
+ * credit counter rises above the bias or software writes it. Which pending bit
+ * the counter's interrupt reaches is unknown; the position inferred from the
+ * IRIX handler that zeroes the counter, is the same bit 1 + slot as the
+ * stall's. Which clock it counts is unknown too: the model counts at the
+ * real-time counter's 1.25 MHz, its choice, so IRIX's compare of 20000 is 16
+ * ms of machine time.
  */
 #define PI_GFX_INT_TICK_NS      PI_RT_TICK_NS
 

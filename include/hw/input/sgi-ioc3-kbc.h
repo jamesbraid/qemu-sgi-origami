@@ -4,8 +4,8 @@
  *
  * A child of the multifunction chip (hw/misc/sgi-ioc3.c). The block is a
  * bit-level PS/2 line engine, not an 8042 clone; it wraps two generic ps2
- * devices and presents SGI's five-register interface. The project tree's
- * IOC3 datasheet is the specification. See docs/system/mips/sgi/hardware/ioc3.rst.
+ * devices and presents SGI's five-register interface. See
+ * docs/system/mips/sgi/hardware/ioc3.rst.
  *
  * Host key events without a console binding reach whichever keyboard
  * registered first, so a machine with two of these controllers (the
@@ -100,14 +100,14 @@ struct SGIIOC3KBCBusState {
 #define SGI_IOC3_KBC_CTRL_CLAMP_MASK 0x00f00000u
 
 /*
- * Control/status write mask. The datasheet enumerates the writable control
- * fields -- the clamp-after-one and clamp-after-three pairs, the two
+ * Control/status write mask. The IOC3 documentation enumerates the writable
+ * control fields -- the clamp-after-one and clamp-after-three pairs, the two
  * timeout-enable bits, emulation mode, the fast-clock bit and the manual
- * line-pull bits -- but does not pin their bit positions; Linux's header
- * does. The low half and timeout enables are stored as control, while the
- * four clamp bits are stored and obeyed. The remaining upper bits report
- * hardware state and read clear in this synchronous model. Enable readback
- * and reset are model policy pending a revision-matched register trace.
+ * line-pull bits -- but does not pin their bit positions; Linux's header does.
+ * The low half and timeout enables are stored as control, while the four clamp
+ * bits are stored and obeyed. The remaining upper bits report hardware state
+ * and read clear in this synchronous model. Enable readback and reset are
+ * model policy pending a revision-matched register trace.
  */
 #define SGI_IOC3_KBC_CONTROL_MASK   (0x0000ffffu | \
                                      SGI_IOC3_KBC_CTRL_TO_EN_MASK | \

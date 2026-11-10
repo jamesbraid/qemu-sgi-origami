@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Proposed one-node Onyx 350 compatibility profile; choices await independent review.
+# One-node Onyx 350 compatibility profile.
 layer_version: 1
 sources:
   ip59-node-board: "web:irixnet-thread-2263  module 001c01 of the captured system: Part:030-1989-003;Name:IP59_4CPU;Revision:-C, four 1.0 GHz R16000 revision 3.0 with 16 MB secondary cache"

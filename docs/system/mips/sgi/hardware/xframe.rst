@@ -686,7 +686,7 @@ Descriptor control words are read and written big-endian while the
 path's swap-enable bit in SWAPPER_CTRL is clear, and little-endian once
 it is set. TxD uses bit 44 and RxD bit 30. SWAPPER_CTRL resets to zero,
 so the default is big-endian. A big-endian IRIX guest leaves these bits
-clear, and a captured IRIX transmit descriptor decodes as a coherent
+clear, and a transmit descriptor written by an IRIX guest decodes as a coherent
 big-endian descriptor and as nonsense little-endian, *software
 expectation*, observed on the model. Linux ``s2io_set_swapper`` sets the
 swap-enable bits only on little-endian hosts, and its comment says the

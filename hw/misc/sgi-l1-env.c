@@ -2,20 +2,20 @@
 /*
  * The L1 console's "env" report for the Chimera node boards.
  *
- * The table layout, names, states and limits follow the reviewed L1 and
- * IP59 datasheets and the console captures they cite. The firmware has one
- * copy of each row format, shared by every brick personality, so each row
- * kind below has one printer and the tables only supply data.
+ * The table layout, names, states and limits follow the L1 manual page
+ * (l1.rst) and the output of the real firmware. The firmware has one copy of
+ * each row format, shared by every brick personality, so each row kind below
+ * has one printer and the tables only supply data.
  *
- * Every reading is model state: a fixed, in-limits value, not a
- * measurement, so a guest or a test sees the same value each time. The
- * datasheet lets a model choose its own readings. The 2U and workstation
- * IP59 readings are taken from captured sessions; the IP53 2U readings
- * reuse the IP59 2U ones, and every rack-mounted workstation reading
- * (including the Odyssey fan's RPM) is a model choice. The node's own
- * voltages, fans and temperatures are not simulated.
+ * Every reading is model state: a fixed, in-limits value, not a measurement,
+ * so a guest or a test sees the same value each time. Nothing specifies the
+ * readings, so a model may choose its own. The 2U and workstation IP59
+ * readings match those a real module prints; the IP53 2U readings reuse the
+ * IP59 2U ones, and every rack-mounted workstation reading (including the
+ * Odyssey fan's RPM) is a model choice. The node's own voltages, fans and
+ * temperatures are not simulated.
  *
- * Output the datasheet does not record is an approximation. Each one is
+ * Output the manual page does not record is an approximation. Each one is
  * stated where it is chosen and logged with LOG_UNIMP when it is printed.
  */
 #include "qemu/osdep.h"
@@ -257,13 +257,13 @@ static const EnvFan u2_fans[] = {
 #define U2_FANS_IP53 5
 
 /*
- * The rack-mounted workstation replaces the second exhaust fan with an
- * Odyssey fan, which warns at 1679 RPM in the captured module. The IP53 list
- * is the first five; the three N0 fans are IP59's. The current readings,
- * including the Odyssey fan's 1850 RPM, are model choices. The exhaust
- * fan's low level is 210 on both generations: the datasheet's 190 is the
- * IP59 2U row, and 210 is the level that gives the Q zone's 18 percent
- * minimum on IP59 as well. That departure is logged when Q prints.
+ * The rack-mounted workstation replaces the second exhaust fan with an Odyssey
+ * fan, which warns at 1679 RPM in the captured module. The IP53 list is the
+ * first five; the three N0 fans are IP59's. The current readings, including
+ * the Odyssey fan's 1850 RPM, are model choices. The exhaust fan's low level
+ * is 210 on both generations: 190 is the IP59 2U row's level, and 210 is the
+ * level that gives the Q zone's 18 percent minimum on IP59 as well. That
+ * departure is logged when Q prints.
  */
 static const EnvFan q_fans[] = {
     { "EXHST 1", 1980, { 2636, 2636 }, { 210, 0, 0 }, 0 },
@@ -349,10 +349,10 @@ static const EnvZone ws_zones_ip59[] = {
 };
 
 /*
- * The rack-mounted workstation's zones: the datasheet's default table for
- * the 8 and Q personalities, which matches the captured modules. The
- * current percentage follows the zone's first fan's drive byte, so at idle
- * it equals the minimum. The NODE zone's exhaust fan is inverted.
+ * The rack-mounted workstation's zones: the default table for the 8 and Q
+ * personalities, which matches the captured modules. The current percentage
+ * follows the zone's first fan's drive byte, so at idle it equals the minimum.
+ * The NODE zone's exhaust fan is inverted.
  */
 static const EnvZone q_zones[] = {
     { "NODE", "0,1,2,5,6", 47, ENV_ZONE_MEAN, "0", 0, 210, true, 0 },
@@ -480,9 +480,9 @@ static void env_zone_row(GString *out, const EnvZone *zone, const char *state,
 
 /*
  * A row's state: Disabled when monitoring is off, else Wait Pwr with no node
- * power, else Enabled. The datasheet gives the order of Fault, Warning,
- * Enabled, Wait Pwr and Disabled but not the monitor state that "env off"
- * leaves a row in, so Disabled over Wait Pwr is a model choice.
+ * power, else Enabled. The order of Fault, Warning, Enabled, Wait Pwr and
+ * Disabled is known, but not the state that "env off" leaves a row in, so
+ * Disabled over Wait Pwr is a model choice.
  */
 static const char *env_state(const SGIL1EnvSettings *settings, bool powered)
 {

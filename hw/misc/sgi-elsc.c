@@ -1569,12 +1569,12 @@ static void elsc_power_cycle(SGIElscState *s, unsigned seconds)
  * grant, at most five times, and then dropped; the master has already done
  * its own part either way.
  *
- * An attempt fails when the slave does not answer, which in the model is
- * only while it waits out its power-up sequence: the firmware processes no
- * command then. Failures of the bus grant itself are not modelled. This
- * is a direct call between the two controllers, as the datasheet gives them
- * a link of their own and the machine joins the pair the way it already
- * joins the master's grant ring to the slave's adapter (arb_peer).
+ * An attempt fails when the slave does not answer, which in the model is only
+ * while it waits out its power-up sequence: the firmware processes no command
+ * then. Failures of the bus grant itself are not modelled. This is a direct
+ * call between the two controllers, as the two have a link of their own and
+ * the machine joins the pair the way it already joins the master's grant ring
+ * to the slave's adapter (arb_peer).
  */
 static bool elsc_peer_busy(SGIElscState *peer)
 {
@@ -1657,14 +1657,14 @@ static void elsc_forward(SGIElscState *s, SGIElscForward command)
 }
 
 /*
- * The controller's own start-up power-up: an Origin 2000 controller powers
- * its module up on its own after a delay, and an Origin 200 master does if
- * its NVRAM says automatic power-on. A slave waits for its master's forward.
- * The delay is start-delay-ms (the datasheet gives about six seconds for the
- * Origin 2000). Only a controller that was told to wait does so. An Origin
- * 2000 controller told not to powers its module up in its own reset
- * (sgi_elsc_power_up_at_start()), and an Origin 200 module starts powered,
- * which is how every guest and test has always started.
+ * The controller's own start-up power-up: an Origin 2000 controller powers its
+ * module up on its own after a delay, and an Origin 200 master does if its
+ * NVRAM says automatic power-on. A slave waits for its master's forward. The
+ * delay is start-delay-ms (about six seconds for the Origin 2000). Only a
+ * controller that was told to wait does so. An Origin 2000 controller told not
+ * to powers its module up in its own reset (sgi_elsc_power_up_at_start()), and
+ * an Origin 200 module starts powered, which is how every guest and test has
+ * always started.
  */
 static void elsc_start_expired(void *opaque)
 {

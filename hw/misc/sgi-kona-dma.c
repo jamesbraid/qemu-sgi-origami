@@ -798,17 +798,15 @@ static void sgi_kona_dma_calls_open_n(SGIKonaState *s, uint32_t token,
 }
 
 /*
- * 0x1e4 class key offset size: the kernel's placement of one of the
- * current context's pipe-memory regions, offset and size in granules.
- * It sends one for every region the context holds when it restores the
- * context, and again when one is allocated or freed (size 0). The
- * library's display-list offsets, in 0x16d, 0x170, 0x167, 0x16f and the
- * kernel DMA write's 0x1c8, count from the start of its
- * display-list allocation, class 1 key 0 (the grammar datasheet's
- * display-list section), so two contexts each using offset 0 must not
- * meet in pipe memory. The model therefore adds the class 1, key 0
- * region's offset, at the model's 0x400-byte granule, to every list-plane
- * address.
+ * 0x1e4 class key offset size: the kernel's placement of one of the current
+ * context's pipe-memory regions, offset and size in granules. It sends one for
+ * every region the context holds when it restores the context, and again when
+ * one is allocated or freed (size 0). The library's display-list offsets, in
+ * 0x16d, 0x170, 0x167, 0x16f and the kernel DMA write's 0x1c8, count from the
+ * start of its display-list allocation, class 1 key 0, so two contexts each
+ * using offset 0 must not meet in pipe memory. The model therefore adds the
+ * class 1, key 0 region's offset, at the model's 0x400-byte granule, to every
+ * list-plane address.
  *
  * Inferred: that the pipe relocates the offsets by the region the kernel
  * placed. A freed region (size 0) leaves no base. Context activation

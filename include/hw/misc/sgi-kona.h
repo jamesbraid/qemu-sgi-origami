@@ -750,14 +750,12 @@ typedef struct SGIKonaPendingSwap {
 
 /*
  * The pipe's flash EEPROM, which IRIX's EEPROM programming tool programs with
- * SGI_KONA_CMD_EEPROM ("The flash EEPROM operation, 0x1ec, and the EEPROM
- * programming tool" in the command grammar datasheet). 512 KiB, inferred from
- * the erase length and the header's place in the last 256-byte group; its
- * layout is in hw/misc/sgi-kona-flash.h. The indirect port reads it
- * big-endian at internal SGI_KONA_FLASH_BASE plus the flash offset
- * (inferred: the PROM's header address is that sum); the ARM's own
- * byte-wide programming accesses are not modelled, so host writes there
- * are dropped.
+ * SGI_KONA_CMD_EEPROM (see kona.rst, "Flash EEPROM operation"). 512 KiB,
+ * inferred from the erase length and the header's place in the last 256-byte
+ * group; its layout is in hw/misc/sgi-kona-flash.h. The indirect port reads it
+ * big-endian at internal SGI_KONA_FLASH_BASE plus the flash offset (inferred:
+ * the PROM's header address is that sum); the ARM's own byte-wide programming
+ * accesses are not modelled, so host writes there are dropped.
  *
  * Approximated: no factory image was ever captured, so the model starts
  * the flash zero with header state 2. It keeps its contents across

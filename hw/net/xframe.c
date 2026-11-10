@@ -406,8 +406,7 @@ static bool xframe_link_pending(XframeState *s)
  * all-ones), and PIC_INT_MASK's PIC_INT_GPIO bit gates the roll-up (Linux
  * s2io.c s2io_txpic_intr_handle and its link-up unmask sequence). An event
  * raised while its leaf bit is masked stays latched in GPIO_INT_REG and is
- * delivered once the bit is cleared. Whether silicon retains it is OPEN in
- * the datasheet.
+ * delivered once the bit is cleared. Whether silicon retains it is OPEN.
  */
 static bool xframe_gpio_link_pending(XframeState *s)
 {

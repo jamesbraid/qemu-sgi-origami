@@ -337,11 +337,11 @@ static void tape_end_of_data(SCSITapeReq *r, int32_t remaining)
 }
 
 /*
- * The drivers disagree on beginning-of-medium: OpenBSD recognises it only
- * as BLANK CHECK 00/04 on a SPACE, and reads the NO SENSE + end-of-medium
- * form as a pending end-of-medium that fails the next transfer. OpenBSD is
- * the first guest tested, so its form is emitted; the datasheet records
- * the divergence as a per-guest decision.
+ * The drivers disagree on beginning-of-medium: OpenBSD recognises it only as
+ * BLANK CHECK 00/04 on a SPACE, and reads the NO SENSE + end-of-medium form as
+ * a pending end-of-medium that fails the next transfer. OpenBSD is the first
+ * guest tested, so its form is emitted; the divergence is a per-guest
+ * decision.
  */
 static void tape_beginning_of_medium(SCSITapeReq *r, int32_t remaining)
 {

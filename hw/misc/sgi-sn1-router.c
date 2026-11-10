@@ -522,12 +522,11 @@ static void router_reset_enter(Object *obj, ResetType type)
 }
 
 /*
- * The L1 raises either line on its own: a change that leaves the router
- * online or offline as it was does nothing. Going offline loses the
- * registers, so they are cold whenever the router comes back (Approximated:
- * the R-brick datasheet records the order of the release but not which
- * registers a held chip keeps, so cold-zero is the model's choice, as for
- * any reset).
+ * The L1 raises either line on its own: a change that leaves the router online
+ * or offline as it was does nothing. Going offline loses the registers, so
+ * they are cold whenever the router comes back (Approximated: the order of the
+ * release is known but not which registers a held chip keeps, so cold-zero is
+ * the model's choice, as for any reset).
  */
 static void router_set_line(SGISN1RouterState *s, bool *line, bool value)
 {

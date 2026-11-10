@@ -228,19 +228,17 @@ static void xbow_write(void *opaque, hwaddr addr, uint64_t value,
             return;
         case 0x30:
             /*
-             * The one-shot resets the widget down this link alone, the
-             * way the Crossbow's does. Which pattern it sends is stated
-             * two ways: the register's own page says it makes the LLP
-             * "assert the remote link reset signal" (printed page 70),
-             * and the reset chapter says it asserts SendWarmReset (page
-             * 122); the Crossbow datasheet leaves the same conflict in
-             * its own specification open. Either way it goes down this
-             * one link, and the modelled widgets, the bridge heads,
-             * reset alike for both, so the model sends the one line it
-             * has (inferred). What ends the link's initialization
-             * afterwards is not stated, so a present link reports alive
-             * throughout, the policy the Crossbow model applies to the
-             * links a machine selects.
+             * The one-shot resets the widget down this link alone, the way the
+             * Crossbow's does. Which pattern it sends is stated two ways: the
+             * register's own page says it makes the LLP "assert the remote
+             * link reset signal" (printed page 70), and the reset chapter says
+             * it asserts SendWarmReset (page 122); the Crossbow specification
+             * leaves the same conflict open. Either way it goes down this one
+             * link, and the modelled widgets, the bridge heads, reset alike
+             * for both, so the model sends the one line it has (inferred).
+             * What ends the link's initialization afterwards is not stated, so
+             * a present link reports alive throughout, the policy the Crossbow
+             * model applies to the links a machine selects.
              */
             qemu_irq_pulse(s->warm_reset[link - LINK_FIRST]);
             return;
