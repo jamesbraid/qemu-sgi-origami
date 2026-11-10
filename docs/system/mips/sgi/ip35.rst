@@ -283,6 +283,25 @@ M48T35-compatible 32 KiB timekeeper on byte-bus select 0, read with the
 *approximation*. The part on the Origin 300 IO-8 is *unknown*. The Fuel
 board carries a DS1742W (:ref:`sgi-ip35-fuel`).
 
+.. _sgi-ip35-diagrams:
+
+Topology diagrams
+-----------------
+
+Each diagram is drawn from the machine catalogue when the manual is
+built, one per topology, and shows every part the topology can hold;
+``nodes=`` fits a smaller number of node boards. The Origin 300 heads at
+widgets 14 and 15 and the Fuel's VPro slot at widget 13 are stated in
+:ref:`sgi-ip35-components` and :ref:`sgi-ip35-fuel` with the ratings
+given there. A cabled C-brick has no labelled link to its XBridge: the
+diagram draws the :term:`XIO` cable, and the node's two entries as the XBridge's
+heads E and F, widgets 14 and 15 (*inferred*, :ref:`sgi-bricks-ibrick`).
+A head with no board ends in a dot. A G-brick pipe's widget 11 is the
+catalogue's choice, and the hardware value is *unknown*
+(:ref:`sgi-bricks-gbrick`).
+
+.. sgi-diagram:: ip35
+
 .. _sgi-ip35-identity:
 
 Board identity inputs
