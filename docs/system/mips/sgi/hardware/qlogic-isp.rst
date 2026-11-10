@@ -312,6 +312,12 @@ byte swap belongs to the Bridge, not to this device (see
 Every offset the model does not decode answers 0 and logs ``LOG_UNIMP``. A
 write to a read-only register logs ``LOG_GUEST_ERROR``.
 
+.. sgi-registers: base=0x20008700000 width=16 xor=2 expect=0x2:0x1216
+   skip=0x4:revision-dependent skiprow="DMA block configuration:isp1040-only"
+   skiprow="Mailboxes 0 to 7:signature"
+   setup=0x20008023014:0x10700000,0x20008023004:6,0x2000800021c:0x1107
+   qemu="-M origin200 -m 64 -device qlogic-isp12160,bus=pci,addr=3"
+
 .. list-table::
    :header-rows: 1
 
