@@ -18,9 +18,9 @@
  * The control node's messages are the slot map (SGI_L2_HUB_SLOTS bytes,
  * one 0 or 1 per slot), sent once on open and again after every attach or
  * detach. A slot node's messages in both directions are one router segment
- * (docs/system/mips/sgi/hardware/l1.rst, "L2 link"); the hub stamps the
- * segment's own length into its first two bytes when the program sent
- * another value, as the kernel driver does.
+ * (docs/system/mips/sgi/hardware/l1-l2-link.rst, "L2 link"); the hub
+ * stamps the segment's own length into its first two bytes when the program
+ * sent another value, as the kernel driver does.
  */
 #ifndef HW_MISC_SGI_L2_HUB_H
 #define HW_MISC_SGI_L2_HUB_H

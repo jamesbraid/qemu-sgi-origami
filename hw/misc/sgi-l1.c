@@ -78,10 +78,11 @@ static const SGIL1ProductProfile l1_profiles[] = {
     { "vbrick-discovery-reference", 0, 0, 0, false },
     /*
      * The Origin 3000 compute brick and system I/O brick. The letters are
-     * candidates (see docs/system/mips/sgi/hardware/l1.rst): a C-brick's is
-     * valid for its module name only, and the case of an I-brick's is the
-     * model's choice. Their records are all synthetic, so board_count and
-     * board_capacity, which describe the file-backed record cache, stay zero.
+     * candidates (see docs/system/mips/sgi/hardware/l1-brick-profiles.rst):
+     * a C-brick's is valid for its module name only, and the case of an
+     * I-brick's is the model's choice. Their records are all synthetic, so
+     * board_count and board_capacity, which describe the file-backed record
+     * cache, stay zero.
      */
     { "cbrick", 0x43, 0, 0, true, L1_O3K_CBRICK },
     { "ibrick", 0x49, 0, 0, false, L1_O3K_IBRICK },
@@ -104,7 +105,8 @@ static const SGIL1ProductProfile l1_profiles[] = {
      * like an I-brick. The L1 firmware has no V-brick personality and
      * takes its letter from the logic board's EEPROM name, so a V-brick
      * whose logic board is named as an X-brick's answers X. That is
-     * inferred, not captured (docs/system/mips/sgi/hardware/l1.rst).
+     * inferred, not captured
+     * (docs/system/mips/sgi/hardware/l1-brick-profiles.rst).
      */
     { "vbrick", 0x58, 0, 0, false, L1_O3K_VBRICK },
 };
@@ -1311,10 +1313,10 @@ static void l1_router_error(SGIL1State *s, uint8_t channel)
 }
 
 /*
- * The optional link to an L2 (docs/system/mips/sgi/hardware/l1.rst, "L2
- * link"). While a peer holds the link, a request for controller type 1 or 2
- * leaves as router segments and the peer's response comes back to whoever
- * asked. With no peer, such a request gets the router error reply.
+ * The optional link to an L2 (docs/system/mips/sgi/hardware/l1-l2-link.rst,
+ * "L2 link"). While a peer holds the link, a request for controller type 1
+ * or 2 leaves as router segments and the peer's response comes back to
+ * whoever asked. With no peer, such a request gets the router error reply.
  */
 
 /* The tag in the source word's bits 11:5 names the requester again. */
@@ -2229,16 +2231,17 @@ static void l1_o3k_attached_put(uint8_t *fields, unsigned slot,
  * widget 0 reports a crossbow part (0xd000 or 0xd100). The I-brick's and
  * V-brick's widget 0 is an XBridge, so that PROM never asks either one, on
  * hardware or here; the reply is for other callers (see
- * docs/system/mips/sgi/hardware/l1.rst). What a real I/O brick answers is
- * not published (approximation): the model lists the requesting C-brick at
- * port 1 and, when that C-brick's chip has a graphics brick on its other
- * port, the graphics brick at port 2, each as the C-brick's reply lists a
- * brick, and leaves the other ports empty. An I-brick answers 0x000c so
- * with or without a graphics brick, and so does a V-brick: the L1 firmware
- * answers 0x000c from its link table whatever the brick's letter, and a
- * V-brick runs the X-brick personality. Without a graphics brick, 0x000d on
- * either, and both requests on an N-brick, keep the unknown-request code:
- * that PROM never asks an N-brick, and nothing settles the others.
+ * docs/system/mips/sgi/hardware/l1-brick-profiles.rst). What a real I/O
+ * brick answers is not published (approximation): the model lists the
+ * requesting C-brick at port 1 and, when that C-brick's chip has a
+ * graphics brick on its other port, the graphics brick at port 2, each as
+ * the C-brick's reply lists a brick, and leaves the other ports empty. An
+ * I-brick answers 0x000c so with or without a graphics brick, and so does a
+ * V-brick: the L1 firmware answers 0x000c from its link table whatever the
+ * brick's letter, and a V-brick runs the X-brick personality. Without a
+ * graphics brick, 0x000d on either, and both requests on an N-brick, keep
+ * the unknown-request code: that PROM never asks an N-brick, and nothing
+ * settles the others.
  */
 static void l1_iobrick_attached(SGIL1State *s, SGIL1State *recipient,
                                 uint8_t channel, bool low_ports)
