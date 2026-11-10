@@ -2783,6 +2783,13 @@ static void test_push_and_pop_attrib(void)
                     fbits(0.8));
     g_assert_cmphex(guest_word(qts, offset + 4), ==, fbits(2));
     g_assert_cmphex(guest_word(qts, offset + 12), ==, fbits(3));
+    /* The edge flag is the float the current-value query writes. */
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 4 + 4 * 12), ==, fbits(1));
+    kona_command(qts, 0xa7, (uint32_t[]){ 0 }, 1);
+    kona_command(qts, 0xc9, (uint32_t[]){ 0x1 }, 1);
+    g_assert_cmphex(guest_word(qts, RETURN_PAGE + 4 + 4 * 12), ==, fbits(0));
+    kona_command(qts, 0xc8, (uint32_t[]){ 0 }, 1);
+    kona_command(qts, 0xa7, (uint32_t[]){ 1 }, 1);
 
     kona_command_f(qts, 0x6b, (float[]){ 1, 1, 1, 1 }, 4);
     kona_command_f(qts, 0x168, (float[]){ 0, 0 }, 2);

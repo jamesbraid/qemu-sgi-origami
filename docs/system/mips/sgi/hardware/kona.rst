@@ -676,6 +676,20 @@ empty without an error; its length is *unknown*, and the model's row of
 inconsistent on this name: its row says the client answers it, and its
 text says the client asks through the fog-function reader.
 
+The current-value query ``0x3b`` takes one word and answers 13 words:
+colour (four floats), colour index, normal, texture coordinates and the
+edge flag at offset 0x30 (*established*). The client reads the edge flag
+as a float and truncates it for integer and boolean reads, so a true flag
+is a float of at least 1.0 and a false one 0.0 (*established*). Which bit
+pattern the pipe writes for it is *inferred*; the model writes 1.0 and
+0.0. The push reply's edge flag, word 12 of its current-value section,
+takes the same float; what encoding that path uses is *unknown*, an
+*approximation* chosen to match the query, whose record the section follows.
+The raster-position query ``0x3d`` answers 15 words with the valid
+flag at offset 0x34 (*established*); whether the flag is an integer or a
+float is *unknown*, and the model writes the float 1.0 or 0.0, an
+*approximation*.
+
 The light-attribute query ``0x10b`` (one word) is sent by the client
 library when it copies a context, and the client waits on the return page
 for it (*established*, from the library). The engine's handler for the

@@ -4979,15 +4979,18 @@ static void sgi_kona_gl_get_error(SGIKonaState *s)
  * So the layouts below are established from the reader:
  *
  *   0x3b: current RGBA (+0x00), index (+0x10), normal xyz (+0x14),
- *         texture STRQ (+0x20), and one word for pname 0xb43 (+0x30);
+ *         texture STRQ (+0x20), and the edge flag, pname 0xb43 (+0x30);
  *   0x3d: raster RGBA (+0x00), index (+0x10), texture STRQ (+0x14),
  *         window xyz and clip w (+0x24), valid (+0x34), distance (+0x38).
  *
  * Inferred: that the pipe writes the whole block, since the client does
- * not say which pname it wants; and the valid flag as 1.0 or 0.0, the
- * value GL's float query gives a boolean. Unknown: what pname 0xb43 is,
- * which no OpenGL 1.2 enumerant names; the model answers 0. Like the
- * error query, a query with no usable current context posts nothing.
+ * not say which pname it wants. The word at +0x30 is the edge flag, which
+ * the client reads as a float and truncates for integer and boolean reads,
+ * so true is 1.0 and false 0.0 (established that it is a float of at least
+ * 1.0 when true; the exact bit pattern the pipe uses is inferred). The
+ * raster-position valid flag's type is unknown: the table gives its offset
+ * only, and the model writes 1.0 or 0.0. Like the error query, a query
+ * with no usable current context posts nothing.
  */
 #define SGI_KONA_GL_CURRENT_WORDS 13
 #define SGI_KONA_GL_RASTER_WORDS  15
@@ -5006,6 +5009,7 @@ static void sgi_kona_gl_get_block(SGIKonaState *s, uint32_t token)
 {
     uint8_t block[SGI_KONA_GL_RASTER_WORDS * 4] = { 0 };
     const SGIGLContext *c;
+    float edge;
     uint32_t len;
 
     if (!sgi_kona_x_read_current(s) ||
@@ -5015,11 +5019,13 @@ static void sgi_kona_gl_get_block(SGIKonaState *s, uint32_t token)
         return;
     }
     c = &s->state[s->context_current]->gl;
+    edge = c->cur_edge ? 1.0f : 0.0f;
     if (token == SGI_KONA_CMD_GL_GET_CURRENT) {
         sgi_kona_gl_store_floats(block, c->cur_color, 4);
         sgi_kona_gl_store_floats(block + 0x10, &c->cur_index, 1);
         sgi_kona_gl_store_floats(block + 0x14, c->cur_normal, 3);
         sgi_kona_gl_store_floats(block + 0x20, c->cur_texcoord, 4);
+        sgi_kona_gl_store_floats(block + 0x30, &edge, 1);
         len = SGI_KONA_GL_CURRENT_WORDS * 4;
     } else {
         float valid = c->raster_valid ? 1.0f : 0.0f;
@@ -10386,7 +10392,8 @@ static void sgi_kona_reply_material(uint8_t *w, const SGIGLMaterial *m)
  * attribute groups the bits name, ordered as the reader's integer and
  * float conversions suggest (inferred):
  *
- *   0x1    colour, index, normal, texture coordinates, edge flag, raster
+ *   0x1    colour, index, normal, texture coordinates, edge flag (the
+ *          float the current-value query writes), raster
  *          position and distance, raster colour, raster texture
  *          coordinates, raster validity, raster index
  *   0x80   mode, density, start, end, colour, index; no fog-function
@@ -10417,7 +10424,7 @@ static uint32_t sgi_kona_gl_push_reply(SGIKonaState *s, int i, uint32_t mask,
         sgi_kona_reply_f(p, 4, c->cur_index);
         sgi_kona_reply_fv(p, 5, c->cur_normal, 3);
         sgi_kona_reply_fv(p, 8, c->cur_texcoord, 4);
-        stl_be_p(p + 4 * 12, c->cur_edge);
+        sgi_kona_reply_f(p, 12, c->cur_edge ? 1.0f : 0.0f);
         sgi_kona_reply_fv(p, 13, c->raster_pos, 4);
         sgi_kona_reply_f(p, 17, c->raster_distance);
         sgi_kona_reply_fv(p, 18, c->raster_color, 4);

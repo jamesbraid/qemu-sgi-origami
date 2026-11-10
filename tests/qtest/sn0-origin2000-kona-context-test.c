@@ -3371,9 +3371,9 @@ static void test_raster_query_answer(void)
 /*
  * The current-attribute query 0x3b takes one word and answers thirteen binary32
  * words from byte 8: the current RGBA glColor3f set, the index, the normal,
- * texture STRQ, and a word for pname 0xb43, whose meaning is unknown and which
- * the model answers 0. The GL client library sends glGetFloatv of
- * GL_CURRENT_COLOR this way, not as the 0x4c glGet.
+ * texture STRQ, and the edge flag (pname 0xb43) at byte 0x30, a float: 1.0
+ * while set, 0.0 after glEdgeFlag(GL_FALSE). The GL client library sends
+ * glGetFloatv of GL_CURRENT_COLOR this way, not as the 0x4c glGet.
  */
 static void test_current_query_answer(void)
 {
@@ -3397,8 +3397,14 @@ static void test_current_query_answer(void)
     assert_return_floats(s, 0x10, index, 1);
     assert_return_floats(s, 0x14, normal, 3);
     assert_return_floats(s, 0x20, strq, 4);
-    g_assert_cmphex(guest_word(s, RETURN_A + 8 + 0x30), ==, 0);
+    assert_return_floats(s, 0x30, (const float[]){ 1 }, 1);
     g_assert_cmphex(guest_word(s, RETURN_A + 8 + 0x34), ==, 0x5a5a5a5a);
+    guest_fill_word(s, RETURN_A, 0);
+    kona_command(s, 0xa7, (uint32_t[]){ 0 }, 1);
+    qtest_writel(s, REG_COMMAND, 0x3b);
+    qtest_writel(s, REG_COMMAND, 0);
+    g_assert_cmphex(guest_word(s, RETURN_A), !=, 0);
+    assert_return_floats(s, 0x30, (const float[]){ 0 }, 1);
     assert_textport_in_step(s);
     qtest_quit(s);
 
