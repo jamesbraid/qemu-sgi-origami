@@ -108,6 +108,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-3457-005``
    *Silicon Graphics Onyx2 Rackmount Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3457-005/pdf/007-3457-005.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-007-3547-001:
+
+``007-3547-001``
+   *OCTANE PCI Module Installation Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3547-001/pdf/007-3547-001.pdf>`__ Published; may be quoted.
+
 .. _sgi-ref-007-3708-002:
 
 ``007-3708-002``

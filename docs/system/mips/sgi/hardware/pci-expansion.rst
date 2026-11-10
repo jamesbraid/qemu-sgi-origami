@@ -7,20 +7,21 @@ PCI expansion: boards and the Origin 300 module
 ===============================================
 
 Used in :ref:`sgi-ip27` (the :term:`XIO` PCI expansion board, the PCI Carrier
-Assembly and the shoehorn) and :ref:`sgi-ip35` (the Origin 300 PCI
-expansion module).
+Assembly and the shoehorn), :ref:`sgi-ip30` (the Octane PCI module and the
+shoehorn) and :ref:`sgi-ip35` (the Origin 300 PCI expansion module).
 
 .. seealso::
 
-   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip35`.
+   Platform pages: :ref:`sgi-ip27`, :ref:`sgi-ip30`, :ref:`sgi-ip35`.
 
 These boards put PCI slots behind the SGI XIO and :term:`NUMAlink` fabrics. This
 page covers the Origin 2000 XIO PCI expansion board and its PCI Carrier
 Assembly, the PCI-XTALK adapter (the "shoehorn") with the Cad Duo card that
-fits it, and the Origin 300 PCI expansion module.
+fits it, the Octane's PCI module and its use of the shoehorn, and the
+Origin 300 PCI expansion module.
 
-QEMU builds the first three boards as ``sgi-pci-expansion``,
-``sgi-pci-carrier`` and ``sgi-pci-shoehorn``
+QEMU builds the XIO boards as ``sgi-pci-expansion``,
+``sgi-pci-carrier``, ``sgi-octane-pci-cage`` and ``sgi-pci-shoehorn``
 (``hw/mips/sgi/board-pci-expansion.c`` and
 ``hw/mips/sgi/board-pci-shoehorn.c``). Each is an XIO board that holds one
 :term:`Bridge` and its PCI bus (:doc:`bridge`). The Cad Duo is an ``sgi-ioc3``
@@ -44,6 +45,15 @@ Sources
   :src:`nekonomicon-16727716`, :src:`nekonomicon-5749` and
   :src:`mimgfx-origin2000-inventory`. A published Origin 300 inventory with
   an expansion module, :src:`nekonomicon-11542`.
+- *OCTANE PCI Module Installation Guide*, :src:`007-3547-001`, and the
+  *OCTANE Technical Report*, :src:`octane-technical-report`, for the
+  Octane's PCI module, and the *Octane Workstation Owner's Guide*,
+  :src:`007-3435-004`, for the Octane's XIO slots.
+- Published IRIX ``hinv -mv`` listings of Octane and Octane2 machines that
+  print a PCI module or a PCI-XTALK adapter. The module appears in 28
+  distinct barcodes, all at ``/hw/node/xtalk/13``; the adapter at
+  ``/hw/node/xtalk/10`` in three. They are cited below as the Octane
+  listings.
 - Seller photographs of a PCI-XTALK adapter, :src:`ebay-277925514107-image-1`,
   :src:`ebay-277925514107-image-3` and :src:`ebay-277925514107-image-5`.
 - A published SGI part-number list, :src:`sgi-pca-numbers`, and the IP27
@@ -266,6 +276,198 @@ above, as for every board here. A guest services INTA with the Ethernet
 handler alone, so a SuperIO source on INTA would never clear. The tests
 check that a keystroke leaves INTA low. The interrupt then takes the
 Bridge to Crossbow to :term:`Hub` path of any card interrupt (:doc:`hub`).
+
+.. _sgi-pci-expansion-octane:
+
+Octane PCI boards
+=================
+
+The Octane and Octane2 take two PCI option boards in XIO ports: the
+three-slot PCI module (SGI's "OCTANE PCI Module", the PCI card cage), on
+Crossbow port 13, and the one-slot PCI-XTALK adapter, in one of the four
+XIO slots at ports 9 to 12. QEMU builds them as ``sgi-octane-pci-cage`` and
+``sgi-pci-shoehorn``. Each is a Bridge on a port of its own with its own
+PCI bus, apart from the Bridge on the system board at port 15 (:doc:`bridge`,
+:ref:`sgi-ip30-components`). Their PCI interrupt pins and DMA go to
+HEART (:doc:`heart`) through the Crossbow, and the machine resets them with the
+Crossbow's link reset like any other XIO board.
+
+.. _sgi-pci-expansion-octane-module:
+
+Octane PCI module
+-----------------
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 12 42
+
+   * - Fact
+     - Rating
+     - Source
+   * - The module is a three-slot PCI card cage. The guide allows two full
+       and one half-size board, one full and two half-size, or three
+       half-size boards.
+     - *established*
+     - :src:`007-3547-001 printed pages 3 and 13` and
+       :src:`octane-technical-report p. 1-2`.
+   * - The module has a Crossbow port of its own, 13, beside the four XIO
+       slots at 9 to 12. IRIX prints its board at ``/hw/node/xtalk/13``.
+     - *established*
+     - :src:`007-3547-001 printed page 65`,
+       :src:`octane-technical-report p. 7-5`, and all 28 module
+       barcodes in the Octane listings.
+   * - One XIO link joins the module's Bridge to Crossbow port 13.
+     - *established*
+     - :src:`octane-technical-report p. 2-19`.
+   * - The board is part ``030-0952-005``, name ``XTALKPCI`` (no
+       underscore, unlike the adapter). Revisions A to E are seen, E on 15
+       of the 28 barcodes. Two listings show other dash numbers, ``-007``
+       and ``-009``.
+     - *observed*
+     - The Octane listings. The model uses revision E.
+   * - The module's Bridge is the "second Bridge ASIC" the Technical Report
+       counts, behind port 13. The report calls the module "four PCI bus
+       slots" once and says three everywhere else; the guide and every
+       listing show three.
+     - *established*
+     - :src:`octane-technical-report p. 2-19` and
+       :src:`007-3547-001 printed page 13`.
+   * - The widget reports the Bridge part (``0xc002``), not the XBridge
+       (``0xd002``).
+     - *inferred*
+     - The report says "Bridge ASIC" for the ``-005`` assembly. What the
+       later assemblies carry is *unknown*.
+   * - The module's Bridge revision.
+     - *unknown*
+     - No Octane PROM listing or register read of the module is held.
+       The model gives it revision 3, the system board's, an
+       *approximation* that says nothing about the real value.
+   * - The three slots are the Bridge's devices 1, 2 and 3: PCI ID 1 to 3
+       in the guide, ``/hw/node/xtalk/13/pci/1`` to ``pci/3`` in the
+       hardware graph.
+     - *inferred*
+     - The guide says the software slot matches the physical one
+       (*established*, :src:`007-3547-001 printed page 13`), and six
+       Octane listings show a Cad Duo: one at ``pci/1``, two at ``pci/2``
+       and three at ``pci/3``. A software slot name is
+       not a configuration device number; the system board's own
+       devices are the model for the step.
+   * - Whether the module's Bridge answers at devices 0 and 4 to 7.
+     - *unknown*
+     - No source shows a slot there. The model puts nothing there, so a
+       configuration read of them times out as an empty slot does
+       (:doc:`bridge`).
+   * - A slot's INTA and INTC reach Bridge pin *device* and its INTB and
+       INTD reach pin *device* ^ 4, so slot 1 uses pins 1 and 5, slot 2
+       pins 2 and 6, slot 3 pins 3 and 7.
+     - *inferred*
+     - Linux and OpenBSD use this as the default Bridge wiring, *software
+       expectation*. Linux overrides it per board, the IP30 system board
+       among them (:ref:`sgi-ip30-unknowns`), so it need not hold for the
+       module. No trace of the module's own wiring is held.
+   * - Which slots are 64 bit.
+     - *unknown*
+     - The report calls the slots PCI-64 (:src:`octane-technical-report
+       p. 1-2`); no listing gives a slot's width. The model drives every
+       slot as 32 bit, an *approximation*.
+   * - The board keeps its record on its Bridge's one-wire part.
+     - *inferred*
+     - The adapter and the Origin 2000 carriers do. No dump of a module's
+       record is held. The model's record carries the part, revision and
+       name above and a marked synthetic barcode.
+   * - What a Bridge with no flash fitted answers on its flash window.
+     - *unknown*
+     - IRIX reads the start of the window and its second select on every
+       Bridge it finds (*software expectation*) and a bus error there is
+       a kernel fault. The model fits a blank part on neither select:
+       reads of both complete with all ones, an *approximation* that
+       keeps IRIX attached. A write to either select fails with a bus
+       error and is logged. What a real board answers to a write is
+       *unknown*; the model's failure is a stand-in, not a measurement.
+
+The module's board record is barcode ``EMUO`` followed by the port's
+instance, ``EMUO68`` at port 13, which is marked synthetic: a real barcode
+names one physical unit.
+
+.. _sgi-pci-expansion-octane-shoehorn:
+
+PCI-XTALK adapter in an Octane
+------------------------------
+
+The adapter on an Octane is the board described above, with the part and
+slot facts the Octane listings give.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 12 42
+
+   * - Fact
+     - Rating
+     - Source
+   * - IRIX prints an ``XTALK_PCI Board`` at ``/hw/node/xtalk/10`` and
+       lists its card as ``PCI Adapter ... PCI slot 1``. All three listings
+       are Octane2 machines with a V12 at port 11 and put the adapter at
+       port 10; the card is named in one.
+     - *observed*
+     - The Octane listings.
+   * - The Octane listings show part ``030-1275-004`` revision A once and
+       ``030-1275-005`` revision A twice. The model uses ``-004``
+       revision A, the number the Origin 2000 listings share.
+     - *observed*
+     - The Octane listings.
+   * - The adapter fits any of the four XIO ports, 9 to 12.
+     - *inferred*
+     - Third-party pages say any slot works and the stock PROM probes all
+       four; no listing shows one outside port 10.
+   * - The adapter's Bridge revision on an Octane.
+     - *unknown*
+     - IRIX prints no ASIC line. The model gives revision 4, the
+       Origin 2000 PROM's ``ASIC BRIDGE Rev 4`` for the same adapter,
+       an *approximation*.
+   * - The card is in the adapter's PCI slot 1 and Bridge device 1.
+     - *inferred*
+     - ``PCI slot 1`` is *observed*; the configuration device is the same
+       step as for the module above.
+   * - Interrupt pins and the flash window.
+     - *inferred*
+     - As for the module: pins *device* and *device* ^ 4, and a blank part
+       on both flash selects, an *approximation*.
+
+How the model places the boards:
+
+- ``-device sgi-pci-shoehorn,slot=widget-10`` fits the adapter in port 10,
+  and ``-device sgi-octane-pci-cage,slot=widget-13`` fits the module. The
+  board is known as its slot unless given an ``id``, so its PCI bus is
+  ``widget-10.0`` or ``widget-13.0`` and a card goes on it with
+  ``-device qlogic-isp2200,bus=widget-13.0,addr=1``. ``pci-bus-name``
+  renames the bus.
+- The catalogue offers ``pci-shoehorn`` in each of ``widget-9`` to
+  ``widget-12`` and ``pci-cage`` in ``widget-13``, so ``--board
+  pci-shoehorn@widget-10`` and ``--board pci-cage@widget-13`` produce the
+  ``-device`` above. The shoehorn on an Octane is empty and carries
+  ``board-part=030-1275-004``, ``board-revision=A``,
+  ``flash-empty-reads-high=true``, ``first-slot=1`` and ``slots=1``. The
+  Origin 2000 shoehorn keeps its photographed ``030-1275-002`` revision B
+  and an empty flash select that fails.
+- ``first-slot`` and ``slots`` restrict a card to the devices
+  ``first-slot`` to ``first-slot + slots - 1``; the module has devices 1 to
+  3 and the adapter device 1, and a card at any other device is refused
+  when it is realized. ``flash-empty-reads-high`` makes the empty flash
+  selects read all ones.
+- A shoehorn in port 13, the module in any of ports 9 to 12, a port the
+  Octane lacks (8, 14) and a port that already holds a board are
+  refused. A shoehorn in the default graphics port, 11, leaves the
+  default pipe nowhere to go, so a launch that fits one there gives
+  ``-vga none`` or names the pipe's port.
+- The module wires an add-in IOC3's SuperIO output to Bridge pin
+  *device* ^ 4, as the other expansion boards do. The shoehorn wires only a
+  card it fits itself, so a card added to it with ``-device`` has INTA and
+  no SuperIO connection.
+- Each board takes a synthetic barcode and one-wire serial offset by its
+  port: ``EMUO64`` to ``EMUO68`` for ports 9 to 13.
+- The machine marks the board's port present and alive when it is created,
+  with the pre-reset health restore of the system board's Bridge link, so
+  the stock PROM finds the board.
 
 .. _sgi-pci-expansion-cad-duo:
 
@@ -729,6 +931,10 @@ Model limits
   to hold cards.
 - The carrier takes devices 0, 1 and 2 for its three slots. The real
   numbers are *unknown*. Power, board length and hot-plug are not modelled.
+- The Octane module's Bridge revision, slot widths, devices outside 1 to
+  3, interrupt wiring and empty flash answer are *unknown* or an
+  *approximation* as stated above. A write to an empty flash select fails
+  where the answer of a real board is *unknown*.
 - The shoehorn fits any empty XIO slot and one card through its
   properties. The Cad Duo's subsystem id is a placeholder and its second
   interrupt line is *inferred*.
@@ -765,6 +971,16 @@ interrupt reaching node 0's Hub on pin *slot* ^ 4 with INTA left low, the
 Cad Duo's one-wire record by Search ROM and Match ROM, a bare card with no
 record, the dual-serial card's record and serial interrupt, the one-card
 limit and a board fitted by slot name.
+
+``tests/qtest/octane-pci-boards-test.c`` fits the shoehorn and the Octane
+module on ``octane`` and ``octane2``. For each it checks the Bridge's widget
+identity and live link after a reset, the one-wire record byte for byte
+against a record laid out from its fields, the empty flash selects, a
+function in every slot with nothing at the other devices, an ISP2200's
+identity, a card's interrupt reaching HEART through the slot's pin
+and clearing, a card's DMA to RAM and, on the module, an add-in IOC3's
+SuperIO interrupt on pin *device* ^ 4 with INTA low. It also covers the shoehorn at the
+ends of the XIO port range, both boards together, and the refusals above.
 
 ``tests/qtest/sn0-bridge-identity-test.c`` compares the carrier's and the
 shoehorn's Bridge records byte for byte and checks their formatted part,

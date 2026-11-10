@@ -785,6 +785,20 @@ serial are the marked synthetic ``EMUG00``, and 32-bit DMA page-list
 entries, which IRIX 6.5.30's X server and kernel and the Linux IMPACTSR
 driver write.
 
+.. _sgi-ip30-pci-boards:
+
+PCI option boards
+=================
+
+The four graphics ports also take the one-slot PCI-XTALK adapter (the PCI
+shoehorn), and Crossbow port 13 takes the Octane PCI module, a three-slot
+PCI card cage. Each is a Bridge on a port of its own with its own PCI bus
+(``-device sgi-pci-shoehorn,slot=widget-10``, ``-device
+sgi-octane-pci-cage,slot=widget-13``, or ``--board
+pci-shoehorn@widget-10`` and ``--board pci-cage@widget-13`` through the
+catalogue). Their identity, slots, interrupt wiring and what is
+*unknown* about them are on :ref:`sgi-pci-expansion-octane`.
+
 .. _sgi-ip30-unknowns:
 
 Open questions
@@ -797,8 +811,9 @@ Open questions
   smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`,
   :doc:`hardware/heart`).
-- The expansion Bridge's widget number. The reference Octane2 has none
-  fitted.
+- The PCI module's and the adapter's Bridge revisions, which no Octane
+  listing prints (:ref:`sgi-pci-expansion-octane`). The reference Octane2
+  has no PCI module fitted.
 - Interrupt wiring from the onboard PCI functions to Bridge inputs; no
   public source establishes it, and this page does not state it. The
   reference Octane2's PROM leaves Bridge pins 6 and 7 enabled, sending
