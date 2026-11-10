@@ -13301,6 +13301,16 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
             return;
         }
     }
+    /*
+     * The generic enables take clip planes 0x3000 to 0x3005 only; the rest
+     * of 0x3000 to 0x3fff is an invalid enumerant (established).
+     */
+    if (i != SGI_KONA_CONTEXT_NONE && (selector == 0x24 || selector == 0x25) &&
+        args[0] > 0x3005 && args[0] <= 0x3fff &&
+        !s->state[i]->gl.in_begin) {
+        sgi_kona_gl_set_error(s, SGI_GL_INVALID_ENUM);
+        return;
+    }
     if (i != SGI_KONA_CONTEXT_NONE &&
         sgi_kona_gl_multisample(s, i, selector, args)) {
         return;

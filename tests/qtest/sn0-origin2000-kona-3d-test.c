@@ -2512,6 +2512,39 @@ static void test_light_attribute_readback(void)
 }
 
 /*
+ * The generic enable and disable (0x25 and 0x24) take clip planes 0x3000
+ * to 0x3005 only; any other name in 0x3000 to 0x3fff is an invalid
+ * enumerant. The clip-plane command 0xb4 is nine words (the plane name and
+ * four doubles), so the glGet that follows it still frames.
+ */
+static void test_clip_plane_enable_range(void)
+{
+    static const uint32_t bad[] = { 0x3006, 0x3007, 0x3fff };
+    g_autofree char *log = NULL, *found = NULL;
+    QTestState *s = kona_init_logged(&log);
+
+    gl_make_current(s);
+    kona_command(s, 0xb4, (uint32_t[]){ 0x3000, 0x3ff00000, 0, 0, 0, 0, 0,
+                                        0, 0 }, 9);
+    kona_command(s, 0x25, (uint32_t[]){ 0x3005 }, 1);
+    assert_native_error(s, 0);
+    kona_command(s, 0x24, (uint32_t[]){ 0x3005 }, 1);
+    assert_native_error(s, 0);
+    for (unsigned k = 0; k < ARRAY_SIZE(bad); k++) {
+        kona_command(s, 0x25, &bad[k], 1);
+        assert_native_error(s, 0x500);
+        kona_command(s, 0x24, &bad[k], 1);
+        assert_native_error(s, 0x500);
+    }
+    prepare_refused_reply(s);
+    kona_command(s, 0x4c, (uint32_t[]){ 0xba2 }, 1);
+    assert_reply_posted(s);
+    qtest_quit(s);
+    found = kona_log_read(log);
+    g_assert_false(log_shows_misframing(found));
+}
+
+/*
  * The feed restart, 0x1bc and one word, is one word that does nothing: the
  * query after it still frames and is answered, and the trace records the
  * token as unmodelled. Without the token in the grammar its word reads as
@@ -21038,6 +21071,8 @@ int main(int argc, char **argv)
              test_unmodelled_query_zero_words);
     add_case("sn0/origin2000/kona-3d/setup-rounding-ties-to-even",
              test_setup_rounding_ties_to_even);
+    add_case("sn0/origin2000/kona-3d/clip-plane-enable-range",
+             test_clip_plane_enable_range);
     add_case("sn0/origin2000/kona-3d/feed-restart-framing",
              test_feed_restart_framing);
     add_case("sn0/origin2000/kona-3d/light-attribute-readback",

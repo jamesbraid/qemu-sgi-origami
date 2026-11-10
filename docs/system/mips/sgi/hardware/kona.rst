@@ -705,6 +705,13 @@ instruments buffer is registered again, and the pipe reprograms its
 select-feedback output channel from the saved start words if a feed is
 active (*established*). The model frames the word and does nothing.
 
+The user clip-plane command ``0xb4`` is nine words: the plane name and
+four doubles, high word first (*established*). The generic enable and
+disable ``0x24`` and ``0x25`` take clip planes ``0x3000`` to ``0x3005``
+only; any other name from ``0x3000`` to ``0x3fff`` records an
+invalid-enumerant error (*established*). The model frames ``0xb4`` as nine
+words and records that error.
+
 .. _sgi-kona-window-id:
 
 Window-id ownership
