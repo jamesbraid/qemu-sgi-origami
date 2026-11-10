@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "0f91423d5eb37ec0840ec819e02a85d9475cfedb592f2a34fbb2ee05d8fb6637"
+    "0a84de0354105d8d7659039a3290cd8fd117a2232fc0e12dbc170b5fc5a9e8ca"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -711,6 +711,26 @@ class StorageTests(unittest.TestCase):
                 if row["product"] == "o2":
                     self.assertEqual(row["clock"]["icount-shifts"], [3])
                     self.assertEqual(row["clock"]["default-icount-shift"], 3)
+
+    def test_octane_second_serial_port_is_a_backed_line(self):
+        """Both Octane products fit IOC3 serial port B and the machine
+        reads it from the second -serial, so the catalogue lists it as a
+        line a launch backs, with its transcript after port A's."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        rows = [row for row in catalogue["offerings"]
+                if row["product"] in ("octane", "octane2")]
+        self.assertEqual({row["product"] for row in rows},
+                         {"octane", "octane2"})
+        for row in rows:
+            with self.subTest(offering=row["id"]):
+                self.assertEqual(
+                    [(line["name"], line["chardev"], line["kind"],
+                      line["serial"]) for line in row["serial-lines"]],
+                    [("ioc3-a", "ioc3_a", "console", 0),
+                     ("ioc3-b", "ioc3_b", "second-port", 1),
+                     ("ioc3-a-record", "ioc3_a_record", "record", 2),
+                     ("ioc3-b-record", "ioc3_b_record", "record", 3)])
 
     def test_l2_links_are_one_line_per_cbrick_l1(self):
         """Each Origin 3000 C-brick L1 has a link line to a rack L2,

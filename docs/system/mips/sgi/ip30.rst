@@ -656,6 +656,18 @@ These are emulator choices for launchers, not hardware facts.
   and the OpenBSD capture shows ``com0`` at IOC3 offset ``0x20178`` as
   console. That the stock PROM selects that port with no graphics board
   fitted was seen only on the model.
+- Serial lines. ``ioc3-a`` is the first ``-serial``, ``ioc3-b`` the second,
+  and the transcripts of A and B follow as the third and fourth, which
+  the catalogue lists as ``ioc3-a-record`` and ``ioc3-b-record``. Both
+  products have two ports: the Octane guide shows two DB9 connectors
+  labelled 1 and 2 on the back (:src:`007-3435-004 p. 202`, *established*),
+  and the measured Octane2 inventory lists IOC3 ``tty1`` and ``tty2``
+  (:ref:`sgi-measured-octane2-hinv`, *established*). Port B is the IRIX
+  ``ttyd2`` device: *inferred* on the Octane2 from the measured ``tty2``
+  entry, and *observed* on the model, where IRIX 6.5.13f lists IOC3 serial
+  ``tty2`` and a guest write to ``/dev/ttyd2`` reached the backend and a
+  reply was read back. Timing and flow control on a real port are
+  *unknown*.
 - PROM dialogue ``none``: no launcher-driven PROM dialogue is defined.
 - Disk bus ``scsi``: the boot disk attaches to the first onboard SCSI
   controller. The reference Octane2's hardware graph places its disk at PCI

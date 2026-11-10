@@ -1271,8 +1271,9 @@ def _serial_lines_for(topology: dict, machine_name: str,
                 line("mace-b", "mace_b", "second-port", serial=1)]
     if generation == "IP30":
         return [line("ioc3-a", "ioc3_a", "console", serial=0),
-                line("ioc3-b", "none", "unconnected", serial=1),
-                line("ioc3-a-record", "ioc3_a_record", "record", serial=2)]
+                line("ioc3-b", "ioc3_b", "second-port", serial=1),
+                line("ioc3-a-record", "ioc3_a_record", "record", serial=2),
+                line("ioc3-b-record", "ioc3_b_record", "record", serial=3)]
     if launch_recipe == "ip53-discovery":
         return [line(c["launcher-name"], c["argument"].split(":")[1],
                      {"console": "console",
