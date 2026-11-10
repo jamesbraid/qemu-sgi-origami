@@ -83,9 +83,8 @@ DECLARE_CLASS_CHECKERS(LucentOHCIClass, LUCENT_OHCI, TYPE_LUCENT_OHCI)
  *
  * - HcInterruptEnable: every field resets to 0 in the reset tables of
  *   sections 7.1.5 and 7.1.6, MasterInterruptEnable included. One sentence
- *   in 7.1.6 says the master bit is set after a reset instead; the Lucent
- *   OHCI datasheet records why zero is taken, which SGI's IO-8 board test
- *   also expects.
+ *   in 7.1.6 says the master bit is set after a reset instead; zero is taken
+ *   (see lucent-ohci.rst), which SGI's IO-8 board test also expects.
  * - HcFmInterval's FSLargestDataPacket: the specification leaves it to the
  *   part ("TBD", section 7.3.1); zero rests on the board test alone.
  */
@@ -244,16 +243,15 @@ static const MemoryRegionOps lucent_ohci_rhdesc_a_ops = {
 
 /*
  * Entering USBRESET resets the root hub, and the shared core takes both
- * descriptors back to its own power-on values with it. OpenHCI 1.0a leaves
- * the root-hub registers out of those USBRESET preserves and says the root
- * hub "is being reset" there (section 5.1.2.1), but gives the descriptor
- * registers' reset column as "Power-On Reset" and says they are written
- * during initialization (section 7.4). The IO-8 board test requires the
- * written HcRhDescriptorB port bits back afterwards, so this part keeps
- * them; the Lucent OHCI datasheet marks that inferred from the test.
- * HcRhDescriptorA goes back to this part's power-on value rather than the
- * core's. Everything else about the write, the port resets included, is
- * the core's.
+ * descriptors back to its own power-on values with it. OpenHCI 1.0a leaves the
+ * root-hub registers out of those USBRESET preserves and says the root hub "is
+ * being reset" there (section 5.1.2.1), but gives the descriptor registers'
+ * reset column as "Power-On Reset" and says they are written during
+ * initialization (section 7.4). The IO-8 board test requires the written
+ * HcRhDescriptorB port bits back afterwards, so this part keeps them; that is
+ * inferred from the test. HcRhDescriptorA goes back to this part's power-on
+ * value rather than the core's. Everything else about the write, the port
+ * resets included, is the core's.
  */
 static uint64_t lucent_ohci_control_read(void *opaque, hwaddr addr,
                                          unsigned size)
@@ -287,16 +285,15 @@ static const MemoryRegionOps lucent_ohci_control_ops = {
 };
 
 /*
- * HcFmNumber: OpenHCI 1.0a, and the Lucent USS-312 datasheet's Table 42
- * after it, give FrameNumber as read-only to the driver and read/write to
- * the controller, and say nothing of what a driver write does. SGI's IO-8
- * and IO-7 board tests for this part write it while the controller is not
- * operational and require the value back, and the IO-8 test was retuned to
- * drop four other fields this part does not keep while keeping this one;
- * so this part is taken to latch a write while it is not counting frames,
- * as the Lucent OHCI datasheet records (inferred, not measured). A write
- * while operational is still discarded, as the core does: what the part
- * does then is unknown.
+ * HcFmNumber: OpenHCI 1.0a, and the Lucent USS-312 datasheet's Table 42 after
+ * it, give FrameNumber as read-only to the driver and read/write to the
+ * controller, and say nothing of what a driver write does. SGI's IO-8 and IO-7
+ * board tests for this part write it while the controller is not operational
+ * and require the value back, and the IO-8 test was retuned to drop four other
+ * fields this part does not keep while keeping this one; so this part is taken
+ * to latch a write while it is not counting frames, as lucent-ohci.rst records
+ * (inferred, not measured). A write while operational is still discarded, as
+ * the core does: what the part does then is unknown.
  */
 static uint64_t lucent_ohci_fm_number_read(void *opaque, hwaddr addr,
                                            unsigned size)

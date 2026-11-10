@@ -3371,8 +3371,8 @@ static bool sn1_node_create_bedrock(SN1NodeState *node, MachineState *machine,
                         node->installed_bank_mask);
     /*
      * An IP35 board's II is a rear connector: with no XIO cable nothing
-     * answers on it, and its link reads down (the C-brick datasheet's
-     * inference; no physical C-brick has been read uncabled).
+     * answers on it, and its link reads down (inferred; no physical C-brick
+     * has been read uncabled).
      */
     if (sn1_node_is_ip35(node)) {
         qdev_prop_set_bit(node->bedrock, "xio-peer", !!node->supplied_xbridge);

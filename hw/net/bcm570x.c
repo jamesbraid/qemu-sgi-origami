@@ -1001,12 +1001,13 @@ static unsigned int bcm570x_lane_xor(Bcm570xState *s, bool frame)
 
 /*
  * Bring the chip's internal image of [addr, addr + len) onto the bus, or the
- * reverse. The image is what the datasheet's layouts describe; the bus bytes
- * are the image with each aligned doubleword's bytes permuted by lane_xor.
- * Writes touch only the lanes the transfer covers, as the chip's byte enables
- * do: whole doublewords go out as one transfer and the partial ends one byte
- * at a time. Reads fetch the covering doublewords. rd is the destination of a
- * read and wr the source of a write; a zero-length transfer does nothing.
+ * reverse. The image is what the chip's documented layouts describe; the bus
+ * bytes are the image with each aligned doubleword's bytes permuted by
+ * lane_xor. Writes touch only the lanes the transfer covers, as the chip's
+ * byte enables do: whole doublewords go out as one transfer and the partial
+ * ends one byte at a time. Reads fetch the covering doublewords. rd is the
+ * destination of a read and wr the source of a write; a zero-length transfer
+ * does nothing.
  */
 static MemTxResult bcm570x_dma_xfer(Bcm570xState *s, uint64_t addr,
                                     uint8_t *rd, const uint8_t *wr,
@@ -2636,9 +2637,8 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
              * back end reading and strands the frames behind it that the
              * jumbo ring can carry.
              *
-             * The manual does not settle this either. See the receive
-             * shortage contract in the BCM570x datasheet, which carries what
-             * was measured against the alternative on this ring.
+             * The manual does not settle this either. Discarding at once was
+             * measured against the alternative on this ring (see bcm570x.rst).
              *
              * Only discard while a jumbo buffer is posted, the state
              * bcm570x_rx_ready accepted. Without one the caller is owed the
@@ -2678,12 +2678,11 @@ static ssize_t bcm570x_receive(NetClientState *nc, const uint8_t *buf,
              * frames included, which is the receive stall issue 553 was filed
              * for.
              *
-             * The manual does not say this. It never addresses a host
-             * producer ring with no descriptor at all, and the pages that
-             * come closest are about the chip's own on-chip buffer pool. The
-             * datasheet's jumbo receive contract carries the evidence, what
-             * it does not cover, and the measurement that rejected the
-             * obvious alternative.
+             * The manual does not say this. It never addresses a host producer
+             * ring with no descriptor at all, and the pages that come closest
+             * are about the chip's own on-chip buffer pool. bcm570x.rst
+             * records the evidence, what it does not cover, and the
+             * measurement that rejected the obvious alternative.
              *
              * Only discard while a standard buffer is posted, which is the
              * state bcm570x_rx_ready accepted. Without one the caller is owed
@@ -2971,15 +2970,14 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     bcm570x_phy_set_link_down(&s->phy, qemu_get_queue(s->nic)->link_down);
 
     /*
-     * The dual-port BCM5704 is one multifunction PCI device presenting two
-     * MAC functions, not two devices and not a bridged card (datasheet: an
-     * inference from the public BCM5704 architecture and the driver
-     * supporting it). Model it as function 0 spawning an identical sibling at
-     * function 1 of the same slot. Both are this same type running the same
-     * per-function code, so the two share the implementation rather than
-     * forking it, and each gets its own register file, SRAM, PHY, ring
-     * engine, status block and interrupt. Only function 0 spawns, so the
-     * sibling at function 1 does not recurse.
+     * The dual-port BCM5704 is one multifunction PCI device presenting two MAC
+     * functions, not two devices and not a bridged card (an inference from the
+     * public BCM5704 architecture and the driver supporting it). Model it as
+     * function 0 spawning an identical sibling at function 1 of the same slot.
+     * Both are this same type running the same per-function code, so the two
+     * share the implementation rather than forking it, and each gets its own
+     * register file, SRAM, PHY, ring engine, status block and interrupt. Only
+     * function 0 spawns, so the sibling at function 1 does not recurse.
      *
      * The PCI core ran pci_init_multifunction for this function before this
      * realize, so set the multifunction capability and header bit by hand

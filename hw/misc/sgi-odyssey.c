@@ -465,25 +465,23 @@
 #define ODSY_FLCTL_CONFIG_RESET 0x0001c000
 
 /*
- * Status register 0x1064 (odsy status0). This model's command FIFO drains
- * in the write handler or, while stores wait for the board's work, behind
- * them, and the 32-bit words of the waiting stores are its level
- * (odyssey_fifo_level()): it is always enabled, empty (bit 16) when no
- * store waits, below the low-water mark (bit 17) while the level is under
- * ODSY_CFIFO_LOW_WATER, and at or above the high-water mark (bit 15)
- * once the level reaches odyssey_fifo_high_mark(). The names of bits 15,
- * 16 and 17 (high water, empty, below low water) come from the IRIX 6.5.30
- * kernels' status decode tables, and OpenBSD's VPro console driver names
- * bits 15 and 17 the same way. Bit 17 with flag 9 as a low-water level is
- * INFERRED; bit 15 with flag 25 rests on its name alone, and the threshold
- * each uses is a model choice (odyssey_fifo_high_mark(),
- * ODSY_CFIFO_LOW_WATER). The kernel's periodic
- * gfx-credits check reads this register and treats a clear low-water or
- * enabled bit as a graphics error, so a board that never answered it (the
+ * Status register 0x1064 (odsy status0). This model's command FIFO drains in
+ * the write handler or, while stores wait for the board's work, behind them,
+ * and the 32-bit words of the waiting stores are its level
+ * (odyssey_fifo_level()): it is always enabled, empty (bit 16) when no store
+ * waits, below the low-water mark (bit 17) while the level is under
+ * ODSY_CFIFO_LOW_WATER, and at or above the high-water mark (bit 15) once the
+ * level reaches odyssey_fifo_high_mark(). The names of bits 15, 16 and 17
+ * (high water, empty, below low water) come from the IRIX 6.5.30 kernels'
+ * status decode tables, and OpenBSD's VPro console driver names bits 15 and 17
+ * the same way. Bit 17 with flag 9 as a low-water level is INFERRED; bit 15
+ * with flag 25 rests on its name alone, and the threshold each uses is a model
+ * choice (odyssey_fifo_high_mark(), ODSY_CFIFO_LOW_WATER). The kernel's
+ * periodic gfx-credits check reads this register and treats a clear low-water
+ * or enabled bit as a graphics error, so a board that never answered it (the
  * default no-register path, reading zero) drew a graphics-error alert for
- * board 0 on every check and then took its board-reset recovery path. The
- * real board's timing-dependent FIFO occupancy is not modeled (see the
- * datasheet's approximation ledger).
+ * board 0 on every check and then took its board-reset recovery path. The real
+ * board's timing-dependent FIFO occupancy is not modeled.
  */
 #define ODSY_STATUS0_FIFO_ENABLED 0x10000000
 #define ODSY_STATUS0_FIFO_LOW_WATER 0x00020000
@@ -495,21 +493,19 @@
 
 /*
  * The command FIFO's low-water threshold, in 32-bit words: below it bit 17
- * reads set, and the level falling below it raises the low-water flag.
- * That bit 17 and flag 9 report a low-water level is INFERRED, and their
- * link to any 0x6bX value is UNKNOWN (datasheet, "Grades for withdrawn
- * claims", rows for 0x6b0-0x6b3 and for status bits 15 and 17).
- * MODEL CHOICE, not a hardware fact: the threshold is 16 words and
- * independent of the 0x6bX values the kernel stores (24,144 in 0x6b3),
- * matched to the 64 stores the model's credits allow
+ * reads set, and the level falling below it raises the low-water flag. That
+ * bit 17 and flag 9 report a low-water level is INFERRED, and their link to
+ * any 0x6bX value is UNKNOWN. MODEL CHOICE, not a hardware fact: the threshold
+ * is 16 words and independent of the 0x6bX values the kernel stores (24,144 in
+ * 0x6b3), matched to the 64 stores the model's credits allow
  * (ODSY_CFIFO_DEPTH). The edge (bit 17 set while the level is below the
- * threshold, the flag raised on falling below it) is a model choice too.
- * Why 16: with credits held to 64 stores the model's level never nears a
- * threshold as large as the stored 0x6b3, if that is a level in words,
- * so bit 17 would always read set; on a Tezro V12, GLperf
- * fill-z-trilinear then kept 0.78 to 0.94 of guest clock, against 0.99
- * with this threshold. Test, a model contract and no evidence for the
- * hardware: sn1/odyssey/command-fifo-water-marks.
+ * threshold, the flag raised on falling below it) is a model choice too. Why
+ * 16: with credits held to 64 stores the model's level never nears a threshold
+ * as large as the stored 0x6b3, if that is a level in words, so bit 17 would
+ * always read set; on a Tezro V12, GLperf fill-z-trilinear then kept 0.78 to
+ * 0.94 of guest clock, against 0.99 with this threshold. Test, a model
+ * contract and no evidence for the hardware:
+ * sn1/odyssey/command-fifo-water-marks.
  */
 #define ODSY_CFIFO_LOW_WATER 16
 
@@ -533,15 +529,13 @@
 #define ODSY_FLCTL_INTR_TARGET_SHIFT 17
 
 /*
- * FIFO set-up registers. The IRIX 6.5.30 kernels' command-FIFO set-up
- * stores five doublewords, read as a register number in the high word
- * (weakly INFERRED) and a value in the low word: 0x6b0 = 0, 0x6b1 = 256,
- * 0x6b3 = 24144, 0x6b2 = 32192
- * and 0x7b5 = 1, written in the order 0x6b0, 0x6b1, 0x6b3, 0x6b2, 0x7b5.
- * The values and the order are ESTABLISHED; the roles and units of the
- * four 0x6bX words are UNKNOWN, and that their high words are register
- * numbers is weakly INFERRED (datasheet, "Grades for withdrawn claims",
- * row for 0x6b0 to 0x6b3). The model stores all five and gives no
+ * FIFO set-up registers. The IRIX 6.5.30 kernels' command-FIFO set-up stores
+ * five doublewords, read as a register number in the high word (weakly
+ * INFERRED) and a value in the low word: 0x6b0 = 0, 0x6b1 = 256, 0x6b3 =
+ * 24144, 0x6b2 = 32192 and 0x7b5 = 1, written in the order 0x6b0, 0x6b1,
+ * 0x6b3, 0x6b2, 0x7b5. The values and the order are ESTABLISHED; the roles and
+ * units of the four 0x6bX words are UNKNOWN, and that their high words are
+ * register numbers is weakly INFERRED. The model stores all five and gives no
  * meaning to 0x6b0, 0x6b1, 0x6b3 or 0x7b5.
  *
  * MODEL CHOICE, not a hardware fact: 0x6b2 is applied as the threshold
@@ -564,13 +558,12 @@
 #define ODSY_FIFO_SETUP_7B5_INDEX 4
 
 /*
- * 0x7f0. The kernels' FIFO set-up writes the doubleword 0x7f0 =
- * 1,000,000,000 once, after the program load (the doubleword and the
- * single write are ESTABLISHED). That the register is 0x3f0 is INFERRED;
- * its unit and meaning are UNKNOWN: a sync timeout in board clocks, in
- * nanoseconds or a non-timeout limit all fit (datasheet, "Grades for
- * withdrawn claims", row for 0x7f0). The model accepts the write and
- * records the value, runs no timer, and raises no flag because of it.
+ * 0x7f0. The kernels' FIFO set-up writes the doubleword 0x7f0 = 1,000,000,000
+ * once, after the program load (the doubleword and the single write are
+ * ESTABLISHED). That the register is 0x3f0 is INFERRED; its unit and meaning
+ * are UNKNOWN: a sync timeout in board clocks, in nanoseconds or a non-timeout
+ * limit all fit. The model accepts the write and records the value, runs no
+ * timer, and raises no flag because of it.
  */
 #define ODSY_REG_SETUP_7F0 0x7f0
 
@@ -584,12 +577,11 @@
  * driver, finding the FIFO already below low water, sets the flag itself
  * through the flags register.
  *
- * Bit 25, FIFO high water by the same decode table, is raised when the
- * level rises to the threshold odyssey_fifo_high_mark() gives. MODEL
- * CHOICE: the flag's meaning rests on its name alone, and its link to
- * 0x6b2 and its threshold and edge are UNKNOWN (datasheet, "Grades for
- * withdrawn claims"); no driver enables it, and the kernel's fatal-flag
- * mask leaves it out.
+ * Bit 25, FIFO high water by the same decode table, is raised when the level
+ * rises to the threshold odyssey_fifo_high_mark() gives. MODEL CHOICE: the
+ * flag's meaning rests on its name alone, and its link to 0x6b2 and its
+ * threshold and edge are UNKNOWN; no driver enables it, and the kernel's
+ * fatal-flag mask leaves it out.
  */
 #define ODSY_INTR_FIFO_LOW_WATER 0x00000200
 #define ODSY_INTR_FIFO_HIGH_WATER 0x02000000
@@ -1072,12 +1064,13 @@ static unsigned odyssey_cmd_arity(uint32_t word)
  *   caller uses, and sets bit 31 on the last block of every such transfer;
  *   the earlier blocks of a transfer split into pieces carry bit 24 alone.
  *   The opcode, word 0 bit 29, word 4 bit 28 and word 7 bits 31, 29, 28 and
- *   25 do not mark a read. APPROXIMATION: the datasheet's header table
- *   leaves bit 24 out and its kernel section reads the same bit as the
- *   last-entry interrupt request, so the direction rule rests on the
+ *   25 do not mark a read. APPROXIMATION: the DMA header layout
+ *   the model works from leaves bit 24 out and the kernel's request builder
+ *   uses the same bit as the last-entry interrupt request, so the direction
+ *   rule rests on the
  *   model's own reading of the kernel's request builder. What would settle
  *   it: a captured board-to-host DMA with bit 24 clear and an interrupt
- *   request, or the reverse, or the datasheet's header table listing the
+ *   request, or the reverse, or a header layout listing the
  *   bit.
  * - Word 0 with bit 29 clear is a board base in 16-byte units, as for an
  *   upload. With bit 29 set it is a sentinel resolved through the bound
@@ -1096,7 +1089,7 @@ static unsigned odyssey_cmd_arity(uint32_t word)
  *   set. How the board resolves it is UNKNOWN. INFERRED mapping onto the
  *   model's two buffers: front is the buffer the pixel's main drawable shows
  *   (its displayed-buffer bit, as scanout resolves it), back the other. That
- *   fits a window, and the datasheet says it has no basis for a double-
+ *   fits a window, and nothing gives a basis for a double-
  *   buffered pixel buffer, which never swaps: that case is not modeled.
  *   An address read of the colour buffer reads the shown buffer. Between a
  *   swap's scheduling and the retrace that latches it, the kernel's buffer
@@ -1106,7 +1099,7 @@ static unsigned odyssey_cmd_arity(uint32_t word)
  *   current window origin is added. An address transfer's is a screen or
  *   object coordinate. INFERRED from the kernel's own clipping arithmetic;
  *   what the header's x and y carry relative to GL window coordinates is
- *   UNKNOWN in the datasheet. dmplay's movie write (ODSY_DMA_MOVIE_FORMAT)
+ *   UNKNOWN. dmplay's movie write (ODSY_DMA_MOVIE_FORMAT)
  *   disagrees: its tiles fit together only with y counted up from the
  *   window's bottom. Which reading holds for the other forms is unknown;
  *   their observed writes start at y 0 and fill the window, where the two
@@ -1475,20 +1468,18 @@ enum {
 #define ODSY_COLOUR_MATERIAL_SPECULAR 0x4
 #define ODSY_COLOUR_MATERIAL_EMISSION 0x8
 /*
- * Classes 0x20 to 0x35 are board registers the host never reads back; the
- * GL library keeps a copy of each at a fixed stride, so the numbering is
- * contiguous (ESTABLISHED as the library's and kernel's writers).
- * "Sequencer" is not an established name for them. Class 0x27 is the
- * microcode write address (ESTABLISHED; ODSY_PROG_PROGRAM_ADDR). The
- * kernel writes 0x2e = 0x380 and 0x26 = 0x7f at set-up: the values are
- * ESTABLISHED and their roles UNKNOWN (datasheet, "Grades for withdrawn
- * claims", row for classes 0x27, 0x2e and 0x26). The model acts on the
- * classes named above, keeps every value in gl_seq[] and accepts the
- * rest, whose meaning is UNKNOWN, without effect. Class 0x34 is
- * stored like the rest. Its values below 0x100 with bit 23 clear are also
- * the model's matrix target select (ODSY_GL_MATRIX_SELECT_TAG), a reading
- * of the GL library's matrix validations that the datasheet does not
- * record; those keep that path.
+ * Classes 0x20 to 0x35 are board registers the host never reads back; the GL
+ * library keeps a copy of each at a fixed stride, so the numbering is
+ * contiguous (ESTABLISHED as the library's and kernel's writers). "Sequencer"
+ * is not an established name for them. Class 0x27 is the microcode write
+ * address (ESTABLISHED; ODSY_PROG_PROGRAM_ADDR). The kernel writes 0x2e =
+ * 0x380 and 0x26 = 0x7f at set-up: the values are ESTABLISHED and their roles
+ * UNKNOWN. The model acts on the classes named above, keeps every value in
+ * gl_seq[] and accepts the rest, whose meaning is UNKNOWN, without effect.
+ * Class 0x34 is stored like the rest. Its values below 0x100 with bit 23 clear
+ * are also the model's matrix target select (ODSY_GL_MATRIX_SELECT_TAG), a
+ * reading of the GL library's matrix validations that no published source
+ * records; those keep that path.
  */
 #define ODSY_PROG_SEQ_FIRST 0x20
 #define ODSY_PROG_SEQ_LAST 0x35
@@ -1616,12 +1607,11 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_TEX_COLOUR_TABLE_BLOCK_WORDS 16
 #define ODSY_REG_TEX_DETAIL_FUNCTION 0x3e40
 /*
- * The texture offset block, three words the GL library copies from the
- * texture object at activation. The only code that writes those object
- * words zeroes them, so the library always sends 0, 0, 0 (ESTABLISHED by
- * the datasheet's search of the library). Their meaning is UNKNOWN, so the
- * model stores them and a draw with any of them nonzero is reported and
- * dropped rather than guessed.
+ * The texture offset block, three words the GL library copies from the texture
+ * object at activation. The only code that writes those object words zeroes
+ * them, so the library always sends 0, 0, 0 (ESTABLISHED by a search of the
+ * library). Their meaning is UNKNOWN, so the model stores them and a draw with
+ * any of them nonzero is reported and dropped rather than guessed.
  */
 #define ODSY_REG_TEX_OFFSET 0x0c3e      /* 3 operands */
 /*
@@ -2142,13 +2132,13 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  *
  * Which of the stored planes are actually tested is a separate question,
  * answered by 0x0405 bits 2:0 (the same register as ODSY_TEX_MODE_2D): a
- * three-bit thermometer count n of enabled planes -- bit 2 set for n > 0,
- * bit 1 for n > 1, bit 0 for n > 2 -- recomputed on every 0x405 write, planes
+ * three-bit thermometer count n of enabled planes -- bit 2 set for n > 0, bit
+ * 1 for n > 1, bit 0 for n > 2 -- recomputed on every 0x405 write, planes
  * 0..n-1 fed SGI_GL_OP_ENABLE and the rest SGI_GL_OP_DISABLE. Because the
- * budget caps at 3, slots 3 to 5 -- which can still receive the library's
- * two internal depth-range planes -- can never be enabled through this
- * field, so they never clip anything in this model; the datasheet's "leave
- * depth_range at [0, 1]" is consistent with that.
+ * budget caps at 3, slots 3 to 5 -- which can still receive the library's two
+ * internal depth-range planes -- can never be enabled through this field, so
+ * they never clip anything in this model; leaving depth_range at [0, 1] is
+ * consistent with that.
  */
 #define ODSY_GL_CLIP_PLANE_BASE 0x120
 #define ODSY_GL_CLIP_PLANE_STRIDE 4
@@ -2223,23 +2213,22 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
  * all grey, which every channel order shows alike.
  *
  * The library's texture uploads into a 12-bit texture (GL_RGB12, GL_RGBA12,
- * GL_LUMINANCE16 and friends, and the default formats on this board) use
- * the 0x6 row of codes. Each names its components and their order: 0x62
- * luminance; 0x68 luminance, alpha; 0x69 R, G, B; 0x6b R, G, B, A; 0x6c A,
- * B, G, R. A DMA's size field (word 7 bits 18:16) then says whether each
- * component is a byte or a big-endian 16-bit word. OBSERVED with a probe
- * that uploaded distinct component values under each internal format,
- * source format and source type (GL_UNSIGNED_BYTE or GL_UNSIGNED_SHORT,
- * GL_ABGR_EXT for 0x6c): the components arrive in the source's own order,
- * and only the code changes with it. In a pixel burst the same probe's
- * 16-bit sources arrive as 16-bit components: 0x62 two luminances a word
- * and 0x68 one luminance-alpha pair a word, under tag 0x12 into an RGBA
- * window and 0x10 into a luminance object; 0x69, 0x6b and 0x6c as a stream
- * of halves under 0x12; 8-bit luminance sources use 0x42 and 0x48 instead,
- * under 0x11 into an RGBA window and 0x10 into a luminance object (datasheet,
- * "Pixel burst tags"). distort's photograph agrees: its 0x6c
- * texels carry the file's blue, green and red bytes repeated into both
- * halves of each 16-bit component.
+ * GL_LUMINANCE16 and friends, and the default formats on this board) use the
+ * 0x6 row of codes. Each names its components and their order: 0x62 luminance;
+ * 0x68 luminance, alpha; 0x69 R, G, B; 0x6b R, G, B, A; 0x6c A, B, G, R. A
+ * DMA's size field (word 7 bits 18:16) then says whether each component is a
+ * byte or a big-endian 16-bit word. OBSERVED with a probe that uploaded
+ * distinct component values under each internal format, source format and
+ * source type (GL_UNSIGNED_BYTE or GL_UNSIGNED_SHORT, GL_ABGR_EXT for 0x6c):
+ * the components arrive in the source's own order, and only the code changes
+ * with it. In a pixel burst the same probe's 16-bit sources arrive as 16-bit
+ * components: 0x62 two luminances a word and 0x68 one luminance-alpha pair a
+ * word, under tag 0x12 into an RGBA window and 0x10 into a luminance object;
+ * 0x69, 0x6b and 0x6c as a stream of halves under 0x12; 8-bit luminance
+ * sources use 0x42 and 0x48 instead, under 0x11 into an RGBA window and 0x10
+ * into a luminance object. distort's photograph agrees: its 0x6c texels carry
+ * the file's blue, green and red bytes repeated into both halves of each
+ * 16-bit component.
  *
  * 0x61 is a 16-bit colour index, two big-endian bytes a pixel. OBSERVED in
  * IRIS GL writepixels from mandel: its headers carry 0x61, its pixel counts
@@ -2681,8 +2670,7 @@ static void odyssey_nic_slot(SGIOdysseyState *s, uint32_t value)
 /*
  * The display back end's 32 by 32 hardware cursor, drawn over the resolved
  * picture: after the lookup RAM and the gamma table, over the main and the
- * overlay planes alike. Its backend entries (the datasheet's
- * "Hardware cursor"):
+ * overlay planes alike. Its backend entries:
  *   0x2500  128 words  glyph: 32 rows of four words, eight 4-bit pixels a
  *                      word, the leftmost pixel in bits 3:0
  *   0x2580             position: x in bits 31:16, y in 15:0, of the glyph's
@@ -2694,15 +2682,15 @@ static void odyssey_nic_slot(SGIOdysseyState *s, uint32_t value)
  * Their layouts are ESTABLISHED as IRIX X server, IRIX kernel and PROM
  * behaviour; what the board makes of the values is INFERRED.
  *
- * APPROXIMATION (the datasheet's proposed model contract): under plane 3 a
- * glyph value k shows colour word k and glyph 0 shows word 0; under plane 0
- * the pixel is transparent whatever the glyph. That is the conventional
- * image-and-mask reading, and the only one under which the PROM's plane
- * upload has a visible effect; the other reading, where a nonzero glyph
- * always shows, is not excluded. The PROM pointer on a real board would
- * settle it. Glyph value 15 and plane values 1 and 2 have no known meaning:
- * they are reported once and drawn transparent. A channel shows the top
- * eight bits of its ten, the model's display choice.
+ * APPROXIMATION (the model's own contract): under plane 3 a glyph value k
+ * shows colour word k and glyph 0 shows word 0; under plane 0 the pixel is
+ * transparent whatever the glyph. That is the conventional image-and-mask
+ * reading, and the only one under which the PROM's plane upload has a visible
+ * effect; the other reading, where a nonzero glyph always shows, is not
+ * excluded. The PROM pointer on a real board would settle it. Glyph value 15
+ * and plane values 1 and 2 have no known meaning: they are reported once and
+ * drawn transparent. A channel shows the top eight bits of its ten, the
+ * model's display choice.
  *
  * Reset values are UNKNOWN; the model resets every entry to zero, cursor
  * off. Every guest path writes the control word before it uses the cursor.
@@ -2963,7 +2951,7 @@ static bool odyssey_cursor_read(SGIOdysseyState *s, hwaddr addr,
 #define ODSY_BACKEND_CTL_BASE 0x2000
 #define ODSY_BACKEND_CTL_ENTRIES 0x1000
 
-/* The entries the kernel writes (the datasheet's back-end entry table). */
+/* The entries the kernel writes. */
 static bool odyssey_backend_ctl_known(uint32_t index)
 {
     return (index >= 0x2000 && index <= 0x247f) ||
@@ -4664,10 +4652,9 @@ static void odyssey_copy_rect_buffer(SGIOdysseyState *s, unsigned source,
 }
 
 /*
- * A rectangle copy inside the id and overlay plane (datasheet, "Rectangle
- * copies inside the id and overlay plane"). The X server's tiled fill sends
- * 0x2031 copies whose two base words both hold the id-plane base, under the
- * id-plane destination select, and expects them to replicate what the
+ * A rectangle copy inside the id and overlay plane. The X server's tiled fill
+ * sends 0x2031 copies whose two base words both hold the id-plane base, under
+ * the id-plane destination select, and expects them to replicate what the
  * preceding image draw wrote there. Colour buffer 0 holds none of it.
  *
  * INFERRED: the board performs such a copy in the id and overlay planes,
@@ -4769,12 +4756,12 @@ static void odyssey_copy_rect(SGIOdysseyState *s)
     }
 
     /*
-     * Inside the id and overlay plane (odyssey_copy_rect_aux()): both bases
-     * at the id-plane base the last 0x1017 select named (INFERRED: the X
-     * server forms both copy bases from the base it selected the plane by,
-     * so the select's own base, not a fixed constant, is compared). One base
-     * there and the other not is UNKNOWN in the datasheet: it moves nothing
-     * and is reported once, not run silently in colour buffer 0.
+     * Inside the id and overlay plane (odyssey_copy_rect_aux()): both bases at
+     * the id-plane base the last 0x1017 select named (INFERRED: the X server
+     * forms both copy bases from the base it selected the plane by, so the
+     * select's own base, not a fixed constant, is compared). One base there
+     * and the other not is UNKNOWN: it moves nothing and is reported once, not
+     * run silently in colour buffer 0.
      */
     if (odyssey_dest_is_id_planes(s) && s->dest_base) {
         uint32_t src_base = s->cmd_operand[ODSY_CMD_COPY_RECT_SRC_BASE_INDEX];
@@ -5409,13 +5396,12 @@ static int odyssey_image_object(SGIOdysseyState *s)
 /*
  * True for a source code whose pixels carry an alpha component that a write
  * into the colour buffer stores. That the board stores the source alpha is
- * INFERRED, from destination-alpha blending that works on an RGBA visual
- * (datasheet, "Alpha from image writes"; the byte orders are established
- * under "Texture source codes for 12-bit textures"). Code 0x4c is left out
- * on purpose: the X server's 24-bit images share it with an alpha byte of
- * zero, and whether the board writes that byte into a window's alpha planes
- * is unsettled ("X server images under code 0x4c"), so its screen writes
- * stay opaque. Into a texture object it keeps alpha, on the same inference.
+ * INFERRED, from destination-alpha blending that works on an RGBA visual (the
+ * byte orders are established). Code 0x4c is left out on purpose: the X
+ * server's 24-bit images share it with an alpha byte of zero, and whether the
+ * board writes that byte into a window's alpha planes is unsettled ("X server
+ * images under code 0x4c"), so its screen writes stay opaque. Into a texture
+ * object it keeps alpha, on the same inference.
  */
 static bool odyssey_code_keeps_screen_alpha(uint32_t code)
 {
@@ -5612,16 +5598,14 @@ static bool odyssey_code_is_index(uint32_t code)
 }
 
 /*
- * A GL image write's source pixels, from word 7 of its DMA header: the
- * format code in bits 4:0 names the components in source order and the
- * type code in bits 8:5 their width (datasheet, "Image-write table").
- * Signed types arrive under the unsigned codes. A packed type lists its
- * components from the most significant bits down, so a reversed packed
- * type comes under the format whose order it has in memory; reading the
- * format code that way for packed types is INFERRED from the table's
- * wording and agrees with the byte-sized forms, where it is the memory
- * order. The 4:2:2 mode (format 0xa) and byte swapping (bit 10) have no
- * modeled meaning.
+ * A GL image write's source pixels, from word 7 of its DMA header: the format
+ * code in bits 4:0 names the components in source order and the type code in
+ * bits 8:5 their width. Signed types arrive under the unsigned codes. A packed
+ * type lists its components from the most significant bits down, so a reversed
+ * packed type comes under the format whose order it has in memory; reading the
+ * format code that way for packed types is INFERRED from the table's wording
+ * and agrees with the byte-sized forms, where it is the memory order. The
+ * 4:2:2 mode (format 0xa) and byte swapping (bit 10) have no modeled meaning.
  */
 #define ODSY_GL_FORMAT_MASK 0x1f
 #define ODSY_GL_TYPE_SHIFT 5
@@ -5713,10 +5697,10 @@ static bool odyssey_gl_layout(uint32_t control, OdysseyGLLayout *l)
         return false;
     }
     /*
-     * Signed types arrive under the unsigned codes. They are read as
-     * unsigned, which is right when the library converts them first and
-     * INFERRED when a context capability bit makes it send them directly
-     * (datasheet: which boards set the bit is unread).
+     * Signed types arrive under the unsigned codes. They are read as unsigned,
+     * which is right when the library converts them first and INFERRED when a
+     * context capability bit makes it send them directly (which boards set the
+     * bit is unread).
      */
     switch (type) {
     case 2:
@@ -5744,12 +5728,11 @@ static uint32_t odyssey_gl_scale(uint64_t v, unsigned bits)
 }
 
 /*
- * One source pixel as 0xRRGGBBAA, or for colour index the raw index. A
- * channel the source lacks is zero and alpha is opaque; LUMINANCE fills
- * red, green and blue, INTENSITY all four. INFERRED, all of it: the
- * datasheet gives the expand flag for red, green and blue only, and
- * leaves what the board stores for a source without alpha unknown. The
- * values are GL's own pixel-transfer defaults.
+ * One source pixel as 0xRRGGBBAA, or for colour index the raw index. A channel
+ * the source lacks is zero and alpha is opaque; LUMINANCE fills red, green and
+ * blue, INTENSITY all four. INFERRED, all of it: the only evidence is an
+ * expand flag for red, green and blue, and what the board stores for a source
+ * without alpha is unknown. The values are GL's own pixel-transfer defaults.
  */
 static uint32_t odyssey_gl_decode(const OdysseyGLLayout *l, const uint8_t *b)
 {
@@ -5850,13 +5833,13 @@ static unsigned odyssey_pixel_bytes(uint32_t code)
 
 /*
  * Whether a source code may arrive under a burst tag. These are the pairings
- * the library sends (datasheet, "Pixel burst tags"). The tag follows the
- * destination's expand flag: a luminance or intensity source takes 0x10 into
- * a luminance or index object, and 0x11 (byte sources) or 0x12 (wider ones)
- * into an RGBA window. A code the table lacks was never accepted, and a
- * listed code under another tag is not a pairing the library produces.
- * The model checks the code and the tag; it does not check the table's
- * destination-class column, which it has no way to tell apart.
+ * the library sends. The tag follows the destination's expand flag: a
+ * luminance or intensity source takes 0x10 into a luminance or index object,
+ * and 0x11 (byte sources) or 0x12 (wider ones) into an RGBA window. A code the
+ * table lacks was never accepted, and a listed code under another tag is not a
+ * pairing the library produces. The model checks the code and the tag; it does
+ * not check the table's destination-class column, which it has no way to tell
+ * apart.
  */
 static bool odyssey_image_pairing_supported(uint32_t code, uint32_t fmt)
 {
@@ -6748,13 +6731,12 @@ static void odyssey_texture_colour_table(const OdysseyTextureVolume *texture,
 
 /*
  * Post-filter scale and bias (0x203b, where texture validation sends a
- * texture's words): eight words, a scale and a bias for each of R, G, B
- * and A in turn, each signed 3.12 in bits 15:0. The GL library clamps both
- * to -8 through 7.999755859375 and defaults them to 4096 (1.0) and 0
- * (ESTABLISHED as the library's conversion). Pairing scale before bias
- * within a channel is INFERRED from the order the datasheet names them.
- * The library never sets bits 31:16, so a word that does is unknown state
- * and drops the draw. The reset value is the library's default, a model
+ * texture's words): eight words, a scale and a bias for each of R, G, B and A
+ * in turn, each signed 3.12 in bits 15:0. The GL library clamps both to -8
+ * through 7.999755859375 and defaults them to 4096 (1.0) and 0 (ESTABLISHED as
+ * the library's conversion). Pairing scale before bias within a channel is
+ * INFERRED. The library never sets bits 31:16, so a word that does is unknown
+ * state and drops the draw. The reset value is the library's default, a model
  * choice.
  */
 #define ODSY_TEX_SCALE_BIAS_WORDS 8
@@ -9271,10 +9253,10 @@ static void odyssey_gl_vertex_colour(SGIOdysseyState *s, const double xyz[3])
  * would flatten to one value. The board interpolates depth with
  * perspective correction (INFERRED from SGI's raster patents).
  *
- * The depth cut: a fragment outside [0, 2S] by more than the rounding slack
- * is dropped before the test. The datasheet leaves the cut point (2S, the
- * largest word, or 2^33) UNKNOWN; at most two steps separate them. The
- * model cuts at 2S plus the slack. MODEL CHOICE.
+ * The depth cut: a fragment outside [0, 2S] by more than the rounding slack is
+ * dropped before the test. The cut point (2S, the largest word, or 2^33) is
+ * UNKNOWN; at most two steps separate them. The model cuts at 2S plus the
+ * slack. MODEL CHOICE.
  *
  * APPROXIMATION, polygon offset: 0x0458 is a count of steps of the stored
  * word, added after the encode and clamped to the words 0 through 2S's,
@@ -10323,13 +10305,12 @@ done:
  * The plane a DMA transfer reads or writes: for a write, the colour plane
  * means a header that is not a depth or stencil write.
  *
- * MODEL CHOICE: the model keeps depth and stencil in planes of their own, so
- * a stencil transfer touches neither the depth word nor the colour, and the
- * depth word's top byte is not stored. Where the board keeps the stencil
- * byte inside a stored pixel is UNKNOWN (datasheet, "What would settle the
- * rest"); the stencil-round-trip qtest pins this choice. A written stencil
- * word keeps its index (bits 23:16) and a written depth word its low 24
- * bits.
+ * MODEL CHOICE: the model keeps depth and stencil in planes of their own, so a
+ * stencil transfer touches neither the depth word nor the colour, and the
+ * depth word's top byte is not stored. Where the board keeps the stencil byte
+ * inside a stored pixel is UNKNOWN; the stencil-round-trip qtest pins this
+ * choice. A written stencil word keeps its index (bits 23:16) and a written
+ * depth word its low 24 bits.
  *
  * MODEL CHOICE, DMA writes (the gl-zs-write-rules qtest pins each): they
  * pass odyssey_pixel_allowed(), so clip rectangles and the window-ID
@@ -10346,16 +10327,15 @@ enum {
 };
 
 /*
- * A depth or stencil write to the draw sentinel (the datasheet's "Depth and
- * stencil headers", ESTABLISHED as the library's request): word 7 carries
- * format code 0 and type code 4 (0x080) and the four-byte pixel code
- * (bits 18:16 = 1); word 4 has bits 7:0 clear and bit 12 set. The other bits
- * of word 7 (the transfer path, the descriptions-differ bit, the interrupt
- * request) and of word 4 (the size field, the framebuffer depth code, the
- * field codes and the draw buffer) are not read. The size field does not
- * choose depth or stencil: the library's burst never carries it, and the
- * write enables of block 0x052 (register 0x0452) choose at write time
- * (odyssey_dma_zs_write_pixel()).
+ * A depth or stencil write to the draw sentinel (ESTABLISHED as the library's
+ * request): word 7 carries format code 0 and type code 4 (0x080) and the
+ * four-byte pixel code (bits 18:16 = 1); word 4 has bits 7:0 clear and bit 12
+ * set. The other bits of word 7 (the transfer path, the descriptions-differ
+ * bit, the interrupt request) and of word 4 (the size field, the framebuffer
+ * depth code, the field codes and the draw buffer) are not read. The size
+ * field does not choose depth or stencil: the library's burst never carries
+ * it, and the write enables of block 0x052 (register 0x0452) choose at write
+ * time (odyssey_dma_zs_write_pixel()).
  */
 #define ODSY_DMA_ZS_CONTROL 0x00010080u
 #define ODSY_DMA_ZS_CONTROL_MASK 0x000701ffu
@@ -10370,16 +10350,15 @@ static bool odyssey_dma_zs_write(const uint32_t *hdr)
 
 /*
  * One pixel of a depth or stencil write, chosen by register 0x0452. The
- * meaning of the bits is ESTABLISHED (the datasheet's "Depth and stencil by
- * pixel burst"): bit 24 enables depth, bits 19:12 are the stencil write
- * mask. A stencil download packs the index in bits 23:16 with no mask, and
- * the burst copies the word unchanged (ESTABLISHED, datasheet). INFERRED:
- * the word is depth (its low 24 bits) when bit 24 is set, and the index
- * merges into the stencil byte as (index & mask) | (old & ~mask), ordinary
- * write-mask semantics. MODEL CHOICE: the mask applies to the index bits in
- * the same positions; LIMIT: how the board aligns the mask bits to the index
- * is UNKNOWN. A word may take both planes when both are enabled, also a
- * MODEL CHOICE (the gl-zs-write-enables qtest pins both). LIMIT: whether the
+ * meaning of the bits is ESTABLISHED: bit 24 enables depth, bits 19:12 are the
+ * stencil write mask. A stencil download packs the index in bits 23:16 with no
+ * mask, and the burst copies the word unchanged (ESTABLISHED). INFERRED: the
+ * word is depth (its low 24 bits) when bit 24 is set, and the index merges
+ * into the stencil byte as (index & mask) | (old & ~mask), ordinary write-mask
+ * semantics. MODEL CHOICE: the mask applies to the index bits in the same
+ * positions; LIMIT: how the board aligns the mask bits to the index is
+ * UNKNOWN. A word may take both planes when both are enabled, also a MODEL
+ * CHOICE (the gl-zs-write-enables qtest pins both). LIMIT: whether the
  * depth-test and stencil-test bits of 0x0404 gate the write is UNKNOWN; the
  * model applies neither.
  */
@@ -10402,14 +10381,13 @@ static void odyssey_dma_zs_write_pixel(SGIOdysseyState *s, int64_t x,
 }
 
 /*
- * A GL image write to the draw sentinel: word 7 gives the source format
- * and type codes (odyssey_gl_layout()), word 4 has bits 7:0 clear, bit 12
- * set and a size field in bits 15:13 that the datasheet gives as 0 to 2
- * (ESTABLISHED, "Image-write table"). The size field follows the board-side
- * destination class, not the source, so no decode reads it. The other bits
- * of word 4 and word 7 (draw buffer, field codes, expand, the transfer path
- * and descriptions-differ flags, the interrupt request) are not decode
- * inputs.
+ * A GL image write to the draw sentinel: word 7 gives the source format and
+ * type codes (odyssey_gl_layout()), word 4 has bits 7:0 clear, bit 12 set and
+ * a size field in bits 15:13 that is 0 to 2 (ESTABLISHED). The size field
+ * follows the board-side destination class, not the source, so no decode reads
+ * it. The other bits of word 4 and word 7 (draw buffer, field codes, expand,
+ * the transfer path and descriptions-differ flags, the interrupt request) are
+ * not decode inputs.
  *
  * Two forms observed on the model fix the bottom-up row order every GL
  * write has. dmplay's movie frames are the ABGR bytes under word 4
@@ -10430,8 +10408,8 @@ static void odyssey_dma_zs_write_pixel(SGIOdysseyState *s, int64_t x,
 
 /*
  * Fill *gl for a write the model decodes and set *top_down; false, with
- * the datasheet's unknowns and malformed headers left for the caller to
- * report, for anything else.
+ * unknown fields and malformed headers left for the caller to report, for
+ * anything else.
  */
 static bool odyssey_dma_gl_write(const uint32_t *hdr, OdysseyGLLayout *gl,
                                  bool *top_down)
@@ -10618,31 +10596,30 @@ typedef struct OdysseyDMALayout {
 #define ODSY_INDEX(w) { ODSY_DMA_CHAN_INDEX, 0, w }
 
 /*
- * GL reads, by word 4's class and code, as the library defines the host
- * bytes (the datasheet's "Read table"). The class and code name a GL
- * format and type, and the bytes are that pair's packing, big-endian
- * (INFERRED from the library treating what it receives as that pair).
- * Several pairs share one code where their bytes are the same; a row
- * lists one. The 5/6/5, 4/4/4/4 and 5/5/5/1 rows are the same for any
- * visual, since only the code is read. Codes 8 and 9 of classes 2 and 3
- * would be 7 and 10 under the library's 4:2:2 read mode, which
- * glReadPixels never sets, and that mode is not modeled.
+ * GL reads, by word 4's class and code, as the library defines the host bytes.
+ * The class and code name a GL format and type, and the bytes are that pair's
+ * packing, big-endian (INFERRED from the library treating what it receives as
+ * that pair). Several pairs share one code where their bytes are the same; a
+ * row lists one. The 5/6/5, 4/4/4/4 and 5/5/5/1 rows are the same for any
+ * visual, since only the code is read. Codes 8 and 9 of classes 2 and 3 would
+ * be 7 and 10 under the library's 4:2:2 read mode, which glReadPixels never
+ * sets, and that mode is not modeled.
  *
  * APPROXIMATION: the model keeps eight bits a channel in every plane, so a
  * narrower field takes the top bits of the stored byte, a wider one repeats
  * them, and a byte read returns the stored byte whatever the visual's width.
  * How the board narrows or widens a pixel is UNKNOWN (the table fixes the
- * bytes handed back, not the board's storage). What would settle it: a
- * board read of a pixel written with known wide data, or a datasheet fact
- * for the board's narrow-pixel storage. A class 0 code 1 or 0 row
- * is colour index for a window and could also be a luminance or alpha
- * texture, which are not modeled; so is class 1 code 2.
+ * bytes handed back, not the board's storage). What would settle it: a board
+ * read of a pixel written with known wide data, or a documented fact for the
+ * board's narrow-pixel storage. A class 0 code 1 or 0 row is colour index for
+ * a window and could also be a luminance or alpha texture, which are not
+ * modeled; so is class 1 code 2.
  *
- * Depth and stencil reads (the datasheet's "Depth and stencil headers"): a
- * 16-bit depth is class 1 code 0, which no modeled colour read uses. A
- * stencil byte shares class 0 code 0 and a 32-bit depth word class 2 code 2
- * with colour index and BGRA bytes. Word 4's field codes tell them apart, so
- * those rows are marked maybe_depth and odyssey_dma_read_plane() decides.
+ * Depth and stencil reads: a 16-bit depth is class 1 code 0, which no modeled
+ * colour read uses. A stencil byte shares class 0 code 0 and a 32-bit depth
+ * word class 2 code 2 with colour index and BGRA bytes. Word 4's field codes
+ * tell them apart, so those rows are marked maybe_depth and
+ * odyssey_dma_read_plane() decides.
  */
 static const OdysseyDMALayout odyssey_dma_gl_layouts[] = {
     /* Class 0: eight-bit colour index. */
@@ -10866,23 +10843,21 @@ static bool odyssey_dma_read_source(SGIOdysseyState *s, const uint32_t *hdr,
 }
 
 /*
- * The plane a header with a shared row reads. Class 0 code 0 is colour
- * index or a stencil byte, and class 2 code 2 is BGRA bytes or a 32-bit
- * depth word. Word 4's two field codes, bits 23:20 (f1) and 27:24 (f2),
- * tell them apart (datasheet, "Read table", the shared headers and the
- * table of word 4 by window and read). ESTABLISHED as what the library
- * sends; what the board does with the codes is unknown.
+ * The plane a header with a shared row reads. Class 0 code 0 is colour index
+ * or a stencil byte, and class 2 code 2 is BGRA bytes or a 32-bit depth word.
+ * Word 4's two field codes, bits 23:20 (f1) and 27:24 (f2), tell them apart.
+ * ESTABLISHED as what the library sends; what the board does with the codes is
+ * unknown.
  *
  * Depth and stencil send (0, 0) or (4, 0). A BGRA read sends (2, 2), (3, 2),
- * (6, 2), (7, 3) or (2, 0), so the two never share a header, except at
- * (0, 0) for class 0: an eight-bit colour index on a storage-0 window is
- * code 0 with those fields, and a stencil read of a storage-2 or 3 window
- * is the same word 4 (word 2 separates them). The model cannot make that
- * choice. It keeps no storage code for a window, and the datasheet does
- * not say how word 2's drawable word maps to one, so it is served as
- * colour index and reported once. A pair the datasheet does not list is
- * served as colour and reported once. A board-memory object is never depth
- * or stencil.
+ * (6, 2), (7, 3) or (2, 0), so the two never share a header, except at (0, 0)
+ * for class 0: an eight-bit colour index on a storage-0 window is code 0 with
+ * those fields, and a stencil read of a storage-2 or 3 window is the same word
+ * 4 (word 2 separates them). The model cannot make that choice. It keeps no
+ * storage code for a window, and nothing says how word 2's drawable word maps
+ * to one, so it is served as colour index and reported once. A pair not listed
+ * above is served as colour and reported once. A board-memory object is never
+ * depth or stencil.
  */
 static unsigned odyssey_dma_read_plane(SGIOdysseyState *s,
                                        const uint32_t *hdr,
@@ -11051,11 +11026,11 @@ static bool odyssey_dma_read_pack(SGIOdysseyState *s,
 }
 
 /*
- * Pack a depth or stencil read: the depth plane's 24-bit word, zero
- * extended to four bytes, or its top 16 bits for the two-byte form (the
- * exponent and the ten leading mantissa bits, as the datasheet gives the
- * RGBA 12/12/12/12 form), or the stencil plane's byte. Rows run in the
- * order odyssey_dma_read_pack() gives a colour read's.
+ * Pack a depth or stencil read: the depth plane's 24-bit word, zero extended
+ * to four bytes, or its top 16 bits for the two-byte form (the exponent and
+ * the ten leading mantissa bits, as for the RGBA 12/12/12/12 form), or the
+ * stencil plane's byte. Rows run in the order odyssey_dma_read_pack() gives a
+ * colour read's.
  */
 static void odyssey_dma_read_pack_zs(SGIOdysseyState *s,
                                      const OdysseyDMASource *src,
@@ -12958,13 +12933,13 @@ static void odyssey_cmd_dispatch(SGIOdysseyState *s, uint32_t tag)
         /*
          * The host-write command's word and the halfword it writes are
          * ESTABLISHED as the kernel's accesses; that the board treats it as
-         * its DMA completion signal is INFERRED (datasheet, DMA tag
-         * write-back). The model raises the same fence the DMA engine's
-         * completion does, through the one fence implementation: op0's slot
-         * and interrupt bit and op1's token become the completion cookie,
-         * published to odyssey_publish() -> odyssey_fence(). op0's interrupt
-         * bit and op1's token already sit at the fence word's own positions
-         * (ODSY_HOST_WRITE_INTERRUPT is the fence word's bit 15).
+         * its DMA completion signal is INFERRED. The model raises the same
+         * fence the DMA engine's completion does, through the one fence
+         * implementation: op0's slot and interrupt bit and op1's token become
+         * the completion cookie, published to odyssey_publish() ->
+         * odyssey_fence(). op0's interrupt bit and op1's token already sit at
+         * the fence word's own positions (ODSY_HOST_WRITE_INTERRUPT is the
+         * fence word's bit 15).
          */
         uint32_t word = ((op1 & 0xffff) << ODSY_DMA_FENCE_TOKEN_SHIFT) |
                         (op0 & (ODSY_DMA_FENCE_INTERRUPT |
@@ -13735,35 +13710,31 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
 #define ODSY_WORK_QUEUE_MAX 65536
 
 /*
- * The depth, in stores, within which waiting stores have their credits.
- * A processor's counted store gets its credit back when the board takes
- * it into the FIFO, not when its work runs (the Bedrock PI datasheet's
- * sizing, inferred: the IRIX 6.5.30 IP35 kernel allows 32 or 188
- * doublewords in flight without a wait and gives the board 25 ms to
- * acknowledge any more, which fits a FIFO that takes words as they arrive
- * and drains them behind). The oldest ODSY_CFIFO_DEPTH waiting stores are
- * in the FIFO and credited, and a store behind them keeps its credit
- * until the work ahead has run and it moves up. A store that does not
- * wait passes through the FIFO at once and is credited at once.
+ * The depth, in stores, within which waiting stores have their credits. A
+ * processor's counted store gets its credit back when the board takes it into
+ * the FIFO, not when its work runs (inferred from the Bedrock processor
+ * interface: the IRIX 6.5.30 IP35 kernel allows 32 or 188 doublewords in
+ * flight without a wait and gives the board 25 ms to acknowledge any more,
+ * which fits a FIFO that takes words as they arrive and drains them behind).
+ * The oldest ODSY_CFIFO_DEPTH waiting stores are in the FIFO and credited, and
+ * a store behind them keeps its credit until the work ahead has run and it
+ * moves up. A store that does not wait passes through the FIFO at once and is
+ * credited at once.
  *
- * MODEL CHOICE: the FIFO's depth, in any unit, is UNKNOWN (datasheet,
- * "Grades for withdrawn claims"; no object names a FIFO size), and the
- * model keeps 64 stores whatever the stored 0x6bX values say. Its board is
- * far slower than a real one,
- * and the PI's credit back-pressure is what makes the kernel sleep the
- * writer while the board catches up; with credits for a full FIFO's
- * backlog the Fuel V12's fill-z-trilinear waited up to 14.5 s and forced
- * swaps (the PI datasheet's model choices for the sleep path). With an
- * IP35 credit window of 100 and bias of 68, 96 stores wait before the PI
- * stops the writer; that figure is model-derived, assuming a 32-bit store
- * costs a whole credit (unknown) and the bias being the level written to
- * HEART fc_mode (inferred). The window and bias are ESTABLISHED per
- * platform (datasheet, "Grades
- * for withdrawn claims", host credit window and bias row): IP30 has a
- * window of 256 credits and a bias of 69, IP35 a tunable window defaulting
- * to 100 and a bias of 68, one credit being 8 bytes. The model's window
- * and bias belong to the PI model and are not chosen here. Test, a model
- * contract: sn1/odyssey/command-work-credit-depth-ignores-setup.
+ * MODEL CHOICE: the FIFO's depth, in any unit, is UNKNOWN (no object names a
+ * FIFO size), and the model keeps 64 stores whatever the stored 0x6bX values
+ * say. Its board is far slower than a real one, and the PI's credit
+ * back-pressure is what makes the kernel sleep the writer while the board
+ * catches up; with credits for a full FIFO's backlog the Fuel V12's
+ * fill-z-trilinear waited up to 14.5 s and forced swaps (a model choice for
+ * the sleep path). With an IP35 credit window of 100 and bias of 68, 96 stores
+ * wait before the PI stops the writer; that figure is model-derived, assuming
+ * a 32-bit store costs a whole credit (unknown) and the bias being the level
+ * written to HEART fc_mode (inferred). The window and bias are ESTABLISHED per
+ * platform: IP30 has a window of 256 credits and a bias of 69, IP35 a tunable
+ * window defaulting to 100 and a bias of 68, one credit being 8 bytes. The
+ * model's window and bias belong to the PI model and are not chosen here.
+ * Test, a model contract: sn1/odyssey/command-work-credit-depth-ignores-setup.
  */
 #define ODSY_CFIFO_DEPTH 64
 
@@ -13942,8 +13913,7 @@ static void odyssey_work_drain(SGIOdysseyState *s, hwaddr addr)
  * - Stores to the flow-control target, +0x1074, only. The kernel stores it
  *   and clears +0x107c with no poll of the FIFO between, so the store is a
  *   direct register write; what a board does with one behind queued work
- *   is unknown. No reader exists, so a read still waits (datasheet,
- *   "Flags, status and flow control").
+ *   is unknown. No reader exists, so a read still waits.
  * - The interrupt flags. The one flag the queued work raises is low
  *   water, and only once no store waits, so a clear written behind the
  *   stores still comes before that edge, as on a board whose FIFO is above

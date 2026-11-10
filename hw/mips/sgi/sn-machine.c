@@ -657,13 +657,12 @@ static void sgi_machine_set_module_serial(SGIMachineState *s,
     if (s->view && s->view->generation == SGI_MODEL_GENERATION_SN1 &&
         s->view->routers && !SGI_L1(l1)->brick_serial) {
         /*
-         * The PROM turns a router's serial text into the number it stores
-         * in router scratch 0, reading letters and digits as base 36. Text
-         * past nine of them, or with other characters, wraps through the
-         * register's booted flag and local identifier fields (bits 63:56),
-         * so the text stays short and alphanumeric. That is how the stock
-         * PROM behaved in a run on the model; the landed datasheets do not
-         * state it.
+         * The PROM turns a router's serial text into the number it stores in
+         * router scratch 0, reading letters and digits as base 36. Text past
+         * nine of them, or with other characters, wraps through the register's
+         * booted flag and local identifier fields (bits 63:56), so the text
+         * stays short and alphanumeric. That is how the stock PROM behaved in
+         * a run on the model; no published source states it.
          */
         char serial[SGI_SYNTHETIC_TEXT_MIN_WIDTH + 1];
 

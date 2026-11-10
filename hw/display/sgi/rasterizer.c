@@ -466,12 +466,12 @@ uint32_t sgi_raster_depth_code(const SGIRasterRules *rules, double z)
 
 /*
  * Window depth z once an eye-float polygon offset of steps words has been
- * added to its stored word: the word of z plus steps, clamped to the
- * words 0 to the one for z = 1, as the depth of the middle of that word's
- * cell, which stores as exactly that word again whatever the rounding of
- * the divide by depth_scale. The clamp at the far word is a MODEL CHOICE:
- * the datasheet fixes neither the sum's saturation nor whether the board
- * keeps a word past the far plane's.
+ * added to its stored word: the word of z plus steps, clamped to the words 0
+ * to the one for z = 1, as the depth of the middle of that word's cell, which
+ * stores as exactly that word again whatever the rounding of the divide by
+ * depth_scale. The clamp at the far word is a MODEL CHOICE: no source fixes
+ * the sum's saturation nor whether the board keeps a word past the far
+ * plane's.
  */
 static double sgi_soft_offset_word_depth(const SGIRasterRules *rules,
                                          double z, double steps)
@@ -3206,14 +3206,14 @@ typedef struct SGISoftTexPlane {
  * the level of detail, as for a per-pixel footprint. ns and nt scale s and
  * t to texels.
  *
- * MODEL CHOICE: the Odyssey datasheet leaves two things open and this
- * takes them as follows. Quads align to even pixel columns and rows of the
- * window the rasterizer draws in; whether the board aligns to the window or
- * the screen is unknown. The four s and t values come from the triangle's
- * planes at each of the quad's pixel centres, so a pixel the triangle does
- * not cover contributes its extrapolated value; how the board treats such
- * pixels is unknown. False where a pixel centre has no positive Q/W or a
- * value is not finite: the caller keeps the pixel's own footprint.
+ * MODEL CHOICE: two things are open and this takes them as follows. Quads
+ * align to even pixel columns and rows of the window the rasterizer draws in;
+ * whether the board aligns to the window or the screen is unknown. The four s
+ * and t values come from the triangle's planes at each of the quad's pixel
+ * centres, so a pixel the triangle does not cover contributes its extrapolated
+ * value; how the board treats such pixels is unknown. False where a pixel
+ * centre has no positive Q/W or a value is not finite: the caller keeps the
+ * pixel's own footprint.
  */
 static bool sgi_soft_texture_quad_rho(const SGISoftTexPlane *g, int px,
                                       int py, double ns, double nt,

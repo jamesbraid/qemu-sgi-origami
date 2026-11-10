@@ -1718,18 +1718,17 @@ static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
 }
 
 /*
- * A read this chip sent for a device and a crossbar dropped: no response
- * comes back, so the chip's own request timer expires (Bridge ASIC
- * specification rev 4.0, table 58, "Crosstalk Read Request from PCI
- * device time-out"; the Crossbow datasheet's "DMA to an unavailable
- * Crossbow destination"). With bit 9 enabled it records the lower 48 bits
- * of the PCI address, the response buffer and the requesting device in
- * the response-buffer group. Table 58 names the Bridge error address
- * registers as the destination; the response buffer error registers
- * (tables 18 and 19) are the pair whose fields are a device, a buffer
- * and 48 address bits, so the model takes them (inferred). It holds no
- * response buffers, so the buffer field is zero. The timer expires at
- * once: the read has already failed back to the device.
+ * A read this chip sent for a device and a crossbar dropped: no response comes
+ * back, so the chip's own request timer expires (Bridge ASIC specification rev
+ * 4.0, table 58, "Crosstalk Read Request from PCI device time-out"; see
+ * xbow.rst). With bit 9 enabled it records the lower 48 bits of the PCI
+ * address, the response buffer and the requesting device in the
+ * response-buffer group. Table 58 names the Bridge error address registers as
+ * the destination; the response buffer error registers (tables 18 and 19) are
+ * the pair whose fields are a device, a buffer and 48 address bits, so the
+ * model takes them (inferred). It holds no response buffers, so the buffer
+ * field is zero. The timer expires at once: the read has already failed back
+ * to the device.
  *
  * The device and address come from the last DMA translation
  * (dma_device and dma_pci_address, which sgi_bridge_translate_common()

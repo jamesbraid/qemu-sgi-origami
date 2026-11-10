@@ -870,9 +870,8 @@ static int sgi_rad1_octane_startup_index(hwaddr addr);
  * Whether the Octane's analog output is muted: 0x88 = 2 is the relay mute and
  * 0x8c = 3 the DAC mute. The permitted sources show only the values the
  * drivers write and when; that these values mute, and that the transfer
- * carries on while the host output is silent, are inferred (the datasheet's
- * mute and transfer rows). No permitted source ties either register to the
- * channel. The registers are storage only,
+ * carries on while the host output is silent, are inferred. No permitted
+ * source ties either register to the channel. The registers are storage only,
  * so the answer follows from them and needs no state of its own.
  */
 static bool sgi_rad1_octane_out_muted(SGIRad1AudioChannel *c)

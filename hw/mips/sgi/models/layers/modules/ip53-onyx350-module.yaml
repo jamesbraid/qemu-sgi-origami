@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: BSD-3-Clause
-# Onyx 350 captured-module compatibility projection; selected runtime choices remain pending independent review.
+# Onyx 350 compatibility projection of the captured module.
 layer_version: 1
 sources:
   onyx350-compatibility-proposal: "qemu:docs/system/mips/sgi/ip53.rst#sgi-ip53-serial-profiles  selected Onyx 350 software profile and unresolved physical behavior"

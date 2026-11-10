@@ -2785,22 +2785,20 @@ static bool mgras_tex_draw_level(SGIMgrasState *s, uint32_t n, uint32_t mode,
 }
 
 /*
- * Mipmapped draws. The client sends bits 5 and 19 when a mipmap filter
- * draws more than one level; bit 8 is then the blend within a level and
- * bit 6 between levels, the four filters of the datasheet's table.
- * TXLOD's last level (3:0) is the highest level drawn and its bits 25:16
- * the minimum LOD in 64ths, clamped to the last level; both are the
- * client's own arithmetic and established as words. A non-mipmap draw
- * uses level 0 alone. The sampler derives lambda from the iterators as
- * the board does, takes the nearest level d = ceil(lambda + 0.5) - 1
- * floored at the base level, and for the blend between levels uses
- * d1 = d2 = last at or past the last level, so no level beyond it is
- * read: all OpenGL 1.2.1 3.8.5 (equations 3.21 to 3.23), approximated
- * since the board's lambda, rounding and blend weights are unknown.
- * SGIS_texture_lod, which the TXLOD bits follow, was not read. A level
- * the draw selects but that was never loaded draws untextured, logged.
- * Levels whose kept format differs from level 0's are left out, which
- * leaves a hole.
+ * Mipmapped draws. The client sends bits 5 and 19 when a mipmap filter draws
+ * more than one level; bit 8 is then the blend within a level and bit 6
+ * between levels, the four mipmap filters. TXLOD's last level (3:0) is the
+ * highest level drawn and its bits 25:16 the minimum LOD in 64ths, clamped to
+ * the last level; both are the client's own arithmetic and established as
+ * words. A non-mipmap draw uses level 0 alone. The sampler derives lambda from
+ * the iterators as the board does, takes the nearest level d = ceil(lambda +
+ * 0.5) - 1 floored at the base level, and for the blend between levels uses d1
+ * = d2 = last at or past the last level, so no level beyond it is read: all
+ * OpenGL 1.2.1 3.8.5 (equations 3.21 to 3.23), approximated since the board's
+ * lambda, rounding and blend weights are unknown. SGIS_texture_lod, which the
+ * TXLOD bits follow, was not read. A level the draw selects but that was never
+ * loaded draws untextured, logged. Levels whose kept format differs from level
+ * 0's are left out, which leaves a hole.
  */
 static void mgras_tex_pyramid(SGIMgrasState *s, uint32_t mode,
                               uint32_t format, bool mip, bool tram_volume)

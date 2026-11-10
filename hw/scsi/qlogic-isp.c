@@ -1729,16 +1729,15 @@ static void qlogic_isp_scsi_complete(SCSIRequest *sreq, size_t resid)
                                                   : ISP_IOCB_COMPLETE;
 
     /*
-     * The two parts disagree on what a completed command's phase bits
-     * mean. The ISP1040's datasheet records the all-phases mask a
-     * completed command traverses, gated only by whether it actually
-     * collected sense; the ISP12160's forbids a phase flag for work the
-     * command skipped, so each of its data-phase bits is earned by what
-     * the request did: a zero-data command reports no data phase, and a
-     * short transfer reports data moved but not a transfer that ran to
-     * its end. Auto-sense runs only after a CHECK CONDITION on either
-     * part, so got-sense is always gated on the completion carrying
-     * sense.
+     * The two parts disagree on what a completed command's phase bits mean.
+     * The ISP1040 reports the all-phases mask a completed command traverses,
+     * gated only by whether it actually collected sense; the ISP12160's
+     * forbids a phase flag for work the command skipped, so each of its
+     * data-phase bits is earned by what the request did: a zero-data command
+     * reports no data phase, and a short transfer reports data moved but not a
+     * transfer that ran to its end. Auto-sense runs only after a CHECK
+     * CONDITION on either part, so got-sense is always gated on the completion
+     * carrying sense.
      */
     if (QLOGIC_ISP_GET_CLASS(s)->info->derived_phase_flags) {
         state_flags = ISP_STATE_FLAG_GOT_BUS | ISP_STATE_FLAG_GOT_TARGET |
@@ -2121,8 +2120,8 @@ static void qlogic_isp_missing_target(QLogicISPState *s, uint32_t handle,
     QLogicISPRequest *req;
 
     /*
-     * Model choice: the datasheet is silent on a zero timeout, so a guest
-     * that programmed no wait gets the answer at once.
+     * Model choice: nothing says what a zero timeout does, so a guest that
+     * programmed no wait gets the answer at once.
      */
     if (timeout == 0) {
         qlogic_isp_post_missing_target(s, handle);
@@ -2252,12 +2251,12 @@ static bool qlogic_isp_handle_request(QLogicISPState *s, hwaddr addr,
     sdev = scsi_device_find(&s->chan[channel].bus, channel, target, lun);
     if (!sdev) {
         /*
-         * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside
-         * it is what lets IRIX treat the empty slot as benign. The
-         * ISP12160's datasheet leaves this status-flags word unresolved
-         * for this case, and an IRIX boot settles it: without the bit,
-         * every absent target is logged as a hard error. Both parts set
-         * it; the per-part field keeps that a stated choice.
+         * GOT_BUS alone is Linux's DID_BAD_TARGET; the timeout bit beside it
+         * is what lets IRIX treat the empty slot as benign. The ISP12160's
+         * documentation leaves this status-flags word unresolved for this
+         * case, and an IRIX boot settles it: without the bit, every absent
+         * target is logged as a hard error. Both parts set it; the per-part
+         * field keeps that a stated choice.
          */
         qlogic_isp_missing_target(s, handle, channel, target, lun);
         return true;

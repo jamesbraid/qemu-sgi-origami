@@ -93,10 +93,9 @@ static const SGIL1ProductProfile l1_profiles[] = {
      */
     { "nbrick", 0x4e, 0, 0, false, L1_O3K_IBRICK },
     /*
-     * The Origin 3900 and Onyx 3000 Cx-brick: one L1 for one to four IP53
-     * node boards. The L1 firmware's personality for it is 6, and request
-     * 0x0003 returns that letter (router board records datasheet, "Other
-     * answers from the same handler"); brick-type-code overrides it.
+     * The Origin 3900 and Onyx 3000 Cx-brick: one L1 for one to four IP53 node
+     * boards. The L1 firmware's personality for it is 6, and request 0x0003
+     * returns that letter (l1.rst, "Requests"); brick-type-code overrides it.
      */
     { "cxbrick", 0x36, 0, 0, true, L1_O3K_CXBRICK },
     /*
@@ -330,11 +329,10 @@ static unsigned l1_config_rows(SGIL1State *s, SGIL1ConfigRow rows[3])
 /*
  * The partition ID this controller reports. PROVISIONAL: an I/O brick takes
  * its C-brick's ID and refuses a set, which is one reading of the L1 sheet's
- * brick command ("it is acquired from attached C-brick"). The partitioning
- * datasheet and the L1 datasheet conflict on whether an I/O brick holds a
- * partition of its own, and a separate research item will settle it. An
- * N-brick serves several C-bricks, which can hold different IDs, so it keeps
- * its own value (a model choice).
+ * brick command ("it is acquired from attached C-brick"). The sources conflict
+ * on whether an I/O brick holds a partition of its own. An N-brick serves
+ * several C-bricks, which can hold different IDs, so it keeps its own value (a
+ * model choice).
  */
 static uint32_t l1_partition(const SGIL1State *s)
 {
@@ -538,9 +536,9 @@ static void l1_reason(SGIL1State *s, uint8_t reason)
 }
 
 /*
- * The 0x8000 event, sent by the deferred first power-off request. The
- * firmware reading in the L1 datasheet (established) defers only for the
- * type letters 9, A and Q, and only with an event subchannel registered.
+ * The 0x8000 event, sent by the deferred first power-off request. The firmware
+ * (established) defers only for the type letters 9, A and Q, and only with an
+ * event subchannel registered.
  */
 static void l1_send_event(SGIL1State *s, uint32_t code, uint32_t number,
                           const char *text)
@@ -876,9 +874,9 @@ static void l1_boot_local(SGIL1State *s)
     s->cx_console_subchannel = 4;
     s->cx_filter = false;
     /*
-     * Monitoring, temperature checking, altitude and the power-monitoring
-     * mode are numbered settings and survive a controller start; the rest
-     * are held in RAM and are lost (inferred from the datasheet).
+     * Monitoring, temperature checking, altitude and the power-monitoring mode
+     * are numbered settings and survive a controller start; the rest are held
+     * in RAM and are lost (inferred).
      */
     if (s->env.fan_auto_off || s->env.faults_only || s->env.fans_off ||
         s->env.custom_limits || s->env.fan_override_mask) {
@@ -1198,14 +1196,14 @@ static void l1_o3k_dimm(SGIL1EEPROM *record, unsigned board, unsigned dimm,
 
 /*
  * The Cx-brick's EEPROM components, as the firmware's personality for it
- * numbers them (router board records datasheet, "Personality 6"): 0 the
- * power inlet, 1 the router board, then for each node board a board record
- * followed by its eight DIMM SPDs in the order 0, 2, 4, 6, 1, 3, 5, 7. Board
- * n's record is component 2 + 9 * n. Thirty-eight entries.
+ * numbers them (l1.rst, "Origin 3900 Cx-brick profile"): 0 the power inlet, 1
+ * the router board, then for each node board a board record followed by its
+ * eight DIMM SPDs in the order 0, 2, 4, 6, 1, 3, 5, 7. Board n's record is
+ * component 2 + 9 * n. Thirty-eight entries.
  *
- * The firmware numbers a request by the port it arrived on (the datasheet's
- * "Component numbers by requesting port"; the port to board mapping is
- * inferred). A node board's link n asks for component c and gets table entry:
+ * The firmware numbers a request by the port it arrived on (the port to board
+ * mapping is inferred). A node board's link n asks for component c and gets
+ * table entry:
  *   c = 0     2 + 9n, its own node record
  *   c = 1     3 + 9n, its own DIMM 0 (not the router)
  *   c >= 2    c + 9n, so 3 to 10 are its own DIMMs and larger numbers reach
@@ -2523,9 +2521,9 @@ static void l1_hold_resets(SGIL1State *s, bool in_reset)
 }
 
 /*
- * @hold is an I-brick's "power up hold", which leaves the bridges in
- * reset. Power-down holds them in reset first (established, firmware
- * reading in the I-brick datasheet); the bits' pins are inferred.
+ * @hold is an I-brick's "power up hold", which leaves the bridges in reset.
+ * Power-down holds them in reset first (established from the firmware); the
+ * bits' pins are inferred.
  */
 static void l1_peer_power(SGIL1State *peer, bool up, uint8_t reason,
                           bool hold)
@@ -2728,12 +2726,12 @@ static int l1_relay(SGIL1State *s, SGIL1State *target, const char *text)
 }
 
 /*
- * A C-brick's "*": this brick, the other C-brick and the I-brick. The
- * firmware hands every remote request to the router before it runs the
- * typed-at brick's own command, so the own brick acts last and the remote
- * bricks first (established, firmware reading in the L1 datasheet). The
- * replies print own answer first; the order of the rest follows the target
- * table here, where the firmware's is the order they arrive (inferred).
+ * A C-brick's "*": this brick, the other C-brick and the I-brick. The firmware
+ * hands every remote request to the router before it runs the typed-at brick's
+ * own command, so the own brick acts last and the remote bricks first
+ * (established from the firmware). The replies print own answer first; the
+ * order of the rest follows the target table here, where the firmware's is the
+ * order they arrive (inferred).
  */
 static int l1_o3k_broadcast(SGIL1State *s, const char *text)
 {
@@ -2828,11 +2826,11 @@ static void l1_o3k_brick_print(SGIL1State *s)
     }
     /*
      * Zero prints none, and the type is followed by the flash text and the
-     * serial, as the L1 datasheet's brick row has them. That the Origin 3000
-     * images print the same is inferred, not captured. The flash size is
-     * unknown, so the unknown-size form is used, and a brick with no serial
-     * prints the C library's null text. A partition of 255 or more prints
-     * ?, also from the datasheet's row and inferred for this image.
+     * serial, as the brick line has them (l1.rst, "Multi-frame transport").
+     * That the Origin 3000 images print the same is inferred, not captured.
+     * The flash size is unknown, so the unknown-size form is used, and a brick
+     * with no serial prints the C library's null text. A partition of 255 or
+     * more prints ?, also from the brick line and inferred for this image.
      */
     l1_printf(s, "rack: %s, slot: %s, partition: %s, type: %c [?MB flash], "
               "serial:%s, source: EEPROM\r\n", rack, bay, partition_text,
@@ -2954,8 +2952,8 @@ static const char *l1_chimera_type_name(const SGIL1State *s)
 }
 
 /*
- * The Origin 300 "brick" line, shared by the console and the wire path (L1
- * datasheet, Origin 300 brick). The model holds no flash capacity or
+ * The Origin 300 "brick" line, shared by the console and the wire path
+ * (l1.rst, "Multi-frame transport"). The model holds no flash capacity or
  * identity source, so the flash label is EMU-UNKNOWN and the source says
  * whether the serial was configured.
  */
@@ -6752,11 +6750,11 @@ fuel_mac_done:
         /*
          * An I-brick's "auto-power" stands for its C-brick's power-up. At
          * mains the I-brick is off with its bridges in reset, and has no
-         * power-up task of its own (established, firmware reading in the
-         * I-brick datasheet). An R-brick is the same, with its router in
-         * reset; the stock protocol powers it only from its own console, a
-         * USB host or its switch, so its "auto-power" is a declared
-         * approximation of a machine that has powered it.
+         * power-up task of its own (established from the firmware). An R-brick
+         * is the same, with its router in reset; the stock protocol powers it
+         * only from its own console, a USB host or its switch, so its
+         * "auto-power" is a declared approximation of a machine that has
+         * powered it.
          */
         if (l1_holds_resets(s)) {
             s->reset_hold = true;

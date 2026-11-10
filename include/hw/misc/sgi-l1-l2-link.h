@@ -9,9 +9,8 @@
  * L1 sends it in a bulk transfer: its first two bytes are its length, big
  * endian and counting themselves, so the stream delimits itself.
  *
- * The field offsets are those of the router segment in the L1 and L2 sheets
- * of the project's datasheets (docs/system/mips/sgi/hardware/l1.rst, "L2
- * link").
+ * The field offsets are those of the router segment described in
+ * docs/system/mips/sgi/hardware/l1.rst, "L2 link".
  */
 #ifndef HW_MISC_SGI_L1_L2_LINK_H
 #define HW_MISC_SGI_L1_L2_LINK_H

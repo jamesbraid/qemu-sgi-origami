@@ -874,8 +874,8 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
 
 /*
  * The channels as the display generator starts: channel 0 shows the whole
- * managed area at 1280x1024, the format the PROM falls back to (see the
- * display datasheet), and every other channel is off.
+ * managed area at 1280x1024, the format the PROM falls back to (see kona.rst,
+ * "Display"), and every other channel is off.
  *
  * Approximated: a real display generator starts the combination stored
  * in its flash, which ircombine and setmon -x write, at power-up; the
@@ -976,15 +976,15 @@ static void sgi_kona_channels_apply(SGIKonaState *s)
 /*
  * The managed area.
  *
- * A combination's SetupFrameBuffer [width, height, pixel depth] gives the
- * size of the one framebuffer every channel takes its rectangle from, the
- * size the X server manages as its screen. The X server takes that size
- * from configuration block +0x84 and +0x88 (established, the command
- * grammar datasheet's configuration request), and a combination stored in
- * the display generator's flash sets it through its own SetupFrameBuffer
- * (observed: ircombine's stored 2@1280x1024_60 carries [2560, 1024, 0]).
- * That the pipe answers the size its last SetupFrameBuffer set is
- * inferred: no capture of a pipe running another size has its block.
+ * A combination's SetupFrameBuffer [width, height, pixel depth] gives the size
+ * of the one framebuffer every channel takes its rectangle from, the size the
+ * X server manages as its screen. The X server takes that size from
+ * configuration block +0x84 and +0x88 (established; see kona.rst,
+ * "Configuration answer"), and a combination stored in the display generator's
+ * flash sets it through its own SetupFrameBuffer (observed: ircombine's stored
+ * 2@1280x1024_60 carries [2560, 1024, 0]). That the pipe answers the size its
+ * last SetupFrameBuffer set is inferred: no capture of a pipe running another
+ * size has its block.
  *
  * The planes are sized at realize for the most pixels the configured
  * raster managers hold (sgi_kona_fb_capacity()), and laid out again with
@@ -999,11 +999,10 @@ static uint64_t sgi_kona_fb_capacity(const SGIKonaState *s)
 }
 
 /*
- * The pipe firmware's budget for a managed area: raster managers x
- * 20,971,520 / (height x width rounded up to 160). Small pixels need 8,
- * Medium 16, Large 32, Extra-Large 64 (the command grammar datasheet's
- * "SetupFrameBuffer on the ARM"; board sets 2 and 6 count differently, and
- * the model presents neither).
+ * The pipe firmware's budget for a managed area: raster managers x 20,971,520
+ * / (height x width rounded up to 160). Small pixels need 8, Medium 16, Large
+ * 32, Extra-Large 64 (see kona.rst, "Products and settings"; board sets 2 and
+ * 6 count differently, and the model presents neither).
  */
 static uint64_t sgi_kona_fb_budget(const SGIKonaState *s, uint32_t width,
                                    uint32_t height)
@@ -1161,18 +1160,16 @@ static void sgi_kona_draw_point(SGIKonaState *s, int32_t x, int32_t y)
 }
 
 /*
- * Filled rectangle (command 5): corners x0, y0, x1, y1 with x0 <= x1 and
- * y0 <= y1, lighting columns x0 + 1 to x1 and rows y0 + 1 to y1. The
- * raster board leaves out the left column and the bottom row of a
- * whole-pixel box, and the IO6 PROM's sender compensates by pushing
- * `max(a1-1,0), max(a2-1,0), a3, a4` (established: the KONA raster
- * datasheet's fill rule, from the IRIX 6.5.7 standalone textport driver
- * and the shipped textport firmware, which passes the corners to the
- * raster board unchanged). A captured boot trace agrees: its fills keep x0
- * and x1 at 0 and 1279 while each call's y0 is the previous call's y1, so
- * adjacent fills meet with neither a gap nor an overlap. A box at the
- * screen's left or bottom edge leaves column or row 0 unlit, as the
- * clamped sender makes the hardware do.
+ * Filled rectangle (command 5): corners x0, y0, x1, y1 with x0 <= x1 and y0 <=
+ * y1, lighting columns x0 + 1 to x1 and rows y0 + 1 to y1. The raster board
+ * leaves out the left column and the bottom row of a whole-pixel box, and the
+ * IO6 PROM's sender compensates by pushing `max(a1-1,0), max(a2-1,0), a3, a4`
+ * (established, from the IRIX 6.5.7 standalone textport driver and the shipped
+ * textport firmware, which passes the corners to the raster board unchanged).
+ * A captured boot trace agrees: its fills keep x0 and x1 at 0 and 1279 while
+ * each call's y0 is the previous call's y1, so adjacent fills meet with
+ * neither a gap nor an overlap. A box at the screen's left or bottom edge
+ * leaves column or row 0 unlit, as the clamped sender makes the hardware do.
  */
 static void sgi_kona_fill_rect(SGIKonaState *s, int32_t x0, int32_t y0,
                                int32_t x1, int32_t y1)
@@ -3137,14 +3134,13 @@ static const struct {
 
 /*
  * A configured pipe's answer, every field at the offset gfxinit's report
- * (6.5.30 gfxinit's board report and the routines it calls) reads it from;
- * see the InfiniteReality command grammar datasheet's configuration
- * request section for the readers. Fields no reader is known for stay
- * zero, as do the geometry board's and Ktown's identity records, which
- * the driver keeps from its own one-wire reading whatever the pipe sends.
- * The size is the managed area's, 1280x1024 until a combination's
- * SetupFrameBuffer changes it (sgi_kona_managed_resize()); the pixel depth
- * is Small unless "pixel-depth" asks for Medium (sgi_kona_pixel_depth()).
+ * (6.5.30 gfxinit's board report and the routines it calls) reads it from; see
+ * kona.rst, "Configuration answer". Fields no reader is known for stay zero,
+ * as do the geometry board's and Ktown's identity records, which the driver
+ * keeps from its own one-wire reading whatever the pipe sends. The size is the
+ * managed area's, 1280x1024 until a combination's SetupFrameBuffer changes it
+ * (sgi_kona_managed_resize()); the pixel depth is Small unless "pixel-depth"
+ * asks for Medium (sgi_kona_pixel_depth()).
  *
  * The display generator's channel count goes both at +0x14, which gfxinfo
  * prints, and at +0x44, which the combination checker in setmon, ircombine
@@ -3396,13 +3392,13 @@ static void sgi_kona_test_get_config_block(Object *obj, Visitor *v,
 }
 
 /*
- * The flash EEPROM operation, SGI_KONA_CMD_EEPROM ("The flash EEPROM operation,
- * 0x1ec, and the EEPROM programming tool" in the command grammar datasheet).
- * The operation number arrives as the command's one framed word; the words each
- * operation takes after it come here. Established from the pipe's ARM handler:
- * a write takes a type, an offset for the boot image only, a count and the
- * data; a read an offset and a byte length; op 3 the reply buffer; ops 4 and 5
- * one unused word; op 6 none; any other number nothing more.
+ * The flash EEPROM operation, SGI_KONA_CMD_EEPROM (see kona.rst, "Flash EEPROM
+ * operation"). The operation number arrives as the command's one framed word;
+ * the words each operation takes after it come here. Established from the
+ * pipe's ARM handler: a write takes a type, an offset for the boot image only,
+ * a count and the data; a read an offset and a byte length; op 3 the reply
+ * buffer; ops 4 and 5 one unused word; op 6 none; any other number nothing
+ * more.
  */
 #define SGI_KONA_FLASH_OP_WRITE        1
 #define SGI_KONA_FLASH_OP_READ         2
@@ -3889,10 +3885,10 @@ static bool sgi_kona_video_names_channel(uint32_t command)
 }
 
 /*
- * The data words of a Get's reply, from the channels' state; every word not set
- * here is zero. The layouts are those the 6.5.30 X server's video initialiser
- * in the KONA X driver module and its channel routines read, from the command
- * grammar datasheet's display channel section:
+ * The data words of a Get's reply, from the channels' state; every word not
+ * set here is zero. The layouts are those the 6.5.30 X server's video
+ * initialiser in the KONA X driver module and its channel routines read; see
+ * kona.rst, "Command page and grammars":
  *
  * - GetBoardConfig: version 1, the board mask (bit n: physical channel n
  *   exists), option mask 0, options code 0 (no option board), flag 0.
@@ -4032,13 +4028,13 @@ static void sgi_kona_video_temp_blank(SGIKonaState *s, uint32_t blank)
 }
 
 /*
- * SetupFrameBuffer [width, height, pixel depth], as the pipe's firmware
- * runs it (the command grammar datasheet's "SetupFrameBuffer on the ARM",
- * established). It never replies. A budget below Small's, or a named depth
- * (0 to 3) the budget does not cover, raises the error flag, which stops a
- * stored combination; -1, -2 and other values pick a depth that fits. The
- * size is the managed area from then on, but configuration block +0x84
- * and +0x88 take it only at the end of a start (sgi_kona_dg_start()).
+ * SetupFrameBuffer [width, height, pixel depth], as the pipe's firmware runs
+ * it (established from the shipped ARM firmware). It never replies. A budget
+ * below Small's, or a named depth (0 to 3) the budget does not cover, raises
+ * the error flag, which stops a stored combination; -1, -2 and other values
+ * pick a depth that fits. The size is the managed area from then on, but
+ * configuration block +0x84 and +0x88 take it only at the end of a start
+ * (sgi_kona_dg_start()).
  *
  * Approximated: the firmware stores a size past the budget all the same;
  * the model keeps drawing the last size its planes hold, logged. And the
@@ -4068,9 +4064,8 @@ static void sgi_kona_setup_frame_buffer(SGIKonaState *s, uint32_t width,
 
 /*
  * The channel setters, as the 6.5.30 X server's combination load in the KONA X
- * driver module and its channel requests send them; the command grammar
- * datasheet's display channel section gives each word's source. Word 0 of every
- * one is the physical channel, the board mask's bit number.
+ * driver module and its channel requests send them. Word 0 of every one is the
+ * physical channel, the board mask's bit number.
  *
  * - DisableChannel [channel]: the channel stops; its console shows no
  *   mode, and it holds no format until the next LoadFormat.
@@ -4301,18 +4296,17 @@ static void sgi_kona_video_word(SGIKonaState *s, uint32_t word)
 
 /*
  * Starting the pipe's firmware: what the ARM does each time the loader
- * releases it after a firmware load (+0x800328 = 1), from the command
- * grammar datasheet's "What the ARM does with a stored combination"
- * (established from the shipped ARM firmware; that the release is the
- * start is inferred). It rebuilds the display generator's default state,
- * blanks every channel and runs the video format combination stored in the
- * flash (op 1 type 1, behind SGI_KONA_FLASH_COMBO_MARKER and its word
- * count) or, when the image is rejected or a command in it raises the
- * error flag, rebuilds again and runs its built-in fallback combination.
- * Only then does configuration block +0x84 and +0x88 take the managed
- * size, so the X server, which sizes its screen from the block, sees the
- * combination that ran. ircombine's eeprom destination and setmon -x store
- * the image; gfxinit, which initializes graphics, reads none of it back.
+ * releases it after a firmware load (+0x800328 = 1) (established from the
+ * shipped ARM firmware; that the release is the start is inferred). It
+ * rebuilds the display generator's default state, blanks every channel and
+ * runs the video format combination stored in the flash (op 1 type 1, behind
+ * SGI_KONA_FLASH_COMBO_MARKER and its word count) or, when the image is
+ * rejected or a command in it raises the error flag, rebuilds again and runs
+ * its built-in fallback combination. Only then does configuration block +0x84
+ * and +0x88 take the managed size, so the X server, which sizes its screen
+ * from the block, sees the combination that ran. ircombine's eeprom
+ * destination and setmon -x store the image; gfxinit, which initializes
+ * graphics, reads none of it back.
  *
  * The stored words are video commands framed as on the command page after
  * 0x1a6: the command, its data words and their checksum. The image is
@@ -4386,15 +4380,14 @@ static bool sgi_kona_dg_run(SGIKonaState *s, const uint32_t *words,
 }
 
 /*
- * The display generator's default state, as the datasheet lists the fields
- * its rebuild resets for each present channel (established): the source
- * channel, the first name word and the date stamp, the pan rectangle (0,
- * 0, 1280, 1024), the enabled bit and gamma map 0. The input rectangle,
- * PlacementRes's words, name words 2-16, the cursor priority and the rest
- * keep their values. The fields the model does not hold (vertical phase,
- * reset ratios, field mode and dominance, the control word's other bits)
- * are not modelled. Then every channel is blanked, as the display set-up
- * that follows does.
+ * The display generator's default state, as the fields its rebuild resets for
+ * each present channel (established): the source channel, the first name word
+ * and the date stamp, the pan rectangle (0, 0, 1280, 1024), the enabled bit
+ * and gamma map 0. The input rectangle, PlacementRes's words, name words 2-16,
+ * the cursor priority and the rest keep their values. The fields the model
+ * does not hold (vertical phase, reset ratios, field mode and dominance, the
+ * control word's other bits) are not modelled. Then every channel is blanked,
+ * as the display set-up that follows does.
  */
 static void sgi_kona_dg_default_state(SGIKonaState *s)
 {
@@ -4452,16 +4445,15 @@ static void sgi_kona_dg_append_format(GArray *image, uint32_t channel,
 }
 
 /*
- * The firmware's built-in fallback combination, as the datasheet's "The
- * built-in fallback combination" gives its commands (established): a
- * 1280x1024 managed area, channel 0 showing 1280x1024_60.vfo, channel 1
- * named 640x486_30i.vfo with channel 0's timing, taking channel 0's timing
- * and blanked. Approximated: only the commands the model gives meaning
- * are built, so not the clock, encoder, gamma, sync, gain, pedestal and
- * phase settings, the cursor priorities, which the fallback sets to 0 as
- * the model's reset does, or the commands for option channel 30;
- * and LoadFormat's words past the size and rate are zero. Both channels'
- * Resize and PlacementRes words are the firmware's.
+ * The firmware's built-in fallback combination, as the firmware's built-in
+ * commands give it (established): a 1280x1024 managed area, channel 0 showing
+ * 1280x1024_60.vfo, channel 1 named 640x486_30i.vfo with channel 0's timing,
+ * taking channel 0's timing and blanked. Approximated: only the commands the
+ * model gives meaning are built, so not the clock, encoder, gamma, sync, gain,
+ * pedestal and phase settings, the cursor priorities, which the fallback sets
+ * to 0 as the model's reset does, or the commands for option channel 30; and
+ * LoadFormat's words past the size and rate are zero. Both channels' Resize
+ * and PlacementRes words are the firmware's.
  */
 static GArray *sgi_kona_dg_fallback(void)
 {
@@ -7535,11 +7527,10 @@ static void sgi_kona_gl_run(SGIKonaState *s, int i, SGIGLSink *sink,
     case SGI_GL_OP_RASTER_POS3F:
     case SGI_GL_OP_RASTER_POS4F:
         /*
-         * In selection mode a raster position inside the view volume
-         * makes a hit at its window depth, as OpenGL 1.2.1 section 5.2
-         * has it, and the geometry program's selection has a path that
-         * records one (inferred from its microcode: the KONA geometry
-         * datasheet's feedback and selection section).
+         * In selection mode a raster position inside the view volume makes a
+         * hit at its window depth, as OpenGL 1.2.1 section 5.2 has it, and the
+         * geometry program's selection has a path that records one (inferred
+         * from its microcode).
          */
         if (state->render.mode == SGI_KONA_GL_SELECT &&
             !state->gl.in_begin && state->gl.raster_valid &&
@@ -13157,11 +13148,11 @@ static void sgi_kona_gl_packet(void *opaque, unsigned port_id,
         return;
     case SGI_KONA_CMD_GL_IGLOO_SWAPTMESH:
         /*
-         * IRIS GL's swaptmesh, sent as the caller makes it. The
-         * distributor exchanges its two retained strip vertices and
-         * flips the strip's parity; outside a triangle strip the token
-         * does nothing (field values established, meanings inferred:
-         * the KONA geometry datasheet's vertex history).
+         * IRIS GL's swaptmesh, sent as the caller makes it. The distributor
+         * exchanges its two retained strip vertices and flips the strip's
+         * parity; outside a triangle strip the token does nothing (field
+         * values established, meanings inferred: the geometry program's vertex
+         * history).
          */
         if (i != SGI_KONA_CONTEXT_NONE) {
             SGIGLSink sink;

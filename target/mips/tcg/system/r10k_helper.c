@@ -128,13 +128,12 @@ static unsigned int r10k_dcache_word_index(hwaddr pa, unsigned int way)
 }
 
 /*
- * A secondary data doubleword is held as TagHi:TagLo, TagHi in bits 63:32.
- * The memory order is a MODEL CHOICE: the word at the lower address is
- * TagLo and the next one TagHi. The datasheet lists the refill delivery
- * order as not established; the one piece of evidence, a third-party
- * simulation of a boot PROM, agrees with this choice. Index Load/Store
- * Data, refills and writebacks all go through these so they cannot
- * disagree, and a change of mind is a change here.
+ * A secondary data doubleword is held as TagHi:TagLo, TagHi in bits 63:32. The
+ * memory order is a MODEL CHOICE: the word at the lower address is TagLo and
+ * the next one TagHi. The refill delivery order is not established; the one
+ * piece of evidence, a third-party simulation of a boot PROM, agrees with this
+ * choice. Index Load/Store Data, refills and writebacks all go through these
+ * so they cannot disagree, and a change of mind is a change here.
  */
 static void r10k_scache_dword_to_memory(uint8_t *bytes, uint64_t dword)
 {
@@ -154,12 +153,11 @@ static unsigned int r10k_scache_byte_shift(hwaddr pa)
 }
 
 /*
- * The slot a secondary index operation names. The secondary cache is
- * indexed by the physical address the operand translated to, and address
- * bit 0 picks the way, mapped operand or not (datasheet, "Geometry and
- * address bits"). Every secondary index operation takes its location from
- * here, so a rule for operands that needed translation changes this one
- * function. Returns false for a location the arrays do not hold.
+ * The slot a secondary index operation names. The secondary cache is indexed
+ * by the physical address the operand translated to, and address bit 0 picks
+ * the way, mapped operand or not. Every secondary index operation takes its
+ * location from here, so a rule for operands that needed translation changes
+ * this one function. Returns false for a location the arrays do not hold.
  */
 typedef struct R10KScacheOperand {
     unsigned int set;
@@ -191,11 +189,10 @@ static bool r10k_scache_operand(CPUMIPSState *env, hwaddr paddr,
 }
 
 /*
- * Staged lines. Index Store Tag (S) and Index Store Data (S) put a valid
- * line in the secondary arrays with no bus access, and a boot PROM then
- * runs from it as if it were memory (datasheet, "What a later cached
- * access sees"). Cached accesses must find such a line instead of the
- * memory behind it.
+ * Staged lines. Index Store Tag (S) and Index Store Data (S) put a valid line
+ * in the secondary arrays with no bus access, and a boot PROM then runs from
+ * it as if it were memory. Cached accesses must find such a line instead of
+ * the memory behind it.
  *
  * The arrays already hold the lines; what the model adds is a way to route
  * a cached access to them. QEMU's TLB resolves an address to memory when a

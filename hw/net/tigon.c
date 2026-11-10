@@ -1261,10 +1261,10 @@ static void tigon_try_firmware_up(TigonState *s)
 
 /*
  * Report the port up as a modelled fact. There is no SerDes and no
- * negotiation. Post the link-state event and set the link-status registers
- * the driver reads, in response to its link-negotiation request, so the event
- * lands after the driver is waiting for it rather than before (datasheet,
- * "Model vs hardware": link comes up when the interface is put into use).
+ * negotiation. Post the link-state event and set the link-status registers the
+ * driver reads, in response to its link-negotiation request, so the event
+ * lands after the driver is waiting for it rather than before (the link comes
+ * up when the interface is put into use).
  */
 static void tigon_link_up(TigonState *s)
 {
@@ -1708,10 +1708,10 @@ static void tigon_reset_state(TigonState *s, bool reset_pci_state)
     /*
      * Modeled defaults, not confirmed silicon power-on-reset values: the
      * mailboxes and GCR indices are producer/consumer positions the driver
-     * always re-initialises, and the embedded CPUs come up halted (datasheet
-     * "On the concrete reset entries"). The SRAM backing store is
-     * deliberately not cleared: a guest resetting mid-download should not
-     * have to re-fetch firmware it already wrote.
+     * always re-initialises, and the embedded CPUs come up halted (see
+     * tigon.rst). The SRAM backing store is deliberately not cleared: a guest
+     * resetting mid-download should not have to re-fetch firmware it already
+     * wrote.
      */
     if (s->link_timer) {
         timer_del(s->link_timer);
@@ -2419,8 +2419,8 @@ static ssize_t tigon_receive_packet(NetClientState *nc,
      * reason for which is freeing buffer space, and is where this model
      * already counts its other receive drops. One bounded hold was built for
      * this device too, and the one that was measured, on the BCM570x, not
-     * here, delivered fewer bytes than discarding at once; the Tigon
-     * datasheet carries that as the stated limitation.
+     * here, delivered fewer bytes than discarding at once; tigon.rst carries
+     * that as the stated limitation.
      */
     /*
      * A queued frame is re-offered straight to receive() without another
