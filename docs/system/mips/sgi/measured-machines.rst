@@ -213,7 +213,7 @@ Timed reads
 -----------
 
 Two reads were timed against a host clock. The HEART counter advanced
-375,407,256 ticks over 30.03 s of host time, 12.5012 MHz
+375,407,256 ticks over 30.03 s of host time, 12.5011 MHz
 (:ref:`sgi-heart-octane2-counter`). The two RAD1 UST reads were several
 seconds apart, within about 8 s by the HEART counter
 (:ref:`sgi-rad1-octane2-ust`). The timed interval was bounded by the

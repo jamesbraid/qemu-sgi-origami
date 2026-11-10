@@ -428,7 +428,7 @@ startup (:ref:`sgi-heart-octane2-status`), so the value is
 what the bits mean is *unknown*. The stock 6.5.30 diagnostic reads the
 slot as 64 bits and expects bits 5 and 6 set and bits 7-15 clear, a
 *software expectation*. The Octane's revision 4 status is unmeasured, so
-the ``octane`` answering ``0x60`` is a *model choice* that lets the
+the ``octane`` answering ``0x60`` is an *approximation* that lets the
 diagnostic's read complete. The 32-bit read of the low word at ``0x0c``
 returns the same value. A 32-bit read of ``0x08``, the reset value and
 any write are *unknown* and fail on both machines.
@@ -718,7 +718,7 @@ leaving ``0xe00000000203fdff``. The reference Octane2's PROM leaves
 request-limit fields at bits 59:51. The model resets those fields to 4
 on revision F, so its run leaves the same word, and to zero on revision
 4 (:ref:`sgi-heart-octane2-piu`). Linux ``heart.h`` names bits 0-10 and 16
-error enables, of which the PROM leaves 4 and 9 clear, bit 12
+error enables, of which the PROM leaves bit 9 clear, bit 12
 ``HM_DATA_CHK_EN``, 14 ``HM_IO_COH_EN``, 15 ``HM_GLOBAL_ECC_EN`` and 25
 ``HM_COR_ECC_LCK`` (``arch/mips/include/asm/sgi/heart.h`` at
 ``db2ddb871435``). The IRIX 6.5.30 IP30 kernel, observed on the model,
@@ -801,7 +801,7 @@ Counter and compare
 OpenBSD ``xheartreg.h`` describes the count register at ``0x20000`` as 52
 bits advancing at 12.5 MHz, and names a 24-bit compare at ``0x30000`` and a
 trigger at ``0x40000``; Linux agrees on width and rate. Each is a *software
-expectation*. The reference Octane2's counter advanced at 12.5012 MHz
+expectation*. The reference Octane2's counter advanced at 12.5011 MHz
 against a host clock, to about 0.1% (:ref:`sgi-heart-octane2-counter`), so
 12.5 MHz is *established* for revision F. The model's count advances one
 tick per 80 ns of virtual time from zero at reset and wraps at 52 bits,
@@ -1354,7 +1354,7 @@ Counter and compare
    0x900000000ff30000:             ffffff
 
 The counter advanced 375,407,256 ticks between the third and fourth reads,
-over 30.03 s of host time: 12.5012 MHz, with keystroke timing limiting
+over 30.03 s of host time: 12.5011 MHz, with keystroke timing limiting
 the precision to about 0.1% (:ref:`sgi-measured-octane2-counter`). The
 counter rate of 12.5 MHz is therefore *established* for this board. The
 values say nothing about the counter's starting point.
@@ -1408,8 +1408,9 @@ Model limits
   clear, where revision F reads them set
   (:ref:`sgi-heart-octane2-widget-more`).
 - Busy one-wire replacement logs ``LOG_GUEST_ERROR``.
-- The Octane's HEART revision 4 has no measured status word, so the
-  ``octane`` refuses that read.
+- The Octane's HEART revision 4 has no measured widget status word or
+  processor-interface status word. The ``octane`` machine answers ``0x60``
+  and ``0x118``, each an *approximation*.
 - Migration works only between identical builds.
 
 .. _sgi-heart-tests:
