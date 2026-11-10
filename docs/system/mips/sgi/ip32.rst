@@ -266,6 +266,18 @@ page:
 Each is an *approximation* where its chip page says so. None identifies a
 fitted ASIC revision.
 
+.. _sgi-ip32-diagrams:
+
+Topology diagrams
+-----------------
+
+The diagram is drawn from the machine catalogue when the manual is
+built. It shows the node the machine builds and the devices its
+offerings list, and no wiring, because the catalogue states none; the
+wiring is in :ref:`sgi-ip32-components` with its ratings.
+
+.. sgi-diagram:: ip32
+
 .. _sgi-ip32-address-map:
 
 Processor address map

@@ -214,6 +214,21 @@ not modelled; the
 capacity notes restrict both machines to the single-processor profile.
 This is a scope limit, not a hardware claim.
 
+.. _sgi-ip30-diagrams:
+
+Topology diagrams
+-----------------
+
+Each diagram is drawn from the machine catalogue when the manual is
+built, one per topology. HEART's Crossbow widget 8 and the onboard
+Bridge's widget 15 are the wiring :ref:`sgi-ip30-components` states,
+with the ratings given there. The slots ``widget-9`` to ``widget-13``
+hang from the one Crossbow by their names alone (*inferred*). A box with
+no link lists what the catalogue states without saying where it
+attaches.
+
+.. sgi-diagram:: ip30
+
 .. _sgi-ip30-devices:
 
 Supported devices

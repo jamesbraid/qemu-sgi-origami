@@ -497,6 +497,38 @@ class DiagramFollowsCatalogue(unittest.TestCase):
         self.assertNotIn(">router-1<", after)
 
 
+class PagesDrawWhatTheyCover(unittest.TestCase):
+    PAGE_NAMES = ("ip27", "ip30", "ip32", "ip35", "ip53")
+
+    def test_each_platform_page_draws_every_product_it_covers(self):
+        for page in self.PAGE_NAMES:
+            with self.subTest(page=page):
+                text = (PAGES / f"{page}.rst").read_text()
+                args = re.findall(r"^\.\. sgi-diagram:: (\S+)\s*$", text,
+                                  re.M)
+                self.assertTrue(args, f"{page}.rst has no sgi-diagram")
+                drawn_tops = set()
+                for arg in args:
+                    drawn_tops |= set(td.topology_names(arg, CAT))
+                running = (PAGES / f"running-{page}.rst").read_text()
+                products = set(re.findall(
+                    r"^\.\. sgi-run:: machines (\w+)\s*$", running, re.M))
+                self.assertTrue(products)
+                offered_tops = {o["topology"] for o in CAT["offerings"]
+                                if o["product"] in products}
+                self.assertEqual(drawn_tops, offered_tops)
+
+    def test_a_product_with_no_topology_or_a_bad_name_is_an_error(self):
+        with self.assertRaises(ValueError):
+            td.render("no-such-platform", CAT)
+
+    def test_render_has_one_collapsible_figure_per_topology(self):
+        html = td.render("ip30", CAT)
+        self.assertEqual(html.count("<details"), 2)
+        self.assertEqual(html.count("<svg "), 2)
+        self.assertEqual(html.count(" open>"), 2)
+
+
 class DiagramQuality(unittest.TestCase):
     def test_each_diagram_is_small_and_well_formed(self):
         for name in TOPOLOGIES:
