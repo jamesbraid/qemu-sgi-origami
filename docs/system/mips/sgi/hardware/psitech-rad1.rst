@@ -128,6 +128,10 @@ ignore writes and log ``LOG_UNIMP``. The GP FIFO, video streams, SVGA and
 reserved blocks, ``0x2000``-``0x2fff`` and ``0x5000``-``0x7fff``, are
 not implemented.
 
+.. sgi-registers: base=0x20008700000 width=32
+   setup=0x20008023010:0x20000000,0x20008023004:2,0x2000800021c:0x1200
+   qemu="-M origin200 -device psitech-rad1,addr=3"
+
 .. list-table::
    :header-rows: 1
 
@@ -192,14 +196,23 @@ not implemented.
      - RW
      - ``0x4010``, ``0x4020``, ``0x4028``, ``0x4030``, ``0x4038`` and
        ``0x4050``, stored only.
-   * - ``0x8000``-``0x9300``
+   * - ``0x8000``-``0x8abc``
      - GP registers
      - ``0``
      - RW
-     - See :ref:`sgi-psitech-rad1-render`. Write mask resets to
-       ``0xffffffff``. Render is write-only: reading it, or any GP
-       offset the model does not store, logs ``LOG_UNIMP`` and returns
-       zero.
+     - See :ref:`sgi-psitech-rad1-render`. Render is write-only: reading
+       it, or any GP offset the model does not store, logs
+       ``LOG_UNIMP`` and returns zero.
+   * - ``0x8ac0``
+     - FBHardwareWriteMask
+     - ``0xffffffff``
+     - RW
+     - The write mask resets to all ones.
+   * - ``0x8ac4``-``0x9300``
+     - GP registers
+     - ``0``
+     - RW
+     - As the first GP row.
 
 The manual names ``0x0008`` IntEnable and ``0x0010`` IntFlags
 (TVP4020 manual p. 34-35), *established*. Linux
