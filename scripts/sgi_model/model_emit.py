@@ -1293,11 +1293,52 @@ _BOARD_PRODUCTS = [
 ]
 
 
+# The Octane's PCI shoehorn, as real Octane inventories print it (part
+# 030-1275-004 revision A, not the photographed label's -002 revision B),
+# with the one slot at PCI device 1 and a flash window that reads high with
+# no part fitted.
+_IP30_PCI_SHOEHORN = ("pci-shoehorn", "a PCI shoehorn with its one PCI slot "
+                      "empty", "sgi-pci-shoehorn",
+                      [("board-part", "030-1275-004"),
+                       ("board-revision", "A"),
+                       ("flash-empty-reads-high", "true"),
+                       ("first-slot", "1"), ("slots", "1")])
+_IP30_PCI_CAGE = ("pci-cage", "the Octane PCI module, three PCI slots",
+                  "sgi-octane-pci-cage", [])
+# The PCI module's Crossbow port, beside the XIO slots at 9 to 12.
+_IP30_PCI_MODULE_SLOT = "widget-13"
+
+
+def _ip30_board_slots(result: dict) -> list[dict]:
+    """The Octane's slots for a board other than a graphics pipe: a PCI
+    shoehorn in each of the XIO slots a pipe can take, and the PCI module
+    in the port of its own."""
+    def slot(name, description, product):
+        key, text, device, props = product
+        return {
+            "name": name, "description": description,
+            "products": [{
+                "product": key, "description": text, "kind": "device",
+                "device": device,
+                "properties": [{"name": prop, "value": value}
+                               for prop, value in props],
+            }]}
+
+    names = sorted((item["name"] for item in result["graphics"]["slots"]),
+                   key=lambda name: int(name.rpartition("-")[2]))
+    return [slot(name, "an XIO slot", _IP30_PCI_SHOEHORN)
+            for name in names] + [
+        slot(_IP30_PCI_MODULE_SLOT, "the PCI module's Crossbow port",
+             _IP30_PCI_CAGE)]
+
+
 def _board_slots_for(result: dict) -> list[dict]:
     """The slots of one rendered topology that take a board other than a
     graphics pipe: the BaseIO slot, whose card QEMU builds before any
     -device exists and so a launch picks with a machine property, and the
     empty XIO slots, which take each XIO card by -device slot=NAME."""
+    if result["generation"] == "ip30":
+        return _ip30_board_slots(result)
     slots = []
     for board in result["io-boards"]:
         preset = board.get("preset")

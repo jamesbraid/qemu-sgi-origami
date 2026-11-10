@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "213b1867591036ab1b7be8a1702b880d6e62030b101cff97803deec9503c88cc"
+    "f3afaf5ab58b882054933d24443df302c9b22c7b05cfa25f198a0cf7867f7cef"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -722,9 +722,12 @@ class StorageTests(unittest.TestCase):
         with_slots = {item["name"] for item in catalogue["topologies"]
                       if "board-slots" in item}
         self.assertEqual(with_slots, {
-            "onyx2-deskside", "onyx2-rack", "origin200-gigachannel",
-            "origin2000-deskside", "origin2000-rack"})
+            "octane", "octane2", "onyx2-deskside", "onyx2-rack",
+            "origin200-gigachannel", "origin2000-deskside",
+            "origin2000-rack"})
         for topology in catalogue["topologies"]:
+            if topology["generation"] == "ip30":
+                continue
             for slot in topology.get("board-slots", []):
                 with self.subTest(topology=topology["name"],
                                   slot=slot["name"]):
@@ -744,6 +747,42 @@ class StorageTests(unittest.TestCase):
                         self.assertEqual(
                             {item["kind"] for item in slot["products"]},
                             {"device"})
+
+    def test_octane_board_slots_list_the_pci_shoehorn_and_module(self):
+        """An Octane lists a PCI shoehorn, empty, in each XIO slot a graphics
+        pipe can take, and the PCI module in the port of its own. The
+        shoehorn carries the part and revision Octane inventories print, the
+        one slot at device 1 and a flash window that reads high; the module
+        has no properties of its own."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for topology in catalogue["topologies"]:
+            if topology["generation"] != "ip30":
+                continue
+            with self.subTest(topology=topology["name"]):
+                slots = {slot["name"]: slot
+                         for slot in topology["board-slots"]}
+                self.assertEqual(list(slots), [
+                    "widget-9", "widget-10", "widget-11", "widget-12",
+                    "widget-13"])
+                for name in ("widget-9", "widget-10", "widget-11",
+                             "widget-12"):
+                    [product] = slots[name]["products"]
+                    self.assertEqual(
+                        (product["product"], product["device"]),
+                        ("pci-shoehorn", "sgi-pci-shoehorn"))
+                    self.assertEqual(
+                        {item["name"]: item["value"]
+                         for item in product["properties"]},
+                        {"board-part": "030-1275-004",
+                         "board-revision": "A",
+                         "flash-empty-reads-high": "true",
+                         "first-slot": "1", "slots": "1"})
+                [product] = slots["widget-13"]["products"]
+                self.assertEqual(
+                    (product["product"], product["device"],
+                     product["properties"]),
+                    ("pci-cage", "sgi-octane-pci-cage", []))
 
     def test_ip53_offerings_list_the_io9_isp12160(self):
         for offering in self.catalogue["offerings"]:
