@@ -59,7 +59,7 @@ Sources
   (``381ab1f538162``) for the directory, ECC and boot-space addresses.
   SGI generated these from its register database. Offsets, field
   positions and the register narratives they carry are rated
-  *established*. They state reset values for only a handful of
+  *software expectation*. They state reset values for only a handful of
   registers.
 - The Itanium SN1 code in the same tree (``arch/ia64/sn/io/sn1/``,
   ``arch/ia64/sn/kernel/``), as a software expectation.
@@ -103,11 +103,11 @@ Sources
 Identity and placement
 ======================
 
-The chip carries two identity words, both *established* by SGI's
+The chip carries two identity words, both a *software expectation* from SGI's
 headers. The local block's revision register holds part ``0x3012`` with
-revision 1 for Bedrock 1.0 and 2 for 1.1 (``bedrock.h`` lines 17-21,
-``hublb_next.h`` line 24). The I/O interface's widget identification
-register holds crosstalk part ``0xc110`` (``hubio_next.h`` line 403). No
+revision 1 for Bedrock 1.0 and 2 for 1.1 (``bedrock.h``,
+``hublb_next.h``). The I/O interface's widget identification
+register holds crosstalk part ``0xc110`` (``hubio_next.h``). No
 header states the manufacturer field. OpenBSD ``xbowdevs`` names
 manufacturer ``0x036`` part ``0xc110`` "Bedrock", a *software
 expectation*, and the model uses ``0x036`` in both words, an
@@ -136,7 +136,7 @@ field 2, an *approximation*.
 The registers are crosstalk widget 1 of the node's own I/O space: an
 8 MB window reached in a local form and a node-named remote form
 (:ref:`sgi-ip35-address-map-hub`). The unit bases inside it are
-*established* by OpenBSD ``hub.h`` and the SN1 headers. The model maps
+a *software expectation* from OpenBSD ``hub.h`` and the SN1 headers. The model maps
 each unit at its base, with these sizes:
 
 .. list-table::
@@ -245,7 +245,7 @@ their value across a local reset and a machine reset alike.
      - none
      - write-only
      - The value ``0x53474972756c6573``, the local block's key
-       (``bedrock.h`` line 15), sets the writer's region bit in CPU
+       (``bedrock.h``), sets the writer's region bit in CPU
        protect; the model takes region 0. The header does not name the
        key for this unit, so its use here is an *approximation*.
    * - ``0x18``
@@ -265,8 +265,7 @@ their value across a local reset and a machine reset alike.
      - 4
      - ``0``, kept
      - read/write
-     - Code 0 off, 1-15 for 4 KB doubling to 64 MB (``hubpi_next.h``
-       lines 200-215). Sizes the node's cached-alias window for the
+     - Code 0 off, 1-15 for 4 KB doubling to 64 MB (``hubpi_next.h``). Sizes the node's cached-alias window for the
        processors on this interface.
    * - ``0x30``, ``0x38``
      - request-buffer timeout and scale
@@ -309,7 +308,7 @@ their value across a local reset and a machine reset alike.
      - 64
      - ``0``
      - read/write
-     - A-to-B stride ``0x10`` (``hubpi_next.h`` line 29).
+     - A-to-B stride ``0x10`` (``hubpi_next.h``).
    * - ``0xc8``-``0xe8``
      - coherency-pending set A, B; clear A, B; mask
      - 64
@@ -434,7 +433,7 @@ their value across a local reset and a machine reset alike.
 
 The reset column for error pending, error stack and error status follows
 the header's "not cleared at reset" and "survives soft reset" wording,
-*established*. Protection, region present and cached-alias size also
+a *software expectation*. Protection, region present and cached-alias size also
 survive soft reset in the header; the model keeps them across every
 reset, its choice, since their power-on values are *unknown*.
 
@@ -452,7 +451,7 @@ CPU number, presence and enable
 -------------------------------
 
 CPU number reports bit 0 as processor A or B and bit 1 as PI0 or PI1
-(``hubpi.h`` lines 660-689), *established*; it is OpenBSD's first hub
+(``hubpi.h``), a *software expectation*; it is OpenBSD's first hub
 access. The model answers from the issuing processor's slot. An access
 with no issuing processor, from a qtest or from another node, reads
 slot A.
@@ -465,11 +464,10 @@ every board revision. Four-processor products fill both slots of both
 interfaces (:src:`108-0240-002 p. 2-12`), *established*. The machine
 fixes which processor sits in which slot. CPU present reads 1 for a
 fitted slot and 0 for an empty one; the header says the interface sets
-it on the processor's first transaction (``hubpi.h`` lines 811-813), and
+it on the processor's first transaction (``hubpi.h``), and
 the model derives it from the population, an *approximation*.
 
-CPU enable withholds the bus from a processor while clear (``hubpi.h``
-lines 883-887), and survives soft reset, *established*. Its power-on
+CPU enable withholds the bus from a processor while clear (``hubpi.h``), and survives soft reset, a *software expectation*. Its power-on
 value is *unknown*. The model sets it for every fitted slot at power-on
 and never for an empty one, an *approximation*: the stock IP35 PROM's
 boot path never sets the bit, so a processor whose bit starts clear is
@@ -491,10 +489,10 @@ Interrupts
 
 A write to the pending-modify register, or its alias at ``0x180``, sets
 or clears one pending bit: bits 5:0 name the bit, bit 6 the bank, and
-bit 8 set means set, clear means clear (``hubpi.h`` lines 1001-1013;
-OpenBSD ``hub.h`` lines 98-100), *established*. Bank 1 bits 54, 55, 62
+bit 8 set means set, clear means clear (``hubpi.h``;
+OpenBSD ``hub.h``), a *software expectation*. Bank 1 bits 54, 55, 62
 and 63 only reflect other units and cannot be changed this way
-(``hubpi.h`` lines 1104-1109), *established*. The model computes them
+(``hubpi.h``), a *software expectation*. The model computes them
 from those units and leaves bit 63 clear, since it has no system
 controller source.
 
@@ -514,13 +512,13 @@ Fixed sources the model drives:
      - Basis
    * - pending 0 bits 1, 2
      - graphics flow control, slots A and B
-     - header (``hubpi.h`` lines 1053-1057); :ref:`sgi-bedrock-pi-gfx`
+     - header (``hubpi.h``); :ref:`sgi-bedrock-pi-gfx`
    * - pending 0 bit 4
      - the L1 controller's UART (:doc:`l1`), on both interfaces
      - bit named by the header; the broadcast is an *approximation*
    * - pending 0 bits 5, 6
      - coherency pending A, B
-     - header (``hubpi.h`` lines 1313-1408)
+     - header (``hubpi.h``)
    * - pending 1 bit 54
      - crossbar error
      - header; :ref:`sgi-bedrock-xb`
@@ -549,7 +547,7 @@ family's hardware interrupts 0-4 (Cause IP2-IP6):
 - 4: error pending masked by its error mask.
 
 Lines 0, 1, 3 and 4 follow the header and both consumer headers
-(``sn1/intr.h`` lines 163-170), *established*. The header names level 4
+(``sn1/intr.h``), a *software expectation*. The header names level 4
 for the real-time compare in one place and level 5 in another; both
 consumers dispatch the timer on hardware interrupt 2, which the model
 uses, an *approximation*. All lines are level-triggered and recomputed on
@@ -565,8 +563,8 @@ Real-time counter and comparators
 ---------------------------------
 
 The counter is 55 bits, wraps to zero and counts the clock the local
-block supplies (``hubpi.h`` lines 3963-3967), *established*. Linux SN1
-gives that clock as 1,250 kHz (``sn1/ip27config.h`` line 50), and every
+block supplies (``hubpi.h``), a *software expectation*. Linux SN1
+gives that clock as 1,250 kHz (``sn1/ip27config.h``), and every
 MIPS consumer assumes 1,250,000 Hz, a *software expectation*. The model
 counts at that fixed rate on QEMU's virtual clock. Writes to the local
 block's clock controls do not change it. A write to the counter sets the
@@ -574,9 +572,8 @@ count. Each interface keeps its own counter.
 
 When the counter equals a slot's real-time compare, that slot's
 real-time pending bit sets; when the counter's low 32 bits equal the
-profile compare, both profile pending bits set (``hubpi.h`` lines
-1477-1480, 1551-1553), *established*. Any store to a pending register
-clears that register's bit, *established*. SGI Performer reads the
+profile compare, both profile pending bits set (``hubpi.h``), a *software expectation*. Any store to a pending register
+clears that register's bit, a *software expectation*. SGI Performer reads the
 counter as two 32-bit halves, so the model accepts 32-bit reads at
 ``0x30100`` (high half) and ``0x30104`` (low half).
 
@@ -586,7 +583,7 @@ NMI
 ---
 
 A store to NMI A or B sends that processor a non-maskable interrupt
-(``hubpi.h`` lines 961-994), *established*. No public source gives the
+(``hubpi.h``), a *software expectation*. No public source gives the
 trigger predicate. The public Linux IP35 series stores 1. The model
 pulses the slot's NMI line once on a store with bit 0 set and logs any
 other store as ``LOG_UNIMP``, an *approximation*. Whether a store
@@ -601,8 +598,8 @@ Graphics flow control
 ---------------------
 
 Ten registers per interface pace one processor's uncached stores to a
-directly attached graphics pipe (``hubpi.h`` lines 332-383, 2025-2193),
-*established*. Slot A's set starts at ``0x300``, slot B's at ``0x328``:
+directly attached graphics pipe (``hubpi.h``),
+a *software expectation*. Slot A's set starts at ``0x300``, slot B's at ``0x328``:
 
 .. list-table::
    :header-rows: 1
@@ -629,8 +626,7 @@ directly attached graphics pipe (``hubpi.h`` lines 332-383, 2025-2193),
 The header says uncached stores into an enabled page go out as graphics
 writes the counter tracks: it falls by one per doubleword sent and rises
 by one per doubleword the pipe acknowledges. Acknowledgements return
-through the I/O interface's node-widget map (``hubio.h`` lines
-1290-1296), *established*. The IRIX 6.5.30 Odyssey and InfiniteReality
+through the I/O interface's node-widget map (``hubio.h``), a *software expectation*. The IRIX 6.5.30 Odyssey and InfiniteReality
 drivers program these registers and tear a pipe down when the count
 reads above their total, a *software expectation*.
 
@@ -701,8 +697,7 @@ what the stock PROM programs, a *software expectation*.
      - 64
      - ``0x0018_1818_0c0c_0c00``
      - read
-     - 12 header and 24 data entries per queue (``hubmd.h`` lines
-       829-846), *established*. A write, which resets credits on the
+     - 12 header and 24 data entries per queue (``hubmd.h``), a *software expectation*. A write, which resets credits on the
        chip, logs ``LOG_UNIMP``.
    * - ``0x790000``-``0x790018``
      - performance select 0, 1; counter 0, 1
@@ -717,7 +712,7 @@ what the stock PROM programs, a *software expectation*.
      - ``0``
      - read/write
      - Threshold and enable; the header says enable resets to 0
-       (``hubmd.h`` lines 1014-1017), *established*. Survives soft
+       (``hubmd.h``), a *software expectation*. Survives soft
        reset. The live counter reads 0. No refresh runs.
    * - ``0x7a0008``
      - junk bus timing
@@ -774,8 +769,8 @@ what the stock PROM programs, a *software expectation*.
      - 64
      - ``0x0000_0000_0404_0400``
      - read
-     - Four entries per queue (``hubmd.h`` lines 1978-2020),
-       *established*. Writes log ``LOG_UNIMP``.
+     - Four entries per queue (``hubmd.h``),
+       a *software expectation*. Writes log ``LOG_UNIMP``.
    * - ``0x7e0000``
      - memory ECC configuration
      - 1
@@ -800,8 +795,8 @@ Read-to-clear on the clear aliases is the model's choice; the header
 gives no mechanism. Reset values other than the two queue sizes and
 refresh enable are each an *approximation*. The unit's soft reset keeps memory
 configuration, refresh threshold and enable, and directory
-configuration, as the header says (``hubmd.h`` lines 376, 1454-1455),
-*established*; it clears the rest. Other offsets read zero and drop
+configuration, as the header says (``hubmd.h``),
+a *software expectation*; it clears the rest. Other offsets read zero and drop
 writes with ``LOG_UNIMP``.
 
 .. _sgi-bedrock-md-cell:
@@ -811,7 +806,7 @@ Current cell and the Hub special windows
 
 The current-cell vector is also the access-rights vector for the Hub
 special spaces: with a region's bit clear, the local and remote register
-windows become inaccessible (``hubmd.h`` lines 321-354), *established*.
+windows become inaccessible (``hubmd.h``), a *software expectation*.
 Its reset value is *unknown*. The model resets it to all ones, which
 permits every access the consumers make, an *approximation*. The L1
 UART at offset ``0x80`` of both register windows
@@ -830,10 +825,10 @@ Memory banks
 Memory configuration holds, for each DIMM bank ``d`` at bits ``8d`` up,
 two bank enables, a DRAM width bit and a size code; bits 33:32 select
 banks by exclusive-or; the upper bits hold protection and timing fields
-(``hubmd.h`` lines 361-376), *established*. Size code ``c`` is
-``32 MB << c``: 1 is 64 MB, 5 is 1 GB (``hubmd_next.h`` lines 20-28).
+(``hubmd.h``), a *software expectation*. Size code ``c`` is
+``32 MB << c``: 1 is 64 MB, 5 is 1 GB (``hubmd_next.h``).
 Software bank ``n`` sits at node offset ``n`` GB, eight banks of 1 GB
-per node (``hubmd_next.h`` lines 242-248), *established*. The Origin
+per node (``hubmd_next.h``), a *software expectation*. The Origin
 300's slots and capacities are on :doc:`/system/mips/sgi/ip35`.
 
 The model decodes node memory through this register. A software bank
@@ -851,7 +846,7 @@ Built-in self test
 ------------------
 
 The header names the self-test control, data, error-address and status
-registers and their fields (``hubmd.h`` lines 1245-1411), *established*.
+registers and their fields (``hubmd.h``), a *software expectation*.
 The stock PROM resets the engine with ``0x4``, writes a pattern with
 bit 7 set to data, starts each DIMM and bank selection with
 ``(dimm << 5) | (bank << 4) | 1``, and waits up to about 625 ms for
@@ -884,12 +879,12 @@ space. Each 128-byte memory line has one 64-bit directory word, at a
 16-byte stride: the M-mode address is the special base plus
 ``(pa & node bits) | ((pa >> 3) & 0x3ffffff0)``, from
 ``0x9000_0001_c000_0000`` for node 0 (``sn/addrs.h`` at v2.5.0),
-*established*. A standard directory uses the low 32 bits of a word and a
+a *software expectation*. A standard directory uses the low 32 bits of a word and a
 premium one all 64; the directory configuration register selects which.
 Offset ``+8`` in each slot is the page-counter word and ``+0x408`` a
-protection entry (``sn/addrs.h`` lines 213-223), *established*. The
+protection entry (``sn/addrs.h``), a *software expectation*. The
 software initialisation value for words and counters is zero
-(``hubmd_next.h`` lines 268-292), *established*; hardware reset values
+(``hubmd_next.h``), a *software expectation*; hardware reset values
 are *unknown*.
 
 The model answers aligned 64-bit accesses only, and only for fitted,
@@ -909,8 +904,8 @@ sharers on reads of shared lines and makes a writer the exclusive owner
 (:src:`laudon-lenoski-origin-1997 sec. 3.2`), and an R10000-family load
 miss under cache algorithm 5 issues a coherent read-shared while a store
 miss reads exclusive (:src:`r10000-users-manual-2.0 p. 57`),
-*established* for those products. The word encodings are *established*
-by ``hubmd_next.h``: format in bits 1:0, pointer state in 4:2, owner
+*established* for those products. The word encodings are a *software expectation*
+from ``hubmd_next.h``: format in bits 1:0, pointer state in 4:2, owner
 pointer in 15:8 as node above three device bits. That the same protocol
 applies on the Bedrock is *inferred* from the Origin 300 field
 diagnostics' directory test, which expects exactly its transitions.
@@ -935,13 +930,13 @@ ECC and the error records
 
 The ECC backdoor at five eighths of the node holds one check byte per
 memory doubleword (``BDECC_ENTRY`` in ``sn/addrs.h`` at v2.5.0),
-*established*; the scrub carrier at four eighths indexes the same bytes
+a *software expectation*; the scrub carrier at four eighths indexes the same bytes
 (``BDECC_SCRUB``). The memory error register keeps valid and overrun
 bits for read-correctable (52, 53), write-uncorrectable (56, 57) and
 read-uncorrectable (60, 61) errors, an 8-bit syndrome at 47:40 and the
 address at 32:3; the directory error register keeps the same for its
-kinds with a 7-bit syndrome (``hubmd.h`` lines 1491-1584, 2131-2262),
-*established*. The check codes themselves are not public. The model
+kinds with a 7-bit syndrome (``hubmd.h``),
+a *software expectation*. The check codes themselves are not public. The model
 uses the column tables the Origin 300 field diagnostics' memory and
 directory tests write, *inferred* from their behaviour.
 
@@ -970,8 +965,8 @@ Memory special space (fetch-and-op)
 
 The processor's uncached attribute 2 reaches node memory through the
 unit's fetch-and-op operations. The header gives only the operation
-cache: a 64-byte variable per entry (``hubmd.h`` lines 551-612),
-*established*. The model uses the encoding of the public SN2 successor
+cache: a 64-byte variable per entry (``hubmd.h``),
+a *software expectation*. The model uses the encoding of the public SN2 successor
 header (Linux ``arch/ia64/include/asm/sn/mspec.h``): a load at offset 0
 returns the value, at 8 fetches and increments, at 16 fetches and
 decrements, at 24 fetches and clears; a store at 0 stores, at 8 increments and
@@ -1029,7 +1024,7 @@ it; the inbound side takes DMA and interrupt packets from the widgets.
      - 64
      - all ones
      - read/write
-     - Reset to all ones is *established* (``hubio.h`` line 933).
+     - Reset to all ones is a *software expectation* (``hubio.h``).
        Gates processor I/O-space accesses by the node's region.
    * - ``0x400108``
      - protection override
@@ -1073,8 +1068,7 @@ it; the inbound side takes DMA and interrupt packets from the widgets.
      - 64
      - ``0``
      - read/write
-     - Widget 3:0, PI 4, node 12:5, slot 16 (``hubio_next.h`` lines
-       93-109); :ref:`sgi-bedrock-pi-gfx`.
+     - Widget 3:0, PI 4, node 12:5, slot 16 (``hubio_next.h``); :ref:`sgi-bedrock-pi-gfx`.
    * - ``0x400150``, ``0x400158``
      - scratch 0, 1
      - 64
@@ -1144,7 +1138,7 @@ it; the inbound side takes DMA and interrupt packets from the widgets.
 Other offsets in the unit read zero and drop writes with ``LOG_UNIMP``.
 Except for local access protection, every reset value is an
 *approximation*. On reset the header initialises only some fields of
-the request-buffer entries (``hubio.h`` lines 3915-3918); the model
+the request-buffer entries (``hubio.h``); the model
 zeroes them.
 
 .. _sgi-bedrock-io-link:
@@ -1153,13 +1147,12 @@ Link status and widget control
 ------------------------------
 
 Link control and status bit 13 is link up; both Linux ports skip the
-node's crosstalk while it is clear (linux-ip35 ``ip35-xtalk.c`` lines
-159-163), a *software expectation*. The stock PROM also tests it before
+node's crosstalk while it is clear (linux-ip35 ``ip35-xtalk.c``), a *software expectation*. The stock PROM also tests it before
 it touches any widget (:src:`ip35-prom-6.210 crosstalk bring-up`). The
 model resets the register to ``0x3fc0fff6403``: link up, remote power,
 link enabled, null timeout 3, maximum retry ``0x3ff``, maximum burst
 ``0x3fc`` and data-available select 3, decoded by the header's layout
-(``hubio.h`` lines 1132-1183). The value at power-on is *unknown*. A
+(``hubio.h``). The value at power-on is *unknown*. A
 node built without a crosstalk peer reads bit 13 clear and no write can
 set it, *inferred*. Writes keep the defined bits.
 
@@ -1202,7 +1195,7 @@ Processor accesses to the node's I/O space go through this unit. Below
 512 MB window uses translation entry ``(offset >> 29) - 1``: the widget
 in bits 11:8, five offset bits in 4:0 placed above bits 28:0, and bit 12
 selecting crosstalk I/O space (bit 47). This is the header's M-mode
-decode (``hubio.h`` lines 1425-1446), *established*. The model refuses
+decode (``hubio.h``), a *software expectation*. The model refuses
 an access with a bus error when local access protection lacks the node's
 region bit, when outbound access lacks the widget's bit or when no
 widget is attached there. A read of widget 1 offset 0 returns the
@@ -1216,7 +1209,7 @@ Inbound access and the device mask
 Inbound widget access qualifies every request a widget launches,
 including DMA and interrupt writes; the device error mask adds one bit
 per DMA master of widgets 8-F, and a device needs both bits
-(``hubio.h`` lines 1032-1086), *established*. No public source gives a
+(``hubio.h``), a *software expectation*. No public source gives a
 reset value for outbound access, inbound access or the device mask. The
 model resets all three to all ones, an *approximation*: a zero would
 block every XBridge DMA and interrupt on every guest. The stock PROM
@@ -1252,7 +1245,7 @@ length in 128-byte lines, 16 error, 20 busy), source, destination
 (39:7), control (0 zero-fill, 4 notify, 8 poison), notification address
 (39:7) and interrupt address (0 PI select, 8:1 node, 22:16 level).
 Writing control starts a transfer and reading it terminates one
-(``hubio.h`` lines 4344-4560), *established*.
+(``hubio.h``), a *software expectation*.
 
 The model moves every line of a transfer before the starting write
 returns, an *approximation*. The stock PROM's engine check starts both
@@ -1280,7 +1273,7 @@ moved. None of these is a measured hardware result.
 
 The miscellaneous error mask enables widget 0 and both engines (bits 0,
 4, 8); the chip clears a bit to shut a source down after an error and
-software sets it again (``hubio.h`` lines 2579-2589), *established*. The
+software sets it again (``hubio.h``), a *software expectation*. The
 model resets it to ``0x111``, *inferred*: the vendor's system-level
 diagnostic fails a freshly booted node whose engine bits are clear
 without writing them first, and no PROM store sets them. The model never
@@ -1322,14 +1315,14 @@ requests and port resets across it.
      - n/a
      - write-only
      - Bit 0 link reset, 1 port reset, 2 local reset
-       (``hubni_next.h`` lines 28-30); :ref:`sgi-bedrock-reset`.
+       (``hubni_next.h``); :ref:`sgi-bedrock-reset`.
    * - ``0x680010``
      - reset enable
      - 1
      - ``0``
      - read/write
      - Lets a reset arriving over the link reset this Bedrock
-       (``hubni_next.h`` line 143).
+       (``hubni_next.h``).
    * - ``0x680018``
      - diagnostic parameters
      - 3
@@ -1371,7 +1364,7 @@ requests and port resets across it.
      - 20
      - kept
      - read; writes store
-     - Not cleared on reset (``hubni.h`` line 1397), *established*.
+     - Not cleared on reset (``hubni.h``), a *software expectation*.
    * - ``0x680120``
      - port error clear
      - 53
@@ -1390,7 +1383,7 @@ at ``0x680028``, log ``LOG_UNIMP`` and return zero. Writes to read-only
 registers log ``LOG_GUEST_ERROR``. The header states no reset value for
 this unit except sideband's; the zeros are each an *approximation*. A companion
 header gives a software constant it believes is the port-parameters
-default (``hubni_next.h`` lines 168-172); nothing uses it and the model
+default (``hubni_next.h``); nothing uses it and the model
 does not.
 
 The stock PROM programs the port once at hub initialisation: reset
@@ -1405,21 +1398,19 @@ or sideband does on the chip is *unknown*; the model stores it.
 Port status and link-up
 -----------------------
 
-Port status bit 1 is link up (``hubni_next.h`` lines 24-25),
-*established*, and it is the only bit the stock PROM tests. The PROM
+Port status bit 1 is link up (``hubni_next.h``),
+a *software expectation*, and it is the only bit the stock PROM tests. The PROM
 writes nothing to bring the link up: it programs the port, then polls
 bit 1 for one second of the real-time counter before it reports the
 local link down and boots alone, a *software expectation*. The model
 computes bit 1 on every read, set while a cable joins this port to a
 peer, is not marked down and has main power at both ends
 (:ref:`sgi-bedrock-power`), clear otherwise. The header makes bits 1:0
-the link-level port status and bit 2 remote power (``hubni.h`` lines
-1015-1033). What bit 0 and bit 2 read on a live link is *unknown*; the
+the link-level port status and bit 2 remote power (``hubni.h``). What bit 0 and bit 2 read on a live link is *unknown*; the
 model reads both as 0, an *approximation*.
 
-OpenBSD reads bit 18 as "more nodes than M mode holds" (``sginode.c``
-lines 100-103); in the Bedrock's register file that bit is reserved
-(``hubni.h`` lines 1015-1033). The model reads it as 0, so OpenBSD
+OpenBSD reads bit 18 as "more nodes than M mode holds" (``sginode.c``); in the Bedrock's register file that bit is reserved
+(``hubni.h``). The model reads it as 0, so OpenBSD
 prints "Machine is in M mode", as a published boot of two cabled Origin
 300s does (:src:`marc-openbsd-sgi-139223952727384`), *observed*.
 
@@ -1465,7 +1456,7 @@ reset, and the error bits survive reset. Every other reset value is
      - none
      - write-only
      - ``0x53474972756c6573`` sets the writer's region bit
-       (``bedrock.h`` line 15); the model takes region 0.
+       (``bedrock.h``); the model takes region 0.
    * - ``0x604018``
      - soft reset
      - 1
@@ -1545,7 +1536,7 @@ Reads of write-only registers log ``LOG_GUEST_ERROR`` and return zero.
 Other offsets read zero and drop writes with ``LOG_UNIMP``.
 
 OpenBSD writes its reboot request to scratch 2: magic ``0x0ead0000``
-with a command and options (``ip27_machdep.c`` lines 680-704;
+with a command and options (``ip27_machdep.c``;
 :ref:`sgi-ip35-address-map-handoff`), a *software expectation*. The
 IRIX 6.5.30 kernel writes its restart request there too. Because scratch
 2 survives reset, it can serve as a mailbox the firmware reads after the
@@ -1561,8 +1552,8 @@ Revision word and node number
 The revision word holds manufacturer (11:1), part (27:12), revision
 (31:28), node number (39:32) and region size (47:46): 0 for one node per
 region, 1 for two, 2 for four (N mode), 3 invalid (``hublb.h``,
-``hublb_next.h`` lines 19-38), *established*. The Itanium port reads it
-as a fence before each posted-write flush (``pio_flush.h`` lines 43-54),
+``hublb_next.h``), a *software expectation*. The Itanium port reads it
+as a fence before each posted-write flush (``pio_flush.h``),
 a *software expectation*.
 
 The stock PROM reads its node number from bits 39:32 wherever it needs
@@ -1586,7 +1577,7 @@ Vector engine
 A vector operation sends a read or write along an explicit port-by-port
 route. Software waits for busy to clear, writes route and data, then
 writes parameters last; the reply loads status, return route and read
-data (``hublb.h`` lines 1327-1551), *established*. Route nibbles are
+data (``hublb.h``), a *software expectation*. Route nibbles are
 consumed from the least significant; route 0 reaches the device at the
 other end of the node's cable, a *software expectation* from the stock
 PROM's discovery code (:src:`ip35-prom-6.210 fabric discovery`). The
@@ -1624,8 +1615,7 @@ Real-time clock controls
 
 The local block supplies the clock both processor interfaces count. With
 use-internal set it divides the Bedrock clock by a maximum count; with
-it clear it filters an incoming global clock (``hublb.h`` lines
-919-995), *established*. No public source gives the resulting frequency
+it clear it filters an incoming global clock (``hublb.h``), a *software expectation*. No public source gives the resulting frequency
 or the firmware's setting. The stock PROM converts the counter to
 microseconds as ``counter * (((control & 0x3ff0) >> 3) + 2) / 200``,
 reading the maximum count back from local control, a *software
@@ -1645,8 +1635,8 @@ MicroLAN controller
 ``0x604030`` is the controller for the node board's add-only serial
 identity part: bit 0 received data, bit 1 completion, sample offset
 9:2, low-pulse duration 19:10 and two phase dividers to bit 33, data
-least significant bit first (``hublb.h`` lines 76-79, 507-549),
-*established*. The XBridge's MicroLAN register matches the low 20 bits
+least significant bit first (``hublb.h``),
+a *software expectation*. The XBridge's MicroLAN register matches the low 20 bits
 field for field, and there a write starts one slot that software polls
 for completion (:src:`xbridge-asic-spec-0.5 p. 79-80`); that the Bedrock
 works the same way is *inferred*.
@@ -1685,8 +1675,7 @@ the Bedrock; the one at crosstalk widget 0 is the XBridge's
      - ``0x0008_0000_8000_0021``
      - read/write
      - Bypass grants, age, deadlock and tail timeout wraps. The reset is
-       the companion header's software constant (``hubxb_next.h`` lines
-       29-30); the chip's value is *unknown*.
+       the companion header's software constant (``hubxb_next.h``); the chip's value is *unknown*.
    * - ``0x700008``, ``0x700010``, ``0x700018``
      - slow grant, spew control, I/O arbitration trigger
      - 32, 11, 4
@@ -1725,7 +1714,7 @@ the Bedrock; the one at crosstalk widget 0 is the XBridge's
      - :ref:`sgi-bedrock-xb-errors`.
 
 The Itanium port writes zero to all fifteen clear registers at probe
-(``huberror.c`` lines 95-100), a *software expectation*. Reads of clear
+(``huberror.c``), a *software expectation*. Reads of clear
 registers and of holes return zero with ``LOG_UNIMP``. Writes to first
 error log ``LOG_GUEST_ERROR``. Reset values other than parameters are
 each an *approximation*.
@@ -1738,10 +1727,9 @@ Error injection and first error
 The header says the PI0 output queue error register "can be written to
 test software, will cause an interrupt". The first error latches while
 valid is clear, interrupts both processor interfaces and persists until
-its queue register and then first error are cleared (``hubxb.h`` lines
-469-470, 760-784), *established*. Seven queues have published layouts:
+its queue register and then first error are cleared (``hubxb.h``), a *software expectation*. Seven queues have published layouts:
 PI0 output and input, MD-to-PI0 output, MD input, NI output, and LB
-output and input. The source codes are in ``hubxb_next.h`` lines 13-26;
+output and input. The source codes are in ``hubxb_next.h``;
 type and channel codes are not published. The model numbers the sources
 down from 0xf in address order, queue n having source 0xf - n. Only PI0
 output (0xf) and LB input (0x2) are confirmed against the header, so the
@@ -1768,8 +1756,7 @@ Boot flash
 SGI describes a 16 MiB logical flash behind the Bedrock, reached through
 a local and a remote boot space (:src:`us-patent-6751698`),
 *established*. Linux SN1 defines a 128 MiB local boot space, a remote one
-per node and two PROMs on 32 MiB boundaries (``sn/addrs.h`` lines
-112-154 at ``7570df54ef8c``), *established*. The fitted parts, their
+per node and two PROMs on 32 MiB boundaries (``sn/addrs.h`` at ``7570df54ef8c``), a *software expectation*. The fitted parts, their
 capacities and their wiring are *unknown*. QEMU models two 8 MiB parts as
 ``sgi-bedrock-flash``, an *approximation* that reconciles the 16 MiB
 total with two PROM positions.
@@ -2041,8 +2028,8 @@ the reset; the other survivors follow from the units. Which of the L1's
 reset lines reaches which Bedrock input is *unknown* too: the reset,
 the reset hold and release pair, the kernel's request and the front-panel
 switch drive one control group, and the model joins that group to this
-input. No L1 path reaches an I-brick's bridge (*established*): the PROM
-warm-resets it over the link after it runs (*established* for the write,
+input. No L1 path reaches an I-brick's bridge (*software expectation*): the PROM
+warm-resets it over the link after it runs (*software expectation* for the write,
 *inferred* for the response). Resetting the bridge when the node restarts
 is an *approximation*, kept because a bridge left running could send
 transfers into a node that is restarting. A restart through an IX-brick's or
@@ -2083,7 +2070,7 @@ Four requests reset the Bedrock in the model:
 
 - a machine reset applies every unit's reset;
 - port reset bit 2, local reset, resets the node whatever reset enable
-  holds (*established* for the register meaning; the enable not blocking it
+  holds (*software expectation* for the register meaning; the enable not blocking it
   is the reviewed reading, an *approximation*);
 - local block soft reset bit 0 does the same;
 - port reset bit 1 sends a warm reset over the cable, and the Bedrock at the
@@ -2094,8 +2081,8 @@ Four requests reset the Bedrock in the model:
 
 Port reset bit 0, link reset, reaches nothing. The header calls reset
 enable a warm-reset enable that lets the link-level protocol reset the
-Bedrock (``hubni.h`` line 1079, ``hubni_next.h`` line 143),
-*established*. Whether it also gates a local reset is *unknown*; the
+Bedrock (``hubni.h``, ``hubni_next.h``),
+a *software expectation*. Whether it also gates a local reset is *unknown*; the
 model does not gate it.
 
 **The reach of a reset.** A write of the port reset register or of the
@@ -2128,7 +2115,7 @@ A Bedrock that receives a warm reset it does not take, because its reset
 enable bit 0 is clear, keeps running: it is not reset, its registers and its
 identity word are left alone, its link stays up, and it latches port errors
 bit 52, "link reset in", which raises its network interface error interrupt.
-The bit's name is *established*; that a refused reset sets it is *inferred*,
+The bit's name is a *software expectation*; that a refused reset sets it is *inferred*,
 and the model latches it, an *approximation*. No other error bit is set and
 no interrupt is raised without one. A kernel that receives it with the reset
 enable clear (and a partition number of zero) prints a notice and goes on;
