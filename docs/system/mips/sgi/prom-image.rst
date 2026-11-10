@@ -8,7 +8,8 @@ PROM images and node boot firmware
 
 Every SGI machine in this family boots a stock SGI PROM: the IP27 PROM on
 the Origin 200, Origin 2000 and Onyx2, the IP35 PROM on the Origin 300,
-Fuel and the IP53 profiles (Origin 350, Onyx 350, Tezro), and the IP30
+Fuel, the Origin 3000 and Onyx 3000 and the IP53 profiles (Origin 350,
+Onyx 350, Tezro), and the IP30
 PROM on the Octane and Octane2. This page covers what QEMU does with those
 images: the file formats it accepts, the flash parts it puts them in, the
 configuration blocks it writes, the firmware data the PROM builds in
@@ -562,7 +563,8 @@ recomputes the checksum adjustment:
      - the fitted processor's clock
    * - ``0x30``
      - machine type
-     - 1 on Origin 300, 2 on Fuel, 0 on the IP53 profiles
+     - 1 on Origin 300, 2 on Fuel, 0 on the Origin 3000, Onyx 3000 and the IP53
+       profiles
    * - ``0x38``
      - flash program count
      - 1, a model choice
