@@ -86,6 +86,8 @@ struct SGIPciExpansionState {
     char *board_revision;
     char *board_name;
     uint32_t bridge_revision;
+    /* The Fibre Channel boards' product, resolved when the board is built. */
+    char *fc_product;
 
     SGIBridgeState *bridge;
     Notifier machine_done;
@@ -314,6 +316,142 @@ static void octane_pci_cage_class_init(ObjectClass *oc, const void *data)
     dc->desc = "Octane PCI module (three PCI slots, Crossbow port 13)";
 }
 
+/*
+ * The Fibre Channel XIO boards: a Bridge with an Adaptec AIC-1160 on each of
+ * PCI devices 0 and 1, one per port. The two ports are two chips on two
+ * Bridge slots, which the published hardware-graph paths show as pci/0 and
+ * pci/1 under one node. The board takes no other card, so only those
+ * positions are open. Each controller's interrupt reaches the Bridge on the
+ * pin of its device number. A port's loop is reached through the controller
+ * (see hw/scsi/adaptec-aic1160.c).
+ *
+ * Which product it is follows the machine. The XT-FC-2P, part 030-0927-00x,
+ * is the Origin 2000, Origin 200 and Onyx2 board; the X9-FC-2P, part
+ * 013-2119-00x, is the identical Octane board. Both are copper and FC-AL
+ * only, with no fabric login. The optical -B boards are separate products
+ * whose controller is not established, so they are not modelled. The last
+ * digit of either part number is not known. The one observed XT-FC-2P
+ * carries assembly 030-0927003E, read here as part 030-0927-003, and the
+ * revision E goes unrecorded because the Bridge's record takes a revision
+ * only with a board name, which is not known. The X9-FC-2P keeps the bare
+ * board's placeholder part. No source gives the Bridge revision, so it keeps
+ * the default.
+ */
+#define TYPE_SGI_FC_BOARD "sgi-fc-board"
+#define FC_BOARD_PORTS 2
+
+typedef struct FCProduct {
+    const char *name;
+    const char *part;
+} FCProduct;
+
+static const FCProduct fc_products[] = {
+    { "xt-fc-2p", "030-0927-003" },
+    { "x9-fc-2p", NULL },
+};
+
+static const FCProduct *fc_find_product(const char *name)
+{
+    for (int i = 0; i < ARRAY_SIZE(fc_products); i++) {
+        if (g_str_equal(fc_products[i].name, name)) {
+            return &fc_products[i];
+        }
+    }
+    return NULL;
+}
+
+static char *fc_get_product(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_PCI_EXPANSION(obj)->fc_product);
+}
+
+static void fc_set_product(Object *obj, const char *value, Error **errp)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(obj);
+
+    if (!fc_find_product(value)) {
+        error_setg(errp, "unknown Fibre Channel board product '%s'; the "
+                   "products are xt-fc-2p and x9-fc-2p", value);
+        return;
+    }
+    g_free(s->fc_product);
+    s->fc_product = g_strdup(value);
+}
+
+static bool (*fc_board_parent_build_widget)(SGIXioBoardState *board,
+                                            Error **errp);
+
+static bool fc_board_build_widget(SGIXioBoardState *board, Error **errp)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(board);
+    const FCProduct *product;
+    PCIBus *bus;
+
+    /* The Octane's slots are named widget-N; the racks' are io2 and up. */
+    if (!s->fc_product) {
+        bool octane = board->slot_name &&
+                      g_str_has_prefix(board->slot_name, "widget-");
+
+        s->fc_product = g_strdup(octane ? "x9-fc-2p" : "xt-fc-2p");
+    }
+    product = fc_find_product(s->fc_product);
+    s->slots = FC_BOARD_PORTS;
+    /*
+     * The IP30 kernel probes the flash window of every PCI-mode Bridge
+     * without a fault handler, and a failed read there panics it. No flash
+     * is modelled on this board, so an empty select reads high.
+     */
+    s->flash_empty_reads_high = true;
+    if (product->part) {
+        g_free(s->board_part);
+        s->board_part = g_strdup(product->part);
+    }
+    if (!fc_board_parent_build_widget(board, errp)) {
+        return false;
+    }
+    bus = PCI_HOST_BRIDGE(s->bridge)->bus;
+    for (unsigned port = 0; port < FC_BOARD_PORTS; port++) {
+        g_autofree char *name = g_strdup_printf("port%u", port);
+        PCIDevice *fc = pci_new(PCI_DEVFN(port, 0), "aic1160");
+
+        /* Each port has a name of its own, a placeholder: none is known. */
+        qdev_prop_set_uint64(DEVICE(fc), "wwn",
+                             UINT64_C(0x2100000000000001) + port);
+        /* A board with an id names each port's loop bus after it. */
+        if (DEVICE(board)->id) {
+            g_autofree char *scsi = g_strdup_printf("%s-p%u",
+                                                   DEVICE(board)->id, port);
+
+            qdev_prop_set_string(DEVICE(fc), "bus-name", scsi);
+        }
+        object_property_add_child(OBJECT(board), name, OBJECT(fc));
+        if (!pci_realize_and_unref(fc, bus, errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void fc_board_instance_finalize(Object *obj)
+{
+    g_free(SGI_PCI_EXPANSION(obj)->fc_product);
+}
+
+static void fc_board_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
+
+    dc->desc = "Fibre Channel XIO board (XT-FC-2P or X9-FC-2P)";
+    object_class_property_add_str(oc, "product", fc_get_product,
+                                  fc_set_product);
+    object_class_property_set_description(oc, "product",
+        "xt-fc-2p or x9-fc-2p; by default x9-fc-2p in an Octane slot and "
+        "xt-fc-2p elsewhere");
+    fc_board_parent_build_widget = bc->build_widget;
+    bc->build_widget = fc_board_build_widget;
+}
+
 static const TypeInfo pci_expansion_types[] = {
     {
         .name = TYPE_SGI_PCI_EXPANSION,
@@ -333,6 +471,12 @@ static const TypeInfo pci_expansion_types[] = {
         .parent = TYPE_SGI_PCI_EXPANSION,
         .instance_init = octane_pci_cage_instance_init,
         .class_init = octane_pci_cage_class_init,
+    },
+    {
+        .name = TYPE_SGI_FC_BOARD,
+        .parent = TYPE_SGI_PCI_EXPANSION,
+        .instance_finalize = fc_board_instance_finalize,
+        .class_init = fc_board_class_init,
     },
 };
 

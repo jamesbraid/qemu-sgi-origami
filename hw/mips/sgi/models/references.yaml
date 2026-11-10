@@ -2083,6 +2083,19 @@ firmware:
       distribution: "IRIX 6.5.30 installation media"
       image: payload
       sha256: ee4722ca6f9b821ffadf156346c4d69bf5be71fc4b911cee75e36a1f51a49972
+  ip30-kernel-6.5.21:
+    title: "IP30 kernel of IRIX 6.5.21"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane and Octane2 IP30 installed kernel"
+    version: "6.5"
+    banner: "IRIX Release 6.5 IP30 Version 07141608 System V - 64 Bit"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.21 installation of the IP30 kernel; addresses are offsets into the kernel's text, whose mapped base is 0xa800000020004180"
+      image: payload
+      sha256: c5cb452162321dd3fccb958f885796e82ae0d3d2cc7d8eeb992dfb4eca2cebb4
   ip30-prom-3.7:
     title: "IP30 PROM"
     publisher: Silicon Graphics

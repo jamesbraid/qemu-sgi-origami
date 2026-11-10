@@ -68,6 +68,7 @@
                             OCTANE_XIO_WIDGET_FIRST + 1)
 #define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
 #define TYPE_SGI_OCTANE_PCI_CAGE "sgi-octane-pci-cage"
+#define TYPE_SGI_FC_BOARD "sgi-fc-board"
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SECTOR (64 * KiB)
@@ -1335,6 +1336,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_ODYSSEY);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_OCTANE_PCI_CAGE);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_FC_BOARD);
 }
 
 static const TypeInfo octane_machine_types[] = {

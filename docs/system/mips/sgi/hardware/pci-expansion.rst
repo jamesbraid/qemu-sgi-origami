@@ -82,6 +82,11 @@ The board names its PCI bus with the ``pci-bus-name`` property, or
 ``<id>.0`` from its ``id``. The tests address the board fitted at IO2 as
 ``bus=io2.0``.
 
+``sgi-fc-board`` is a further board of this family: a Fibre Channel XIO board,
+an ``sgi-pci-expansion`` with an Adaptec AIC-1160 controller on each of PCI
+devices 0 and 1 and no other position open. Its ``product`` property picks the
+XT-FC-2P or the Octane's X9-FC-2P (:doc:`adaptec-aic1160`).
+
 ``sgi-pci-expansion`` passes the properties ``board-part``,
 ``board-barcode``, ``board-revision``, ``board-name`` and
 ``bridge-revision`` to its Bridge. ``board-part`` must be exactly 12
@@ -381,9 +386,13 @@ Octane PCI module
        Bridge it finds (*software expectation*) and a bus error there is
        a kernel fault. The model fits a blank part on neither select:
        reads of both complete with all ones, an *approximation* that
-       keeps IRIX attached. A write to either select fails with a bus
-       error and is logged. What a real board answers to a write is
-       *unknown*; the model's failure is a stand-in, not a measurement.
+       keeps IRIX attached. A write to either select fails and is logged.
+       The 6.5.21 Octane kernel stores to both selects without a fault
+       handler (*software expectation*, :src:`ip30-kernel-6.5.21`) and the
+       model's guest takes no fault from the failed store (*observed* with
+       the module on an Octane; the adapter was not booted). What a real
+       board answers to a write is *unknown*; the model's failure is a
+       stand-in, not a measurement.
 
 The module's board record is barcode ``EMUO`` followed by the port's
 instance, ``EMUO68`` at port 13, which is marked synthetic: a real barcode
