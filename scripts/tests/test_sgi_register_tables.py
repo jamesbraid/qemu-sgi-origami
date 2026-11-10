@@ -404,6 +404,24 @@ class RegisterTablesTest(unittest.TestCase):
         reg = [r for r in cases[0]['registers'] if r['offset'] == '0x38'][0]
         self.assertEqual(reg['expect'], '0x7')
 
+    def test_access_overrides_every_width(self):
+        text = PAGE.replace('     - Reset\n', '     - Width\n     - Reset\n')
+        out = []
+        for row in text.split('\n'):
+            out.append(row)
+            if row.strip() in ('- Control', '- Two', '- Range',
+                               '- Write only', '- Prose'):
+                out.append('     - 9')
+        marker = MARKER.replace('width=64', 'access=32 skip=0x38')
+        cases, _, _, errors = scan('\n'.join(out), marker=marker)
+        self.assertEqual(errors, [])
+        self.assertEqual({r['width'] for r in cases[0]['registers']}, {32})
+
+    def test_access_must_be_a_width(self):
+        marker = MARKER.replace('width=64', 'access=9')
+        _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(len(errors), 1)
+
     def test_this_tree(self):
         cases, annotated, other, errors = tables.scan(SOURCE)
         self.assertEqual(errors, [])

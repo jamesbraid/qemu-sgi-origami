@@ -258,6 +258,10 @@ output stay the page's.
 A row whose Offset is relative to its unit, such as "link +0x08", takes
 ``units=0x100:0x40:8`` (base, stride, count) and is read once per unit.
 
+``access=64`` reads every register of a table with that width whatever its
+Width cell says, for a device whose registers are slots read whole: the
+VICE lists a nine-bit register that is still read as a doubleword.
+
 A register in a window declared little-endian, such as the Xframe's, is
 read with ``split=32``: two 32-bit reads, low half at the address and
 high half four above. A Reset cell that says ``all ones`` is the width's
