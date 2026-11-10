@@ -1383,21 +1383,42 @@ on format loads, channel enable and disable, resize, blanking, gamma map
 selection, cursor priority and channel source. Other commands are framed
 and consumed.
 
-The colour chain is 10-bit colour-map entries, then a 12-bit gamma index,
-with the 10-bit value widened to 12 bits by replicating its top bits
-(*inferred*; the table says replication is suggested). The model does not
-follow that chain: it narrows a colour-map entry to 8 bits when it
-resolves the pixel, then widens the 8 bits to the 12-bit gamma index by
-replication, and shows the top eight bits of the 12-bit gamma entry. Each
-rounding is a model choice, an *approximation*; the pipe's own output
-rounding is *unknown*. Following the 12-bit chain needs 12-bit rows
-through the shared scanout, which the model does not carry.
+The colour chain is 10-bit colour-map entries, then a 12-bit gamma
+index. The model follows it for a pixel that comes from a colour map (the
+X colour maps and the overlay and popup maps): the 10-bit output sits in
+index bits 11:2 and its top two bits repeat in bits 1:0, ``c << 2 | c >> 8``
+(*inferred*, from the address rules in the pipe's diagnostic, which never
+force the low bits to zero and tie them to bits 11:10; zero fill and an
+8-bit-based widening disagree with them; the rule is for legacy
+addressing, flag bit 18 clear). A pixel that does not go through a colour
+map is direct colour with only 8 bits, and no widening rule is known for
+it: the model repeats the byte, ``v << 4 | v >> 4``, an *approximation*.
+The textport's colour map keeps 8-bit entries (the textport load narrows
+its 10-bit components as it stores them), so a textport pixel takes the
+direct-colour rule, also an *approximation*. A capture with a marker
+table, 0x3ff selecting entry 0xfff against 0xffc, would settle the
+widening.
+
+The gamma output reaches the video-output chips and the DACs as bits
+11:4, truncated: bits 3:0 of the output are unconnected on the base
+board, and nothing in the register map rounds or dithers (*inferred*: it
+rests on the board connection data in the shipped diagnostics, a software
+expectation that this page cannot cite by a public document number; no
+published description of the link was found). The
+chip between the gamma output and the DACs also resizes, so the unity-size
+end-to-end reading is *inferred* too. The model shows the entry's top eight
+bits. The DAC widens its 8-bit input in the start-up palette bypass mode
+by zero fill, the two low bits of its 10-bit converter input zero, not by
+rounding (*inferred*: it rests on a description of such a bypass mode for
+a DAC of this kind. No public document for this board's DAC was found,
+so none is cited, and it holds only if the board's part behaves that
+way).
 
 The gamma load ``0x12f`` fills three components of 4,096 entries;
-channels select a linear ramp or the loaded table. The cursor is 64x64 at
-two bits per pixel with three colours, up to 64 images loaded with
-``0x130``; the kernel selects channel, image, position and mode through
-the indirect pair with selectors ``0x100``-``0x103``, a *software
+channels select a linear ramp or the loaded table. The XMAP cursor is
+64x64 at two bits per pixel with three colours, up to 64 images loaded
+with ``0x130``; the kernel selects channel, image, position and mode
+through the indirect pair with selectors ``0x100``-``0x103``, a *software
 expectation*. Only mode 0 (off) and 2 (on) are modelled.
 
 The retrace runs at 60 Hz on channel 0, an *approximation*: ``0x1e6``
@@ -1606,8 +1627,11 @@ Model limits
 - A small texture level's origin is not taken from the last of its copies,
   and a load at a new address does not retire the levels it overlaps; the
   model keys levels by place instead.
-- The start-up display state is channel 0 over the whole area, not the
-  video combination stored in the flash.
+- Before the loader releases the controller's firmware, the display state
+  is channel 0 over the whole area. The stored video combination runs at
+  the release (``+0x800328`` written 1), not at power-up, which is where the
+  model is an *approximation* of a pipe that starts the stored combination
+  itself.
 - The detail combine is the model's reading: its arithmetic widths,
   rounding and coordinate derivation are *unknown*, and only the channel
   select Quake GL uses (colour) has been exercised against a guest.

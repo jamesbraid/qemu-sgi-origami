@@ -632,6 +632,28 @@ static void test_colour_map_resolves_at_scanout(void)
 }
 
 /*
+ * A direct-colour word shows its low 24 bits whatever its top byte holds.
+ * While a row resolves, bit 31 of a pixel marks a wide colour-map entry, so
+ * the resolve masks a direct word's top byte first; a word with bit 31 set
+ * that kept it would be read as a 10-bit entry and shown as the wrong
+ * colour.
+ */
+static void test_direct_pixel_top_bit_is_not_wide(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    kona_dma_pixels(qts, (uint32_t[]){ 0x80123456, 0xff00ff00, 0x7f654321 },
+                    3);
+    frame = kona_screendump(qts, dir, "direct.ppm");
+    g_assert_cmphex(ppm_pixel(frame, 0, 0), ==, 0x123456);
+    g_assert_cmphex(ppm_pixel(frame, 1, 0), ==, 0x00ff00);
+    g_assert_cmphex(ppm_pixel(frame, 2, 0), ==, 0x654321);
+    g_rmdir(dir);
+}
+
+/*
  * The board memory subsection carries the planes as stored: the
  * destination holds the textport pixel's index and tag, not its resolved
  * colour, so reloading the entry there recolours it, and the DMA pixel's
@@ -1316,6 +1338,9 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-scanout/"
                    "colour-map-resolves-at-scanout",
                    test_colour_map_resolves_at_scanout);
+    qtest_add_func("sn0/origin2000/kona-scanout/"
+                   "direct-pixel-top-bit-is-not-wide",
+                   test_direct_pixel_top_bit_is_not_wide);
     qtest_add_func("sn0/origin2000/kona-scanout/migration-carries-planes",
                    test_migration_carries_planes);
     qtest_add_func("sn0/origin2000/kona-scanout/list-size-zero-refused",

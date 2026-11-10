@@ -45,6 +45,7 @@
 #define TOKEN_CLIP          0x12b
 #define TOKEN_SCISSOR       0x12d
 #define TOKEN_COLOR_MAP     0x12e
+#define TOKEN_GAMMA         0x12f
 #define TOKEN_PIXEL_SETUP   0x136
 #define TOKEN_PIXEL_WRITE   0x139
 #define TOKEN_PIXEL_FINISH  0x13a
@@ -1406,6 +1407,85 @@ static void test_background_point_skips_stipple_under_xor(void)
     assert_in_step(qts);
 }
 
+/* A one-entry gamma load: gamma-RAM address `addr` takes `value`. */
+static void load_gamma(QTestState *s, uint32_t addr, uint32_t value)
+{
+    x_command(s, TOKEN_GAMMA, (uint32_t[]){ addr, 1, value }, 3);
+}
+
+/*
+ * A colour-map pixel passes through the gamma table at the index the
+ * colour map's 10-bit output makes, the output in bits 11:2 and its top
+ * two bits repeated in bits 1:0, c << 2 | c >> 8 (inferred). The red
+ * table here holds marker entries at 0x004 (c = 1), 0xfff (c = 0x3ff),
+ * 0x800 (c = 0x200) and 0x802 (c = 0x200 under replication is 0x802);
+ * and the shown value is the entry's top eight bits, bits 11:4. An
+ * index made from the 8-bit colour instead would reach entry 0 for
+ * c = 1 and show black, and zero fill would reach 0x004 for c = 1 and
+ * 0x800 for c = 0x200. Green and blue have no table and pass unchanged.
+ */
+static void test_gamma_index_replicates_colour_map_output(void)
+{
+    static const struct {
+        uint32_t index, entry, x;
+        uint32_t table_addr, table_value, expected;
+    } probes[] = {
+        { 0x10, 0x00100000, 30, 0x004, 0xf00, 0xf00000 },
+        { 0x11, 0x3ff00000, 40, 0xfff, 0x800, 0x800000 },
+        { 0x12, 0x20000000, 50, 0x802, 0xa5f, 0xa50000 },
+        { 0x13, 0x20000000 | 0x155, 60, 0x802, 0xa5f, 0xa50055 },
+    };
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        x_command(qts, TOKEN_COLOR_MAP,
+                  (uint32_t[]){ X_MAP_WINDOW + probes[i].index, 1,
+                                probes[i].entry }, 3);
+        load_gamma(qts, probes[i].table_addr, probes[i].table_value);
+        fill_box(qts, probes[i].index, probes[i].x, 10, probes[i].x + 4, 14);
+    }
+    frame = kona_screendump(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        g_assert_cmphex(ppm_pixel(frame, probes[i].x + 1, 11), ==,
+                        probes[i].expected);
+    }
+    assert_in_step(qts);
+}
+
+/*
+ * The 12-bit gamma output reaches the DAC as its top eight bits,
+ * truncated: entries 0x0f7, 0x0f8, 0x0ff and 0x100 show 0x0f, 0x0f, 0x0f
+ * and 0x10, where round-to-nearest would show 0x0f, 0x10, 0x10 and 0x10.
+ * The colour-map outputs 0x3d, 0x3e, 0x3f and 0x40 index entries 0x0f4,
+ * 0x0f8, 0x0fc and 0x100.
+ */
+static void test_gamma_output_truncates(void)
+{
+    static const struct { uint32_t c, addr, value, shown; } probes[] = {
+        { 0x3d, 0x0f4, 0x0f7, 0x0f }, { 0x3e, 0x0f8, 0x0f8, 0x0f },
+        { 0x3f, 0x0fc, 0x0ff, 0x0f }, { 0x40, 0x100, 0x100, 0x10 },
+    };
+    g_autofree uint8_t *frame = NULL;
+
+    qtest_system_reset(qts);
+    full_screen_clip(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        x_command(qts, TOKEN_COLOR_MAP,
+                  (uint32_t[]){ X_MAP_WINDOW + 0x20 + i, 1,
+                                probes[i].c << 20 }, 3);
+        load_gamma(qts, probes[i].addr, probes[i].value);
+        fill_box(qts, 0x20 + i, 20 + 10 * i, 10, 24 + 10 * i, 14);
+    }
+    frame = kona_screendump(qts);
+    for (unsigned i = 0; i < ARRAY_SIZE(probes); i++) {
+        g_assert_cmphex(ppm_pixel(frame, 21 + 10 * i, 11), ==,
+                        probes[i].shown << 16);
+    }
+    assert_in_step(qts);
+}
+
 /*
  * A store that does not fit the model's cache, an entry past it or a
  * pattern over 32 bits wide, is logged and its rows consumed; loading an
@@ -1763,6 +1843,11 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-glyph/"
                    "stipple-masks-boxes-and-ignores-stray-bits",
                    test_stipple_masks_boxes_and_ignores_stray_bits);
+    qtest_add_func("sn0/origin2000/kona-glyph/"
+                   "gamma-index-replicates-colour-map-output",
+                   test_gamma_index_replicates_colour_map_output);
+    qtest_add_func("sn0/origin2000/kona-glyph/gamma-output-truncates",
+                   test_gamma_output_truncates);
     qtest_add_func("sn0/origin2000/kona-glyph/background-point-skips-stipple",
                    test_background_point_skips_stipple);
     qtest_add_func("sn0/origin2000/kona-glyph/"

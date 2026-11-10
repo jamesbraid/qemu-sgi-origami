@@ -170,6 +170,21 @@ static uint32_t sgi_kona_rgb10(uint32_t entry)
     return rgb;
 }
 
+/*
+ * A colour-map entry as a pixel: the 8-bit colour, or, while a scanout
+ * row resolves, the 10:10:10 entry flagged in bit 31 so the gamma stage
+ * can index its 12-bit table from the full 10 bits.
+ */
+#define SGI_KONA_PIXEL_WIDE 0x80000000u
+
+static uint32_t sgi_kona_map_pixel(SGIKonaState *s, uint32_t entry)
+{
+    if (s->resolve_wide) {
+        return SGI_KONA_PIXEL_WIDE | (entry & 0x3fffffff);
+    }
+    return sgi_kona_rgb10(entry);
+}
+
 static uint32_t sgi_kona_x_color(SGIKonaState *s, uint32_t index)
 {
     uint64_t addr = (uint64_t)SGI_KONA_X_COLOR_MAP_WINDOW + index;
@@ -179,7 +194,7 @@ static uint32_t sgi_kona_x_color(SGIKonaState *s, uint32_t index)
         return 0;
     }
     entry = s->x_color_map[addr];
-    return sgi_kona_rgb10(entry);
+    return sgi_kona_map_pixel(s, entry);
 }
 
 /* Installed unsupported maps stay visible as black and log their raw entry. */
@@ -199,7 +214,7 @@ static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
         }
         return 0;
     }
-    return sgi_kona_rgb10(s->x_color_map[base + index]);
+    return sgi_kona_map_pixel(s, s->x_color_map[base + index]);
 }
 
 /*
@@ -564,7 +579,7 @@ static uint32_t sgi_kona_bank_read(SGIKonaState *s, unsigned bank, int x,
     case SGI_KONA_TAG_X_INDEX16:
         return sgi_kona_desktop_index_color(s, word, x, y, true);
     default:
-        return word;
+        return s->resolve_wide ? word & 0x00ffffff : word;
     }
 }
 
@@ -621,48 +636,69 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
 }
 
 /*
- * A resolved x8r8g8b8 pixel through the gamma table, as the display
- * shows it. The X server loads one 4,096-entry table per component, red
- * at 0, green at 0x1000 and blue at 0x2000, with 12-bit entries (the
- * command grammar's gamma load); the stock server's tables are a 1.7
- * power curve (entry 2048 is 2724, read back in a run), and SI applies
- * its own server's table the same way. The model's 8-bit component
- * indexes the table with its bits repeated to 12, and the entry's top
- * eight bits are shown.
+ * A resolved pixel through the gamma table, as the display shows it. The
+ * X server loads one 4,096-entry table per component, red at 0, green at
+ * 0x1000 and blue at 0x2000, with 12-bit entries (the command grammar's
+ * gamma load); the stock server's tables are a 1.7 power curve (entry
+ * 2048 is 2724, read back in a run), and SI applies its own server's
+ * table the same way.
+ *
+ * A colour-map pixel arrives as its 10:10:10 entry (SGI_KONA_PIXEL_WIDE).
+ * The table index is the 10-bit output in bits 11:2 with its top two
+ * bits repeated in bits 1:0, c << 2 | c >> 8 (inferred, from the address
+ * rules of the pipe's diagnostic, which never force the low bits to zero
+ * and tie them to bits 11:10; zero fill and an 8-bit-based widening
+ * disagree with it; legacy addressing, flag bit 18 clear). A direct pixel
+ * has only 8 bits and no rule for widening them is known: the model
+ * repeats the byte, v << 4 | v >> 4, an approximation.
+ *
+ * The entry's top eight bits are shown: the 12-bit output reaches the
+ * video-output chips and DACs as bits 11:4, with bits 3:0 unconnected on
+ * the base board (inferred, from the board connection data in the shipped
+ * diagnostics, not from a published document; also inferred end to end at
+ * unity size; how the DAC widens its 8-bit input is unknown). A component
+ * with no nonzero entry, before any load, is shown unchanged.
  *
  * Inferred: that the table sits after the colour maps, on every pixel,
- * as on SI; a component with no nonzero entry, before any load, is
- * shown unchanged. What the pipe's gamma RAM holds before the X server
- * loads it, its index width, and whether it applies to the cursor (the
- * shared scanout composes the cursor afterwards, uncorrected) are
- * unknown.
+ * as on SI. What the pipe's gamma RAM holds before the X server loads it
+ * is unknown. The XMAP cursor passes through the same table (inferred;
+ * sgi_kona_cursor_update()); the DAC cursor does not (established).
  *
  * Each channel shows through the map the gamma-map command gave it: map 0 is
  * this table, the only one the model holds, since the board answers
  * GetBoardConfig's word 4 with 0 and the X server then keeps one gamma
  * map; SGI_KONA_GAMMA_MAP_LINEAR, which the X server sends for a map it
  * marks linear, shows the pixel unchanged (inferred from its log
- * message, "Linear Gamma being used for bind").
+ * message, "Linear Gamma being used for bind"). The result is always a
+ * plain 0x00RRGGBB.
  */
 static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, unsigned channel,
                                      uint32_t rgb)
 {
+    bool wide = rgb & SGI_KONA_PIXEL_WIDE;
+    bool linear = s->channel[channel].gamma_map == SGI_KONA_GAMMA_MAP_LINEAR;
     uint32_t out = 0;
 
-    if (s->channel[channel].gamma_map == SGI_KONA_GAMMA_MAP_LINEAR) {
-        return rgb;
-    }
     for (unsigned c = 0; c < SGI_KONA_GAMMA_COMPONENTS; c++) {
-        unsigned shift = 16 - 8 * c;
-        unsigned v = (rgb >> shift) & 0xff;
+        unsigned shift = wide ? 20 - 10 * c : 16 - 8 * c;
+        unsigned out_shift = 16 - 8 * c;
+        unsigned v = (rgb >> shift) & (wide ? 0x3ff : 0xff);
+        unsigned index = wide ? (v << 2) | (v >> 8) : (v << 4) | (v >> 4);
 
-        if (s->gamma_loaded[c]) {
-            v = s->gamma[c * SGI_KONA_GAMMA_COMPONENT_ENTRIES +
-                         ((v << 4) | (v >> 4))] >> 4;
+        if (!linear && s->gamma_loaded[c]) {
+            v = s->gamma[c * SGI_KONA_GAMMA_COMPONENT_ENTRIES + index] >> 4;
+        } else if (wide) {
+            v = (v * 255 + 511) / 1023;
         }
-        out |= (v & 0xff) << shift;
+        out |= (v & 0xff) << out_shift;
     }
     return out;
+}
+
+/* A resolved pixel of a scanout row: a wide colour-map pixel keeps its bits. */
+static uint32_t sgi_kona_row_pixel(uint32_t pixel)
+{
+    return pixel & SGI_KONA_PIXEL_WIDE ? pixel : pixel & 0x00ffffff;
 }
 
 /*
@@ -678,7 +714,7 @@ static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
     SGIClipRect r;
 
     for (unsigned x = 0; x < s->fb_width; x++) {
-        dst[x] = sgi_kona_bank_read(s, 0, x, row) & 0x00ffffff;
+        dst[x] = sgi_kona_row_pixel(sgi_kona_bank_read(s, 0, x, row));
     }
     for (unsigned i = 0; i < SGI_KONA_CONTEXTS; i++) {
         if (!sgi_kona_bank1_window(s, i, &r) || row < r.y0 ||
@@ -687,12 +723,14 @@ static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
         }
         for (int x = r.x0; x <= r.x1; x++) {
             if (sgi_kona_gl_window_shows(s, &s->state[i]->window, x, row)) {
-                dst[x] = sgi_kona_bank_read(s, 1, x, row) & 0x00ffffff;
+                dst[x] = sgi_kona_row_pixel(sgi_kona_bank_read(s, 1, x,
+                                                               row));
             }
         }
     }
     for (unsigned x = 0; x < s->fb_width; x++) {
-        dst[x] = sgi_kona_desktop_compose(s, x, row, dst[x]) & 0x00ffffff;
+        dst[x] = sgi_kona_row_pixel(sgi_kona_desktop_compose(s, x, row,
+                                                             dst[x]));
     }
 }
 
@@ -877,7 +915,8 @@ static void sgi_kona_invalidate_all(SGIKonaState *s)
  * sampled to the format's width, then through the channel's gamma table;
  * every pixel black while the display is blanked (see
  * sgi_kona_video_temp_blank()) or outside the managed area. The shared
- * scanout composes the cursor after resolving the row.
+ * scanout composes the cursor after resolving the row, so a cursor takes
+ * its gamma where sgi_kona_cursor_update() defines it.
  */
 static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
                                          uint32_t *dst)
@@ -898,6 +937,7 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
         memset(dst, 0, v.out_width * sizeof(*dst));
         return;
     }
+    s->resolve_wide = true;
     if (v.x == 0 && v.width == s->fb_width &&
         v.out_width == s->fb_width) {
         sgi_kona_resolve_managed_line(s, line, dst);
@@ -910,6 +950,7 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
                      s->resolve_line[sx] : 0;
         }
     }
+    s->resolve_wide = false;
     for (uint32_t x = 0; x < v.out_width; x++) {
         dst[x] = sgi_kona_gamma_apply(s, h->index, dst[x]);
     }

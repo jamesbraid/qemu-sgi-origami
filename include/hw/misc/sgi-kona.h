@@ -2021,6 +2021,12 @@ struct SGIKonaState {
     SGIKonaChannelHook channel_hook[SGI_KONA_MAX_CHANNELS];
     uint32_t channel_scanouts;  /* consoles past channel 0's, from config */
     uint32_t resolve_line[SGI_KONA_FB_MAX_DIMENSION];
+    /*
+     * Set while a scanout row resolves: a colour-map pixel then keeps its
+     * 10:10:10 entry (SGI_KONA_PIXEL_WIDE) for the gamma stage instead
+     * of narrowing it to 8 bits. Not migrated; it is false between rows.
+     */
+    bool resolve_wide;
 
     /*
      * The managed area's size, which the planes in mem, desktop_mem and
