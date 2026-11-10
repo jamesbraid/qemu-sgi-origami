@@ -87,6 +87,19 @@ class ChangedTableTests(unittest.TestCase):
         self.assertTrue(all(tables.values()))
 
 
+class RegisterTestSelection(unittest.TestCase):
+    def test_extractor_and_marked_pages_select_the_test(self):
+        edited = sgi_check.register_tables_edited
+        self.assertTrue(edited('scripts/ci/sgi-register-tables.py'))
+        self.assertTrue(edited('docs/system/mips/sgi/hardware/heart.rst'))
+
+    def test_unmarked_pages_and_other_files_select_nothing(self):
+        edited = sgi_check.register_tables_edited
+        self.assertFalse(edited('docs/system/mips/sgi/hardware/bic.rst'))
+        self.assertFalse(edited('docs/system/mips/sgi/removed-page.rst'))
+        self.assertFalse(edited('hw/misc/sgi-heart.c'))
+
+
 class QtestShards(unittest.TestCase):
     DURATIONS = {'a': 600, 'b': 300, 'c': 300, 'd': 100, 'e': 50}
 

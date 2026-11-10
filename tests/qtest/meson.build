@@ -693,7 +693,10 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test', 'r5000-cpu-test'
    config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['sgi-mace-dma-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') ?
-    ['sgi-mace-eth-test'] : [])
+    ['sgi-mace-eth-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_MACE') and
+   config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
+    ['sgi-register-reset-test'] : [])
 
 qtests_mips64el = qtests_mips
 

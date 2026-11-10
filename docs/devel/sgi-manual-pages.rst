@@ -170,3 +170,59 @@ Three more checks run in the same required job, and each fails it:
 
 ``scripts/tests/test_sgi_docs_lint.py`` tests each rule of the lint with a
 page it must reject and a page it must pass.
+
+Register reset values
+---------------------
+
+A register table with ``Offset`` and ``Reset`` columns can be checked
+against the model. Put a comment above the ``.. list-table::``, so Sphinx
+ignores it:
+
+.. code-block:: rst
+
+   .. sgi-registers: base=0x1f280000 width=64
+      qemu="-m 64M -M o2,register-test-profile=on -nic none"
+
+``qemu`` is the argument string the test starts QEMU with. ``base`` is the
+physical address the table's offsets add to (default 0) and ``width`` the
+access width in bits for a table without a ``Width`` column; a ``Width``
+column wins, and its first number is the width. A device started on its own
+with ``-M none`` gets ``map=PATH:INDEX:ADDRESS`` to map one of its MMIO
+regions first (repeat it for several).
+
+``tests/qtest/sgi-register-reset-test.c`` runs ``scripts/ci/sgi-register-tables.py
+--json``, starts each configuration, reads every documented register and
+fails with ``page:line`` when the model reads another value, so the page
+is the only source of the expected values. Offsets may be a list
+(``0x08``, ``0x10``) or a range (``0x20``-``0x3c``, read at the table's
+width). Several comments above one table check it in several
+configurations. A cell that lists a value per variant, ``0; 0x8118 on
+revision F``, takes the plain value, or the labelled one when the comment
+says ``variant="revision F"``.
+
+A Reset cell that says ``n/a``, ``none``, ``unknown`` or ``unsupported``,
+or is empty, states no reset value and is skipped. Any other cell that is
+not a number, such as "per machine", must have its offset in ``skip=``:
+``skip=0x318000,0x31c000``. A row with a number is left out only with a
+reason, ``skip=0x30:reason-in-one-word``. Where the page states the
+specification's value and the model differs by a documented approximation,
+``expect=0x310010:0x1400`` checks the model's value instead, and the page
+says so with the *approximation* rating. An offset in ``skip=`` or
+``expect=`` that matches no row, or an ``expect=`` that repeats the page's
+value, is an error. Every skip and every pinned value is printed by
+``--coverage`` and, with its reason, logged by the test (visible under
+``--verbose``). A read taken after firmware initialisation is not a reset
+value (`Facts`_), so it does not belong in a checked cell.
+
+The test proves the page and the model agree, not that either matches the
+hardware. The rating beside a value says how well it is known: a page may
+say that every reset value of a part is the model's choice, an
+*approximation*, and the test then only keeps the page honest about it.
+
+``scripts/ci/sgi-check docs`` validates every comment (a bad word, a cell
+that is neither a number nor skipped, a variant no cell uses, a comment not
+directly above a table, or a marker the extractor dropped).
+``scripts/ci/sgi-register-tables.py --coverage``
+lists the annotated tables with the registers each checks and skips, then
+every register table still unannotated, ordered by how many of its rows
+already hold a plain reset number.
