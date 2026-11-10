@@ -46,6 +46,9 @@ continue on indented lines. Keys:
   split    32, to read a 64-bit register as two 32-bit reads, low half at
            the address and high half four above, as a bus window declared
            little-endian delivers it (default: one read of the width);
+  access   32 or 64 and so on, the width of every access, whatever the
+           Width column says, for a device whose registers are slots read
+           whole (a nine-bit register is still read as a doubleword);
   units    BASE:STRIDE:COUNT, the places that repeat for a row whose Offset
            is relative to its unit, such as "link ``+0x08``" (units=
            0x100:0x40:8 reads it at 0x108, 0x148 and so on);
@@ -97,7 +100,7 @@ PAGES = 'docs/system/mips/sgi'
 MARKER = re.compile(r'\.\.\s+sgi-registers:(.*)')
 KEYS = {'qemu', 'base', 'width', 'map', 'variant', 'skip', 'expect',
         'setup', 'select', 'skiprow', 'count', 'label', 'lane',
-        'stride', 'units', 'split', 'xor'}
+        'stride', 'units', 'split', 'xor', 'access'}
 WIDTHS = (8, 16, 32, 64)
 NO_RESET = {'', 'n/a', 'none', 'unknown', 'unsupported', '-'}
 NUMBER = re.compile(r'(?:0x[0-9a-fA-F]+|\d+)$')
@@ -188,6 +191,10 @@ def parse_marker(text):
             options['stride'] = int(options['stride'], 0)
             if options['stride'] < 1:
                 raise ValueError
+        if 'access' in options:
+            options['access'] = int(options['access'])
+            if options['access'] not in WIDTHS:
+                raise ValueError
         if 'split' in options:
             if options['split'] != '32':
                 raise ValueError
@@ -226,9 +233,9 @@ def parse_marker(text):
         options['select'] = parse_select(options['select'])
         options['skiprow'] = parse_skiprow(options['skiprow'])
     except ValueError:
-        raise Error('a marker number (base, width, count, lane, xor, stride, '
-                    'units, skip, expect, setup, select or skiprow) is not '
-                    'of the right kind')
+        raise Error('a marker number (base, width, access, count, lane, '
+                    'xor, stride, units, skip, expect, setup, select or '
+                    'skiprow) is not of the right kind')
     return options
 
 
@@ -374,7 +381,8 @@ def build(page, table, marker_text, number):
         raise Error('table has no Offset and Reset columns')
     c_name = column(header, 'name')
     c_width = column(header, 'width')
-    if c_width is None and 'width' not in options:
+    if c_width is None and 'width' not in options and \
+            'access' not in options:
         raise Error('table has no Width column and the marker no width=')
     variant = options.get('variant')
     seen_variant = variant is None
@@ -388,7 +396,9 @@ def build(page, table, marker_text, number):
         if len(cells) <= need:
             raise Error(f'{page}:{line}: row has too few cells')
         per_offset = None
-        if c_width is not None:
+        if 'access' in options:
+            width = options['access']
+        elif c_width is not None:
             found = re.search(r'\d+', cells[c_width])
             width = int(found.group()) if found else None
             if '/' in cells[c_width]:
