@@ -250,7 +250,8 @@ A row such as ``0x310 + 0x1c*n`` needs ``count=4``, which reads copies
 two comments on one table apart.
 
 ``lane=4`` adds 4 bytes to every address the test reads, for registers kept in
-the low half of an eight-byte slot, and ``stride=8`` spaces the registers
+the low half of an eight-byte slot (``lane=4/0x60`` for the offsets below
+``0x60`` only), and ``stride=8`` spaces the registers
 of a range such as ``0x130``-``0x168`` by slot rather than by access width.
 ``xor=2`` XORs every offset with 2 first, for the halfword registers behind
 a Bridge, which places a narrow access by address lane. The offsets in the

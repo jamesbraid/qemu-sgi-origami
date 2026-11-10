@@ -422,6 +422,13 @@ class RegisterTablesTest(unittest.TestCase):
         _, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
         self.assertEqual(len(errors), 1)
 
+    def test_lane_may_stop_at_a_limit(self):
+        marker = MARKER.replace('width=64', 'width=64 lane=4/0x20')
+        cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
+        self.assertEqual(errors, [])
+        regs = {r['offset']: r['address'] for r in cases[0]['registers']}
+        self.assertEqual((regs['0x0'], regs['0x20']), ('0x1004', '0x1020'))
+
     def test_bios_blank_reaches_the_case(self):
         marker = MARKER.replace('width=64', 'width=64 bios=blank')
         cases, _, _, errors = scan(PAGE, marker=marker, skip='0x38')
