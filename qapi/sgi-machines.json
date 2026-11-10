@@ -2670,16 +2670,22 @@
 #
 # @media-io: a MediaIO serial line, bound by its device's own property
 #
+# @l2-link: the link from one C-brick's L1 to a rack L2, bound by the
+#     machine's ``controller-l2-chardev`` list property.  Only C-brick
+#     L1s are listed.  A launch with no L2 peer to attach leaves the
+#     chardev unbacked and the machine runs; a consumer that does not
+#     know this kind ignores it
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelSerialKind',
   'data': ['console', 'system-controller', 'second-port', 'tablet',
-           'record', 'unconnected', 'bring-up', 'media-io'] }
+           'record', 'unconnected', 'bring-up', 'media-io', 'l2-link'] }
 
 ##
 # @SGIModelSerialLine:
 #
-# One serial line a launch backs.
+# One serial line a launch can back.
 #
 # @name: the line's stable name, which a launcher names its console by
 #
@@ -2694,7 +2700,20 @@
 #     line from; absent for a line bound by @property
 #
 # @property: the machine or device property that binds the line's
-#     chardev, for one that is not a ``-serial``
+#     chardev, for one that is not a ``-serial``.  An @l2-link line
+#     names a slot of a list property, ``controller-l2-chardev.N``,
+#     which a launch sets as
+#     ``controller-l2-chardev.N=CONTROLLER=CHARDEV``, numbering N over
+#     the entries it actually sets
+#
+# @controller: position in the owning topology's @controllers list of
+#     the controller whose L1 the line reaches; present on an @l2-link
+#     line
+#
+# @setting: the @SGIModelOfferingSetting that fits this line, which a
+#     launch backs only when it turns that setting on; absent when the
+#     line has no setting of its own (an @l2-link line is then listed
+#     for every launch, and left unbacked when there is no L2 peer)
 #
 # Since: 11.2
 ##
@@ -2704,7 +2723,9 @@
             'kind': 'SGIModelSerialKind',
             'node': 'uint32',
             '*serial': 'uint32',
-            '*property': 'str' } }
+            '*property': 'str',
+            '*controller': 'uint32',
+            '*setting': 'str' } }
 
 ##
 # @SGIModelBoardFit:
@@ -2794,10 +2815,14 @@
 # @global: a ``-global DEVICE.PROPERTY=`` setting
 # @cpu: a ``-cpu`` property of the offering's processor part
 #
+# @serial-lines: no property of its own: a boolean that turns on the
+#     offering's @serial-lines whose @setting names it, each of which
+#     carries the property that binds it
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelSettingTargetKind',
-  'data': ['machine', 'global', 'cpu'] }
+  'data': ['machine', 'global', 'cpu', 'serial-lines'] }
 
 ##
 # @SGIModelSettingForm:
@@ -2845,25 +2870,25 @@
 #
 # @kind: the target
 #
-# @property: the property's name.  For a @cpu target it is the
-#     suffix of the CPU property: the offering's processor part
-#     (@SGIModelOffering @processor @part) in lower case, a hyphen and
-#     this name give the QEMU property, so ``prid`` on an R12000
-#     offering is ``r12000-prid`` and ``fpu-id`` is ``r12000-fpu-id``,
-#     set as ``-cpu MODEL,r12000-prid=VALUE`` with MODEL the
-#     offering's @default-cpu-model
+# @property: the property's name; absent for @serial-lines.  For a
+#     @cpu target it is the suffix of the CPU property: the offering's
+#     processor part (@SGIModelOffering @processor @part) in lower
+#     case, a hyphen and this name give the QEMU property, so ``prid``
+#     on an R12000 offering is ``r12000-prid`` and ``fpu-id`` is
+#     ``r12000-fpu-id``, set as ``-cpu MODEL,r12000-prid=VALUE`` with
+#     MODEL the offering's @default-cpu-model
 #
 # @device: the QOM type, for @global only
 #
-# @form: how the value is written
+# @form: how the value is written; absent for @serial-lines
 #
 # Since: 11.2
 ##
 { 'struct': 'SGIModelSettingTarget',
   'data': { 'kind': 'SGIModelSettingTargetKind',
-            'property': 'str',
+            '*property': 'str',
             '*device': 'str',
-            'form': 'SGIModelSettingForm' } }
+            '*form': 'SGIModelSettingForm' } }
 
 ##
 # @SGIModelSettingDefinition:

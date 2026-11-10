@@ -1208,15 +1208,56 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
         raise CompileError("qtest-only PIC profile cannot be exported as a product")
 
 
+def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
+                   line) -> list[dict]:
+    """The link from each C-brick L1 to a rack L2, one per L1, bound by
+    the machine's controller-l2-chardev list: the L1 of a controller that
+    no module owns and exactly one of @nodes names (a module-owned L1
+    serves several boards and takes no link; for the Origin 3900 that
+    rests on the topology data, not on a manual). Only C-brick L1s are
+    listed; the expansion bricks' L1s also reach the L2 but have no line.
+
+    The owner's guides make an L2 included with every tall rack that
+    holds C-bricks, optional in a short rack, and required whenever the
+    rack has an R-brick (007-4311-002 p. 42; 007-4240-002 p. 6, 15, 75,
+    82-83; 007-4264-002 p. 24, 26, 96; 007-4653-001 p. 116 for the Origin
+    3900). Rack height is not in the topology data, so "no routers" stands
+    in for the short rack. It matches every current offering (the
+    routerless ones are the Origin 3200 and Onyx 3200 short racks) but is
+    a proxy, to be revisited if a routerless tall rack is added. Only the
+    optional links name the l2-controller setting that fits them."""
+    optional = not topology["routers"]
+    lines = []
+    for index, controller in enumerate(topology["controllers"]):
+        if controller["kind"] != "L1" or controller.get("owner") == "module":
+            continue
+        owned = [node for node in
+                 topology["modules"][controller["module_index"]]["nodes"]
+                 if node in nodes]
+        if len(owned) != 1:
+            continue
+        node = owned[0]
+        found = line(
+            "l2-link" if node == 0 else f"l2-link-node{node}",
+            "l2" if node == 0 else f"l2_node{node}", "l2-link", node=node,
+            prop=f"controller-l2-chardev.{len(lines)}")
+        found["controller"] = index
+        if optional:
+            found["setting"] = "l2-controller"
+        lines.append(found)
+    return lines
+
+
 def _serial_lines_for(topology: dict, machine_name: str,
                       launch_recipe: str | None, consoles: list[dict],
-                      tablet: bool) -> list[dict]:
+                      tablet: bool, nodes: tuple[int, ...]) -> list[dict]:
     """Every serial line a launch backs, with its -serial position, as
     the machines read them: the console, the system controller's, the
     second IOC3 port (the tablet's, where a launch drives one), and the
     lines the machine's transmit records come out on. A line the machine
     reads that a launch leaves unconnected is listed too, so the
-    positions are complete."""
+    positions are complete. The Origin 3000 C-brick L1s' links to a rack
+    L2 follow, bound by property rather than by position."""
     generation = topology["generation"]
 
     def line(name, chardev, kind, node=0, serial=None, prop=None):
@@ -1253,6 +1294,8 @@ def _serial_lines_for(topology: dict, machine_name: str,
                                   f"l1_node{c['node']}",
                                   "system-controller", node=c["node"],
                                   serial=c["line"]))
+        if machine_name == "origin3000":
+            lines += _l2_link_lines(topology, nodes, line)
         return lines
     # SN0: node n's block starts at 6n (IOC3 A and B, the system
     # controller's AUX, the bring-up UART, the two records).
@@ -1535,7 +1578,7 @@ def _offerings_for(model: dict, topology: dict,
                        if "audio" in DEVICES[machine_name] else {})},
                 "serial-lines": _serial_lines_for(
                     topology, machine_name, launch_recipe, consoles,
-                    DEVICES[machine_name]["tablet"]),
+                    DEVICES[machine_name]["tablet"], tuple(row["nodes"])),
             })
             offering = offerings[-1]
             settings, groups = offering_settings(

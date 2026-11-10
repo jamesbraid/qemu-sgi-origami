@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "f3afaf5ab58b882054933d24443df302c9b22c7b05cfa25f198a0cf7867f7cef"
+    "0f91423d5eb37ec0840ec819e02a85d9475cfedb592f2a34fbb2ee05d8fb6637"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -712,6 +712,68 @@ class StorageTests(unittest.TestCase):
                     self.assertEqual(row["clock"]["icount-shifts"], [3])
                     self.assertEqual(row["clock"]["default-icount-shift"], 3)
 
+    def test_l2_links_are_one_line_per_cbrick_l1(self):
+        """Each Origin 3000 C-brick L1 has a link line to a rack L2,
+        bound by a controller-l2-chardev slot, and the Cx-brick's
+        module-owned L1 has none. The link names the l2-controller
+        setting exactly where the L2 is optional: no R-brick, which is
+        the Origin 3200 and Onyx 3200. A link without that setting is
+        always present."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        topologies = {item["name"]: item for item in catalogue["topologies"]}
+        for row in catalogue["offerings"]:
+            links = [line for line in row["serial-lines"]
+                     if line["kind"] == "l2-link"]
+            with self.subTest(offering=row["id"]):
+                if row["product"] != "origin3000" or \
+                        row["topology"].startswith("origin3900"):
+                    self.assertEqual(links, [])
+                    continue
+                topology = topologies[row["topology"]]
+                controllers = [index for index, controller in
+                               enumerate(topology["controllers"])
+                               if controller["id"].startswith("c")
+                               and controller["id"].endswith("-l1")]
+                self.assertEqual([line["controller"] for line in links],
+                                 controllers)
+                self.assertEqual([line["property"] for line in links],
+                                 [f"controller-l2-chardev.{i}"
+                                  for i in range(len(links))])
+                self.assertEqual([line["node"] for line in links],
+                                 list(range(len(links))))
+                self.assertEqual(len({line["chardev"] for line in links}),
+                                 len(links))
+                for line in links:
+                    self.assertNotIn("serial", line)
+                optional = not topology["routers"]
+                self.assertEqual(
+                    [line.get("setting") for line in links],
+                    ["l2-controller" if optional else None] * len(links))
+                self.assertEqual(
+                    "l2-controller" in [item["name"]
+                                        for item in row["settings"]],
+                    optional)
+        definition = next(item for item in catalogue["setting-definitions"]
+                          if item["name"] == "l2-controller")
+        self.assertEqual(definition["kind"], "boolean")
+        self.assertEqual(definition["target"], {"kind": "serial-lines"})
+        # A serial-lines setting is offered exactly where a line names
+        # it, and every line's setting is one its offering offers.
+        for row in catalogue["offerings"]:
+            offered = {item["name"] for item in row["settings"]
+                       if next(d for d in catalogue["setting-definitions"]
+                               if d["name"] == item["name"])["target"][
+                                   "kind"] == "serial-lines"}
+            named = {line["setting"] for line in row["serial-lines"]
+                     if "setting" in line}
+            self.assertEqual(offered, named, row["id"])
+        optional_offerings = {row["topology"] for row in catalogue["offerings"]
+                              if any("setting" in line
+                                     for line in row["serial-lines"])}
+        self.assertEqual(optional_offerings, {
+            "onyx3000", "origin3200", "origin3200-two-ibricks"})
+
     def test_board_slots_list_the_baseio_slot_and_the_empty_xio_slots(self):
         """An Origin 2000 or Onyx 2 topology lists its BaseIO slot, whose
         card a machine property picks (a plain BaseIO may be built as the
@@ -1281,6 +1343,8 @@ class FuelTests(unittest.TestCase):
         bedrock = ["board-id-word", "bedrock-revision", "l1-type-code",
                    "l1-revision"]
         records = ["chassis-eeprom", "board-eeprom"]
+        routerless = {item["name"] for item in catalogue["topologies"]
+                      if not item["routers"]}
         expected = {
             "fuel": bedrock + ["ioc3-subsystem-id", "prid"] + records +
                     ["fuel-mac-eeprom"],
@@ -1306,6 +1370,10 @@ class FuelTests(unittest.TestCase):
             want = list(expected[row["product"]])
             if row["processor"]["part"] == "R12000" and "prid" in want:
                 want.insert(want.index("prid") + 1, "fpu-id")
+            if row["product"] == "origin3000" and \
+                    row["topology"] in routerless:
+                # The L2 is optional only where no R-brick needs one.
+                want.append("l2-controller")
             if "controller-brick-serial" in names:
                 # The Origin 300 expansion topologies add their controllers.
                 want += ["controller-brick-serial",

@@ -14,6 +14,7 @@
 #include "libqtest.h"
 #include "sgi-o2-product-fixture.h"
 #include "sgi-test.h"
+#include "sgi-l1-l2-stub.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qobject/qstring.h"
@@ -265,13 +266,47 @@ static void check_networks(QDict *o, const char *machine, const char *out,
     }
 }
 
+/*
+ * The offering's processor part, CPU count and memory, as the catalogue
+ * lists them.
+ */
+static void append_cpu_memory(GPtrArray *args, QDict *o)
+{
+    int64_t nodes = qdict_get_int(o, "nodes");
+    QDict *memory = qdict_get_qdict(o, "memory-per-node-mib");
+    int64_t ram_mib;
+
+    g_ptr_array_add(args, g_strdup("-cpu"));
+    /* The bare part: the O2+ board fits its module's values itself. */
+    g_ptr_array_add(args, g_strdup(qdict_get_str(o, "default-cpu-model")));
+    g_ptr_array_add(args, g_strdup("-smp"));
+    g_ptr_array_add(args, g_strdup_printf("%" PRId64,
+                                          qdict_get_int(o, "smp")));
+    /*
+     * Over 16 GiB (the Origin 3800 offerings) a builder host cannot back one
+     * plain -m reservation, so those launches map their RAM unreserved.
+     */
+    ram_mib = qdict_get_int(memory, "default") * nodes;
+    if (ram_mib > 16 * 1024) {
+        g_autofree char *ram =
+            g_strdup_printf(SGI_UNRESERVED_RAM("%" PRId64 "M"), ram_mib);
+        g_auto(GStrv) words = g_strsplit(ram, " ", 0);
+
+        for (char **w = words; *w; w++) {
+            g_ptr_array_add(args, g_strdup(*w));
+        }
+    } else {
+        g_ptr_array_add(args, g_strdup("-m"));
+        g_ptr_array_add(args, g_strdup_printf("%" PRId64 "M", ram_mib));
+    }
+}
+
 static void test_launch(const void *opaque)
 {
     const Launch *l = opaque;
     QDict *o = l->offering;
     const char *topology = qdict_get_str(o, "topology");
     int64_t nodes = qdict_get_int(o, "nodes");
-    QDict *memory = qdict_get_qdict(o, "memory-per-node-mib");
     QDict *graphics = qdict_get_qdict(topology_record(topology), "graphics");
     QDict *machine_properties = graphics ?
         qdict_get_qdict(graphics, "machine-properties") : NULL;
@@ -297,7 +332,6 @@ static void test_launch(const void *opaque)
     g_autofree char *out = NULL, *err = NULL;
     const QListEntry *e;
     int status;
-    int64_t ram_mib;
     O2ProductTest product = { 0 };
 
     if (ip32) {
@@ -348,29 +382,7 @@ static void test_launch(const void *opaque)
     }
     g_ptr_array_add(args, g_strdup("-M"));
     g_ptr_array_add(args, g_strdup(machine->str));
-    g_ptr_array_add(args, g_strdup("-cpu"));
-    /* The bare part: the O2+ board fits its module's values itself. */
-    g_ptr_array_add(args, g_strdup(qdict_get_str(o, "default-cpu-model")));
-    g_ptr_array_add(args, g_strdup("-smp"));
-    g_ptr_array_add(args, g_strdup_printf("%" PRId64,
-                                          qdict_get_int(o, "smp")));
-    /*
-     * Over 16 GiB (the Origin 3800 offerings) a builder host cannot back one
-     * plain -m reservation, so those launches map their RAM unreserved.
-     */
-    ram_mib = qdict_get_int(memory, "default") * nodes;
-    if (ram_mib > 16 * 1024) {
-        g_autofree char *ram =
-            g_strdup_printf(SGI_UNRESERVED_RAM("%" PRId64 "M"), ram_mib);
-        g_auto(GStrv) words = g_strsplit(ram, " ", 0);
-
-        for (char **w = words; *w; w++) {
-            g_ptr_array_add(args, g_strdup(*w));
-        }
-    } else {
-        g_ptr_array_add(args, g_strdup("-m"));
-        g_ptr_array_add(args, g_strdup_printf("%" PRId64 "M", ram_mib));
-    }
+    append_cpu_memory(args, o);
     for (const char *const *word = (const char *const[]) {
              "-nodefaults", "-display", "none", "-S", "-accel", "qtest",
              "-qmp", "stdio", NULL }; *word; word++) {
@@ -404,6 +416,93 @@ static void test_launch(const void *opaque)
         }
         g_assert_null(strstr(out, "\"error\""));
     }
+}
+
+/*
+ * The l2-link lines of an offering, applied as a launcher would with an L2
+ * peer for each: every C-brick L1 reaches the peer on its own line and no
+ * other. An optional link (the Origin 3200's) is backed as if its setting
+ * were on.
+ */
+static void test_l2_links(const void *opaque)
+{
+    const Launch *l = opaque;
+    QDict *o = l->offering;
+    g_autoptr(GString) machine = g_string_new(
+        qdict_get_str(o, "machine-options"));
+    g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) stubs = g_ptr_array_new();
+    g_autoptr(GPtrArray) paths = g_ptr_array_new_with_free_func(g_free);
+    g_autofree char *command = NULL;
+    /* Any image will do: the L1s connect before the PROM runs. */
+    g_autofree char *prom = make_store(qdict_get_str(o, "id"), "prom",
+                                       1476264);
+    const QListEntry *e;
+    QTestState *qts;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "serial-lines"), e) {
+        QDict *line = qobject_to(QDict, qlist_entry_obj(e));
+        L2Stub *stub;
+
+        if (!g_str_equal(qdict_get_str(line, "kind"), "l2-link")) {
+            continue;
+        }
+        stub = l2_stub_listen();
+        g_ptr_array_add(stubs, stub);
+        g_ptr_array_add(paths, g_strdup_printf(
+            "/machine/node%" PRId64 "/l1", qdict_get_int(line, "node")));
+        g_ptr_array_add(args, g_strdup("-chardev"));
+        g_ptr_array_add(args, g_strdup_printf(
+            "socket,id=%s,path=%s", qdict_get_str(line, "chardev"),
+            stub->path));
+        g_string_append_printf(machine, ",%s=%" PRId64 "=%s",
+                               qdict_get_str(line, "property"),
+                               qdict_get_int(line, "controller"),
+                               qdict_get_str(line, "chardev"));
+    }
+    g_assert_cmpuint(stubs->len, >, 0);
+    g_ptr_array_add(args, g_strdup("-M"));
+    g_ptr_array_add(args, g_strdup(machine->str));
+    append_cpu_memory(args, o);
+    g_ptr_array_add(args, g_strdup("-bios"));
+    g_ptr_array_add(args, g_strdup(prom));
+    g_ptr_array_add(args, g_strdup("-nodefaults"));
+    g_ptr_array_add(args, g_strdup("-display"));
+    g_ptr_array_add(args, g_strdup("none"));
+    g_ptr_array_add(args, NULL);
+    command = g_strjoinv(" ", (char **)args->pdata);
+    qts = qtest_init(command);
+    for (guint i = 0; i < stubs->len; i++) {
+        l2_stub_accept(g_ptr_array_index(stubs, i));
+    }
+    for (guint i = 0; i < stubs->len; i++) {
+        const char *path = g_ptr_array_index(paths, i);
+
+        for (unsigned n = 0; n < 10000 &&
+             !qtest_qom_get_bool(qts, path, "l2-link-up"); n++) {
+            g_usleep(1000);
+        }
+        g_assert_true(qtest_qom_get_bool(qts, path, "l2-link-up"));
+    }
+    qtest_quit(qts);
+    unlink(prom);
+    for (guint i = 0; i < stubs->len; i++) {
+        l2_stub_free(g_ptr_array_index(stubs, i));
+    }
+}
+
+/* How many l2-link lines the offering lists. */
+static unsigned offering_l2_links(QDict *o)
+{
+    const QListEntry *e;
+    unsigned count = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "serial-lines"), e) {
+        QDict *line = qobject_to(QDict, qlist_entry_obj(e));
+
+        count += g_str_equal(qdict_get_str(line, "kind"), "l2-link");
+    }
+    return count;
 }
 
 /* Whether this binary builds @product, so a configured-out one is skipped. */
@@ -479,6 +578,18 @@ int main(int argc, char **argv)
             g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
                          '-');
             qtest_add_data_func(path, l, test_launch);
+        }
+        /* Every offering that lists links launches with them all backed. */
+        if (offering_l2_links(o)) {
+            Launch *l = g_new0(Launch, 1);
+            g_autofree char *path = g_strdup_printf(
+                "/sgi-catalogue-launch/%s/l2-links", id);
+
+            l->offering = o;
+            g_ptr_array_add(launches, l);
+            g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
+                         '-');
+            qtest_add_data_func(path, l, test_l2_links);
         }
         if (qlist_size(qdict_get_qlist(o, "networks")) > 1) {
             Launch *l = g_new0(Launch, 1);
