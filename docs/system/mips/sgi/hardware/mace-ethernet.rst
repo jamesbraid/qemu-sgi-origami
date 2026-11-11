@@ -170,6 +170,17 @@ the station address, the broadcast address in modes 1 to 3, all multicast
 in mode 2 and everything in mode 3. In mode 1 a multicast frame is dropped
 and ``LOG_UNIMP`` logged, since the hash is not modelled.
 
+The filter has two physical station addresses, a 64-bit hashed multicast
+mask and the broadcast address :src:`sgi-mace-2.0-spec p. 77`, *established*. A destination
+is multicast when the least significant bit of its first byte is 1. The hash
+index is the six most significant bits of a 32-bit CRC computed over the
+48-bit destination address, and a set bit at that index in the mask passes the
+packet. The mask does not filter exactly, so software must still reject
+unwanted multicast addresses itself :src:`sgi-mace-2.0-spec p. 77`, *established*. The
+register list calls ``0xa8`` the secondary physical or multicast station
+address and lists the incoming message queue registers at ``0x80`` to ``0x98``
+as reserved read-only :src:`sgi-mace-2.0-spec p. 70`, *established*.
+
 Station address
 ---------------
 
@@ -264,7 +275,11 @@ Each slot starts with a command word :src:`sgi-mace-2.0-spec p. 79`:
 15:0 length minus one, 22:16 offset of the first data byte in the slot
 (8 or more; 0 means the data starts at the first concatenation pointer),
 23 stop on abort, 24 interrupt when sent, 27:25 valid flags for three
-concatenation pointers. A pointer word holds an address in bits 31:3 and
+concatenation pointers. Message headers always start on a 128-byte boundary. The
+inline data is back-filled so that its end is on an 8-byte boundary, even for a
+packet with no pointers, and the pointer words are optional and may carry packet
+data when no pointer uses them. The pointers address data inside 4 KiB aligned
+buffers :src:`sgi-mace-2.0-spec p. 78`, *established*. A pointer word holds an address in bits 31:3 and
 a length minus one in 47:32. After transmission the first word is
 overwritten with a status vector: length in 15:0, success in bit 23 and
 done in bit 63.
