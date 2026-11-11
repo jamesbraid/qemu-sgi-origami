@@ -4239,12 +4239,14 @@ static const LoopDisk inquiry_disks[ARRAY_SIZE(sgi_inquiry_cases)][1] = {
     { INQUIRY_DISK(0) },
     { INQUIRY_DISK(1) },
     { INQUIRY_DISK(2) },
+    { INQUIRY_DISK(3) },
 };
 
 static const LoopConfig inquiry_configs[ARRAY_SIZE(sgi_inquiry_cases)] = {
     { .disks = inquiry_disks[0], .ndisks = 1 },
     { .disks = inquiry_disks[1], .ndisks = 1 },
     { .disks = inquiry_disks[2], .ndisks = 1 },
+    { .disks = inquiry_disks[3], .ndisks = 1 },
 };
 
 static void test_inquiry_data(void *obj, void *data, QGuestAllocator *alloc)

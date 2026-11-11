@@ -35,11 +35,13 @@ typedef struct SgiInquiryCase {
 /*
  * The expected fields are the 48 bytes from 8 to 55 as concatenated
  * literals: vendor (8), product (16), revision (4), vendor specific (20).
- * The first case's values are short and space padded; the second's are as
- * wide as their fields, with an explicit byte string that includes 0x00
- * and 0xff (in octal, so no escape swallows the next character) and a
- * peripheral qualifier and type in byte 0; the third sets no inquiry-
- * property, so it shows scsi-hd's identity and zeros in bytes 36 to 55.
+ * The first case's identity values are short and space padded, its vendor
+ * specific text NUL filled; the second's are as wide as their fields, with
+ * an explicit byte string that includes 0x00 and 0xff (in octal, so no
+ * escape swallows the next character) and a peripheral qualifier and type
+ * in byte 0; the third keeps spaces written in a hex: value; the fourth
+ * sets no inquiry- property, so it shows scsi-hd's identity and zeros in
+ * bytes 36 to 55.
  */
 static const SgiInquiryCase sgi_inquiry_cases[] = {
     {
@@ -50,7 +52,8 @@ static const SgiInquiryCase sgi_inquiry_cases[] = {
         .serial = "SN-0123456789",
         .byte0 = 0x00,
         .fields = "ACME    " "GENERIC-DISK    " "1.2 "
-                  "SN-0123456789       ",
+                  "SN-0123456789"
+                  "\0\0\0\0\0\0\0",
     },
     {
         .name = "hex",
@@ -63,6 +66,16 @@ static const SgiInquiryCase sgi_inquiry_cases[] = {
         .fields = "VENDOR01" "0123456789ABCDEF" "ABCD"
                   "\000\377\001\200"
                   "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
+    },
+    {
+        /* Spaces in a hex: value are the caller's and stay spaces. */
+        .name = "hex-spaces",
+        .props = "ver=9,serial=S1,inquiry-vendor-specific=hex:5331202020",
+        .serial = "S1",
+        .byte0 = 0x00,
+        .fields = "QEMU    " "QEMU HARDDISK   " "9   "
+                  "S1   "
+                  "\0\0\0\0\0\0\0\0\0\0\0\0\0\0\0",
     },
     {
         .name = "default",

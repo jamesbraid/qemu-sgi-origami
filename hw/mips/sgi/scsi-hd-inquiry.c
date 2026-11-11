@@ -102,9 +102,11 @@ static InquirySettings *inquiry_settings_of(const SCSIDevice *dev)
 /*
  * Parse the text of inquiry-vendor-specific into the 20 bytes. "hex:"
  * followed by an even number of hex digits gives raw bytes, padded with
- * NULs. Anything else is ASCII, left aligned and padded with spaces as SPC
- * pads its ASCII data fields. An empty string leaves the field to
- * scsi-hd's (zeros).
+ * NULs. Anything else is ASCII, left aligned with the unused bytes filled
+ * with NULs. SPC space-pads the vendor, product and revision fields but
+ * sets no padding rule for bytes 36 to 55, and software that reads them as
+ * a NUL-terminated string needs the NUL. An empty string leaves the field
+ * to scsi-hd's (zeros).
  */
 static bool inquiry_parse_vendor_specific(const char *text,
                                           InquirySettings *s, Error **errp)
@@ -149,7 +151,7 @@ static bool inquiry_parse_vendor_specific(const char *text,
                 return false;
             }
         }
-        memset(bytes, ' ', sizeof(bytes));
+        memset(bytes, 0, sizeof(bytes));
         memcpy(bytes, text, len);
         s->vendor_specific_set = len != 0;
     }
@@ -245,7 +247,7 @@ static void inquiry_instance_init(Object *obj)
                                inquiry_get_vendor_specific,
                                inquiry_set_vendor_specific, NULL, s);
     object_property_set_description(obj, prop->name,
-        "INQUIRY bytes 36 to 55: up to 20 ASCII characters, space padded, "
+        "INQUIRY bytes 36 to 55: up to 20 ASCII characters, NUL filled, "
         "or hex: and up to 20 bytes as hex digits, NUL padded");
     prop = object_property_add(obj, "inquiry-peripheral-qualifier", "uint8",
                                inquiry_get_u8, inquiry_set_qualifier, NULL,

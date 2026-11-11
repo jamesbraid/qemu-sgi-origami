@@ -81,9 +81,10 @@ the INQUIRY data, and the type adds three.
        page. Not written to the standard INQUIRY data.
    * - ``inquiry-vendor-specific``
      - 36 to 55
-     - A string. Up to 20 printable ASCII characters (0x20 to 0x7e), left aligned and padded with
-       spaces; or ``hex:`` followed by up to 20 bytes as hex digit pairs,
-       padded with ``0x00``. Empty or unset leaves the bytes at zero.
+     - A string. Up to 20 printable ASCII characters (0x20 to 0x7e), left
+       aligned and filled out with ``0x00``; or ``hex:`` followed by up to
+       20 bytes as hex digit pairs, padded with ``0x00``. Empty or unset
+       leaves the bytes at zero.
    * - ``inquiry-peripheral-qualifier``
      - 0, bits 7:5
      - 0 to 7. Default 0.
@@ -101,9 +102,35 @@ properties of a realized device.
 
 SPC pads an ASCII data field with spaces, so the revision level is padded
 with spaces here, where ``scsi-hd`` pads it with NUL bytes. The
-vendor-specific area has no SPC padding rule; the type pads text with
-spaces and an explicit byte string with zeros, so a caller wanting
-zero-padded text writes it as ``hex:``.
+vendor-specific area has no SPC padding rule, and the type fills the
+unused bytes of both ASCII text and an explicit ``hex:`` string with
+``0x00``. A ``hex:`` value is byte-exact: the model returns its bytes as
+given, and a caller who wants spaces writes ``20``.
+
+The NUL fill is for a disk-array driver that compares INQUIRY bytes 36
+onward as a NUL-terminated string against a short serial number. With the
+unused bytes space padded, the byte after the serial is a space, the
+comparison fails, and the driver decides the disks have been reordered.
+Earlier versions of this type space padded ASCII text, so an
+``inquiry-vendor-specific`` written as plain text now has ``0x00`` where it
+had ``0x20``.
+
+How well each part is known:
+
+- *established*: SPC-3 gives bytes 36 to 55 as vendor specific, and sets
+  no padding rule for them (:src:`t10-spc3-08-309r1 p. 158`). The rule
+  that unused bytes of a left-aligned ASCII data field are filled with
+  spaces applies to the fields that are described as left-aligned ASCII
+  data, which are the vendor, product and revision fields
+  (:src:`t10-spc3-08-309r1 p. 52`). The same clause lets an ASCII data
+  field be terminated with NUL bytes.
+- *software expectation*: the driver above needs byte 44 to be NUL on the
+  drives it was written for. With space padding it logged that the disks
+  were reordered and reinstalled its configuration during metadata writes;
+  with NUL fill the message stopped in the same guest runs.
+- *unknown*: what bytes 44 to 55 held on real drives sold with that
+  software. A capture of such a drive's standard INQUIRY data would
+  settle it.
 
 What stays as in scsi-hd
 ========================
@@ -179,8 +206,9 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-scsi-inquiry-test.h`` has cases for ASCII, hex with
-a qualifier and type, and defaults. It reads the standard INQUIRY data
+``tests/qtest/sgi-scsi-inquiry-test.h`` has cases for ASCII (NUL filled
+after the text), hex with a qualifier and type (byte-exact), and
+defaults. It reads the standard INQUIRY data
 with allocation lengths 12, 36, 40, 56 and 96, with CMDDT set, and with a
 nonzero page code and EVPD clear, and checks bytes 0, 8 to 15, 16 to
 31, 32 to 35 and 36 to 55, the padding, the zeros past byte 55 and the
