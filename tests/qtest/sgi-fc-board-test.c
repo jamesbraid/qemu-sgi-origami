@@ -199,6 +199,15 @@ static void test_identity(gconstpointer data)
         g_assert_cmphex(rd32(qts, CFG0(f->base, dev)), ==, AIC_ID_PAIR);
         g_assert_cmphex(rd32(qts, CFG0(f->base, dev) + 8), ==,
                         AIC_CLASS_REVISION);
+        /* A BAR walk that stops at a zero BAR must get past BAR 1 and 2. */
+        for (unsigned bar = 0; bar < 4; bar++) {
+            qtest_writel(qts, CFG0(f->base, dev) + 0x10 + 4 * bar,
+                         0xffffffff);
+        }
+        g_assert_cmphex(rd32(qts, CFG0(f->base, dev) + 0x10), ==, 0xffffff01);
+        g_assert_cmphex(rd32(qts, CFG0(f->base, dev) + 0x14), ==, 0xfffff004);
+        g_assert_cmphex(rd32(qts, CFG0(f->base, dev) + 0x18), ==, 0xffffffff);
+        g_assert_cmphex(rd32(qts, CFG0(f->base, dev) + 0x1c), ==, 0xffffff01);
     }
     g_assert_cmphex(rd32(qts, CFG0(f->base, 2)), ==, 0xffffffff);
     qtest_quit(qts);

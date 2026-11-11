@@ -38,9 +38,16 @@ OBJECT_DECLARE_SIMPLE_TYPE(AIC1160State, AIC1160)
 #define AIC1160_DEVICE_ID           0x1160
 #define AIC1160_WINDOW_SIZE         0x100
 
-/* The chip registers are I/O BAR 0 and the sequencer memory I/O BAR 3. */
+/*
+ * The chip registers are I/O BAR 0 and the sequencer memory I/O BAR 3. BAR 1
+ * is a 64-bit memory BAR whose upper dword is BAR 2, and the chip has a
+ * 64 KiB expansion ROM. Nothing here is known to use either.
+ */
 #define AIC1160_BAR_REGS            0
+#define AIC1160_BAR_MEM             1
 #define AIC1160_BAR_SEQ_MEM         3
+#define AIC1160_MEM_SIZE            0x1000
+#define AIC1160_ROM_SIZE            0x10000
 
 /* A device-config register of the chip; bit 2 enables 64-bit addressing. */
 #define AIC1160_CFG_DEVICE          0x40
@@ -230,6 +237,8 @@ struct AIC1160State {
 
     MemoryRegion regs;
     MemoryRegion seq_mem;
+    MemoryRegion mem;
+    MemoryRegion rom;
     SCSIBus bus;
 
     uint8_t seq_ctl;
@@ -786,6 +795,36 @@ static void aic1160_seq_mem_write(void *opaque, hwaddr addr, uint64_t val,
         s->done_lap = 0;
     }
 }
+
+/*
+ * The 4 KiB memory BAR and the expansion ROM have no known contents or
+ * registers. An access is logged and reads all ones, what a PCI read nothing
+ * answers returns.
+ */
+static uint64_t aic1160_unimp_read(void *opaque, hwaddr addr, unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP, "aic1160: %s read of %u bytes at 0x%" HWADDR_PRIx
+                  " is not modelled\n", (const char *)opaque, size, addr);
+    return MAKE_64BIT_MASK(0, size * 8);
+}
+
+static void aic1160_unimp_write(void *opaque, hwaddr addr, uint64_t val,
+                                unsigned size)
+{
+    qemu_log_mask(LOG_UNIMP, "aic1160: %s write of %u bytes at 0x%"
+                  HWADDR_PRIx " is not modelled\n", (const char *)opaque,
+                  size, addr);
+}
+
+static const MemoryRegionOps aic1160_unimp_ops = {
+    .read = aic1160_unimp_read,
+    .write = aic1160_unimp_write,
+    .endianness = DEVICE_LITTLE_ENDIAN,
+    .valid = {
+        .min_access_size = 1,
+        .max_access_size = 4,
+    },
+};
 
 static const MemoryRegionOps aic1160_seq_mem_ops = {
     .read = aic1160_seq_mem_read,
@@ -1380,6 +1419,22 @@ static void aic1160_realize(PCIDevice *dev, Error **errp)
                      &s->regs);
     pci_register_bar(dev, AIC1160_BAR_SEQ_MEM, PCI_BASE_ADDRESS_SPACE_IO,
                      &s->seq_mem);
+    memory_region_init_io(&s->mem, OBJECT(s), &aic1160_unimp_ops,
+                          (void *)"memory BAR", "aic1160-mem",
+                          AIC1160_MEM_SIZE);
+    pci_register_bar(dev, AIC1160_BAR_MEM,
+                     PCI_BASE_ADDRESS_SPACE_MEMORY |
+                     PCI_BASE_ADDRESS_MEM_TYPE_64, &s->mem);
+    /*
+     * With a romfile, or with rombar=0, the PCI core owns the ROM slot after
+     * realize. Without one, a placeholder gives the slot the chip's size.
+     */
+    if (!dev->romfile && dev->rom_bar) {
+        memory_region_init_io(&s->rom, OBJECT(s), &aic1160_unimp_ops,
+                              (void *)"expansion ROM", "aic1160-rom",
+                              AIC1160_ROM_SIZE);
+        pci_register_bar(dev, PCI_ROM_SLOT, 0, &s->rom);
+    }
 
     QTAILQ_INIT(&s->requests);
     scsi_bus_init_named(&s->bus, sizeof(s->bus), DEVICE(dev),

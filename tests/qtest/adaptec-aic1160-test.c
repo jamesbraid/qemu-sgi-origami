@@ -28,6 +28,7 @@
 #define AIC_SLOT            4
 
 #define BAR_REGS            0
+#define BAR_MEM             1
 #define BAR_SEQ_MEM         3
 
 #define REG_SEQ_CTL         0x00
@@ -280,27 +281,53 @@ static void test_revision_property(void *obj, void *data,
     g_assert_cmphex(qpci_config_readb(&aic->dev, PCI_REVISION_ID), ==, 1);
 }
 
-/* BAR 0 and BAR 3 are 256-byte I/O windows; no other BAR answers. */
+/*
+ * BAR 0 and BAR 3 are 256-byte I/O windows. BAR 1 is a 4 KiB 64-bit
+ * non-prefetchable memory BAR with BAR 2 as its upper dword; BARs 4 and 5 do
+ * not answer. The expansion ROM is 64 KiB.
+ */
 static void test_windows(void *obj, void *data, QGuestAllocator *alloc)
 {
     QAic1160 *aic = obj;
     QPCIDevice *dev = &aic->dev;
+    uint32_t bar[6];
 
     for (int i = 0; i < 6; i++) {
-        uint8_t off = PCI_BASE_ADDRESS_0 + 4 * i;
-        uint32_t bar;
-
-        qpci_config_writel(dev, off, 0xffffffff);
-        bar = qpci_config_readl(dev, off);
-        if (i == BAR_REGS || i == BAR_SEQ_MEM) {
-            g_assert_cmphex(bar & PCI_BASE_ADDRESS_SPACE, ==,
-                            PCI_BASE_ADDRESS_SPACE_IO);
-            g_assert_cmphex((uint32_t)(~(bar & PCI_BASE_ADDRESS_IO_MASK) + 1),
-                            ==, AIC_WINDOW_SIZE);
-        } else {
-            g_assert_cmphex(bar, ==, 0);
-        }
+        qpci_config_writel(dev, PCI_BASE_ADDRESS_0 + 4 * i, 0xffffffff);
+        bar[i] = qpci_config_readl(dev, PCI_BASE_ADDRESS_0 + 4 * i);
     }
+    g_assert_cmphex(bar[BAR_REGS], ==, 0xffffff01);
+    g_assert_cmphex(bar[BAR_MEM], ==, 0xfffff004);
+    g_assert_cmphex(bar[BAR_MEM + 1], ==, 0xffffffff);
+    g_assert_cmphex(bar[BAR_SEQ_MEM], ==, 0xffffff01);
+    g_assert_cmphex(bar[4], ==, 0);
+    g_assert_cmphex(bar[5], ==, 0);
+
+    qpci_config_writel(dev, PCI_ROM_ADDRESS, 0xfffffffe);
+    g_assert_cmphex(qpci_config_readl(dev, PCI_ROM_ADDRESS), ==, 0xffff0000);
+}
+
+static char *rom_path;
+
+/* A romfile replaces the placeholder: the core sizes the ROM from the file. */
+static void test_romfile(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QAic1160 *aic = obj;
+
+    qpci_config_writel(&aic->dev, PCI_ROM_ADDRESS, 0xfffffffe);
+    g_assert_cmphex(qpci_config_readl(&aic->dev, PCI_ROM_ADDRESS), ==,
+                    0xfffff000);
+    unlink(rom_path);
+    g_free(rom_path);
+}
+
+/* rombar=0 hides the ROM BAR. */
+static void test_rombar0(void *obj, void *data, QGuestAllocator *alloc)
+{
+    QAic1160 *aic = obj;
+
+    qpci_config_writel(&aic->dev, PCI_ROM_ADDRESS, 0xfffffffe);
+    g_assert_cmphex(qpci_config_readl(&aic->dev, PCI_ROM_ADDRESS), ==, 0);
 }
 
 /* The attach-time config writes: cache line, latency, DAC enable. */
@@ -316,10 +343,11 @@ static void test_config_space(void *obj, void *data, QGuestAllocator *alloc)
     qpci_config_writeb(dev, PCI_LATENCY_TIMER, 0xf0);
     g_assert_cmphex(qpci_config_readb(dev, PCI_CACHE_LINE_SIZE), ==, 32);
     g_assert_cmphex(qpci_config_readb(dev, PCI_LATENCY_TIMER), ==, 0xf0);
-    /* BARs 1 and 2 take the driver's zero writes and stay zero. */
+    /* The driver's zero writes to BARs 1 and 2 leave the type bits. */
     qpci_config_writel(dev, PCI_BASE_ADDRESS_1, 0);
     qpci_config_writel(dev, PCI_BASE_ADDRESS_2, 0);
-    g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_1), ==, 0);
+    g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_1), ==,
+                    PCI_BASE_ADDRESS_MEM_TYPE_64);
     g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_2), ==, 0);
 }
 
@@ -846,6 +874,25 @@ static void *disk_setup(GString *cmd_line, void *arg)
 static void *wwn_setup(GString *cmd_line, void *arg)
 {
     g_string_append_printf(cmd_line, " -global aic1160.wwn=0x%" PRIx64, WWN);
+    return arg;
+}
+
+static void *romfile_setup(GString *cmd_line, void *arg)
+{
+    GError *err = NULL;
+    int fd = g_file_open_tmp("aic1160-rom-XXXXXX", &rom_path, &err);
+    char image[0x1000] = { 0x55, 0xaa };
+
+    g_assert_no_error(err);
+    g_assert_cmpint(write(fd, image, sizeof(image)), ==, sizeof(image));
+    close(fd);
+    g_string_append_printf(cmd_line, " -global aic1160.romfile=%s", rom_path);
+    return arg;
+}
+
+static void *rombar0_setup(GString *cmd_line, void *arg)
+{
+    g_string_append(cmd_line, " -global aic1160.rombar=0");
     return arg;
 }
 
@@ -1774,6 +1821,8 @@ static void aic_register_nodes(void)
         .extra_device_opts = "addr=04.0,id=fc0",
     };
     QOSGraphTestOptions rev1_opts = { .before = revision_setup };
+    QOSGraphTestOptions romfile_opts = { .before = romfile_setup };
+    QOSGraphTestOptions rombar0_opts = { .before = rombar0_setup };
     QOSGraphTestOptions wwn_opts = { .before = wwn_setup };
     QOSGraphTestOptions disk_opts = { .before = disk_setup };
 
@@ -1787,6 +1836,8 @@ static void aic_register_nodes(void)
     qos_add_test("revision-property", "aic1160", test_revision_property,
                  &rev1_opts);
     qos_add_test("windows", "aic1160", test_windows, NULL);
+    qos_add_test("romfile", "aic1160", test_romfile, &romfile_opts);
+    qos_add_test("rombar0", "aic1160", test_rombar0, &rombar0_opts);
     qos_add_test("config-space", "aic1160", test_config_space, NULL);
     qos_add_test("config-collection", "aic1160", test_config_collection,
                  NULL);

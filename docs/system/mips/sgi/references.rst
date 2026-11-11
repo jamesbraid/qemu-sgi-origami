@@ -533,6 +533,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``linux-mips-impactsr-2008``
    *linux-mips, 2008-07-31, SGI Octane (IP30) Patches, Part two, Octane core (Kumba), carrying Stanislaw Skowronek's IMPACTSR framebuffer driver*. linux-mips mailing list. Web post, cited by post. Message-ID ``<48914C74.6090309@gentoo.org>``. Public web page; may be quoted.
 
+.. _sgi-ref-lkml-aha-f950-lspci:
+
+``lkml-aha-f950-lspci``
+   *Adaptec AHA-F950 FC card, lspci -v of an AIC-1160 board, 2004-06-18*. Mark Watts, Linux kernel mailing list. Web post, cited by line. `<https://lkml.rescloud.iu.edu/0406.2/0688.html>`__ SHA-256 ``9de24a7d07d9eb4da6db9e6cdea51cbd0340c5a7d523aba730184e62f53ebd2f``. Public web page; may be quoted.
+
 .. _sgi-ref-lore-kaloz-ip35-35:
 
 ``lore-kaloz-ip35-35``
