@@ -1383,9 +1383,17 @@ static void test_ip27_memory_has_no_hotplug(const void *data)
         qtest_qemu_binary(NULL), "-M", "onyx2,topology=onyx2-deskside",
         "-smp", "4", "-m", "maxmem=2G,slots=1", "-display", "none", NULL
     };
+    /*
+     * A plain -m 16G is refused by the kernel before the machine sees it on
+     * a builder with less than 16 GiB of RAM and swap ("cannot set up guest
+     * memory"), so the size reaches the machine in an unreserved backend.
+     */
     const char *huge[] = {
-        qtest_qemu_binary(NULL), "-M", "onyx2,topology=onyx2-deskside",
-        "-smp", "4", "-m", "16G", "-display", "none", NULL
+        qtest_qemu_binary(NULL), "-M",
+        "onyx2,topology=onyx2-deskside,memory-backend=sgi-ram",
+        "-smp", "4", "-object",
+        "memory-backend-ram,id=sgi-ram,size=16384M,reserve=off",
+        "-display", "none", NULL
     };
 
     assert_qemu_rejects(with_size, "the memory has no hotplug");
