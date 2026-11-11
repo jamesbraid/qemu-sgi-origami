@@ -10854,7 +10854,8 @@ static void test_origin3400_routed_bricks(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf("-M origin3000,topology=origin3400 -cpu R12000 "
-                      "-smp 16 -m 16384 -bios %s -nodefaults -display none",
+                      "-smp 16 " SGI_UNRESERVED_RAM("16384M") " -bios %s "
+                      "-nodefaults -display none",
                       prom);
     for (size_t i = 0; i < ARRAY_SIZE(bays); i++) {
         g_autofree char *path = g_strdup_printf("/machine/node%zu/l1", i);
@@ -10897,7 +10898,8 @@ static void test_origin3400_two_routers_cables(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf("-M origin3000,topology=origin3400-two-routers "
-                      "-cpu R12000 -smp 16 -m 16384 -bios %s -nodefaults "
+                      "-cpu R12000 -smp 16 " SGI_UNRESERVED_RAM("16384M")
+                      " -bios %s -nodefaults "
                       "-display none", prom);
     for (unsigned int port = 1; port <= 8; port++) {
         g_autofree char *name = g_strdup_printf("port%u-cable", port);
@@ -11309,7 +11311,8 @@ static void test_onyx3400_ir_io_brick_l1s(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     qts = qtest_initf("-M origin3000,topology=onyx3400-ir -cpu R12000 "
-                      "-smp 16 -m 16384 -bios %s -nodefaults -display none",
+                      "-smp 16 " SGI_UNRESERVED_RAM("16384M") " -bios %s "
+                      "-nodefaults -display none",
                       prom);
     for (size_t i = 0; i < ARRAY_SIZE(gfx_bays); i++) {
         g_autofree char *path = g_strdup_printf("/machine/node%zu/l1", i);
@@ -11638,12 +11641,13 @@ static void test_router_l1_board_records(void)
         const char *router_l1;
         const char *board;
     } cases[] = {
-        { "origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384",
+        { "origin3000,topology=origin3400 -cpu R12000 -smp 16 "
+          SGI_UNRESERVED_RAM("16384M"),
           "/machine/module4/l1", "rbrick" },
         { "origin3000,topology=origin3400-two-routers -cpu R12000 -smp 16 "
-          "-m 16384", "/machine/module4/l1", "rbrick" },
+          SGI_UNRESERVED_RAM("16384M"), "/machine/module4/l1", "rbrick" },
         { "origin3000,topology=origin3400-two-routers -cpu R12000 -smp 16 "
-          "-m 16384", "/machine/module5/l1", "rbrick" },
+          SGI_UNRESERVED_RAM("16384M"), "/machine/module5/l1", "rbrick" },
         { "origin3000,topology=origin3800 -cpu R12000 -smp 32 "
           SGI_UNRESERVED_RAM("32768M"),
           "/machine/module8/l1", "rbrick" },
@@ -11770,6 +11774,19 @@ static void test_origin3900_ip59_cx_brick(void)
 }
 
 /*
+ * The guest RAM option for a C-brick case, given its size in MiB as a string.
+ * A 16 GiB machine maps its RAM unreserved so a builder host with less RAM
+ * than that can still start it.
+ */
+static char *cbrick_ram_args(const char *mib)
+{
+    if (!strcmp(mib, "16384")) {
+        return g_strdup(SGI_UNRESERVED_RAM("16384M"));
+    }
+    return g_strdup_printf("-m %s", mib);
+}
+
+/*
  * The 800 MHz R16000 C-brick is an approximation: third parties report the
  * PIMM and no SGI document names it. Each C-brick topology fits it with the
  * reset word of the 800 MHz, 8 MiB R16000 boards, whose SS field gives the
@@ -11798,10 +11815,11 @@ static void test_cbrick_r16000_approximation(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *ram = cbrick_ram_args(cases[i].memory);
         QTestState *qts = qtest_initf(
-            "-M origin3000,topology=%s -cpu R16000 -smp %s -m %s -bios %s "
+            "-M origin3000,topology=%s -cpu R16000 -smp %s %s -bios %s "
             "-nodefaults -display none", cases[i].topology, cases[i].smp,
-            cases[i].memory, prom);
+            ram, prom);
         g_autoptr(QDict) response = qtest_qmp(
             qts, "{'execute':'query-cpus-fast'}");
         QList *cpus = qdict_get_qlist(response, "return");
@@ -11888,10 +11906,11 @@ static void test_cbrick_r14000_600mhz(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *ram = cbrick_ram_args(cases[i].memory);
         QTestState *qts = qtest_initf(
-            "-M origin3000,topology=%s -cpu R14000 -smp %s -m %s -bios %s "
+            "-M origin3000,topology=%s -cpu R14000 -smp %s %s -bios %s "
             "-nodefaults -display none", cases[i].topology, cases[i].smp,
-            cases[i].memory, prom);
+            ram, prom);
         g_autoptr(QDict) response = qtest_qmp(
             qts, "{'execute':'query-cpus-fast'}");
         QList *cpus = qdict_get_qlist(response, "return");
@@ -11957,10 +11976,11 @@ static void test_cbrick_r14000_500mhz(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     for (size_t i = 0; i < G_N_ELEMENTS(cases); i++) {
+        g_autofree char *ram = cbrick_ram_args(cases[i].memory);
         QTestState *qts = qtest_initf(
-            "-M origin3000,topology=%s -cpu R14000 -smp %s -m %s -bios %s "
+            "-M origin3000,topology=%s -cpu R14000 -smp %s %s -bios %s "
             "-nodefaults -display none", cases[i].topology, cases[i].smp,
-            cases[i].memory, prom);
+            ram, prom);
         g_autoptr(QDict) response = qtest_qmp(
             qts, "{'execute':'query-cpus-fast'}");
         QList *cpus = qdict_get_qlist(response, "return");
@@ -12105,7 +12125,7 @@ static void test_ibrick_products_fit_ieee1394(void)
                     ORIGIN3200_PROM_SIZE);
     g_assert_cmpint(close(fd), ==, 0);
     for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
-        g_autofree char *ram = products[i].mib > 16384 ?
+        g_autofree char *ram = products[i].mib >= 16384 ?
             g_strdup_printf(SGI_UNRESERVED_RAM("%uM"), products[i].mib) :
             g_strdup_printf("-m %u", products[i].mib);
         QTestState *qts = qtest_initf(

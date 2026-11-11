@@ -255,7 +255,8 @@ static QTestState *start_routed(void)
     g_autofree char *prom = write_image();
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf(
-        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384 "
+        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 "
+        SGI_UNRESERVED_RAM("16384M") " "
         RUN "-bios %s "
         "-device sgi-pi-gfx-test-head,id=head,"
         "pio=/machine/node0/bedrock/io/sgi-bedrock-io-pio[0],"
@@ -616,7 +617,8 @@ static void test_routed_credit_return(void)
     g_autofree char *prom = write_image();
     g_autofree char *quoted = g_shell_quote(prom);
     QTestState *qts = qtest_initf(
-        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 -m 16384 "
+        "-M origin3000,topology=origin3400 -cpu R12000 -smp 16 "
+        SGI_UNRESERVED_RAM("16384M") " "
         RUN "-bios %s -device sgi-pi-gfx-test-head,id=head,"
         "pi=/machine/node0/bedrock,widget=11", quoted);
 

@@ -957,7 +957,7 @@ static GPtrArray *catalogue_cases(void)
             extra ? extra->machine_options : "",
             qdict_get_str(offering, "default-cpu-model"),
             qdict_get_int(offering, "smp"),
-            mib > 16384 ? "-machine memory-backend=ram -object "
+            mib >= 16384 ? "-machine memory-backend=ram -object "
             "memory-backend-ram,reserve=off,id=ram,size=" : "-m ", mib);
         g_ptr_array_add(cases, c);
     }
