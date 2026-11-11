@@ -158,6 +158,32 @@ static void test_uart_register_spacing(void)
     qtest_quit(s);
 }
 
+static void test_uart_ti_differences(void)
+{
+    QTestState *s = mace_start();
+
+    /* The model is QEMU's generic 16550A: reset gives MCR 0x08, scratch 0. */
+    qtest_writeq(s, MACE_RING_BASE, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x400), ==, 0x08);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_B + 0x400), ==, 0x08);
+    qtest_writeb(s, MACE_UART_A + 0x700, 0x5a);
+    qtest_writeb(s, MACE_UART_B + 0x700, 0x7c);
+    qtest_writeq(s, MACE_RING_BASE, 1);
+    qtest_writeq(s, MACE_RING_BASE, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x700), ==, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_B + 0x700), ==, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x400), ==, 0x08);
+
+    /* The interrupt output does not depend on MCR bit 3. */
+    qtest_writeb(s, MACE_UART_A + 0x400, 0);
+    g_assert_cmphex(qtest_readb(s, MACE_UART_A + 0x400), ==, 0);
+    qtest_writeq(s, MACE_IMASK, MACE_UART_A_INT);
+    qtest_writeb(s, MACE_UART_A + 0x100, 0x02);
+    g_assert_true(qtest_readq(s, MACE_ISTAT) & MACE_UART_A_INT);
+    g_assert_true(qtest_get_irq(s, 4));
+    qtest_quit(s);
+}
+
 static void test_uart_interrupt_routes(void)
 {
     QTestState *s = mace_start();
@@ -769,6 +795,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace/rtc-direct-stride", test_rtc_direct_stride);
     qtest_add_func("/sgi/mace/uart-register-spacing",
                    test_uart_register_spacing);
+    qtest_add_func("/sgi/mace/uart-ti-differences",
+                   test_uart_ti_differences);
     qtest_add_func("/sgi/mace/uart-interrupt-routes",
                    test_uart_interrupt_routes);
     qtest_add_func("/sgi/mace/rtc-periodic-interrupt",
