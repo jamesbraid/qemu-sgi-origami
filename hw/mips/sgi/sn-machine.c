@@ -11240,7 +11240,16 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_reset_cpus(SN1_NODE(s->bedrock_nodes[i]));
         }
+        /*
+         * One memory-map commit for the whole reset. The commit of a nested
+         * transaction rebuilds nothing; each device reset that moved a
+         * region committed its own outermost transaction before this wrap.
+         * Under MALLOC_PERTURB_ (Meson sets it for every test) the dispatch
+         * tables of those rebuilds became resident.
+         */
+        memory_region_transaction_begin();
         qemu_devices_reset(type);
+        memory_region_transaction_commit();
         sn1_memory_mappings_refresh(s->sn1_memory_mappings, NULL);
         for (i = 0; i < s->num_nodes; i++) {
             sn1_node_release_cpus(SN1_NODE(s->bedrock_nodes[i]));
