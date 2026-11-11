@@ -2045,12 +2045,12 @@ static void test_gl_smooth_is_perspective_correct(void)
 
 /*
  * A deep double-buffered visual's client sends draw-buffer bit 2 for its back
- * buffer, and a stereo one bit 3 as well. On a two-RE board each bit is a
- * colour buffer a clear lands in and a read-back sees; bit 2 does not write
- * the front or back bank, and bit 0 still does. Which slot a swap shows is
- * asserted in sgi-mgras-gl-test.c.
+ * buffer, and a stereo one bit 3 as well. Each bit is a colour buffer a
+ * clear lands in and a read-back sees; bit 2 does not write the front or
+ * back bank, and bit 0 still does. Which slot a swap shows is asserted in
+ * sgi-mgras-gl-test.c.
  */
-static void test_gl_deep_bit2_draws_ssi(void)
+static void gl_deep_bit2_draws(const char *args)
 {
     static const struct {
         uint32_t word;
@@ -2063,7 +2063,7 @@ static void test_gl_deep_bit2_draws_ssi(void)
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
-        QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+        QTestState *s = qtest_init(args);
 
         gl_deep_scene(s);
         gl_draw_buffer(s, cases[i].word);
@@ -2080,16 +2080,19 @@ static void test_gl_deep_bit2_draws_ssi(void)
     }
 }
 
-/* One RE has no slot 2: the bit stays ignored and nothing is drawn. */
+static void test_gl_deep_bit2_draws_ssi(void)
+{
+    gl_deep_bit2_draws(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+}
+
+/*
+ * One RE as well: an SI in a 32db format offers the deep visual, and
+ * Discreet Flint 7.7.2SE on IRIX 6.5.13f draws its back buffer with bit 2
+ * there. A board that drops the bit leaves the window black.
+ */
 static void test_gl_deep_bit2_draws_si(void)
 {
-    gl_scene_start(qts, GL_FLAT);
-    gl_draw_buffer(qts, 4);
-    gl_clear_color(qts, 1, 0, 1, 1);
-    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
-    g_assert_cmphex(mgras_test_pixel(qts, 300, 300), ==, 0);
-    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-back-pixel"), ==, 0);
-    g_assert_cmphex(mgras_test_slot_pixel(qts, 0, 300, 300), ==, 0);
+    gl_deep_bit2_draws(MACHINE_ARGS);
 }
 
 /*
@@ -5062,7 +5065,7 @@ int main(int argc, char **argv)
         test_gl_deep_bit2_draws_ssi, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-deep-bit2-draws/si",
-        test_gl_deep_bit2_draws_si, true);
+        test_gl_deep_bit2_draws_si, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-color-bytes-unpack-red-first",
         test_gl_color_bytes_unpack_red_first, true);

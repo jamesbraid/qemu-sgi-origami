@@ -1228,8 +1228,48 @@ The model's pixel memory is its own layout, an *approximation*: two banks
 of 32-bit words at the screen's size, a 24-bit depth plane, a per-pixel
 overlay index, a two-bit clip ID that the X server writes over GL windows,
 and a per-pixel format tag recording whether a pixel holds a colour index,
-a 24-bit colour or a 12-bit window's colour. The real plane packing,
-interleave and clear values are *unknown*.
+a 24-bit colour or a 12-bit window's colour. On every board the model
+also keeps two more 32-bit colour planes, slots 2 and 3, for deep
+visuals. The real plane packing, interleave and clear values are
+*unknown*.
+
+Deep double-buffered visuals
+----------------------------
+
+A deep double-buffered visual keeps 8 bits per component in both buffers.
+Two-RE boards offer one in their ordinary video formats. On an SI under
+IRIX 6.5.13f, Discreet Flint 7.7.2SE finds none in the default format, and
+``1280x1024_60_32db``, which ``setmon -x`` selects, offers an RGBA 8/8/8/8
+double-buffered visual with no depth buffer beside the 12-bit
+double-buffered ones with depth, *software expectation*. The one-RE
+``1280x1024`` ``32db`` format files give main draw-buffer word ``0x240``,
+pages ``0x240`` and 0, against ``0x90240``, both pages ``0x240``, in the
+plain files, and list two visible banks where the plain files list one
+of the same two, *software expectation*. So the second colour buffer is
+page 0, the bank the plain format does not display, and the format has
+no third bank for depth, *software expectation*.
+
+The OpenGL client takes its draw-buffer and read-buffer words for such a
+visual from the visual, not the board, *software expectation*. Discreet
+Flint 7.7.2SE on an SI in ``1280x1024_60_32db`` sends draw-buffer word 4
+for its back buffer and the read tuples ``(0, 2, 0x404)`` and
+``(2, 0, 0x405)``, the words the SSI client sends, *software expectation*.
+The model gives every board the same answer: bit 2 draws into slot 2, bit
+3 into slot 3, the deep tuples read bank 0 and slot 2, and a window ID
+whose XMAP buffer-select bit is set shows slot 2 where a deep draw wrote
+it, *inferred* from the client's words and the SSI swaps. The IRIX
+kernel's swap path takes no account of the RE count, *software
+expectation*.
+
+A real one-RE board in a ``32db`` format most likely keeps the deep
+visual's second buffer in the planes that hold depth and stencil in the
+plain format, *inferred* from page 0 being that bank. The model keeps
+slot 2 apart from depth on every board, an *approximation*. A test that
+would settle it: under ``32db``, overlap a deep double-buffered window
+and a 12-bit window with 24-bit depth and 8-bit stencil, clear depth in
+the second window, swap the first, and read back the first window's back
+buffer. Shared planes show the depth clear there; the model shows the
+deep window's own pixels.
 
 .. _sgi-mgras-tram:
 
@@ -1358,8 +1398,7 @@ IRIX draws and reads pixels through one stream and never addresses one
 RE, so the model keeps one set of planes for both and does not split
 rows, an *approximation* visible only to the IDE's memory tests. The
 second GE takes its program through the second slot and is never
-executed, like the first. A two-RE board adds two colour slots that the
-OpenGL client's deep visuals draw into.
+executed, like the first.
 
 .. _sgi-mgras-reset:
 
@@ -1412,7 +1451,7 @@ It carries the pixel planes, the HQ and GE programs, the context
 handshake, every GL context with its parser position, the raster and
 descriptor registers, the mapping port, the XMAP files of all four PP1s,
 VC3, CMAP and DAC state, and the retrace phase as the timer's expiry.
-Optional subsections carry the two-RE colour slots, alpha, the
+Optional subsections carry the colour slots, alpha, the
 serial-number master, a raster record half-forwarded from the mapping
 port, the clip IDs, texture state and TRAM, the latter only once a block
 has been written. The retrace period is derived again from the migrated

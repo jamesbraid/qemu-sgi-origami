@@ -5392,32 +5392,17 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
     g_assert_nonnull(strstr(log, "from 0x1ff8 do not fit a 2-page buffer"));
 }
 
-/* One RE has no deep slot even when a guest sends the captured tuple. */
-static void test_gl_readpixels_dma_deep_one_re_unsupported(void)
-{
-    static const uint32_t red = 0xff0000ff;
-    QTestState *s;
-    g_autofree char *log = NULL;
-    char *log_path = gl_eviction_log_start(&s, MACHINE_ARGS);
-
-    gl_pixels_context(s, 0);
-    gl_draw_buffer(s, 1);
-    gl_draw_rgba_row(s, 1, 1, &red, 1);
-    gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
-    gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, NULL);
-    g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
-    log = gl_eviction_log_end(s, log_path);
-    g_assert_nonnull(strstr(log, "unsupported client read buffer tuple 0, 2"));
-}
-
 /*
- * Every two-RE board takes the deep pair as SSI does: ESSI, MXI and EMXI
- * run the client's same branch on the same RE count, and their second RE
- * holds the deep visual's other bank in slot 2.
+ * Every board takes the deep pair as SSI does: the client picks the pair
+ * from the visual, not the board. ESSI, MXI and EMXI offer deep visuals in
+ * their ordinary formats, SI and ESI in their 32db ones, where Discreet
+ * Flint 7.7.2SE on IRIX 6.5.13f sends both tuples.
  */
-static const char *const deep_two_re_boards[] = { "essi", "mxi", "emxi" };
+static const char *const deep_boards[] = {
+    "si", "si-t", "esi", "essi", "mxi", "emxi",
+};
 
-static void test_gl_readpixels_dma_deep_two_re(gconstpointer data)
+static void test_gl_readpixels_dma_deep(gconstpointer data)
 {
     static const uint32_t front[] = { 0x10203040 };
     static const uint32_t slot2[] = { 0x20406080 };
@@ -7140,17 +7125,13 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-buffers",
         test_gl_readpixels_dma_ssi_deep_buffers, false);
-    mgras_qtest_add_func(
-        "sn0/origin2000/mgras/gl-readpixels-dma-deep-one-re-unsupported",
-        test_gl_readpixels_dma_deep_one_re_unsupported, false);
-    for (size_t i = 0; i < ARRAY_SIZE(deep_two_re_boards); i++) {
+    for (size_t i = 0; i < ARRAY_SIZE(deep_boards); i++) {
         g_autofree char *path = g_strdup_printf(
-            "sn0/origin2000/mgras/gl-readpixels-dma-deep-two-re/%s",
-            deep_two_re_boards[i]);
+            "sn0/origin2000/mgras/gl-readpixels-dma-deep/%s",
+            deep_boards[i]);
 
-        mgras_qtest_add_data_func(path, deep_two_re_boards[i],
-                                  test_gl_readpixels_dma_deep_two_re,
-                                  false);
+        mgras_qtest_add_data_func(path, deep_boards[i],
+                                  test_gl_readpixels_dma_deep, false);
     }
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-ssi-deep-reset",

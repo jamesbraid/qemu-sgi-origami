@@ -221,7 +221,7 @@ static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
          * set bit shows slot 2 where a draw wrote it (inferred, see the
          * draw-buffer mapping in sgi-mgras-gl.c); elsewhere bank 1.
          */
-        if (s->slot[0] && (s->slot[0][i] & SGI_MGRAS_SLOT_WRITTEN)) {
+        if (s->slot[0][i] & SGI_MGRAS_SLOT_WRITTEN) {
             return mgras_bank_bgr(s, s->slot[0][i],
                                   SGI_MGRAS_PIXEL_FORMAT_RGB, main_did);
         }

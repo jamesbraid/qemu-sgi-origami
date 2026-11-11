@@ -1847,9 +1847,9 @@ static void test_gl_colour_index_swap_shows_the_drawn_bank(void)
  * swap back, bit clear, shows that. Read through scanout, so a model that
  * draws the frames right but displays bank 1 shows black.
  */
-static void test_gl_deep_swap_shows_the_drawn_buffer_ssi(void)
+static void gl_deep_swap_shows_the_drawn_buffer(const char *args)
 {
-    QTestState *s = qtest_init(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+    QTestState *s = qtest_init(args);
 
     gl_deep_scene(s);
     mgras_tag_wid(s, 256, 256, 383, 383, 14);
@@ -1873,6 +1873,20 @@ static void test_gl_deep_swap_shows_the_drawn_buffer_ssi(void)
     gl_swap(s, 0, 1u << 14);
     g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0x0000ff);
     qtest_quit(s);
+}
+
+static void test_gl_deep_swap_shows_the_drawn_buffer_ssi(void)
+{
+    gl_deep_swap_shows_the_drawn_buffer(MACHINE_ARGS MGRAS_TWO_RE_ARGS);
+}
+
+/*
+ * The same on one RE: an SI in a 32db format offers the deep visual, and
+ * its window was black while the board dropped draw-buffer bit 2.
+ */
+static void test_gl_deep_swap_shows_the_drawn_buffer_si(void)
+{
+    gl_deep_swap_shows_the_drawn_buffer(MACHINE_ARGS);
 }
 
 /*
@@ -2667,6 +2681,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-deep-swap-shows-the-drawn-buffer-ssi",
         test_gl_deep_swap_shows_the_drawn_buffer_ssi, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-deep-swap-shows-the-drawn-buffer-si",
+        test_gl_deep_swap_shows_the_drawn_buffer_si, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-shallow-swap-still-shows-bank-one-ssi",

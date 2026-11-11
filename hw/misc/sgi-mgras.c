@@ -1933,13 +1933,11 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->front_alpha = g_new0(uint8_t, s->front_count);
     s->back_alpha = g_new0(uint8_t, s->back_count);
     s->depth_count = s->width * s->height;
-    if (s->board->re_count == 2) {
-        s->slot_count = s->width * s->height;
-        s->slot[0] = g_new0(uint32_t, s->slot_count);
-        s->slot[1] = g_new0(uint32_t, s->slot_count);
-        s->slot_alpha[0] = g_new0(uint8_t, s->slot_count);
-        s->slot_alpha[1] = g_new0(uint8_t, s->slot_count);
-    }
+    s->slot_count = s->width * s->height;
+    s->slot[0] = g_new0(uint32_t, s->slot_count);
+    s->slot[1] = g_new0(uint32_t, s->slot_count);
+    s->slot_alpha[0] = g_new0(uint8_t, s->slot_count);
+    s->slot_alpha[1] = g_new0(uint8_t, s->slot_count);
     s->format = g_new0(uint8_t, s->width * s->height);
     s->back_format = g_new0(uint8_t, s->width * s->height);
     s->overlay = g_new0(uint8_t, s->width * s->height);
@@ -2189,7 +2187,7 @@ static bool mgras_slot_count_valid(void *opaque, int version_id)
     return s->slot_count == s->width * s->height;
 }
 
-/* Only a two-RE board has the slots, so a one-RE stream carries none. */
+/* The colour slots, on every board since a one-RE board's 32db formats. */
 static const VMStateDescription vmstate_sgi_mgras_slots = {
     .name = TYPE_SGI_MGRAS "/slots",
     .version_id = 2,
