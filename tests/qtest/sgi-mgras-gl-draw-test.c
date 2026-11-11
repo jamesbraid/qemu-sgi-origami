@@ -4461,6 +4461,63 @@ static void test_gl_vertex2d_polygon(void)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/*
+ * glVertex2s, 3s and 4s: headers 0x59000004, 0x39000006 and 0x19000008,
+ * the shorts packed from bit 31 down, as Discreet Flame 7.0 sends its
+ * panels. A wide rectangle tells x from y: with the halves swapped it
+ * would stand on its side and miss (20, 6). A negative x tells signed
+ * from unsigned. Without the headers the
+ * vertices are dropped and only the clear colour remains.
+ */
+static void gl_vertex_shorts(QTestState *s, unsigned n, int16_t x, int16_t y)
+{
+    static const uint32_t headers[] = { 0x59000004, 0x39000006, 0x19000008 };
+
+    gl_word(s, headers[n - 2]);
+    gl_word(s, (uint16_t)x << 16 | (uint16_t)y);
+    if (n == 3) {
+        /* z = 0 in the high half, the low half padding. */
+        gl_word(s, 0);
+    } else if (n == 4) {
+        /* z = 0, w = 1. */
+        gl_word(s, 1);
+    }
+}
+
+static void test_gl_vertex_shorts_polygon(void)
+{
+    static const int16_t xy[4][2] = {
+        { 8, 4 }, { 24, 4 }, { 24, 12 }, { 8, 12 },
+    };
+
+    for (unsigned n = 2; n <= 4; n++) {
+        gl_transform_start(qts);
+        gl_width_clear(qts);
+        gl_polygon_mode(qts, GL_FRONT_AND_BACK, GL_FILL_MODE);
+        gl_word(qts, GL_BEGIN_POLYGON);
+        for (unsigned i = 0; i < ARRAY_SIZE(xy); i++) {
+            gl_vertex_shorts(qts, n, xy[i][0], xy[i][1]);
+        }
+        gl_word(qts, GL_END_OF(GL_BEGIN_POLYGON));
+        g_assert_cmphex(gl_window_pixel(qts, 16, 8), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 20, 6), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 10, 20), ==, 0);
+        g_assert_cmphex(gl_window_pixel(qts, 4, 4), ==, 0);
+
+        /* A negative x reads signed: the left edge lies off the window. */
+        gl_width_clear(qts);
+        gl_word(qts, GL_BEGIN_POLYGON);
+        gl_vertex_shorts(qts, n, -8, 4);
+        gl_vertex_shorts(qts, n, 24, 4);
+        gl_vertex_shorts(qts, n, 24, 12);
+        gl_vertex_shorts(qts, n, -8, 12);
+        gl_word(qts, GL_END_OF(GL_BEGIN_POLYGON));
+        g_assert_cmphex(gl_window_pixel(qts, 2, 8), ==, 0xffffff);
+        g_assert_cmphex(gl_window_pixel(qts, 28, 8), ==, 0);
+        g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    }
+}
+
 static void test_gl_native_polygon_contexts(void)
 {
     mgras_reset();
@@ -5175,6 +5232,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-vertex2d-polygon",
         test_gl_vertex2d_polygon, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-vertex-shorts-polygon",
+        test_gl_vertex_shorts_polygon, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-native-polygon/contexts",
         test_gl_native_polygon_contexts, true);

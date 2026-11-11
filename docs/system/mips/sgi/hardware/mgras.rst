@@ -1124,7 +1124,13 @@ The model never executes the program. It reads the OpenGL client's
 command words at the port and draws what OpenGL 1.2.1 says they produce,
 an *approximation* of the geometry engines' function and not of their
 program; ``sgi-mgras-gl.c`` lists the subset, and a command outside it is
-logged ``LOG_UNIMP`` and consumed by length. Load balancing between two
+logged ``LOG_UNIMP`` and consumed by length. The subset takes ``glVertex``
+in its float, double, integer and short forms; the short forms,
+``0x59000004``, ``0x39000006`` and ``0x19000008``, carry two components a
+word from bit 31 down, a *software expectation* from the client library's
+emitters, read signed and unscaled, *inferred* as for the integer forms.
+Discreet Flame 7.0 on IRIX 6.5.13f draws its panels and outlines with
+``glVertex2s``. Load balancing between two
 GEs is not modelled: the HQ4 "performs load balancing based on the
 filling of the GE11 command FIFOs"
 (:src:`octane-technical-report section 4`) and its rule is *unknown*.
