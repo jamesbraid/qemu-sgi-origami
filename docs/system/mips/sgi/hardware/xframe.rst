@@ -40,11 +40,11 @@ Sources
 - OpenBSD ``xge(4)``: ``sys/dev/pci/if_xgereg.h`` and ``if_xge.c`` at
   ``2df91d80c104``, as software expectations. The manual page lists the
   SGI card among the supported boards.
-- Linux ``s2io``: ``drivers/net/ethernet/neterion/s2io-regs.h``,
-  ``s2io.h`` and ``s2io.c`` at ``c9bace5bce3e`` in the Linux/MIPS tree,
-  and the interrupt-mask rationale in the commit message and
-  ``drivers/net/s2io.c`` of ``596c5c97431e`` in the Linux history tree,
-  as software expectations.
+- Linux ``s2io``: ``drivers/net/ethernet/neterion/s2io-regs.h``, ``s2io.h`` and
+  ``s2io.c`` at ``c9bace5bce3e`` in the Linux/MIPS tree, and commit
+  ``596c5c97431e`` in the Linux history tree (its message and
+  ``drivers/net/s2io.c`` give the interrupt-mask rationale), as software
+  expectations.
 - Register offsets and names throughout are the public driver names.
   Neterion's programming manual is not a source for this page, so a
   register's reset value, a bit the drivers never use and the behaviour
@@ -54,19 +54,18 @@ Sources
 Identity and placement
 ======================
 
-The SGI manual's trademark page credits Neterion and Xframe, and its
-feature list gives a single LC multimode-fibre port (850 nm, 10GBASE-SR,
-full duplex), PCI 2.3 and PCI-X 1.0a compliance with 64-bit operation at
-66 MHz and PCI-X at 66, 100 and 133 MHz, universal 3.3 V and 5 V
-signalling, jumbo frames to 9600 bytes, and 16 DMA channels, 8 for reads
-and 8 for writes :src:`007-4669-003 Features`, *established*. TCP
-large-send offload is a Release 1 feature, and TCP large-receive and UDP
-large-send offload are Release 2 only :src:`007-4669-003 Features`,
-*established*. The guide's supported-systems list, in its third
-revision, names Altix, Silicon Graphics Prism, Origin 350, Onyx 4/350,
-Origin 3000 with an IX or PX brick, Onyx 3000 and Tezro. It does not
-list the Origin 200 or the Origin 2000 :src:`007-4669-003 Supported
-systems`, *established*.
+The SGI manual's trademark page credits Neterion and Xframe. Its feature list
+gives a single LC multimode-fibre port (850 nm, 10GBASE-SR, full duplex), PCI
+2.3 and PCI-X 1.0a compliance with 64-bit operation at 66 MHz and PCI-X at 66,
+100 and 133 MHz, universal 3.3 V and 5 V signalling, jumbo frames to 9600
+bytes, and 16 DMA channels, 8 for reads and 8 for writes
+:src:`007-4669-003 Features`, *established*. TCP large-send offload is a
+Release 1 feature, and TCP large-receive and UDP large-send offload are Release
+2 only :src:`007-4669-003 Features`, *established*. The guide's
+supported-systems list, in its third revision, names Altix, Silicon Graphics
+Prism, Origin 350, Onyx 4/350, Origin 3000 with an IX or PX brick, Onyx 3000
+and Tezro. It does not list the Origin 200 or the Origin 2000
+:src:`007-4669-003 Supported systems`, *established*.
 
 .. list-table::
    :header-rows: 1
@@ -880,23 +879,22 @@ Model limits
 Tests
 =====
 
-``tests/qtest/xframe-test.c`` runs the device behind a Bridge on a bare
-test head with no machine. It covers PCI identity and the device-ID and
-subsystem properties, the two BARs, the swapper constant and scratch
-register, ADAPTER_STATUS and ADAPTER_EN, the SW_RESET key through 64-bit
-and 32-bit writes, the MAC_CFG key lock across both halves, the address
-table and factory-MAC read-back, the traffic-interrupt memories and their
-moderation, continuous interrupts and migration, link-up delivery through
-the MAC and the GPIO paths, the GENERAL, GPIO and per-source mask
-contracts, the scheduled interrupt including the write acknowledgement
-and carrier steadiness, transmit of a frame with byte-exact TCP and UDP
-checksums, gather lists, segmentation of a send larger than a frame, the
-host-offload path with a virtio-net header, completion interrupts and
-their per-frame rate, receive delivery, the arrival deadline, filtering,
-multicast matching, ring exhaustion and recovery, a buffer that is too
-small, five-buffer header splitting for classified, truncated, fragmented
-and jumbo frames, reported checksum verdicts, descriptor byte order with
-SWAPPER_CTRL set, and the statistics block.
+``tests/qtest/xframe-test.c`` runs the device behind a Bridge on a bare test
+head with no machine. It covers PCI identity and the device-ID and subsystem
+properties, the two BARs, the swapper constant and scratch register,
+ADAPTER_STATUS and ADAPTER_EN, the SW_RESET key through 64-bit and 32-bit
+writes, the MAC_CFG key lock across both halves, the address table and
+factory-MAC read-back, the traffic-interrupt memories and their moderation,
+continuous interrupts and migration, link-up delivery through the MAC and the
+GPIO paths, the GENERAL, GPIO and per-source mask contracts, the scheduled
+interrupt including the write acknowledgement and carrier steadiness. It also
+covers transmit of a frame with byte-exact TCP and UDP checksums, gather lists,
+segmentation of a send larger than a frame, the host-offload path with a
+virtio-net header, completion interrupts and their per-frame rate, receive
+delivery, the arrival deadline, filtering, multicast matching, ring exhaustion
+and recovery, a buffer that is too small, five-buffer header splitting for
+classified, truncated, fragmented and jumbo frames, reported checksum verdicts,
+descriptor byte order with SWAPPER_CTRL set, and the statistics block.
 
 ``tests/qtest/sn0-xframe-test.c`` runs the card on the ``origin200``
 machine. It covers the swapper constant through the Bridge at 64-bit and

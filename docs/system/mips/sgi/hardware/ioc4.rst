@@ -546,12 +546,12 @@ IO9's real byte-bus decode is *unknown*.
 ATA
 ===
 
-Linux ``sgiioc4.c`` maps one channel with task-file registers at
-``0x100`` on a four-byte stride, alternate control at ``0x120`` and DMA
-registers from ``0x140``, a *software expectation*. The published
-announcement states that OpenBSD did not yet support the IO9 ATAPI
-interface (:src:`miod-openbsd-sgi-story Origin 350 support`). The model
-implements no ATA function: reads return zero and log ``LOG_UNIMP``.
+Linux ``sgiioc4.c`` maps one channel with task-file registers at ``0x100`` on a
+four-byte stride, alternate control at ``0x120`` and DMA registers from
+``0x140``, a *software expectation*. The published announcement states that
+OpenBSD did not support the IO9 ATAPI interface
+(:src:`miod-openbsd-sgi-story Origin 350 support`). The model implements no ATA
+function: reads return zero and log ``LOG_UNIMP``.
 
 The one exception is ``0x148`` with the ``ata-readback-compat``
 property, which IP53 boards set. The IP35 PROM writes each one-bit
@@ -623,18 +623,17 @@ Tests
 =====
 
 ``tests/qtest/sgi-ioc4-test.c`` covers PCI identity and reset, both UART
-clocks, the interrupt registers, the UART FIFOs, byte-only UART access
-and the XBridge split of a wider access, the ``0x148`` latch with its
-width checks and migration, the PS/2 adapter and its migration, the
-timekeeper window for no clock, the 8-byte clock alias and the 32 KiB
-window, and the serial DMA profile: default-off, both PIC swap settings,
-bus mastering, control entries, both ring sizes, drain and threshold
-as levels, loopback including overrun and discarded outside input, full
-rings, the timer, pointer-field checks, error capture, requester ids and
-the halt until a channel reset, port reset and isolation, the mode
-switches that are logged and then take effect, the idle bit, backend
-reconnection and migration of active, paused and delayed ports,
-including a profile mismatch.
+clocks, the interrupt registers, the UART FIFOs, byte-only UART access and the
+XBridge split of a wider access, the ``0x148`` latch with its width checks and
+migration, the PS/2 adapter and its migration. It also covers the timekeeper
+window for no clock, the 8-byte clock alias and the 32 KiB window, and the
+serial DMA profile: default-off, both PIC swap settings, bus mastering, control
+entries, both ring sizes, drain and threshold as levels, loopback including
+overrun and discarded outside input, full rings, the timer, pointer-field
+checks, error capture, requester ids and the halt until a channel reset, port
+reset and isolation, the mode switches that are logged and then take effect,
+the idle bit, backend reconnection and migration of active, paused and delayed
+ports, including a profile mismatch.
 
 ``tests/qtest/sgi-pic-test.c`` covers the PCI Status compatibility value
 and its migration, CPU PIO to an IOC4 behind PIC, and serial DMA, the
