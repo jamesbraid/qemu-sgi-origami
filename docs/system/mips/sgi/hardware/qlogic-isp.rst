@@ -454,6 +454,27 @@ then zero to the semaphore, while NetBSD writes the semaphore first. The
 host command clears bus status and the zero write releases the semaphore. A
 masked interrupt keeps its pending state.
 
+A status entry posted after the guest last read the response pointer
+survives the clear. Clearing the RISC interrupt then leaves bus status bits
+1 and 2 set, and the line high. A read of ``0x7a`` marks every posted entry
+seen, and the next clear after that read takes the line down. Linux 2.2's
+``drivers/scsi/qlogicisp.c`` (``isp1020_intr_handler()``) reads mailbox 5,
+the response pointer, and then clears. IRIX 6.5.21f reads the pointer,
+works through the ring, writes the acknowledgement, clears and reads bus
+status again (observed under the model, *software expectation*). Without
+the rule, a completion that lands between that read and the clear sits in
+the ring with no interrupt. On the Octane, with two disks busy on one bus,
+IRIX then waits out its command timeout and resets the chip. Real silicon
+cannot be asked: whether its firmware holds the next posting until the
+clear, or asserts the request again after it, is *unknown*. Either way the
+driver sees the entry, and the rule is an *approximation* of that. A driver
+that clears before it reads the pointer takes at most one extra interrupt
+that finds nothing new. Because ``0x7a`` is also mailbox 5, a driver that
+reads every mailbox, for example after a mailbox command, marks the entries
+seen too. If such a driver does not then look at the ring, an entry posted
+just before the read waits for the next interrupt, as it did before this
+rule.
+
 The semaphore's second bit is plain storage. The stock Origin 300 IO8 board
 test writes the semaphore while it is already set and expects bits 1:0 back
 as ``0x3``, reading bit 1 as "in use by someone". The model reads back what
@@ -508,7 +529,9 @@ RISC paused and ``0x0010`` external, which the model never sets.
      - None.
    * - ``0x7``
      - Clear RISC interrupt
-     - Clears ``0x0080``, clears bus status and re-evaluates the line.
+     - Clears ``0x0080``, clears bus status and re-evaluates the line. Bus
+       status bits 1 and 2 stay set while a status entry posted after the
+       last read of ``0x7a`` is unread.
    * - ``0x4``, ``0x9``, ``0xa``, ``0xe``
      - Mask parity, BIOS enable, enable parity, parity error
      - Accepted. ``LOG_UNIMP`` logs "accepted, not modelled".
@@ -1106,8 +1129,11 @@ failing the load.
 
 A subsection, ``qlogic-isp/isp12160``, carries the SXP1 and DMA banks and
 the two channels' reset delays. It is emitted only for a banked or
-two-channel part, so an ISP1040 stream never contains it. Migration works
-only between identical builds.
+two-channel part, so an ISP1040 stream never contains it. A second,
+``qlogic-isp/resp-unseen``, carries the flag that a status entry was posted
+after the guest's last read of the response pointer. It is emitted only
+while the flag is set, and a stream without it means the flag is clear.
+Migration works only between identical builds.
 
 .. _sgi-qlogic-isp2200:
 
@@ -1531,8 +1557,9 @@ Tests
   status bytes, the sense phase flag, the missing-target flags, unknown
   entry types and continuations, the bounded ring walk, SCSI bus resets,
   data transfers through type 0 and 64-bit entries with continuations, NVRAM
-  reads, a full response ring, a stale acknowledgement and a held
-  completion.
+  reads, a full response ring, a stale acknowledgement, a held
+  completion and a completion that lands between the handler's pointer read
+  and its interrupt clear.
 - ``tests/qtest/sn0-qlogic-isp-test.c`` repeats the access contract through
   the :term:`XIO` to PCI path on the Origin topology: the PCI Status reset value,
   the swap bit, the signature through the fabric, RAM DMA through the
