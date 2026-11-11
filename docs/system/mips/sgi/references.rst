@@ -63,6 +63,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-0911-180``
    *IRIX Device Driver Programmer's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/0000/007-0911-180/pdf/007-0911-180.pdf>`__ SHA-256 ``25a6ed2d5223595ace87b9d9140605be7ab361de65c183b92fae3e28d00ea45e``. Published; may be quoted.
 
+.. _sgi-ref-007-2392-003:
+
+``007-2392-003``
+   *OpenGL on Silicon Graphics Systems*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/2000/007-2392-003/pdf/007-2392-003.pdf>`__ SHA-256 ``6565e36a749d12aa77b48f706430ee7acd30e803f772855ea0d6830421575879``. Published; may be quoted.
+
 .. _sgi-ref-007-2597-001:
 
 ``007-2597-001``

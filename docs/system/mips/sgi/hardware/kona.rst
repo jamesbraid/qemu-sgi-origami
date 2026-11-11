@@ -1044,10 +1044,12 @@ The general vector carries the cause bits:
   Clearing it also consumes an unread completion word at the queue's head,
   since the kernel's DMA wait reads the mailbox once and writes nothing
   back, a *software expectation*.
-- Video, bit 3: set at a retrace that completes a retrace request, and
-  sent only while the enable register has bit 3 set. Whether the bit also
-  rises at retraces with nothing completed is *unknown*; the model does
-  not raise it then.
+- Video, bit 3: the model sets it at every retrace, whether or not a
+  retrace request completes there, and sends it only while the enable
+  register has bit 3 set.
+  That a real pipe raises it at every field is *inferred*: the video-sync
+  counter in the OpenGL manual increments on each vertical retrace, and
+  at the field rate on an interlaced monitor (:src:`007-2392-003 p. 288`).
 - Fatal, bit 8: set when a DMA whose sender waits fails. No vector is
   sent, an *approximation*.
 - Low water, bit 1: raised, with the vector, when display-list work and

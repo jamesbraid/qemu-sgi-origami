@@ -958,8 +958,8 @@ static void sgi_kona_retrace(void *opaque);
 /*
  * publish() takes the command ports' completions (sgi_kona_port_consumed()),
  * the retrace requests' swap records and, through the DMA engine's own
- * hooks, its transfers' and fetches'. retrace() raises the video bit at a
- * retrace that honoured a request.
+ * hooks, its transfers' and fetches'. retrace() raises the video bit at
+ * every retrace.
  */
 static const SGIHeadOps sgi_kona_head_ops = {
     .publish = sgi_kona_publish,
