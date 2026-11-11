@@ -25,6 +25,9 @@
 #define ODSY_IDENTITY 0x0004
 #define ODSY_MEMORY_CONFIG 0x106c
 #define ODSY_CONTROL 0x0024
+#define ODSY_RESET_CONTROL 0x100c
+#define ODSY_FLCTL_CONFIG 0x1070
+#define ODSY_FLCTL_CONFIG_RESET 0x0001c000
 /* The routed destination and vector table; the flag source has byte 7:0. */
 #define ODSY_ROUTE_DEST_UPPER 0x1044
 #define ODSY_ROUTE_DEST_LOWER 0x104c
@@ -39,6 +42,8 @@
 /* Each Crossbow link's status register, in its slot's data half. */
 #define XBOW_LINK_STATUS(w) (XBOW + 0x100 + ((w) - 8) * 0x40 + 0x10 + 4)
 #define XBOW_LINK_ALIVE (1u << 31)
+#define XBOW_LINK_AUX(w) (XBOW + 0x100 + ((w) - 8) * 0x40 + 0x38 + 4)
+#define XBOW_AUX_PRESENT (1u << 5)
 
 /*
  * HEART takes an interrupt packet as an eight-byte write at 0x80 of its
@@ -322,6 +327,43 @@ static void test_posted_fifo(void)
     g_free(loaded.pixels);
 }
 
+/*
+ * An in-guest reboot restarts the PROM without a machine reset, so the
+ * driver's reset pulse at the next start is the reset the board gets. The
+ * IP30 kernel and PROM write 0x200 to +0x100c on a Crossbow of revision
+ * code 5 or more (the Octane2's) and 0x16d on an older one, then 0. A
+ * FLCTL configuration word the guest changed goes back to its reset value on
+ * either pulse, and not on the release write of 0 or an unknown value.
+ */
+static void test_reset_control_pulse_resets_board(void)
+{
+    static const uint32_t pulses[] = { 0x200, 0x16d };
+    QTestState *qts = start(true, "v12");
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(pulses); i++) {
+        qtest_writel(qts, VPRO_SHORT + ODSY_FLCTL_CONFIG, 0x12345);
+        qtest_writel(qts, VPRO_SHORT + ODSY_RESET_CONTROL, 0);
+        qtest_writel(qts, VPRO_SHORT + ODSY_RESET_CONTROL, 1);
+        g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_FLCTL_CONFIG), ==,
+                        0x12345);
+        qtest_writel(qts, VPRO_SHORT + ODSY_RESET_CONTROL, pulses[i]);
+        g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_FLCTL_CONFIG), ==,
+                        ODSY_FLCTL_CONFIG_RESET);
+        qtest_writel(qts, VPRO_SHORT + ODSY_RESET_CONTROL, 0);
+        g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_IDENTITY), ==,
+                        ODSY_IDENTITY_DEFAULT);
+        /*
+         * The driver retries the pulse up to four times unless the port's
+         * link status bit 31 and auxiliary bit 5 read set afterwards.
+         */
+        g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
+                        XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+        g_assert_cmphex(qtest_readl(qts, XBOW_LINK_AUX(VPRO_WIDGET)) &
+                        XBOW_AUX_PRESENT, ==, XBOW_AUX_PRESENT);
+    }
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     const struct {
@@ -358,6 +400,8 @@ int main(int argc, char **argv)
         }
     }
     qtest_add_func("/octane2/vpro/posted-fifo", test_posted_fifo);
+    qtest_add_func("/octane2/vpro/reset-control-pulse-resets-board",
+                   test_reset_control_pulse_resets_board);
     result = g_test_run();
     g_assert_cmpint(unlink(flash_path), ==, 0);
     g_free(flash_path);

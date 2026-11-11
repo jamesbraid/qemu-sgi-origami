@@ -208,6 +208,7 @@ sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *
 
 # sgi-odyssey.c
 sgi_odyssey_mmio(uint64_t sequence, uint64_t offset, unsigned size, uint64_t value, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " size %u value 0x%" PRIx64 " write=%d"
+sgi_odyssey_board_reset(const char *source, uint64_t value) "%s reset, value 0x%" PRIx64
 sgi_odyssey_work(const char *what, uint64_t offset, int64_t ns) "%s offset 0x%" PRIx64 " ns %" PRId64
 sgi_odyssey_work_behind(unsigned int stores, int64_t age_ns) "%u stores wait, the oldest for %" PRId64 " ns"
 sgi_odyssey_dma_chunk(uint64_t seq, uint64_t addr, uint32_t len, const char *hex) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u hex %s"

@@ -1109,19 +1109,20 @@ static void test_v12_profile_memory_word_bits(void)
 }
 
 /*
- * The kernel's reset: a pulse on +0x100c (0x200 or 0x16d, then 0), then
- * the memory controller set-up on +0x1004: the widget master id in bits
- * 22:19, then the strap's size (bits 4:3), four-bank (bit 2) and CAS
- * latency 2 (bit 1) fields, then bit 5 cleared, set and cleared and bit 8
- * set. Each register is accepted and logged by name under -d unimp rather
- * than falling through to the generic "not modeled" message, the board
- * keeps answering identity, and a set-up that agrees with the strap word
- * (the default V12 profile: 128 MB, four banks, CAS latency 3) raises no
- * mismatch; one that disagrees is reported.
+ * The kernel's reset: a pulse on +0x100c (0x200 or 0x16d, each of which
+ * resets the board, then 0), then the memory controller set-up on +0x1004:
+ * the widget master id in bits 22:19, then the strap's size (bits 4:3),
+ * four-bank (bit 2) and CAS latency 2 (bit 1) fields, then bit 5 cleared,
+ * set and cleared and bit 8 set. The memory controller writes are accepted
+ * and logged by name under -d unimp rather than falling through to the
+ * generic "not modeled" message, an unknown value on +0x100c is logged the
+ * same way, the board keeps answering identity, and a set-up that agrees
+ * with the strap word (the default V12 profile: 128 MB, four banks, CAS
+ * latency 3) raises no mismatch; one that disagrees is reported.
  */
 static void test_reset_and_memory_control_writes(void)
 {
-    static const uint32_t sequence[] = { 0x200, 0, 0x16d, 0 };
+    static const uint32_t sequence[] = { 0x200, 0, 0x16d, 0, 0x1 };
     const uint32_t master = 0xb << 19;
     const uint32_t fields = master | 2 << 3 | 1 << 2;
     const uint32_t setup[] = {
@@ -1160,7 +1161,11 @@ static void test_reset_and_memory_control_writes(void)
     g_assert_no_error(error);
     g_assert_null(strstr(log, "0x1004 is not modeled"));
     g_assert_null(strstr(log, "0x100c is not modeled"));
-    g_assert_nonnull(strstr(log, "reset control register accepted"));
+    /* Only the unknown value 0x1 is logged; the two pulses reset the board. */
+    g_assert_nonnull(strstr(log, "write of 0x1 to the reset control register "
+                                 "accepted"));
+    g_assert_null(strstr(log, "write of 0x200 to the reset control"));
+    g_assert_null(strstr(log, "write of 0x16d to the reset control"));
     g_assert_nonnull(strstr(log, "memory controller configuration 0x580000 "
                                  "stored"));
     g_assert_null(strstr(log, "configuration 0x58001"));
