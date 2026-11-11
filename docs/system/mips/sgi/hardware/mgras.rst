@@ -1047,6 +1047,18 @@ HEART's widget 8 on Octane and the Hub's on SN0. A count of 0 or over
 2^20, or a list that would run past its node's 4 GiB, logs and transfers
 nothing.
 
+The model keeps one set of slot registers and keeps them until the next
+mapping-port write. Observed with Discreet Flame 7.0 on IRIX 6.5.13f on
+an MXI: the X server programs slot 0 when it starts and copies through it
+with kicks ``0xb9`` and ``0xb1``; Flame's OpenGL client reprograms slot 0
+for its pixel reads; after Flame exits no write reinstalls the server's
+base, and the desktop backdrop the server then copies stays grey or
+black. That those copies read Flame's freed page list, and that a board
+behaves the same, are *inferred* from analysis of the graphics software
+shipped with IRIX 6.5.13f and the IRIX 6.5.30m maintenance release.
+Restarting the X server would reprogram slot 0, *inferred* and not yet
+observed.
+
 Image transfers
 ---------------
 
