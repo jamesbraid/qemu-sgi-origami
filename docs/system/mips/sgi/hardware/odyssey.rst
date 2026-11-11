@@ -302,7 +302,9 @@ every other register takes aligned 32-bit accesses only.
      - 32
      - none
      - write-only
-     - Each write logs ``LOG_UNIMP`` and changes nothing.
+     - A write of ``0x200`` or ``0x16d`` resets the board, as
+       :ref:`sgi-odyssey-reset` says. A write of 0 does nothing; any other
+       value logs ``LOG_UNIMP``.
    * - ``0x1014``
      - Interrupt flags
      - 32
@@ -810,12 +812,46 @@ reloads the board's widget number. Properties, the identity, the memory
 word and the one-wire image are configuration and survive reset. With
 the Mesa renderer on, reset recreates it; a failure stops the machine.
 
-Writes to the reset control register at ``0x100c`` log ``LOG_UNIMP``
-and change nothing (*approximation*). A write to the memory controller
+Resets reach the board without a machine reset, which matters after an
+in-guest reboot (``init 6``): that restarts the PROM, and the driver's own
+pulse at the next start is then the only reset the board gets on an
+Octane2. The IP30 kernel and PROM write ``0x200`` to the reset control
+register at ``0x100c``, wait, and write 0, when the Crossbow's revision
+code is 5 or more (the Octane2's is 5). On an older Crossbow they write
+``0x16d`` instead and then link-reset the board's port; the model does not
+act on that link reset. The IP35 kernel writes ``0x200`` only, from the
+driver's start-up path, and never link-resets the board. The IP35
+kernel's pulse routine retries the store up to four times unless the
+port's link status bit 31 and auxiliary bit 5 read set afterwards
+(*inferred* from analysis of the shipped IP35 kernel; the IP30 routines
+were not checked for it). The Octane2 Crossbow model keeps both bits set.
+The IP30 and IP35 pulses and the code-4 link reset are *inferred* from
+analysis of the shipped kernels and PROMs.
+
+The model takes a write of ``0x200`` or ``0x16d`` as a reset of the whole
+board (*approximation*). What a real board keeps through either, and what
+bit 9 of ``0x200`` or the bits of ``0x16d`` mean, is *unknown*. That
+``0x16d`` is a reset at all is *inferred* only from the role of the
+routine that writes it. Before this, a pulse was accepted and ignored,
+and the board kept the previous boot's state; an Octane2 V12 running IRIX
+6.5.23 still ran ``gr_osview`` after three reboots in that state, so no
+stale register that breaks a guest is known.
+
+On the Fuel and Tezro an in-guest reboot ends with the processor's
+network-port reset on the :term:`Bedrock`, which software does not follow with a
+link reset. QEMU does not send the board a reset of its own then: the
+Bedrock's reset, which on a machine with one powered compute node reaches
+every node, restarts the whole machine (:ref:`sgi-bedrock`), and the
+board is reset with everything else. That is the machine's approximation
+and not a model of the board. Whether the network-port reset reaches the
+board on hardware is *unknown*; the driver's own ``0x200`` pulse at the
+next start is the reset software can rely on.
+
+A write to the memory controller
 configuration at ``0x1004`` is stored without a controller behind it
 (*approximation*); the model reports a size, bank or latency field that
 disagrees with the memory configuration word as a guest error, a model
-choice whose board behaviour is *unknown*. The board's warm, link and board-local resets are
+choice whose board behaviour is *unknown*. The board's warm reset is
 *unknown*.
 
 .. _sgi-odyssey-migration:
@@ -962,6 +998,8 @@ covers the context switch and shadow page. The ``gl`` group and the
 ``texture-1d-wide``, ``texture-2d-clamp``, ``texture-2d-stored`` and
 ``texture-3d`` groups cover the OpenGL command stream. ``tests/qtest/sn1-odyssey-query-test.c``
 covers the current-attribute query records.
+``tests/qtest/octane-vpro-test.c`` covers the board's reset by a
+``0x100c`` pulse in the Octane2's graphics port.
 
 ``tests/qtest/octane-vpro-test.c`` checks each product's identity and
 memory size, and the default board's interrupt path to HEART, at

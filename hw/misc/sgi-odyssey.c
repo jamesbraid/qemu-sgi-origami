@@ -240,12 +240,20 @@
 #define ODSY_MEMORY_CONTROL_SIZE_MASK 0x3
 
 /*
- * +0x100c, the low-level reset: the IP30 kernel pulses it 0x200 for 1 s or
- * 0x16d for 200 ms by host chip revision, the IP35 kernel 0x200 only, then
- * writes 0 (ESTABLISHED). Its effect on the board is UNKNOWN; the model
- * accepts and logs each write rather than modeling a reset.
+ * +0x100c, the low-level reset: the IP30 kernel and PROM pulse it 0x200 for
+ * 1 s on a Crossbow of revision code 5 or more, or 0x16d for 200 ms and then
+ * link-reset the board's port on an older one. The IP35 kernel pulses 0x200
+ * only. Each pulse ends with a write of 0 (ESTABLISHED as code order). An
+ * in-guest reboot restarts the PROM without a machine reset, and the
+ * driver's pulse at the next start is then the reset the board gets, so the
+ * model takes either value as a reset of the whole board (MODEL CHOICE, an
+ * APPROXIMATION: what a real board keeps through it, and what bit 9 or the
+ * 0x16d bits mean, is UNKNOWN). Any other nonzero value is accepted and
+ * logged. A write of 0 ends the pulse and does nothing.
  */
 #define ODSY_RESET_CONTROL 0x100c
+#define ODSY_RESET_PULSE_CURRENT 0x200
+#define ODSY_RESET_PULSE_OLD 0x16d
 
 /*
  * The flag interrupt's registers, as the shipped IRIX 6.5.30 kernel uses them
@@ -13536,10 +13544,16 @@ static void odyssey_write_dispatch(SGIOdysseyState *s, hwaddr addr,
         odyssey_update_irq(s);
         break;
     case ODSY_RESET_CONTROL:
-        /* The kernel's reset pulse; see the define's comment. */
-        qemu_log_mask(LOG_UNIMP, "sgi-odyssey: write of 0x%" PRIx64
-                      " to the reset control register accepted; its effect "
-                      "is unknown\n", value);
+        /* The driver's reset pulse; see the define's comment. */
+        if (value == ODSY_RESET_PULSE_CURRENT ||
+            value == ODSY_RESET_PULSE_OLD) {
+            trace_sgi_odyssey_board_reset("control", value);
+            device_cold_reset(DEVICE(s));
+        } else if (value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-odyssey: write of 0x%" PRIx64
+                          " to the reset control register accepted; its "
+                          "effect is unknown\n", value);
+        }
         break;
     case ODSY_MEMORY_CONTROL:
         odyssey_memory_control(s, value);
