@@ -262,7 +262,13 @@ fits an AIC-7880 at each (:doc:`aic7880`).
 The model refuses some configuration writes with ``LOG_UNIMP`` and a bus
 error. It refuses any write to a base address register or the expansion
 ROM address of any device except the first two base address registers of
-an onboard AIC-7880. It refuses a COMMAND write that enables memory,
+an onboard AIC-7880 and its unused registers. A write to base address
+register 2 to 5, or to the expansion ROM address, of an onboard AIC-7880 that
+has no region there completes, any payload is accepted and the register reads
+0. Whether a present function must accept and discard writes to registers it
+does not implement is *unknown* for this bridge, since the PCI text was not
+available to check. ``pci-unused-aic-regions`` in ``sgi-mace-test`` checks the
+model's behaviour. It refuses a COMMAND write that enables memory,
 I/O or bus-master access on any device but an onboard AIC-7880. On an
 AIC-7880 it refuses COMMAND bits other than I/O enable, memory enable,
 bus master and parity error response. These are model limits, not
@@ -328,6 +334,32 @@ bits 0-7, 8, 10, 15 and 24-31. That includes the Linux value. A write
 with any other bit set (9, 11-14 or 16-23) logs ``LOG_UNIMP`` and gets a
 bus error, though the specification marks them read/write, an
 *approximation*. Parking and read-ahead have no effect in the model.
+A write that sets only bit 15 is stored and leaves the PCI interrupt
+routing as it was, an *approximation*.
+
+Each arbiter bit moves one requester out of the default round-robin ring
+into the fixed-priority level. Bit 9 (revision 1 of the bridge; reserved and
+read-only on revision 0) does so for REQ_N[6] as first priority, bit 12 for
+REQ_N[3] as fourth, bit 13 for REQ_N[4] as third and bit 14 for REQ_N[5] as
+second :src:`sgi-mace-2.0-spec p. 164`, *established*. The text after the table
+gives a different order: within the fixed level the order follows the slot,
+slot 3 highest and slot 1 lowest, for devices 3 to 6
+:src:`sgi-mace-2.0-spec p. 165`, *established*. The two orderings conflict, so
+which one the hardware follows is *unknown*. The text numbers the slots 1 to 3
+where the control table names them zero to two, so which slot each requester
+is also stays *unknown*.
+Bit 15 parks the bus on the host when clear and on the last master in use when
+set :src:`sgi-mace-2.0-spec p. 164`, *established*. The model has no
+arbiter, an *approximation*.
+
+A 32-bit write to ``0x08000c`` invalidates the bridge's read buffers whatever
+the data, and the data is discarded; a read returns the bridge revision
+:src:`sgi-mace-2.0-spec p. 165`, *established*. The model keeps no read buffers, so the
+write has no other effect: the control register, the configuration state, the
+error flags and address and the interrupt outputs keep their values, and a
+read still returns 1. A write of another width or alignment gets a bus
+error. The buffers are an *approximation*; the model's behaviour is checked by
+``pci-flush`` and ``pci-control-bits`` in ``sgi-mace-test``.
 
 Interrupts
 ----------
@@ -353,12 +385,14 @@ interrupts are absent.
 CPU view of PCI
 ---------------
 
-The CPU sees the first 32 MiB of PCI memory and I/O in KSEG1 windows and
-larger windows above them: a 2 GiB PCI memory window at
-``0x2_8000_0000`` and I/O at ``0x1_0000_0000``
-:src:`sgi-mace-2.0-spec p. 160`, *inferred*: the IP32 address map gives
-4 GiB from ``0x2_0000_0000`` for the same window, and neither figure has
-been checked against that page. Linux
+The CPU address figure draws these windows :src:`sgi-mace-2.0-spec p. 160`,
+*established*. At ``0x1800_0000`` and ``0x1a00_0000`` are 32 MiB of PCI low
+I/O and 32 MiB of PCI low memory, which map to the lower 32 MiB of PCI I/O
+space and to the lower 32 MiB of the non-host half of PCI memory space
+(from ``0x8000_0000``). A 4 GiB PCI I/O window starts at ``0x1_0000_0000``,
+the 2 GiB from ``0x2_0000_0000`` is marked reserved, and a 2 GiB PCI memory
+window at ``0x2_8000_0000`` maps to the non-host half of PCI memory space.
+The figure is a drawing and gives no register to select between them. Linux
 uses ``0x1a000000`` for low memory, ``0x18000000`` for low I/O and
 ``0x2_8000_0000`` for high memory (``mace.h``, ``pci-ip32.c``), *software
 expectation*.
@@ -370,6 +404,19 @@ with a byte-lane swap for 1-byte accesses, and fail other widths with a
 bus error. The specification draws the low window as 32 MiB. The PCI I/O
 windows at ``0x18000000`` and ``0x1_0000_0000`` are absent. Both limits
 are each an *approximation*.
+
+The specification's bug list adds that an early version of CRIME, which it
+calls Petty Crime, does not alias the upper 16 MiB of the low I/O window
+(``0x19000000`` to ``0x19ffffff``) or of the low memory window
+(``0x1b000000`` to ``0x1bffffff``) as the figure draws them, and a CPU access
+there hangs the system. The lower 16 MiB of each (``0x18000000`` and
+``0x1a000000``) alias correctly :src:`sgi-mace-2.0-spec p. 167`,
+*established* for that CRIME, and the note adds that the problem "will be
+resolved in the final version of CRIME". Published O2s read a CRIME ID byte of
+``0xa1``, ID ``0xa`` revision 1, where the early part is revision 0
+(:ref:`sgi-crime-identity`), so they are not the early part, *inferred*. The
+model's 16 MiB low window covers only the span the note calls correct, an
+*approximation* to the 32 MiB figure.
 
 Bus-master views
 ----------------
@@ -397,6 +444,30 @@ The bridge's read-ahead buffers (128-byte virtual lines, filled by
 memory-read-multiple when control bit 11 is set) are not modelled; reads
 go straight to memory, an *approximation* with no guest-visible effect
 other than timing.
+
+Revision 0 errata
+-----------------
+
+The specification lists these faults for host-bridge revision 0
+:src:`sgi-mace-2.0-spec p. 167`, *established* for that revision:
+
+- Invalidating the read buffers, by interrupt or by the flush register, can
+  make the bridge return bad data if it happens during a memory read on the
+  bus; the specification calls both mechanisms broken and says not to use them.
+- PCI I/O transactions carry a 4-byte-aligned address, so halfword and byte
+  accesses may not work with a target that expects the full byte address.
+- Accesses to the upper 2 GiB of PCI I/O space alias onto the lower 2 GiB.
+- A memory read or memory read line that follows a memory read multiple is
+  treated as another memory read multiple, so the next 128 bytes are
+  prefetched when read-ahead is on.
+- With more than one device in the fixed arbitration level, the arbiter can
+  grant the bus to two devices at once. The specification adds that this is not
+  a problem for the first of two systems it names but could be for the second.
+- A 64-bit master that writes the native view of host memory with a disabled
+  byte lane stores bad data; 32-bit masters are not affected.
+
+Whether revision 1, which the model reports, still has any of these is
+*unknown*. The model has none of them.
 
 .. _sgi-mace-peripheral:
 
@@ -515,10 +586,28 @@ the two do not both fit the specification. The model stores the bits as
 written. The model accepts 64-bit accesses only, unless the
 ``misc-word-pio`` option is set (`Identity line`_).
 
+With bit 0 clear, writes to the flash go into a bit bucket
+:src:`sgi-mace-2.0-spec p. 124`, *established*. Bit 6 permits PIO writes to the
+DP-RAM, bit 7 enables a UST timer test mode, and bit 8 makes the game-port chip
+select drive address line SA20 when set and leaves it an address bit when clear
+:src:`sgi-mace-2.0-spec p. 124`, *established*.
+
 Linux names bit 1 "PWD CLEAR jumper detected" (``mace.h``), a *software
-expectation* that a jumper exists. Whether the password-clear input is fitted,
-and its value, is *unknown* for the O2 board. The machine requires the property
-to be given when it loads a boot ROM image.
+expectation* that a jumper exists. Bit 1 reads 1 when password clear is
+enabled and 0 when disabled :src:`sgi-mace-2.0-spec p. 124`, *established*. The
+specification names no connector, polarity or board that drives the input, and
+its reset value of 0 is the register-table entry, not the level a fitted board
+presents, so whether the O2 fits the input, and its value, is *unknown*. The
+model treats bit 1 as a level, not storage: a guest write cannot change it, a
+reset of the machine leaves it at the level the board supplies, and a change of
+the ``password-clear-input`` line updates it at once. The machine requires the
+property to be given as 0 or 1 when it loads a boot ROM image and refuses a
+later change, an *approximation*. ``password-clear-input`` in
+``sgi-mace-id-test`` checks that a guest write leaves bit 1 alone, that the line
+updates it and that a reset keeps it. ``board-input`` in
+``sgi-o2-platform-inputs-test`` checks that the level survives a machine reset
+and that a later change is refused, and ``refused-inputs`` there checks that a
+boot ROM image needs the property and that only 0 or 1 is accepted.
 
 Interrupt status and mask
 -------------------------
@@ -650,6 +739,28 @@ are bytes at a 256-byte stride: register *r* of port 1 is at
 with a 6-bit prescaler :src:`sgi-mace-2.0-spec p. 126`, which does not
 match; which one is the real clock tree is *unknown*.
 
+The specification names a Texas Instruments part with two enhanced 16C550 ports
+and a clock prescaler, and its example of a 22 MHz input (divisor 3 for
+7.33 MHz, 5.5 for the 4.00 MHz MIDI clock) matches the TL16PIR552 datasheet's
+(22.118 MHz input, :src:`ti-tl16pir552-slls222a p. 33`), *inferred*: whether
+an O2 fits that part is *unknown*. For that part, master reset clears every
+modem control bit (6 and 7 are permanent) and leaves the scratch register
+unchanged :src:`ti-tl16pir552-slls222a p. 25`; modem control bit 3 enables the
+external serial interrupt :src:`ti-tl16pir552-slls222a p. 30`; and with DLAB
+set the scratch address holds the prescaler in bits 5:0 and an IR select bit,
+with UART 0 in IR mode and UART 1 in UART mode after reset
+:src:`ti-tl16pir552-slls222a p. 33`, *established* for the part. The
+specification's table places the IR select in bit 7 and calls bit 6 reserved
+(:src:`sgi-mace-2.0-spec p. 126`) where the datasheet says "the seventh bit"
+(:src:`ti-tl16pir552-slls222a p. 33`); which bit it is stays *unknown*.
+
+The model's UARTs differ from that part. A reset of the UARTs through the ring
+base register clears the scratch register and sets modem control to ``0x08``,
+and the interrupt output does not depend on modem control bit 3, so an
+interrupt condition reaches the peripheral status register with the bit
+clear, each an *approximation*; ``uart-ti-differences`` in ``sgi-mace-test``
+checks them.
+
 The model uses QEMU's 16550A with a 16-byte FIFO and a base clock of
 115200 baud, which is a 1.8432 MHz clock, as an *approximation*. Port 1
 connects to the machine's first ``-serial`` backend through the
@@ -696,6 +807,17 @@ empty, 6 full, 7 not full, 0 off. A write with bit 10 set resets the
 channel and its pointers. The ring holds 4 KiB, 128 blocks, and is full at
 127 blocks. The hardware owns one pointer, the read pointer of a transmit
 ring and the write pointer of a receive ring, and software the other.
+
+The specification's own tables disagree on the pointers and the depth, so the
+pointer width and the full-ring rule are *unknown*. Its register list shows the
+hardware-owned pointer of each channel as bits 11:0 (:src:`sgi-mace-2.0-spec
+p. 122`), while the pointer tables make bits 4:0 reserved for both pointers
+(:src:`sgi-mace-2.0-spec p. 127`). The depth register is write pointer minus
+read pointer with all zeros empty and all ones full (:src:`sgi-mace-2.0-spec
+p. 127`), whereas equal pointers mean full for an input ring and empty for an
+output ring (:src:`sgi-mace-2.0-spec p. 128`). A search of the whole
+retained specification text finds no size for the channel's internal FIFO and
+no receive timeout setting for the serial DMA, *unknown*.
 
 A ring's address is the ring-base register's bits 31:15, the ring ID and
 the pointer :src:`sgi-mace-2.0-spec p. 128`. IDs 4 to 7 are the serial
@@ -782,6 +904,24 @@ positions (``maceps2.c``), *software expectation*. The reset table
 gives transmit buffer empty (bit 3) a reset of 0, which is odd for an
 empty buffer, *unknown*.
 
+A frame on the data line is 11 bits: a start bit of 0, the eight data bits
+least significant first, an odd parity bit and a stop bit of 1
+:src:`sgi-mace-2.0-spec p. 139`, *established*. The attached device supplies a 1X serial clock
+on an open-collector line, and the port's clock-enable output can pull that line
+high, which stops both the port and the device from sending or receiving. The
+device polls the clock at 100 microsecond intervals, so software must allow
+settling time after it changes clock enable :src:`sgi-mace-2.0-spec p. 141`, *established*.
+Control bit 0 drops clock enable after the next transmitted frame, bit 1 enables
+shifting the transmit buffer out on the falling edge of the input clock, and
+clearing bit 4 pauses a transmit or receive in progress
+:src:`sgi-mace-2.0-spec p. 141`, *established*. The control logic keeps the device from sending
+another frame until the receive buffer has been cleared and nothing is waiting
+to transmit, and undefined bits read zero :src:`sgi-mace-2.0-spec p. 140`, *established*. The
+specification's sections on receiving and transmitting are blank placeholders
+(:src:`sgi-mace-2.0-spec p. 142`). What clears the receive-buffer-full state, when a parity
+or framing error clears, and what a write to a busy transmit buffer does are
+*unknown*.
+
 The model is a byte-atomic *approximation*. It has no clock edges and no
 shift timing. A transmit write sets the transmit-buffer-full state until
 the control register allows the byte out (transmit enable set, clock
@@ -793,6 +933,26 @@ received frame carries correct odd parity and no framing error. After
 reset the status reads ``0x0b``: clock enabled, clock output enabled and
 transmit buffer empty. Interrupt output is the transmit-empty state with
 the transmit enable bit, or receive-full with the receive enable bit.
+
+A read of the receive buffer returns the byte with the status in bits 15:8 as
+they stood before the read, and clears the receive-buffer-full state, an
+*approximation* of the unknown rule above. Status bits 1 and 0 both read 1
+while the clock is permitted (clock enable set, reset clear, no inhibit held
+and the receive buffer empty) and 0 otherwise, an *approximation*: the
+specification gives bit 0 no reset value. With control bit 0 set, the model
+holds the clock inhibited once the transmitted byte has gone out, so those
+status bits read 0 and no byte is received until a control write clears bit 0,
+an *approximation*. A frame arriving while the receive buffer is full or a
+transmit byte is waiting is refused and the earlier byte stays. The model's
+frame-admission function sets the parity error flag (status bit 6) when the
+data bits and parity bit hold an even number of ones and the framing error flag
+(bit 7) for a start bit of 1 or a stop bit of 0. The attached keyboard and mouse
+always deliver good frames, so both flags stay 0 in a running machine, an
+*approximation*. In ``sgi-mace-ps2-test`` the ``frames`` case exercises only
+the inline admission and receive functions in ``mace-ps2.h``. The device's own
+rules are checked by ``accesses`` (the read clears the full state),
+``pending-transmit`` and ``inhibit-queue-priority`` (inhibit and status bits),
+which also read the status alias with its error bits 0.
 
 The model accepts 64-bit aligned accesses only and logs
 ``LOG_GUEST_ERROR`` for others and for writes to read-only registers. A
@@ -1113,8 +1273,9 @@ Tests
 
 - ``tests/qtest/sgi-mace-test.c`` covers the compare timers (mask,
   acknowledgement, late callbacks, overshoot, migration), the external
-  reset, the clock window stride, UART register spacing, interrupt routes
-  and receive backends, and the PCI host bridge: reset, configuration lane
+  reset, the clock window stride, UART register spacing, reset state and
+  interrupt gating, writes to unused AIC base address and ROM registers,
+  interrupt routes and receive backends, and the PCI host bridge: reset, configuration lane
   swap, refused BAR and ROM writes, absent devices, control bits, flush,
   master abort, interrupt inputs, expansion pins and migration.
 - ``tests/qtest/sgi-mace-ps2-test.c`` covers reset aliases, pending
