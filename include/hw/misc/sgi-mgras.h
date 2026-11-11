@@ -764,10 +764,12 @@ struct SGIMgrasState {
     uint32_t front_count;
     uint32_t back_count;
     /*
-     * Colour-buffer slots 2 and 3 of a two-RE board, written by GL's
-     * draw-buffer bits 2 and 3 (hw/misc/sgi-mgras-gl.c); NULL, with a zero
-     * slot_count, on a one-RE board. Direct colour or an index, with no
-     * format tag. A pixel of slot 2 that a draw wrote carries
+     * Colour-buffer slots 2 and 3, written by GL's draw-buffer bits 2 and
+     * 3 (hw/misc/sgi-mgras-gl.c). Every board has them: a one-RE board
+     * offers deep double-buffered visuals in its 32db formats, a two-RE
+     * board in its ordinary ones. They are the model's planes, not the
+     * board's memory layout. Direct colour or an index, with no format
+     * tag. A pixel of slot 2 that a draw wrote carries
      * SGI_MGRAS_SLOT_WRITTEN above its 24 colour bits, which tells scanout a
      * deep window's pixel from a shallow one; slot 3 is never scanned out.
      */
@@ -1014,17 +1016,5 @@ struct SGIMgrasState {
      */
     bool dirty;
 };
-
-/*
- * Whether the client's deep front and back read-buffer selections reach a
- * deep bank: on a board with two REs, whose second RE's slots hold the
- * deep visual's pixels. SSI's captured reads ground the rule; MXI, EMXI
- * and ESSI run the same client branch, which picks the pair from the
- * visual's fields, not the board.
- */
-static inline bool sgi_mgras_deep_reads(const SGIMgrasState *s)
-{
-    return s->board->re_count == 2 && s->slot[0];
-}
 
 #endif

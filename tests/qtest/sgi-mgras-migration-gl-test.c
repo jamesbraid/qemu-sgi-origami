@@ -22,9 +22,14 @@
 #include "sgi-mgras-test.h"
 
 
-/* The slots migrate between two boards of the same build. */
-static void test_gl_deep_slots_migrate(void)
+/*
+ * The slots migrate between two boards of the same build, and a reset
+ * clears them. Every board keeps them: one RE as well as two.
+ */
+static void test_gl_deep_slots_migrate(gconstpointer data)
 {
+    g_autofree char *args = g_strdup_printf(MIGRATION_ARGS ",product=%s",
+                                            (const char *)data);
     g_autofree char *tmpfs = NULL;
     g_autofree char *uri = NULL;
     g_autofree char *dest_cmdline = NULL;
@@ -34,9 +39,8 @@ static void test_gl_deep_slots_migrate(void)
     tmpfs = g_dir_make_tmp("sn0-mgras-slots-XXXXXX", &err);
     g_assert_no_error(err);
     uri = g_strdup_printf("file:%s/migrate.bin", tmpfs);
-    from = qtest_init(MIGRATION_ARGS MGRAS_TWO_RE_ARGS);
-    dest_cmdline = g_strdup_printf(MIGRATION_ARGS MGRAS_TWO_RE_ARGS
-                                   " -incoming %s", uri);
+    from = qtest_init(args);
+    dest_cmdline = g_strdup_printf("%s -incoming %s", args, uri);
 
     gl_deep_scene(from);
     gl_draw_buffer(from, 8);
@@ -48,6 +52,8 @@ static void test_gl_deep_slots_migrate(void)
     sgi_wait_migration_status(to, "completed", 30);
     g_assert_cmphex(mgras_test_slot_pixel(to, 1, 300, 300), ==, 0xff00ff);
     g_assert_cmphex(mgras_test_slot_pixel(to, 0, 300, 300), ==, 0);
+    qtest_system_reset(to);
+    g_assert_cmphex(mgras_test_slot_pixel(to, 1, 300, 300), ==, 0);
 
     qtest_quit(to);
     g_remove(uri + sizeof("file:") - 1);
@@ -1491,9 +1497,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-texture-missing-mip-level-migration",
         test_gl_texture_missing_mip_level_migration, false);
-    mgras_qtest_add_func(
-        "sn0/origin2000/mgras/gl-deep-slots-migrate",
-        test_gl_deep_slots_migrate, false);
+    mgras_qtest_add_data_func("sn0/origin2000/mgras/gl-deep-slots-migrate/si",
+                              "si", test_gl_deep_slots_migrate, false);
+    mgras_qtest_add_data_func("sn0/origin2000/mgras/gl-deep-slots-migrate/ssi",
+                              "ssi", test_gl_deep_slots_migrate, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-eviction-migration",
         test_gl_eviction_migration, false);

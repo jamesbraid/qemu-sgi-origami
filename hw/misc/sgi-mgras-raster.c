@@ -3113,12 +3113,11 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
                          mgras_raster_dma_src_offset(s) % 8 != 4))) {
         goto rejected;
     }
-    if (deep && (!sgi_mgras_deep_reads(s) ||
-                 (!strided &&
-                  (slot != 3 || signature_format != 0x00400080 ||
-                   mode != 0x00400080 ||
-                   !((signature_width == 1 && signature_height == 1) ||
-                     (signature_width == 2 && signature_height == 2)))))) {
+    if (deep && !strided &&
+        (slot != 3 || signature_format != 0x00400080 ||
+         mode != 0x00400080 ||
+         !((signature_width == 1 && signature_height == 1) ||
+           (signature_width == 2 && signature_height == 2)))) {
         goto rejected;
     }
     captured_split =

@@ -739,8 +739,8 @@ enum {
  * (a captured run), where OpenGL's default draw buffer is
  * the front and the back buffer respectively. Reading it as a bit mask of
  * the front and back buffers, SGI_GL_DRAW_FRONT and SGI_GL_DRAW_BACK, is
- * inferred from those two values. Bits 2 and 3 name slots 2 and 3 of a
- * two-RE board (mgras_gl_bind()); bits above 3 are not modelled.
+ * inferred from those two values. Bits 2 and 3 name colour-buffer slots 2
+ * and 3 (mgras_gl_bind()); bits above 3 are not modelled.
  */
 
 /*
@@ -1340,9 +1340,15 @@ static void mgras_gl_bind(SGIMgrasState *s)
         .back = 1u << back,
         /*
          * Draw-buffer bits 2 and 3 name colour buffers beyond the two
-         * banks where the board has slots; a stereo visual sends bit 3 too
-         * and nothing here is known of it. A deep double-buffered visual
-         * sends FRONT as (1, 4) and BACK as (4, 1), so its pair is bank 0
+         * banks; a stereo visual sends bit 3 too and nothing here is known
+         * of it. Every board has them: the client picks these words from
+         * the visual, not the board, and a one-RE board in a 32db format
+         * offers a deep visual too (Flint 7.7.2SE on IRIX 6.5.13f sends
+         * bit 2 on an SI). The format files put that buffer in the bank
+         * the plain format does not display, inferred to hold depth there;
+         * slot 2 stands in for it and stays apart from depth. A deep
+         * double-buffered visual sends FRONT as (1, 4) and BACK as (4, 1),
+         * so its pair is bank 0
          * and slot 2 and bit 2 is its back buffer, which the bank token
          * places as it does a shallow back buffer: token 1 names slot 2
          * (the pair's second member), token 0 bank 0. The kernel's
@@ -1353,7 +1359,7 @@ static void mgras_gl_bind(SGIMgrasState *s)
          * (bit 0) on a deep visual still goes to the shallow front bank,
          * which is bank 0 only while the token is 1.
          */
-        .extra = { s->slot[0] ? (back ? 4 : 1) : 0, s->slot[1] ? 8 : 0 },
+        .extra = { back ? 4 : 1, 8 },
         .overlay = MGRAS_GL_OVERLAY_TARGET,
     };
 
@@ -3271,9 +3277,6 @@ bool sgi_mgras_gl_post_load(SGIMgrasState *s)
                 MGRAS_CLIENT_READ_DEEP_BACK ||
             s->gl_context[i].iris_rule > 1 ||
             s->gl_context[i].iris_colour_last > 1 ||
-            (s->gl_context[i].client_read_bank >=
-                 MGRAS_CLIENT_READ_DEEP_FRONT &&
-             !sgi_mgras_deep_reads(s)) ||
             !mgras_gl_pixels_valid(&s->gl_context[i].pixels) ||
             !mgras_gl_selection_valid(&s->gl_selection[i]) ||
             !sgi_mgras_texture_valid(&s->gl_context[i].tex)) {
@@ -3351,12 +3354,10 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
         s->back[idx] = rgb;
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
         /* A shallow window's pixel is not a deep window's. */
-        if (s->slot[0]) {
-            s->slot[0][idx] &= ~SGI_MGRAS_SLOT_WRITTEN;
-        }
+        s->slot[0][idx] &= ~SGI_MGRAS_SLOT_WRITTEN;
     }
     for (int i = 0; i < 2; i++) {
-        if ((banks & (4u << i)) && s->slot[i]) {
+        if (banks & (4u << i)) {
             s->slot[i][idx] = (rgb & 0xffffff) |
                               (i ? 0 : SGI_MGRAS_SLOT_WRITTEN);
         }
@@ -3513,7 +3514,7 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
         s->back_format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
     }
     for (int i = 0; i < 2; i++) {
-        if ((target & (4u << i)) && s->slot[i]) {
+        if (target & (4u << i)) {
             s->slot[i][idx] = ((s->slot[i][idx] & ~mask) | (index & mask)) &
                               planes;
         }
@@ -3669,7 +3670,7 @@ static SGIRenderResult mgras_gl_render_snapshot(
             size_t idx = (s->height - 1 - y) * s->width + x;
 
             if (format[idx] != SGI_MGRAS_PIXEL_FORMAT_RGB ||
-                (resource->target == 2 && s->slot[0] &&
+                (resource->target == 2 &&
                  (s->slot[0][idx] & SGI_MGRAS_SLOT_WRITTEN))) {
                 error_setg(errp, "MGRAS RGB8 resource overlaps another "
                                   "pixel format or a deep slot");
@@ -3721,7 +3722,7 @@ static SGIRenderCommitResult mgras_gl_render_commit_pixels(
                 continue;
             }
             if (format[idx] != SGI_MGRAS_PIXEL_FORMAT_RGB ||
-                (resource->target == 2 && s->slot[0] &&
+                (resource->target == 2 &&
                  (s->slot[0][idx] & SGI_MGRAS_SLOT_WRITTEN))) {
                 error_setg(errp, "MGRAS RGB8 resource changed format or "
                                   "overlaps a deep slot before commit");
@@ -6518,13 +6519,11 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
                    payload[2] == 0x405) {
             s->gl_context[s->gl_current].client_read_bank =
                 MGRAS_CLIENT_READ_BACK;
-        } else if (sgi_mgras_deep_reads(s) &&
-                   payload[0] == 0 && payload[1] == 2 &&
+        } else if (payload[0] == 0 && payload[1] == 2 &&
                    payload[2] == 0x404) {
             s->gl_context[s->gl_current].client_read_bank =
                 MGRAS_CLIENT_READ_DEEP_FRONT;
-        } else if (sgi_mgras_deep_reads(s) &&
-                   payload[0] == 2 && payload[1] == 0 &&
+        } else if (payload[0] == 2 && payload[1] == 0 &&
                    payload[2] == 0x405) {
             s->gl_context[s->gl_current].client_read_bank =
                 MGRAS_CLIENT_READ_DEEP_BACK;
