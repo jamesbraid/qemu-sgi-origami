@@ -35,6 +35,9 @@ Sources
 - Linux ``drivers/scsi/aic7xxx/aic7xxx.reg`` and ``aic7xxx_pci.h``, and
   ``arch/mips/pci/ops-mace.c``, at ``db2ddb871435``, as software
   expectations.
+- Linux ``drivers/scsi/aic7xxx/aicasm/aicasm_insformat.h``,
+  ``aicasm/aicasm_gram.y``, ``aic7xxx.seq``, ``aic7xxx_core.c`` and
+  ``aic7xxx_osm.c``, at the same commit, as software expectations.
 - The OpenBSD report of an O2, :src:`dmesgd-2432 ahc0`, and the NetBSD report
   of an O2 with an R12000, :src:`dmesgd-5290 ahc0`.
 - A published hardware inventory of an O2, :src:`bukosek-sgi-o2 My O2`.
@@ -155,6 +158,75 @@ expectation*. The call stack has four entries and is read through the STACK
 register, two bytes per entry, low byte first
 :src:`adaptec-aic-7870-data-book p. 105`, *established* for the AIC-7870.
 
+The STACK register returns the entry pushed last first, low byte then
+high byte, and its read pointer advances after each high-byte read, so eight
+reads bring it back to where it started
+:src:`adaptec-aic-7870-data-book p. 105`, *established* for the AIC-7870 and
+*inferred* for the AIC-7880. The book lists an initial value of zero for the
+register (:src:`adaptec-aic-7870-data-book p. 60`) but none for the individual
+entries, which are *unknown*.
+The model keeps the four entries as a circular buffer. A CALL moves the
+pointer back one slot, modulo four, and stores the address of the following
+instruction. A fifth CALL overwrites the oldest entry. A return loads the
+newest entry and moves the pointer forward, modulo four. A return with
+nothing pushed loads the stored word, which is zero at reset. None of these
+cases sets the error state, an *approximation*: the book describes the STACK
+reads, not overflow or underflow. The model zeroes all four words at reset, an
+*approximation*. It reads STACK through the same pointer, advancing after each high byte.
+
+ALLONES (``0x69``) reads ``0xff`` and ALLZEROS (``0x6a``) reads ``0x00``
+:src:`adaptec-aic-7870-data-book p. 102`, *established* for the AIC-7870 and
+*inferred* for the AIC-7880. NONE shares the ALLZEROS address, is write-only,
+and a write to it as a destination changes nothing
+:src:`adaptec-aic-7870-data-book p. 103`, *established* for the AIC-7870. The
+model discards a host or sequencer write to ``0x6a`` and leaves ALLZEROS,
+FLAGS and the other registers unchanged. A sequencer ADD of ALLONES and 1 into
+NONE sets FLAGS (``0x6b``, ZERO bit 1, CARRY bit 0) to ``0x03``, and an ALU
+return bit on that instruction still returns. The book names the two FLAGS
+bits :src:`adaptec-aic-7870-data-book p. 103` but gives no per-instruction
+update rule, so that flag result is an *approximation*. The book gives
+ALLONES no write function. The model refuses a write to ALLONES from the host
+or the sequencer and stops the sequencer, and ALLONES keeps reading ``0xff``,
+an *approximation*.
+
+FUNCTION1 (``0x6e``) turns bits 6:4 of the byte written to it into a single
+set bit on read: a value of 0 reads ``0x01``, a value of 1 reads ``0x02``,
+and so on up to ``0x80``
+:src:`adaptec-aic-7870-data-book p. 104`, *established* for the AIC-7870 and
+*inferred* for the AIC-7880. The book says nothing about bits 7 and 3:0 of the
+written byte. The model ignores them when it decodes the read, so any byte with
+the same bits 6:4 reads the same, an *approximation*. A sequencer ALU result
+written to FUNCTION1 becomes the new input: after the model reads ``0x08``
+from input ``0x30``, an ADD of ``0x10`` writes ``0x18`` and the next read
+returns ``0x02``. The book lists no initial value for FUNCTION1
+(:src:`adaptec-aic-7870-data-book p. 60`), *unknown*. The model resets the
+input to zero, so FUNCTION1 reads ``0x01`` after a chip reset or a PCI reset,
+an *approximation*.
+
+Opcode ``0x9`` is JC, the branch taken when the incoming FLAGS CARRY bit is
+set, and opcode ``0xa`` is JNC, the branch taken when it is clear. The Linux
+assembler defines both and its sequencer program uses JC
+(``aicasm_insformat.h``, ``aic7xxx.seq``), *software expectation*. The
+AIC-7870 book defines neither. The model decides from the CARRY value present
+before the instruction, not from a new comparison. On either outcome it reads
+the encoded source, ORs in the literal immediate and writes the result to
+SINDEX. It sets ZERO from that transferred byte and keeps CARRY, and it leaves
+ACCUM and the source register unchanged. These transfer and flag effects are
+an *approximation*: no source defines them.
+
+The breakpoint compares the program counter with BRKADDR0 and bit 0 of
+BRKADDR1, which holds address bit 8. Bit 7 of BRKADDR1, BRKDIS, disables the
+comparison and resets to one
+:src:`adaptec-aic-7870-data-book p. 101-102`, *established* for the AIC-7870.
+A match sets INTSTAT BRKADRINT (bit 3) and pauses the sequencer, and
+SEQCTL BRKADRINTEN (bit 3) decides whether it also drives the interrupt pin
+:src:`adaptec-aic-7870-data-book p. 98, 141-142`, *established* for the
+AIC-7870 and *inferred* for the AIC-7880. The model pauses with the program
+counter at the break address and does not run the instruction there. It
+raises the interrupt only while BRKADRINTEN is set, and setting BRKDIS lets
+the instruction run. Pausing before the instruction runs is an *approximation*:
+the book does not say which side of the instruction the pause falls on.
+
 By default the sequencer runs without modelled time: it executes up to 256
 instructions in a burst after each guest access or SCSI event. With the
 ``x-sequencer-clocked`` property it executes one instruction per cycle of
@@ -164,6 +236,76 @@ input clock (:src:`adaptec-aic-7870-data-book p. 4, 48, 53, 98`),
 *established* for the
 AIC-7870. The AIC-7880's clock and timing are *unknown*, so both modes are
 an *approximation*. The ``o2`` machine does not set ``x-sequencer-clocked``.
+
+.. _sgi-aic7880-host-path:
+
+Host data path
+==============
+
+DFCNTRL (``0x93``) holds SCSIEN (bit 5), SDMAEN (bit 4), HDMAEN (bit 3),
+DIRECTION (bit 2), FIFOFLUSH (bit 1) and FIFORESET (bit 0). Bit 6 is
+WIDEODD, which has no effect except in a wide transfer with an odd byte
+count, and bit 7 reads zero. A chip reset or PCI reset forces every bit to
+zero. FIFORESET clears itself. FIFOFLUSH clears itself and has no effect while
+the FIFO is empty
+:src:`adaptec-aic-7870-data-book p. 145-146`, *established* for the
+AIC-7870 and *inferred* for the AIC-7880. The model latches WIDEODD and reads
+it back until a reset, with no effect on any transfer, because it has no wide
+data path, an *approximation*. A write that sets bit 7 is refused and logs
+``unsupported DFCNTRL control``. A write of ``0x43`` leaves ``0x40``, because
+FIFORESET clears itself and the FIFO is empty.
+
+DIRECTION set moves data from PCI memory to the data FIFO, and DIRECTION
+clear moves it from the FIFO to memory
+:src:`adaptec-aic-7870-data-book p. 146`, *established* for the AIC-7870.
+HADDR (``0x88``-``0x8b``) counts up by one for each byte moved and HCNT
+(``0x8c``-``0x8e``) counts down. A transfer with a zero count is inhibited.
+Offset ``0x8f`` is reserved, always reads zero and ignores writes
+:src:`adaptec-aic-7870-data-book p. 139-140`, *established* for the AIC-7870
+and *inferred* for the AIC-7880. DFSTATUS HDONE is set when the count has
+expired and the last transfer has finished, and FIFOFULL is set when every
+byte location holds data
+:src:`adaptec-aic-7870-data-book p. 148`, *established* for the AIC-7870.
+The data FIFO holds 256 bytes
+(:src:`adaptec-aic-7870-data-book p. 4`), *established* for the AIC-7870.
+In the model, a host-only 256-byte transfer from memory (DFCNTRL ``0x05``,
+then ``0x0c``) advances HADDR by 256, takes HCNT to zero and sets HDONE and
+FIFOFULL, and the bytes then read back in order through DFDAT (``0x99``). That
+transfer sets neither SDONE nor CMDCMPLT and queues nothing on QOUTFIFO. The
+model returns zero from ``0x8f`` and ignores writes to it, also after a chip
+reset and a PCI reset, and a write there leaves HADDR, HCNT and DFSTATUS
+unchanged.
+
+SHADDR (``0x14``-``0x17``) takes the same value as HADDR when HADDR is loaded.
+Afterwards HADDR counts bytes moved on the host side and SHADDR counts bytes
+moved on the SCSI side
+:src:`adaptec-aic-7870-data-book p. 58-59, 171`, *established* for the
+AIC-7870. In the model, a host-only transfer moves HADDR and leaves SHADDR at
+the loaded value, and loading HADDR at ``0x88``-``0x8b`` shows the same bytes
+at ``0x14``-``0x17``.
+
+DSPCISTATUS (``0x86``) holds the FIFO threshold selector in bits 7:6, which
+the host can write, and mirrors six PCI status bits in bits 5:0, which it
+cannot. Bit 2 is received master abort
+:src:`adaptec-aic-7870-data-book p. 136`, *established* for the AIC-7870 and
+*inferred* for the AIC-7880. The model keeps the selector bits as written,
+ignores writes to bits 5:0, and clears the selector on a chip reset or a PCI
+reset without touching the PCI configuration registers. With the selector at
+``0x80``, the model reads ``0x84`` after the QTest-only ``x-test-pci-error``
+property sets received master abort. That property is a test hook, not a
+hardware feature.
+
+SCBPTR (``0x90``) selects a 32-byte page of the SCB array. The array has 16
+internal pages, and a write of ``0xff`` reads back ``0xff`` whether or not
+external SRAM is fitted
+:src:`adaptec-aic-7870-data-book p. 63, 153`, *established* for the
+AIC-7870 and *inferred* for the AIC-7880. The book does not say what an array
+access with a pointer above 15 reaches. The model reads and writes page
+``SCBPTR & 0x0f``, so page 16 is page 0 and page 255 is page 15, while SCBPTR
+keeps all eight bits, an *approximation*. The model sets SCBPTR, QINCNT and
+QOUTCNT to zero on a chip reset or PCI reset, matching the book's initial
+values (:src:`adaptec-aic-7870-data-book p. 61, 63`), *established* for the
+AIC-7870.
 
 SCSI behaviour
 ==============
@@ -176,6 +318,46 @@ and by byte-wise host access to DFDAT. Both read and write phases run as
 asynchronous narrow transfers. A data phase with a nonzero synchronous
 offset or wide transfer programmed in SCSIRATE sets the error state, an
 *approximation* rather than a statement about the chip.
+
+SCSIID (``0x05``) holds the target ID in bits 7:4 and the controller's own
+ID in bits 3:0 :src:`adaptec-aic-7870-data-book p. 80`, *established* for the
+AIC-7870 and *inferred* for the AIC-7880. SBLKCTL (``0x1f``) holds DIAGLEDEN
+(bit 7) and DIAGLEDON (bit 6), both set at reset, AUTOFLUSHDIS (bit 5), clear
+at reset, SELBUSB (bit 3), which always reads zero and ignores writes, and
+SELWIDE (bit 1), loaded from the WIDEPS# strap at reset and writable after
+that :src:`adaptec-aic-7870-data-book p. 96-97`, *established* for the
+AIC-7870. The model stores all eight SCSIID bits as written, so target and own
+IDs from 0 to 15 read back unchanged. It latches SBLKCTL bits 7:5 and 1 as
+written and reads bit 3 as zero.
+
+An ENSELO write in SCSISEQ starts a selection. SSTAT0 SELINGO (bit 4) is set
+while the controller waits for the target to raise BSY and clears when the
+target answers
+:src:`adaptec-aic-7870-data-book p. 73, 84`, *established* for the AIC-7870.
+With SXFRCTL1 ENSTIMER set, an unanswered selection ends when the timer
+expires: the controller releases SEL and sets SSTAT1 SELTO (bit 7). With
+ENSTIMER clear, SEL stays on the bus until the sequencer clears it
+:src:`adaptec-aic-7870-data-book p. 76, 87`, *established* for the AIC-7870.
+SSTAT1 BUSFREE (bit 3) is set once BSY and SEL have been negated for 400 ns
+:src:`adaptec-aic-7870-data-book p. 87`, *established* for the AIC-7870. The
+SXFRCTL1 STIMESEL field (bits 4:3) selects the timeout. The book's table prints
+``256 s`` for value 0 and ``128 ms``, ``64 ms`` and ``32 ms`` for values 1 to 3
+:src:`adaptec-aic-7870-data-book p. 76`: the unit conflicts with the other
+three, so the first value is *unknown*. The Linux
+driver documents 256, 128, 64 and 32 ms (``aic7xxx_osm.c``), *software
+expectation*. The model uses 256, 128, 64 and 32 ms of virtual time, an
+*approximation* that resolves the book's unit conflict in the driver's favour.
+The model sets SELTO that long after the selection starts, releases SEL in the
+same step, leaves SELINGO set, and sets BUSFREE 400 ns later. With SIMODE1
+ENSELTIMO (bit 7) set, SELTO also latches INTSTAT SCSIINT, pauses the sequencer
+and raises the interrupt. With ENSTIMER clear the model never sets SELTO. A
+write that sets ENSTIMER during a pending selection starts the interval at
+that write, and writing the same value again does not restart it, an
+*approximation*: the book does not say how the timer starts.
+
+The model refuses a selection whose target ID equals the controller's own ID,
+for every ID from 0 to 15. It stops the sequencer and leaves SEL, SELINGO and
+SELTO clear, an *approximation*: no source describes selecting oneself.
 
 Interrupts raise INTA when the host interrupt enable is set, the chip is not
 powered down and PCI bus master is enabled. INTSTAT carries the
@@ -225,6 +407,22 @@ identity (``pci-identity``), command DMA, the function registers, SCB
 pointers and aliases, external SCB RAM, wide selection, the PCI status
 register, host DMA and FIFO thresholds, and the sibling policy
 (``o2-sibling-policy-default``, ``o2-sibling-bar-repeats-last-slice``).
+The sequencer additions are pinned by ``function-registers/constants``,
+``function-registers/selectors``, ``function-registers/alu``,
+``function-registers/none-return``, ``function-registers/refusals``,
+``function-registers/state``,
+``jc-branch-transfer``, ``jnc-branch-transfer``, ``circular-call-stack``,
+``four-nested-calls``, ``or-return-without-call``, ``breakpoint`` and
+``breakpoint-address-bits``. The host
+data path is pinned by ``dfcntrl-wideodd``, ``internal-refusal-pci-status-clear`` (the refused bit
+7), ``reserved-host-count-byte``,
+``host-address-loads-scsi-address``, ``host-dma-memory-to-fifo``,
+``host-dma-four-byte-offset``, ``dspcistatus-selector``,
+``dspcistatus-resets``, ``pci-error-status-survives-chip-reset``,
+``internal-scb-pointer/reset`` and ``internal-scb-alias/host``. Selection is
+pinned by ``wide/registers``, ``wide/own-id``, ``wide/target-routing``,
+``selection-timer-intervals``, ``selection-timer-late-enable`` and
+``unmasked-selection-timeout``.
 ``tests/qtest/sgi-o2-test.c`` covers the O2 view of the controllers:
 ``o2/mace-pci-functional/unused-aic-config`` (configuration registers and
 BARs), ``o2/aic-pci-diagnostic``, ``o2/storage-pio-aic-hcntrl`` and the
