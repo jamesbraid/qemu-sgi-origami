@@ -354,6 +354,60 @@ static void test_dma_code(void)
     qtest_quit(s);
 }
 
+/*
+ * A store HEART takes through its ECC path, here with mode bit 21 (force
+ * write) set, must reach code the CPU has already run from that memory.
+ * The IP30 PROM's memory checks write this way after a reset, so code a
+ * previous run left at the exception vectors would otherwise survive the
+ * PROM's own handlers.
+ */
+static void test_ecc_write_code(void)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = NULL;
+    QTestState *s;
+    uint8_t word[4];
+    uint32_t seen, replacement = mips_addiu(SN0_R_V0, SN0_R_ZERO, 2);
+    uint32_t store = mips_branch(SN0_OPC_SW << 26, SN0_R_K0, SN0_R_V0, 0);
+    SgiWait w;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    sn0_emit_li(image, SN0_R_T0, SN0_STATUS_KERNEL);
+    sn0_emit_mtc0(image, SN0_R_T0, SN0_CP0_STATUS);
+    sn0_emit_li64(image, SN0_R_K0, UNCACHED(MAILBOX));
+    sn0_emit_li64(image, SN0_R_T0, UNCACHED(WORD));
+    sn0_emit(image, (SN0_R_T0 << 21) | 8); /* jr t0 */
+    sn0_emit_nop(image);
+    path = sn0_image_write(image, "heart-ecc-write-code");
+    s = qtest_initf("-M octane -cpu R10000 -accel tcg -S -bios %s", path);
+    unlink(path);
+    qtest_writel(s, HEART_REGS + 0x20, 0x80030000);
+    qtest_writel(s, WORD, mips_addiu(SN0_R_V0, SN0_R_ZERO, 1));
+    qtest_writel(s, WORD + 4, store);
+    qtest_writel(s, WORD + 8, mips_branch(SN0_OPC_BEQ << 26, 0, 0, -3));
+    qtest_writel(s, WORD + 12, mips_nop());
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    g_assert_cmpuint(sn0_wait_word(s, 0, MAILBOX), ==, 1);
+
+    qtest_writeq(s, HEART_REGS, ECC_FORCE);
+    qtest_writeq(s, WORD, ((uint64_t)replacement << 32) | store);
+    qtest_writeq(s, HEART_REGS, 0);
+    g_assert_cmphex(qtest_readl(s, WORD), ==, replacement);
+    sgi_wait_start(&w, "second mailbox report");
+    do {
+        g_assert_true(qtest_memread_cpu(s, 0, MAILBOX, word, sizeof(word)));
+        seen = ldl_be_p(word);
+        if (seen == 2) {
+            break;
+        }
+    } while (sgi_wait_continue(&w, 1000));
+    g_assert_cmpuint(seen, ==, 2);
+    qtest_quit(s);
+}
+
 int main(int argc, char **argv)
 {
     static const HeartCPUCase cases[] = {
@@ -369,6 +423,7 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("/heart/cpu/dma-code", test_dma_code);
+    qtest_add_func("/heart/cpu/ecc-write-code", test_ecc_write_code);
     qtest_add_data_func("/heart/cpu/r10000/dropped-requests",
                         GUINT_TO_POINTER(0), test_dropped_requests_cpu);
     qtest_add_data_func("/heart/cpu/r12000/dropped-requests",
