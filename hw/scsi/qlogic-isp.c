@@ -468,6 +468,12 @@ struct QLogicISPState {
     uint16_t rqst_cons;    /* Next request entry this device will read. */
     uint16_t resp_prod;    /* Next response slot this device will write. */
     uint16_t resp_cons;    /* Next response slot the guest has acknowledged. */
+    /*
+     * A status entry was posted after the guest last read the response
+     * pointer, so its handler has not seen it. Clearing the RISC interrupt
+     * leaves the request standing while this is set.
+     */
+    bool resp_unseen;
 
     /* Completions waiting for response room, oldest first. */
     QTAILQ_HEAD(, QLogicISPPendingStatus) pending_status;
@@ -707,6 +713,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
     s->rqst_cons = 0;
     s->resp_prod = 0;
     s->resp_cons = 0;
+    s->resp_unseen = false;
 
     qlogic_isp_drop_pending_status(s);
 
@@ -1249,6 +1256,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         s->resp_len = s->mailbox[1];
         s->resp_prod = 0;
         s->resp_cons = 0;
+        s->resp_unseen = false;
         /* From here reads of the pointer address answer resp_prod. */
 
         /*
@@ -1435,10 +1443,17 @@ static void qlogic_isp_host_command(QLogicISPState *s, uint16_t val)
     case ISP_HOST_CMD_CLEAR_HOST_INT:
         break;
 
-    /* The semaphore is released by the driver's separate write, not here. */
+    /*
+     * The semaphore is released by the driver's separate write, not here.
+     * A status entry posted after the guest's last read of the response
+     * pointer keeps the request standing: IRIX and Linux read the pointer,
+     * then clear, so one landing in between would otherwise never
+     * interrupt.
+     */
     case ISP_HOST_CMD_CLEAR_RISC_INT:
         s->risc_flags &= ~ISP_RISC_FLAG_HOST_INT;
-        s->bus_status = 0;
+        s->bus_status = s->resp_unseen ? ISP_BUS_STATUS_INT_REQ |
+                                         ISP_BUS_STATUS_RISC_INT_REQ : 0;
         qlogic_isp_update_irq(s);
         break;
 
@@ -1601,6 +1616,7 @@ static void qlogic_isp_post_one_status(QLogicISPState *s, uint32_t handle,
     }
 
     s->resp_prod = (s->resp_prod + 1) % s->resp_len;
+    s->resp_unseen = true;
     trace_qlogic_isp_response_ring(s->resp_prod, s->resp_cons);
 
     s->bus_status |= ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ;
@@ -2692,6 +2708,7 @@ static uint64_t qlogic_isp_reg_read(void *opaque, hwaddr addr, unsigned size)
         if (s->resp_len == 0) {
             return s->mailbox[ISP_MAILBOX_RESPONSE_QUEUE];
         }
+        s->resp_unseen = false;
         return s->resp_prod;
     }
 
@@ -3328,6 +3345,28 @@ static const VMStateDescription vmstate_qlogic_isp_hold = {
     }
 };
 
+/*
+ * Sent only while a posted entry is unseen; a stream without it means the
+ * handler has read every entry, the value pre_load leaves.
+ */
+static bool qlogic_isp_resp_unseen_needed(void *opaque)
+{
+    QLogicISPState *s = opaque;
+
+    return s->resp_unseen;
+}
+
+static const VMStateDescription vmstate_qlogic_isp_resp_unseen = {
+    .name = "qlogic-isp/resp-unseen",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = qlogic_isp_resp_unseen_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(resp_unseen, QLogicISPState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /* One completion the guest has not been given room for. */
 static const VMStateDescription vmstate_qlogic_isp_pending_status = {
     .name = "qlogic-isp/pending-status",
@@ -3375,6 +3414,7 @@ static bool qlogic_isp_pre_load(void *opaque, Error **errp)
     qlogic_isp_clear_holds(s);
     s->selection_count = 0;
     s->parked_count = 0;
+    s->resp_unseen = false;
     /* A stream that omits the subsection means the reset value. */
     for (i = 0; i < QLOGIC_ISP_MAX_CHANNELS; i++) {
         s->chan[i].select_timeout = ISP_SELECTION_TIMEOUT_DEFAULT;
@@ -3462,6 +3502,7 @@ static const VMStateDescription vmstate_qlogic_isp = {
         &vmstate_qlogic_isp_isp12160,
         &vmstate_qlogic_isp_selection,
         &vmstate_qlogic_isp_hold,
+        &vmstate_qlogic_isp_resp_unseen,
         NULL
     }
 };

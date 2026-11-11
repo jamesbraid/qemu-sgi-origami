@@ -3436,6 +3436,90 @@ static void test_held_completion_resignals_on_drain(void *obj, void *data,
                     ISP_IOCB_COMPLETE);
 }
 
+/*
+ * A completion that lands after the handler read the producer must still
+ * interrupt once the handler clears. IRIX and Linux both read the producer,
+ * work through the ring, acknowledge and clear RISC_INT_REQ; IRIX then reads
+ * bus status again to see whether anything arrived meanwhile. When the clear
+ * wiped the second completion's request, the entry sat in the ring with no
+ * interrupt until IRIX's command timeout reset the chip.
+ */
+static void test_clear_keeps_a_completion_the_handler_missed(
+    void *obj, void *data, QGuestAllocator *alloc)
+{
+    QQlogicIsp *isp = obj;
+    QPCIDevice *dev = &isp->dev;
+    QPCIBar io;
+    QTestState *qts;
+    uint64_t rqst_addr, resp_addr;
+    uint8_t entry[ISP_QUEUE_ENTRY_SIZE];
+    uint16_t seen;
+
+    qpci_device_enable(dev);
+    io = qpci_iomap(dev, 0, NULL);
+    qts = dev->bus->qts;
+
+    rqst_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+    resp_addr = guest_alloc(alloc, 8 * ISP_QUEUE_ENTRY_SIZE);
+
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_REQ_QUEUE,
+                                   8, rqst_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+    g_assert_cmphex(isp_init_queue(dev, io, ISP_MBOX_CMD_INIT_RSP_QUEUE,
+                                   8, resp_addr), ==, ISP_MBOX_COMPLETE);
+    qlogic_isp_ack(dev, io);
+
+    memset(entry, 0, sizeof(entry));
+    entry[0] = ISP_ENTRY_TYPE_REQUEST;
+    entry[1] = 1;
+    isp_put16(entry, ISP_REQ_OFF_DEVICE, 0);
+    isp_put16(entry, ISP_REQ_OFF_CDBLEN, 6);
+    isp_put16(entry, ISP_REQ_OFF_SEGCOUNT, 0);
+
+    /* A handler with nothing landing behind it clears the request. */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x4001);
+    qtest_memwrite(qts, rqst_addr, entry, sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 1);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+    seen = qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE);
+    g_assert_cmpuint(seen, ==, 1);
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, seen);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+
+    /* The next handler reads the producer... */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x4002);
+    qtest_memwrite(qts, rqst_addr + ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 2);
+    seen = qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE);
+    g_assert_cmpuint(seen, ==, 2);
+
+    /* ...a second target finishes before it clears... */
+    isp_put32(entry, ISP_REQ_OFF_HANDLE, 0x4003);
+    qtest_memwrite(qts, rqst_addr + 2 * ISP_QUEUE_ENTRY_SIZE, entry,
+                   sizeof(entry));
+    qpci_io_writew(dev, io, ISP_REG_REQUEST_QUEUE, 3);
+
+    /* ...and it acknowledges what it read and clears, as IRIX does. */
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, seen);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+
+    /* The entry it never saw keeps the interrupt asserted. */
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==,
+                    ISP_BUS_STATUS_INT_REQ | ISP_BUS_STATUS_RISC_INT_REQ);
+    g_assert_cmpuint(qpci_io_readw(dev, io, ISP_REG_RESPONSE_QUEUE), ==, 3);
+
+    /* Once it has read that producer, a clear clears. */
+    qpci_io_writew(dev, io, ISP_REG_RESPONSE_QUEUE, 3);
+    qpci_io_writew(dev, io, ISP_REG_HOST_CMD,
+                   ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmphex(qpci_io_readw(dev, io, ISP_REG_BUS_STATUS), ==, 0);
+}
+
 static void qlogic_isp_register_nodes(void)
 {
     QOSGraphEdgeOptions opts = {
@@ -3564,6 +3648,9 @@ static void qlogic_isp_register_nodes(void)
                  test_ack_does_not_erase_a_later_completion, NULL);
     qos_add_test("held-completion-resignals-on-drain", "qlogic-isp1040",
                  test_held_completion_resignals_on_drain, NULL);
+    qos_add_test("clear-keeps-a-completion-the-handler-missed",
+                 "qlogic-isp1040",
+                 test_clear_keeps_a_completion_the_handler_missed, NULL);
 }
 
 libqos_init(qlogic_isp_register_nodes);
