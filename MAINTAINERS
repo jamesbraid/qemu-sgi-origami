@@ -1553,6 +1553,7 @@ F: tests/functional/mips64/
 F: tests/qtest/fixtures/
 F: tests/qtest/mips64-*.c
 F: tests/qtest/mips-cpu-exception-fixture.c
+F: tests/qtest/qlogic-isp-migration-test.c
 F: tests/qtest/qlogic-isp-test.c
 F: tests/qtest/qlogic-isp2200-test.c
 F: tests/qtest/qlogic-isp2200-migration-test.c

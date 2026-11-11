@@ -1578,6 +1578,10 @@ Tests
   channel, abort device, abort command, abort target and bus reset scoped to
   a channel, a completion racing an abort, handle reuse and migration of
   distinct state.
+- ``tests/qtest/qlogic-isp-migration-test.c`` migrates an ISP1040 between
+  a handler's read of the response pointer and its interrupt clear, once
+  with an entry posted after the read and once with none, and checks the
+  destination's clear keeps or drops the request to match.
 - ``tests/qtest/scsi-tape-test.c`` drives the tape through an ISP1040. It
   covers inquiry and its identity, unit ready and load, block limits, mode
   sense with write protect and the partition page, write, rewind and read,

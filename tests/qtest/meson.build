@@ -495,6 +495,8 @@ sgi_bridge_card_qtests = \
     ['sgi-rad1-pci-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_QLOGIC_ISP_SCSI_PCI') ?
+    ['qlogic-isp-migration-test'] : []) + \
   (config_all_devices.has_key('CONFIG_QLOGIC_ISP2200_PCI') ?
     ['qlogic-isp2200-migration-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_DBRICK') ? ['sgi-dbrick-test'] : []) + \
