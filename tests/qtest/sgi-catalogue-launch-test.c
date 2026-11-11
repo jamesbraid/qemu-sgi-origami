@@ -283,11 +283,12 @@ static void append_cpu_memory(GPtrArray *args, QDict *o)
     g_ptr_array_add(args, g_strdup_printf("%" PRId64,
                                           qdict_get_int(o, "smp")));
     /*
-     * Over 16 GiB (the Origin 3800 offerings) a builder host cannot back one
-     * plain -m reservation, so those launches map their RAM unreserved.
+     * From 16 GiB up (the Origin 3400 and 3800 offerings) a builder host
+     * cannot back one plain -m reservation, so those launches map their
+     * RAM unreserved.
      */
     ram_mib = qdict_get_int(memory, "default") * nodes;
-    if (ram_mib > 16 * 1024) {
+    if (ram_mib >= 16 * 1024) {
         g_autofree char *ram =
             g_strdup_printf(SGI_UNRESERVED_RAM("%" PRId64 "M"), ram_mib);
         g_auto(GStrv) words = g_strsplit(ram, " ", 0);

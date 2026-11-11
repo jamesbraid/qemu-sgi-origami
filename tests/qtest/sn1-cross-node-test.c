@@ -1313,7 +1313,7 @@ static void test_reset_page_is_node_zeros(void)
  * on router port 3 and node 0 on port 2, so its route to number 0 is turn 7.
  */
 #define ORIGIN3400_ARGS "-M origin3000,topology=origin3400 " \
-                        "-cpu R12000 -smp 16 -m 16384"
+                        "-cpu R12000 -smp 16 " SGI_UNRESERVED_RAM("16384M")
 #define NI_LOCAL_ROUTE(number) (UINT64_C(0x681000) + (number) * 8)
 #define ROUTED_PROBE UINT64_C(0x10000)
 
@@ -1510,7 +1510,7 @@ static void test_router_l1_power_follows_the_switch(void)
  * for those numbers stay unwritten.
  */
 #define TWO_ROUTER_ARGS "-M origin3000,topology=origin3400-two-routers " \
-                        "-cpu R12000 -smp 16 -m 16384"
+                        "-cpu R12000 -smp 16 " SGI_UNRESERVED_RAM("16384M")
 #define ROUTER_LOCAL_TABLE(link, number) \
     (router_link_bank[(link) - 1] + UINT64_C(0x200) + (number) * 8)
 

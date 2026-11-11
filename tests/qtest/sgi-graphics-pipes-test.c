@@ -81,7 +81,7 @@ static const Launch launches[] = {
       "-cpu R16000,reset-mode=0x009bad85"
       " -smp 4 -m 4G", SN1_PROM, NULL, true },
     { "onyx3400-ir", "origin3000,topology=onyx3400-ir",
-      "-cpu R12000 -smp 16 -m 16384", SN1_PROM,
+      "-cpu R12000 -smp 16 " SGI_UNRESERVED_RAM("16384M"), SN1_PROM,
       "/machine/module5/gbrick0-pipe0-pipe" },
 };
 
