@@ -20617,6 +20617,28 @@ static const MemoryRegionOps sgi_kona_ops = {
     },
 };
 
+/*
+ * A link reset from the Crossbow port this board sits on. An in-guest
+ * reboot restarts the PROM without a machine reset, so this is the reset
+ * the board can still be given then: the Onyx2 kernel's InfiniteReality
+ * reset path sends one, and the driver rewrites the widget's registers
+ * afterwards (inferred from analysis of the shipped kernels). Its order
+ * against the host-interface reset pulse (SGI_KONA_RESET_STROBE) is not
+ * established; the two are separate paths. Taken as a full widget reset,
+ * an approximation: what the part keeps through a link reset is not
+ * documented, and the driver's rewrite of the widget registers only shows
+ * that the Crosstalk interface registers are lost.
+ */
+static void sgi_kona_link_reset(void *opaque, int line, int level)
+{
+    SGIKonaState *s = opaque;
+
+    if (level) {
+        trace_sgi_kona_link_reset();
+        device_cold_reset(DEVICE(s));
+    }
+}
+
 static bool sgi_kona_build_widget(SGIXioBoardState *board,
                                   Error **errp)
 {
@@ -20658,6 +20680,7 @@ static bool sgi_kona_build_widget(SGIXioBoardState *board,
                                    s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
+    board->link_reset = qdev_get_gpio_in_named(DEVICE(s), "link-reset", 0);
     return true;
 }
 
@@ -21415,6 +21438,7 @@ static void sgi_kona_instance_init(Object *obj)
 {
     SGIKonaState *s = SGI_KONA(obj);
 
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_kona_link_reset, "link-reset", 1);
     sgi_kona_texture_init(&s->textures);
     s->context_current = SGI_KONA_CONTEXT_NONE;
     object_property_add(obj, "x-record-mark", "uint32", NULL,

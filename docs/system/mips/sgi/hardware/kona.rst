@@ -1174,6 +1174,32 @@ cleared. The flash keeps its contents; only an operation in progress ends.
 After reset the textport expects a sync word. How the pipe's reset domains
 behave is *unknown*; these are model choices.
 
+Two pulses reach the pipe without a machine reset. A write of the reset
+strobe with bit 0 set, the host-interface reset the driver pulses at attach
+and when it recovers credit, clears only the interrupt enable, the reset
+argument, the credit configuration, the low-window group word and the map
+RAM; that it clears these is *inferred* from the driver rewriting them
+afterwards, and what it does to the rest is *unknown*.
+
+A pulse on the :term:`Crossbow` link the pipe sits on is a full reset of the
+pipe. An in-guest reboot (``init 6``) restarts the PROM without a machine
+reset, and the Onyx2 kernel's InfiniteReality reset path link-resets the
+pipe's port and rewrites the widget's registers afterwards. The strobe
+above is a separate path, and the order of the two is not established. The
+PROM sends the pipe no link reset. Both are *inferred* from analysis of
+the shipped IRIX kernels and PROMs. Without the input, nothing the board
+held from the earlier boot was cleared; an Onyx2 with one InfiniteReality2
+pipe (IRIX 6.5.21f) still ran OpenGL (Performer and ``gr_osview``) after two
+reboots, so no stale register that breaks a guest is known. That a link
+pulse resets the pipe's internals at all is *unknown*; the driver's rewrite
+of the widget control, interrupt destination, vector, time-out, error and
+water-mark registers after it only shows that the :term:`Crosstalk` interface
+registers are lost (*inferred*), and the driver does not re-run its map RAM
+initialisation (*inferred*, so a real pipe's map RAM probably survives).
+The model's full cold reset is therefore an *approximation*: it clears the
+map RAM and the firmware load as well, which the boot and reboot above
+tolerated.
+
 Migration
 =========
 
@@ -1357,7 +1383,8 @@ The qtests fit the pipe with ``-device sgi-kona`` on
 ``-M origin2000,nodes=1,x-uncatalogued-graphics=on`` unless noted.
 
 - ``tests/qtest/sn0-origin2000-kona-test.c``: identity and aperture,
-  one-wire records, plain-storage registers, reset, credit register,
+  one-wire records, plain-storage registers, reset, the pipe's reset by a
+  link reset, credit register,
   textport commands and mailbox protocol, map RAM and migration.
 - ``tests/qtest/sn0-origin2000-kona-textport-test.c``: bitmap placement
   against a recorded PROM label.

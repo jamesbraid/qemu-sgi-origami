@@ -1682,6 +1682,43 @@ static void test_reset_clears_plain_storage(void)
 }
 
 /*
+ * A link reset sent to the board's Crossbow port resets the board without
+ * a machine reset. After an in-guest reboot it is the reset the board can
+ * still get: the IRIX InfiniteReality driver link-resets the port before it
+ * rewrites the widget's registers. The Crossbow's link reset register for
+ * widget 11 is at 0x130 + 3 * 0x40.
+ */
+#define XBOW_LINK_RESET_KONA (SPACE_IO + 0x130 + (KONA_WIDGET - 8) * 0x40 + 4)
+
+static void test_link_reset_resets_board(void)
+{
+    uint8_t zero[4] = { 0 };
+
+    kona_reset();
+    qtest_writel(qts, REG_WIDGET_CONTROL, 0xdeadbeef);
+    qtest_writel(qts, REG_LOW_WINDOW_WRITE, 0x23);
+    qtest_writel(qts, REG_RESET_ARG, 3);
+    qtest_writel(qts, REG_INT_ENABLE, 1);
+    qtest_writel(qts, MAPRAM_ENTRY(1), 0x10000001);
+    kona_textport_push(qts, 0x3,
+                       (uint32_t[]){ 1, 0xc0 << 2, 0xff << 2, 0xee << 2 }, 4);
+    kona_textport_push(qts, 0x2, (uint32_t[]){ 1 }, 1);
+    kona_textport_push(qts, 0x6, (uint32_t[]){ 700, 700 }, 2);
+    g_assert_cmphex(kona_test_pixel(qts, 700, 700), ==, 0x00c0ffee);
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), !=, 0);
+
+    g_assert_true(qtest_memwrite_cpu(qts, 0, XBOW_LINK_RESET_KONA, zero,
+                                     sizeof(zero)));
+
+    g_assert_cmphex(qtest_readl(qts, REG_WIDGET_CONTROL), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_LOW_WINDOW_WRITE), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG_RESET_ARG), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, MAPRAM_ENTRY(1)), ==, 0);
+    g_assert_cmphex(kona_test_pixel(qts, 700, 700), ==, 0);
+    qtest_clock_step(qts, 20);
+}
+
+/*
  * Dirty each state added by the Kona device, reset, then probe it. The
  * textport's generic-framer state and bitmap mid-payload state need
  * separate phases: once selector 0xa engages the bitmap interceptor, its
@@ -1920,6 +1957,8 @@ int main(int argc, char **argv)
                    test_nic_search_rom_walks_rack_and_deskside);
     qtest_add_func("sn0/origin2000/kona/reset-clears-plain-storage",
                    test_reset_clears_plain_storage);
+    qtest_add_func("sn0/origin2000/kona/link-reset-resets-board",
+                   test_link_reset_resets_board);
     qtest_add_func("sn0/origin2000/kona/reset-clears-increment-2-state",
                    test_reset_clears_increment2_state);
     qtest_add_func("sn0/origin2000/kona/credit-register-reads-fixed-zero",
