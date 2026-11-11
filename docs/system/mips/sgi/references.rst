@@ -1043,6 +1043,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-35ab0320``
    *comp.sys.sgi.graphics, 1998-07-14, three keyboards on a two-rack Onyx2, Message-ID <35AB0320.794B@kyb.tuebingen.mpg.de>*. Usenet. Capture, cited by line. Message-ID ``<35AB0320.794B@kyb.tuebingen.mpg.de>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-396673aa:
+
+``usenet-396673aa``
+   *comp.sys.sgi.hardware, 2000-07-07, Re: Digital audio port on Indigo2, Message-ID <396673AA.968E9BCB@cartsys.com>*. Usenet. Capture, cited by line. Message-ID ``<396673AA.968E9BCB@cartsys.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-39b750e0:
 
 ``usenet-39b750e0``

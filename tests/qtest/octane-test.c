@@ -3462,6 +3462,139 @@ static void test_rad_input_clock(void)
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
+static void octane_rad_digital_out_program(QTestState *qts, bool adat,
+                                           uint64_t base, uint32_t ctrl)
+{
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x4e8 : 0x4f0), base);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x51c : 0x520), base >> 32);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x4ec : 0x4f4), ctrl);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x43c : 0x424), base);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x440 : 0x428), base >> 32);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x444 : 0x42c), ctrl);
+}
+
+/*
+ * Discreet Flame 7.6 opens the AES3 and ADAT outputs through IRIX 6.5.13f.
+ * The kernel mixer turns each output's status-slot pointer (+0x30 AES3, +0x28
+ * ADAT) into the ring's read index, so a refused enable that leaves the
+ * pointer at zero gives an index far outside the ring, and the mixer then
+ * zero-fills its buffer without end. Once enabled with the driver's rings,
+ * both outputs must run and publish pointers inside their rings.
+ */
+static void test_rad_digital_outputs(void)
+{
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    const uint64_t buffer = RAM + 0x8000;
+    const uint32_t aes = 0xa000a000, adat = 0xa000c000;
+    int fd = g_file_open_tmp("octane-rad-digital-XXXXXX", &log_path, NULL);
+    uint32_t count, aes_ptr, adat_ptr;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = octane_start_args(extra);
+    qtest_irq_intercept_out_named(qts, "/machine/heart", "processor");
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+
+    /* IRIX's start-up words leave both outputs stopped. */
+    qtest_writel(qts, RAD_BAR0 + 0x50, 0x60000000);
+    qtest_writel(qts, RAD_BAR0 + 0x54, 0x40000000);
+
+    /* The AES3 ring size in the ADAT descriptor names no ADAT ring. */
+    octane_rad_digital_out_program(qts, true, adat, 0xfffff028);
+    qtest_writel(qts, RAD_BAR0 + 0x50, 0x60000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x50), ==, 0x60000000);
+    /* Set B must repeat set A. */
+    octane_rad_digital_out_program(qts, false, aes, 0xfffff018);
+    qtest_writel(qts, RAD_BAR0 + 0x424, aes + 0x1000);
+    qtest_writel(qts, RAD_BAR0 + 0x54, 0x40000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x54), ==, 0x40000000);
+
+    /* The rings IRIX 6.5.13f programs: 4 KiB AES3, 16 KiB ADAT. */
+    octane_rad_digital_out_program(qts, false, aes, 0xfffff018);
+    octane_rad_digital_out_program(qts, true, adat, 0xffffc028);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4f4), ==, 0xfffff018);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4e8), ==, adat);
+    qtest_writel(qts, RAD_BAR0 + 0x54, 0x40000001);
+    qtest_writel(qts, RAD_BAR0 + 0x50, 0x60000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x54), ==, 0x40000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x50), ==, 0x60000001);
+    qtest_clock_step(qts, 22675);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x24) >> 18, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1c) >> 18, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x24) >> 18, ==, 1);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1c) >> 18, ==, 1);
+
+    /* A running ring cannot be reprogrammed. */
+    qtest_writel(qts, RAD_BAR0 + 0x4f0, 0xa000b000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4f0), ==, aes);
+    qtest_writel(qts, RAD_BAR0 + 0x444, 0xfffff028);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x444), ==, 0xffffc028);
+
+    /* 25 ms at 44.1 kHz: past one lap of each 512-frame ring. */
+    qtest_clock_step(qts, 24977324);
+    count = 1102;
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x24) >> 18, ==, count);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x28) >> 18, ==, count);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x1c) >> 18, ==, count);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x20) >> 18, ==, count);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x2c), ==, 0);
+
+    octane_rad_status_program(qts, 0xa0008000, 0xfffffffc);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    aes_ptr = qtest_readl(qts, buffer + 0x30);
+    adat_ptr = qtest_readl(qts, buffer + 0x28);
+    g_assert_cmphex(aes_ptr, ==, aes + count * 8 % 0x1000);
+    g_assert_cmphex(adat_ptr, ==, adat + count * 32 % 0x4000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x38), ==, 0);
+
+    /* Disable holds the count and the pointer; other bits are kept. */
+    qtest_writel(qts, RAD_BAR0 + 0x54, 0x4000000c);
+    qtest_writel(qts, RAD_BAR0 + 0x50, 0x60000000);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x54), ==, 0x4000000c);
+    qtest_clock_step(qts, 1000000);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x24) >> 18, ==, count);
+    g_assert_cmpuint(qtest_readl(qts, RAD_BAR0 + 0x1c) >> 18, ==, count);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x30), ==, aes_ptr);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0x28), ==, adat_ptr);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(0x100)) & RAD_PIN, ==, 0);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_false(qtest_get_irq(qts, i));
+    }
+
+    qtest_system_reset(qts);
+    octane_rad_map(qts);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x24), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x1c), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4f0), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x444), ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x50 "
+                                 "value 0x60000001"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x54 "
+                                 "value 0x40000001"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x4f0 "
+                                 "value 0xa000b000"));
+    g_assert_nonnull(strstr(log, "unsupported 4-byte BAR0 write at 0x444 "
+                                 "value 0xfffff028"));
+    g_assert_null(strstr(log, "at 0x520"));
+    g_assert_null(strstr(log, "at 0x51c"));
+    g_assert_null(strstr(log, "DMA at"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
 /*
  * Clock generator words IRIX 6.5.30 writes for each rate, measured on another
  * emulator's RAD1 model (iris, github.com/jamesbraid/iris, commit 4ec2939's
@@ -4069,8 +4202,7 @@ static void test_rad_startup_unsupported(void)
     const unsigned enables[] = { 0x44, 0x48, 0x4c, 0x50, 0x54 };
     const unsigned holes[] = { 0x1078, 0x107c, 0x10f8, 0x10fc, 0x1220 };
     const unsigned descriptors[] = {
-        0x4c4, 0x4cc, 0x4dc, 0x4ec, 0x4f4,
-        0x508, 0x50c, 0x514, 0x51c, 0x520,
+        0x4c4, 0x4cc, 0x4dc, 0x508, 0x50c, 0x514,
     };
     uint8_t memory[0x100];
 
@@ -6858,6 +6990,7 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-status-routes", test_rad_status_routes);
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
+    qtest_add_func("/octane/rad-digital-outputs", test_rad_digital_outputs);
     qtest_add_func("/octane/rad-clock-irix-words", test_rad_clock_irix_words);
     qtest_add_func("/octane/rad-clock-master", test_rad_clock_master);
     qtest_add_func("/octane/rad-clock-generators", test_rad_clock_generators);
