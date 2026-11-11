@@ -83,6 +83,12 @@
 #define SPURIOUS_HEADER_0 0x4c8
 #define SPURIOUS_HEADER_1 0x4d0
 #define RT_COUNTER 0x30100
+#define PERF_CNTL_A 0x40200
+#define PERF_CNTR0_A 0x40208
+#define PERF_CNTR1_A 0x40210
+#define PERF_CNTL_B 0x50200
+#define PERF_CNTR0_B 0x50208
+#define PERF_CNTR1_B 0x50210
 #define RT_MASK ((1ULL << 55) - 1)
 #define RT_TICK_NS 800
 #define GFX_CREDIT(slot) (0x308 + 0x28 * (slot))
@@ -685,6 +691,8 @@ static void write_reset_probe(QTestState *s)
     qtest_writeq(s, PI(0, RT_COMPARE_A), 0x5678);
     qtest_writeq(s, PI(0, RT_ENABLE_A), 1);
     qtest_writeq(s, PI(0, ERROR_MASK_A), 1ULL << 3);
+    qtest_writeq(s, PI(0, PERF_CNTR1_B), 0x77);
+    qtest_writeq(s, PI(1, PERF_CNTL_A), 0x55);
     qtest_writeq(s, XB(0x20), 1);
     g_assert_cmphex(qtest_readq(s, PI(1, PENDING_1)), ==,
                     (1ULL << 10) | (1ULL << 54));
@@ -717,6 +725,8 @@ static void check_reset_probe(QTestState *s)
     g_assert_cmphex(qtest_readq(s, PI(0, RT_COMPARE_A)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, RT_ENABLE_A)), ==, 0);
     g_assert_cmphex(qtest_readq(s, PI(0, ERROR_MASK_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTR1_B)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(1, PERF_CNTL_A)), ==, 0);
     g_assert_false(qtest_get_irq(s, 0));
     g_assert_false(qtest_get_irq(s, 16));
 }
@@ -1357,6 +1367,135 @@ static void test_rt_counter_access_width(void)
 }
 
 /*
+ * The six performance registers of each interface (control, counter 0 and
+ * counter 1, slots A and B): the public header names them and gives no
+ * fields or reset values, so the model keeps what software writes, reads zero
+ * after reset and counts nothing. The IRIX crash dump reads all twelve with
+ * 64-bit loads.
+ */
+static void test_perf_registers(void)
+{
+    static const unsigned regs[] = {
+        PERF_CNTL_A, PERF_CNTR0_A, PERF_CNTR1_A,
+        PERF_CNTL_B, PERF_CNTR0_B, PERF_CNTR1_B,
+    };
+    QTestState *s = start_clock("");
+
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+            g_assert_cmphex(qtest_readq(s, PI(pi, regs[i])), ==, 0);
+        }
+    }
+
+    /* Every bit is kept, each register apart from the others and the PIs. */
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+            qtest_writeq(s, PI(pi, regs[i]),
+                         0x8000000000000001ULL + (pi << 8) + (i << 4));
+        }
+    }
+    for (unsigned pi = 0; pi < 2; pi++) {
+        for (unsigned i = 0; i < ARRAY_SIZE(regs); i++) {
+            g_assert_cmphex(qtest_readq(s, PI(pi, regs[i])), ==,
+                            0x8000000000000001ULL + (pi << 8) + (i << 4));
+        }
+    }
+
+    /* A stored counter does not move with time. */
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTR0_A)), ==,
+                    0x8000000000000011ULL);
+
+    /* Only aligned 64-bit accesses reach them. */
+    qtest_writel(s, PI(0, PERF_CNTR0_A), 0);
+    qtest_writel(s, PI(0, PERF_CNTR0_A) + 4, 0);
+    qtest_writeb(s, PI(0, PERF_CNTR0_A) + 7, 0);
+    qtest_writeq(s, PI(0, PERF_CNTR0_A) + 4, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTR0_A)), ==,
+                    0x8000000000000011ULL);
+    g_assert_cmphex(qtest_readl(s, PI(0, PERF_CNTR0_A)), ==, 0);
+    g_assert_cmphex(qtest_readl(s, PI(0, PERF_CNTR0_A) + 4), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTR0_A) + 4), ==, 0);
+
+    /* The edges of the block are not registers: no neighbour is reached. */
+    qtest_writeq(s, PI(0, 0x40218), UINT64_MAX);
+    qtest_writeq(s, PI(0, 0x501f8), UINT64_MAX);
+    qtest_writeq(s, PI(0, 0x50218), UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTR1_A)), ==,
+                    0x8000000000000021ULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, PERF_CNTL_B)), ==,
+                    0x8000000000000031ULL);
+    g_assert_cmphex(qtest_readq(s, PI(0, 0x40218)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, 0x501f8)), ==, 0);
+
+    /* Registers outside the performance block are untouched. */
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COMPARE_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, ERROR_MASK_A)), ==, 0);
+    qtest_quit(s);
+}
+
+/*
+ * A qtest read of a rejected access returns zero, the same as a register that
+ * reads zero, so the data cannot show a hole. The memory core logs a rejected
+ * access under -d invalid_mem ("Invalid read ... reason: rejected"), which
+ * can: the hole offsets must be logged and the six registers must not be.
+ */
+static void test_perf_block_holes(void)
+{
+    static const uint64_t holes[] = {
+        0x30108, 0x401f8, 0x40218, 0x501f8,
+    };
+    g_autofree char *path = g_strdup_printf("%s/sn1-pi-perf-XXXXXX.log",
+                                            g_get_tmp_dir());
+    g_autofree char *extra = NULL;
+    char *found = NULL;
+    unsigned n_before;
+    QTestState *s;
+    int fd = g_mkstemp(path);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d invalid_mem -D %s", path);
+    s = start(extra);
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    g_assert_null(strstr(found, "Invalid"));
+    g_free(found);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(holes); i++) {
+        g_autofree char *needle = NULL;
+
+        qtest_readq(s, PI(0, holes[i]));
+        /* The log names the offset inside the PI region, in capitals. */
+        needle = g_strdup_printf("Invalid read at addr 0x%" PRIX64
+                                 ", size 8, region 'sgi-bedrock-pi', "
+                                 "reason: rejected", holes[i]);
+        g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+        g_assert_nonnull(strstr(found, needle));
+        g_free(found);
+    }
+
+    /*
+     * The twelve registers are accepted: no further access is logged. The
+     * log keeps the hole entries, so count them rather than looking for none.
+     */
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    n_before = g_strv_length(g_strsplit(found, "Invalid", 0));
+    g_free(found);
+    for (unsigned pi = 0; pi < 2; pi++) {
+        qtest_readq(s, PI(pi, PERF_CNTL_A));
+        qtest_readq(s, PI(pi, PERF_CNTR1_A));
+        qtest_readq(s, PI(pi, PERF_CNTL_B));
+        qtest_readq(s, PI(pi, PERF_CNTR1_B));
+    }
+    g_assert_true(g_file_get_contents(path, &found, NULL, NULL));
+    g_assert_cmpuint(g_strv_length(g_strsplit(found, "Invalid", 0)), ==,
+                     n_before);
+    g_free(found);
+    qtest_quit(s);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
  * The graphics interrupt counter (SN1 hubpi.h): it counts while the
  * credit counter is at or below zero, sends the graphics interrupt,
  * pending bit 1 + slot, when it reaches the compare and is loaded with the
@@ -1471,6 +1610,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-pi/migration-counter-phase",
                    test_migration_preserves_counter_phase);
     qtest_add_func("sn1/bedrock-pi/cpu-enable-lines", test_cpu_enable_lines);
+    qtest_add_func("sn1/bedrock-pi/perf-registers", test_perf_registers);
+    qtest_add_func("sn1/bedrock-pi/perf-block-holes", test_perf_block_holes);
     qtest_add_func("sn1/bedrock-pi/gfx-interrupt-counter",
                    test_gfx_interrupt_counter);
     qtest_add_func("sn1/bedrock-pi/cpu-enable-migration",

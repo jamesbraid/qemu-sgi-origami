@@ -12,7 +12,12 @@
 #define TYPE_SGI_BEDROCK_PI "sgi-bedrock-pi"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockPIState, SGI_BEDROCK_PI)
 
-#define SGI_BEDROCK_PI_SIZE 0x30108
+/*
+ * The last performance register ends at 0x50218. The span from 0x30108 to
+ * 0x40200, and the gap after the A set, is not decoded (pi_accepts()).
+ */
+#define SGI_BEDROCK_PI_SIZE 0x50218
+#define SGI_BEDROCK_PI_PERF_REGS 6
 #define SGI_BEDROCK_PI_PROCESSORS 2
 #define SGI_BEDROCK_PI_HW_IRQS 5
 #define SGI_BEDROCK_PI_LEVEL_SOURCES 256
@@ -82,6 +87,11 @@ struct SGIBedrockPIState {
     uint64_t nack_count[2];
     uint32_t nack_compare;
     uint8_t spool_mask;
+    /*
+     * Performance control, counter 0 and counter 1 of slot A, then of slot
+     * B. Plain storage: nothing counts (see the manual page).
+     */
+    uint64_t perf[SGI_BEDROCK_PI_PERF_REGS];
     uint8_t err_check_enable;
     uint64_t spurious_header[2];
     uint64_t rt_base;

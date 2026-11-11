@@ -148,11 +148,11 @@ each unit at its base, with these sizes:
      - Device
    * - ``0x000000``
      - processor interface 0
-     - ``0x30108``
+     - ``0x50218``
      - ``sgi-bedrock-pi``
    * - ``0x200000``
      - processor interface 1
-     - ``0x30108``
+     - ``0x50218``
      - ``sgi-bedrock-pi``
    * - ``0x400000``
      - I/O interface (II)
@@ -176,7 +176,10 @@ each unit at its base, with these sizes:
      - ``sgi-bedrock-md``
 
 An access to a hole between units fails, so the processor takes a bus
-error. All registers are big-endian 64-bit words. Every unit accepts
+error. A processor interface's size reaches past its real-time counter
+only to hold the performance registers; the stretches around them
+(``0x30108`` to ``0x401ff``, ``0x40218`` to ``0x501ff``) fail the same way.
+All registers are big-endian 64-bit words. Every unit accepts
 only aligned 64-bit accesses, except that the processor interface also
 takes 32-bit reads of each half of its real-time counter. Any other
 width or alignment fails the same way. That restriction is a model
@@ -423,6 +426,18 @@ their value across a local reset and a machine reset alike.
      - ``0``, kept
      - read/write
      -
+   * - ``0x40200``, ``0x40208``, ``0x40210``
+     - performance control A; performance counter 0 A, 1 A
+     - 64
+     - ``0``
+     - read/write
+     - :ref:`sgi-bedrock-pi-perf`.
+   * - ``0x50200``, ``0x50208``, ``0x50210``
+     - performance control B; performance counter 0 B, 1 B
+     - 64
+     - ``0``
+     - read/write
+     - :ref:`sgi-bedrock-pi-perf`.
    * - ``0x20068``
      - graphics credit mode
      - 1
@@ -445,10 +460,76 @@ reset, its choice, since their power-on values are *unknown*.
 Reads of write-only registers log ``LOG_GUEST_ERROR`` and return zero.
 Writes to CPU number and CPU present log ``LOG_UNIMP``. Other offsets
 the header defines but the model leaves out (debug select, the
-force-bad-check-bit pair, reply level, performance counters, spool
-compare, error injection) and the undefined offsets ``0x80`` and
+force-bad-check-bit pair, reply level, spool compare, error injection) and the undefined offsets ``0x80`` and
 ``0x88``, which only the Itanium port writes, read zero and drop writes
 with ``LOG_UNIMP``.
+
+.. _sgi-bedrock-pi-perf:
+
+Performance registers
+---------------------
+
+Each interface has six performance registers: a control word and two
+counters for processor slot A at ``0x40200``, ``0x40208`` and
+``0x40210``, and the same three for slot B at ``0x50200``, ``0x50208``
+and ``0x50210`` (``PI_PERF_CNTL_A``, ``PI_PERF_CNTR0_A``,
+``PI_PERF_CNTR1_A`` and the B set, SN1 ``hubpi.h``). What is known about
+them:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Fact
+     - Grade
+     - Basis
+   * - Names and offsets, 8 bytes apart, the B set 0x10000 above the A set
+     - *established*
+     - ``hubpi.h``, a *software expectation*; the second interface repeats
+       them at ``+0x200000``.
+   * - Each is read with a 64-bit load
+     - *established*
+     - The IRIX 6.5.30 IP35 kernel reads all six per interface with plain
+       64-bit loads in its crash dump (kernel analysis; image address in
+       the Origami processor-interface datasheet), a *software
+       expectation*.
+   * - The block exists on the chip and is read/write
+     - *inferred*
+     - Names only. The header has no field layout, access mode or reset
+       value for these six, as it does for the memory unit's performance
+       registers. The crash dump needing a completed read shows only that
+       a load completes.
+   * - Fields, counted events, counter width and overflow behaviour
+     - *unknown*
+     - No source states them. Pending-1 bit 58 is named performance
+       counter overflow in the header and the debug-select layout names
+       per-slot counter increment signals, so the counters can raise
+       that bit and increment from internal signals; their enables and
+       thresholds are not described.
+   * - Reset value and whether a soft reset clears them
+     - *unknown*
+     - No capture or document.
+
+The model keeps each of the six as a full 64-bit stored word. They reset
+to zero with the rest of the interface, and a soft reset clears them like
+the interface's other counters. Aligned 64-bit reads and writes only, the
+interface's usual width policy. A write of a nonzero control word logs
+``LOG_UNIMP`` because nothing counts.
+
+Approximation, and why. The registers exist so a load completes: the IRIX
+crash dump reads them on every dump and a bus error there ends the dump in
+a double panic. The model's counters hold what software writes and never
+increment, the control word selects nothing, pending-1 bit 58 is never
+raised, and the 64-bit storage width and zero reset are choices. Software
+that programs the counters to profile a guest sees no counts. This is
+the same treatment as the memory unit's performance registers
+(:ref:`sgi-bedrock-md`). The discriminating qtests are
+``sn1/bedrock-pi/perf-registers``, which shows a written counter does not
+move with time, ``sn1/bedrock-pi/perf-block-holes``, which reads the
+offsets around the block and finds each rejected in the memory log while
+the twelve registers are not, and
+``sn1/bedrock-pi/local-reset``, which shows a reset clears them. A
+capture of the six registers after a normal boot on a real Bedrock, or a
+Bedrock register reference, would settle width, reset and fields.
 
 .. _sgi-bedrock-pi-presence:
 

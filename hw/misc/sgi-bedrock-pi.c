@@ -80,6 +80,16 @@
 #define PI_SPURIOUS_HEADER_1 0x4d0
 #define PI_RT_COUNTER        0x30100
 /*
+ * Performance control and the two counters of each slot, 8 bytes apart. The
+ * public header names them and gives no fields, so each is a full 64-bit
+ * word.
+ */
+#define PI_PERF_CNTL_A       0x40200
+#define PI_PERF_CNTL_B       0x50200
+#define PI_PERF_CNTR_STRIDE  0x08
+/* The first offset past the registers before the performance block. */
+#define PI_MAIN_END          0x30108
+/*
  * Graphics flow control: ten registers from 0x300, five per slot, whose
  * rules are the shared block's (hw/mips/sgi/pi-gfx.c), and the credit-mode
  * bit in its own page. The count and the return reach the block through
@@ -642,6 +652,23 @@ static unsigned pi_population_mask(SGIBedrockPIState *s)
         (1U << MIN(s->processor_count, 4U)) - 1;
 }
 
+/*
+ * The index into perf[] of the performance register at @offset, or -1.
+ * Slot A's three registers come first, then slot B's.
+ */
+static int pi_perf_index(hwaddr offset)
+{
+    for (unsigned slot = 0; slot < 2; slot++) {
+        hwaddr base = slot ? PI_PERF_CNTL_B : PI_PERF_CNTL_A;
+
+        if (offset >= base && offset < base + 3 * PI_PERF_CNTR_STRIDE &&
+            !(offset & (PI_PERF_CNTR_STRIDE - 1))) {
+            return slot * 3 + (offset - base) / PI_PERF_CNTR_STRIDE;
+        }
+    }
+    return -1;
+}
+
 static uint64_t pi_cpu_number(SGIBedrockPIState *s)
 {
     if (current_cpu) {
@@ -659,7 +686,11 @@ static uint64_t pi_read_locked(void *opaque, hwaddr offset, unsigned size)
 {
     SGIBedrockPIState *s = opaque;
     unsigned mask = pi_population_mask(s);
+    int perf = pi_perf_index(offset);
 
+    if (perf >= 0) {
+        return s->perf[perf];
+    }
     if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
         unsigned n = (offset - SGI_PI_GFX_BASE) / 8;
 
@@ -769,7 +800,18 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
 {
     SGIBedrockPIState *s = opaque;
     int cpu = current_cpu ? current_cpu->cpu_index : -1;
+    int perf = pi_perf_index(offset);
 
+    if (perf >= 0) {
+        s->perf[perf] = value;
+        /* Control word 0 of either slot: a nonzero value asks to count. */
+        if (perf % 3 == 0 && value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-bedrock-pi: performance counting "
+                          "is not modelled (control 0x%" HWADDR_PRIx
+                          " = 0x%" PRIx64 ")\n", offset, value);
+        }
+        return;
+    }
     if (offset >= SGI_PI_GFX_BASE && offset < PI_GFX_END) {
         pi_gfx_write(s, (offset - SGI_PI_GFX_BASE) / 8, value);
         return;
@@ -1069,6 +1111,13 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
 static bool pi_accepts(void *opaque, hwaddr addr, unsigned size,
                        bool is_write, MemTxAttrs attrs)
 {
+    /*
+     * Past the real-time counter only the performance registers answer; the
+     * rest of the span is a hole, which fails like the one between units.
+     */
+    if (addr >= PI_MAIN_END && pi_perf_index(addr) < 0) {
+        return false;
+    }
     if (is_write) {
         return size == 8;
     }
@@ -1149,6 +1198,7 @@ static void pi_reset_enter(Object *obj, ResetType type)
     s->remap = 0;
     memset(s->error_mask, 0, sizeof(s->error_mask));
     memset(s->nack_count, 0, sizeof(s->nack_count));
+    memset(s->perf, 0, sizeof(s->perf));
     s->nack_compare = 0;
     s->spool_mask = 0;
     s->err_check_enable = 0;
@@ -1260,6 +1310,8 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_UINT32(nack_compare, SGIBedrockPIState),
         VMSTATE_UINT8(spool_mask, SGIBedrockPIState),
         VMSTATE_UINT8(err_check_enable, SGIBedrockPIState),
+        VMSTATE_UINT64_ARRAY(perf, SGIBedrockPIState,
+                             SGI_BEDROCK_PI_PERF_REGS),
         VMSTATE_UINT64_ARRAY(spurious_header, SGIBedrockPIState, 2),
         VMSTATE_UINT64(rt_base, SGIBedrockPIState),
         VMSTATE_INT64(rt_base_ns, SGIBedrockPIState),
