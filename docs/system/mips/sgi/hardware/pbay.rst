@@ -93,16 +93,16 @@ commands ``0x02`` and ``0xc0``, *software expectation*.
 Receive rules
 -------------
 
-The receive rules of the bay are in its flash loader, not the image, so
-each is *unknown*. The model drops a frame whose checksum is wrong or that
-is shorter than a header and checksum, and logs it with ``LOG_GUEST_ERROR``;
-the same follows for the rest, each an *approximation*: a bare ``0xa0``
-abandons the frame in progress and begins a new one; an escape followed by a
-byte other than ``0xb0``, ``0xb5`` or ``0xba`` drops the frame up to its
-terminator; a frame that ends inside an escape is dropped; a body longer
-than 256 bytes is dropped up to its terminator (the application cannot hold
-more, *inferred*). The loader may answer a bad frame with completion code
-``0xff`` instead; the model does not.
+The receive rules of the bay are in its flash loader, not the image, so each is
+*unknown*. The model drops a frame whose checksum is wrong or that is shorter
+than a header and checksum, and logs it with ``LOG_GUEST_ERROR``. The same
+follows for the rest, each an *approximation*: a bare ``0xa0`` abandons the
+frame in progress and begins a new one; an escape followed by a byte other than
+``0xb0``, ``0xb5`` or ``0xba`` drops the frame up to its terminator; a frame
+that ends inside an escape is dropped; a body longer than 256 bytes is dropped
+up to its terminator (the application cannot hold more, *inferred*). The loader
+may answer a bad frame with completion code ``0xff`` instead; the model does
+not.
 
 Commands
 ========

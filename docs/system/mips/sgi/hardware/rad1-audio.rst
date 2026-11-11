@@ -913,15 +913,14 @@ Tests
 ``tests/qtest/octane-test.c``, the ``/octane/rad-*`` and
 ``/octane2/rad-pci-identity`` cases, covers the identity word through the
 Bridge configuration window on both machines, the read-only PCI Status
-``0x0480`` across a write and a reset, BAR sizing, start-up
-storage and refused enables, the subcode windows under all four Bridge
-width and swap settings, one-shot and continuous status DMA through
-direct, translated and 64-bit Bridge addresses, the analog output and
-input clocks, the AES3-input subcode channel, ring overrun, sample
-conversion, the relay and DAC mutes over a played span, descriptor links
-to entries 1 and 7 past the first lap and to a never-programmed entry,
-DMA failures, refused accesses, the UST counter's enable
-sequence, word value and wrap, and migration.
+``0x0480`` across a write and a reset, BAR sizing, start-up storage and refused
+enables, the subcode windows under all four Bridge width and swap settings,
+one-shot and continuous status DMA through direct, translated and 64-bit Bridge
+addresses, the analog output and input clocks, the AES3-input subcode channel,
+ring overrun, sample conversion, the relay and DAC mutes over a played span,
+descriptor links to entries 1 and 7 past the first lap and to a
+never-programmed entry, DMA failures, refused accesses. It also covers the UST
+counter's enable sequence, word value and wrap, and migration.
 
 ``tests/qtest/sn0-baseio-test.c``, the ``sn0/baseio/io6g-rad1-*`` cases,
 covers the MediaIO slot and identity, register storage, status DMA, every

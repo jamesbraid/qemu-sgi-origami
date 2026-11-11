@@ -122,22 +122,22 @@ when it is zero from a hash of the device's QOM path, so each adapter has its
 own name and keeps it from run to run. The other fields are the values the
 public OpenBSD driver uses when it has no image.
 
-Five mailbox commands come from IRIX and have no public definition. The
-model's replies are approximations: Get Port Queue Parameters (``0x29``)
-returns queue depth 256 and throttle 255 for a loop ID with a port;
-Set Retry Count (``0x32``) and Reset Link Status (``0x52``) complete and
-change nothing; Get Link Status (``0x6b``) writes 32 zero bytes, for the
-adapter's own loop ID as well as a port's; Set Port Queue Parameters
-(``0x39``) completes with ``0x4000`` for any loop ID and leaves m1 to m7 as
-the guest wrote them. IRIX writes only m0 and m1 for it, so the queue depth
-and throttle it means to send never reach the adapter; the model keeps
-neither, and the real firmware's reply is unknown. A loop ID with no port, and
-``0x29`` for the adapter's own loop ID (the driver asks it of discovered
-ports only), get ``0x4005``, as does either while the loop is down. The
-``qlogic_isp2200_approximate_reply`` trace event marks each of these
-replies. The NVRAM skips zero bits before the start bit, and the model
-returns ``0xffff`` for reads of word addresses 128 and above. The default port name's serial
-is FNV-1a over the device's QOM path, modulo ``0xfffffe``, plus one.
+Five mailbox commands come from IRIX and have no public definition. The model's
+replies are approximations: Get Port Queue Parameters (``0x29``) returns queue
+depth 256 and throttle 255 for a loop ID with a port; Set Retry Count
+(``0x32``) and Reset Link Status (``0x52``) complete and change nothing; Get
+Link Status (``0x6b``) writes 32 zero bytes, for the adapter's own loop ID as
+well as a port's; Set Port Queue Parameters (``0x39``) completes with
+``0x4000`` for any loop ID and leaves m1 to m7 as the guest wrote them. IRIX
+writes only m0 and m1 for it, so the queue depth and throttle it means to send
+never reach the adapter. The model keeps neither, and the real firmware's reply
+is unknown. A loop ID with no port, and ``0x29`` for the adapter's own loop ID
+(the driver asks it of discovered ports only), get ``0x4005``, as does either
+while the loop is down. The ``qlogic_isp2200_approximate_reply`` trace event
+marks each of these replies. The NVRAM skips zero bits before the start bit,
+and the model returns ``0xffff`` for reads of word addresses 128 and above. The
+default port name's serial is FNV-1a over the device's QOM path, modulo
+``0xfffffe``, plus one.
 
 Reset and RISC control
 ======================
@@ -315,14 +315,13 @@ LUN the 16-bit field at offset 10, the expanded-LUN layout both Linux
 and OpenBSD build once About Firmware reports it.
 
 A malformed request comes back on the response ring as itself with an
-entry-status flag set: bit 2 for an unknown type, bit 3 for more
-segments than the entries hold, bit 4 for an impossible entry count,
-bit 5 for a continuation where a command belongs or the wrong kind of
-continuation, bit 6 for a refused read of a continuation or of a
-``0x15`` segment list. A rejected command takes the slots its entry
-count claims, or one slot when that count is itself invalid, and never
-reaches the Fibre Channel service. Which flag a real firmware sets for
-each is unknown.
+entry-status flag set: bit 2 for an unknown type, bit 3 for more segments than
+the entries hold, bit 4 for an impossible entry count, bit 5 for a continuation
+where a command belongs or the wrong kind of continuation, bit 6 for a refused
+read of a continuation or of a ``0x15`` segment list. A rejected command takes
+the slots its entry count claims, or one slot when that count is itself
+invalid. Such a command never reaches the Fibre Channel service. Which flag a
+real firmware sets for each is unknown.
 
 A status entry (``0x03``) carries the handle at offset 4, SCSI status
 at 8, completion status at 10, sense length at 18, residual at 20 and up

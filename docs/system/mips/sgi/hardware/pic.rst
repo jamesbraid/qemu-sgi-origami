@@ -951,19 +951,18 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sgi-pic-test.c`` covers both heads and both views: the
-identity word on both widths and its migration, configuration windows,
-type-1 cycles and slot bounds, register widths and unsupported
-registers, the processor word view, the widget timeout and destination
-slots, the runtime reset values, the short windows with their attribute
-refusals and boundaries, processor byte lanes against conventional
-devices, the IOC4 and the ISP12160, 32-bit and 64-bit direct DMA with the
-attribute matrix, requester width and refusals, swapped transfers written
-a data phase at a time, interrupt pins, edges, clear and enable effects,
-the force registers on both views, packets to a Bedrock, held-input
-reassertion with migration, the link-error interrupt, the direct-map
-mask, and migration between matching and mismatched profiles and older
-stream versions.
+``tests/qtest/sgi-pic-test.c`` covers both heads and both views: the identity
+word on both widths and its migration, configuration windows, type-1 cycles and
+slot bounds, register widths and unsupported registers, the processor word
+view, the widget timeout and destination slots, the runtime reset values, the
+short windows with their attribute refusals and boundaries, processor byte
+lanes against conventional devices. It also covers the IOC4 and the ISP12160,
+32-bit and 64-bit direct DMA with the attribute matrix, requester width and
+refusals, swapped transfers written a data phase at a time, interrupt pins,
+edges, clear and enable effects, the force registers on both views, packets to
+a Bedrock, held-input reassertion with migration, the link-error interrupt, the
+direct-map mask, and migration between matching and mismatched profiles and
+older stream versions.
 
 ``tests/qtest/sn-builder-test.c`` builds IP53 machines with one and two
 PICs and IO9 on either head, and checks reset, independent per-widget

@@ -925,15 +925,14 @@ a cause bit still set. An aligned eight-byte write with bits 19, 20 and
 25 clear repairs a faulty word, with or without bit 21. Machine reset
 clears all faults and records.
 
-The model refuses, without changing RAM or any record, an injection
-without its enables or together with bit 21, any partial or unaligned
-write while bit 19, 20 or 21 is set, a partial or unaligned access
-touching a faulty word, a read of a faulty word while bit 20 or 21 is
-set, a read of a double-bit faulty word while bit 19 is set, any
-injection, forced write or faulty-word access while bit 25 is set,
-both generation bits at once, a DMA access touching a faulty word, a DMA
-write while either generation bit is set, and a descriptor write while
-any word is faulty. Each refusal logs ``LOG_UNIMP`` and fails the
+The model refuses, without changing RAM or any record, an injection without its
+enables or together with bit 21, any partial or unaligned write while bit 19,
+20 or 21 is set, a partial or unaligned access touching a faulty word, a read
+of a faulty word while bit 20 or 21 is set, a read of a double-bit faulty word
+while bit 19 is set. It also refuses any injection, forced write or faulty-word
+access while bit 25 is set, both generation bits at once, a DMA access touching
+a faulty word, a DMA write while either generation bit is set, and a descriptor
+write while any word is faulty. Each refusal logs ``LOG_UNIMP`` and fails the
 transaction.
 
 A write the checked path accepts, including a forced write with bit
@@ -1398,9 +1397,9 @@ reads.
 Model limits
 ============
 
-- One processor. Status and processor ID follow that profile. Masks 1-3
-  drive only level-4 outputs, which no machine connects yet, and
-  inter-processor interrupts have no second target.
+- One processor. Status and processor ID follow that profile. Masks 1-3 drive
+  only level-4 outputs, which no machine connects, and inter-processor
+  interrupts have no second target.
 - Mode bits other than 0, 1, 13, 15, 19, 20, 21 and 25 are stored with
   no effect, including the reset, refresh, cached-PROM and processor
   disable bits Linux names. Linux restarts the machine by setting mode
@@ -1478,12 +1477,11 @@ widget 13 and takes the data bus error.
 
 ``tests/qtest/octane-test.c`` checks HEART inside the ``octane`` and
 ``octane2`` machines: identity at both widths and the refused widths
-(``/octane/heart-identity``, ``/octane2/heart-identity``), the Octane2
-status word, the measured status, mode, compare and widget ``0x10`` words
-across a reset (``/octane2/heart-measured-words``), widget control and
-error registers, requests to empty widgets 13 and 14 reaching HEART's
-report (``/octane/heart-dropped-requests``,
-``/octane2/heart-dropped-requests``), the stored diagnostic
-registers on both machines, one-wire timing with the divider written,
-HEART's level 0-2 outputs, and SCSI DMA from a QLogic
-controller into HEART RAM.
+(``/octane/heart-identity``, ``/octane2/heart-identity``), the Octane2 status
+word, the measured status, mode, compare and widget ``0x10`` words across a
+reset (``/octane2/heart-measured-words``), widget control and error registers.
+It also covers requests to empty widgets 13 and 14 reaching HEART's report
+(``/octane/heart-dropped-requests``, ``/octane2/heart-dropped-requests``), the
+stored diagnostic registers on both machines, one-wire timing with the divider
+written, HEART's level 0-2 outputs, and SCSI DMA from a QLogic controller into
+HEART RAM.

@@ -906,25 +906,24 @@ Model limits
 Tests
 =====
 
-``tests/qtest/psitech-rad4-test.c`` covers the PCI identity of both
-products and the RAD4's missing BAR3; the BAR0 registers and the INTCSR
-table; EEPROM reads, writes before and after EWEN, EWDS, the sequential
-wrap and a backing drive read back by a second QEMU instance; the plane
-mask and the overlay-index rule on and off; the RGB561 data-port
-auto-increment and the round trips of every multi-cycle table; recognition
-of every mode for two option words, rejection of altered sequences, modes
-that share PLL bytes or banks, all 16 option words for mode 9, run-time
-mode changes with a frame pending, migration and reset; frame interrupts,
-their request bit and acknowledgement; display dirty tracking; overlay
-composition, chroma keys and window attribute addressing; every
-frame-buffer pixel format and the gamma tables; the composited cursor; and
-DMA: register state before start, uploads, the mask, descriptor and done
-interrupts, pointer bit 0, the driver's chain layout, a 1,024-descriptor
-chain, unaligned spans, out-of-range descriptors, abort, pause and resume,
-reset and migration mid-transfer and a looping chain. Its
-``/psitech-rad4-km/`` cases cover the RAD4-KM identity, the shared BAR0
-and BAR2 layout, channel status, the aggregate interrupt reaching PCI and
-a PS/2 reset round trip on each channel.
+``tests/qtest/psitech-rad4-test.c`` covers the PCI identity of both products
+and the RAD4's missing BAR3; the BAR0 registers and the INTCSR table; EEPROM
+reads, writes before and after EWEN, EWDS, the sequential wrap and a backing
+drive read back by a second QEMU instance; the plane mask and the overlay-index
+rule on and off; the RGB561 data-port auto-increment and the round trips of
+every multi-cycle table; recognition of every mode for two option words,
+rejection of altered sequences, modes that share PLL bytes or banks, all 16
+option words for mode 9, run-time mode changes with a frame pending, migration
+and reset; frame interrupts, their request bit and acknowledgement; display
+dirty tracking; overlay composition, chroma keys and window attribute
+addressing; every frame-buffer pixel format and the gamma tables; the
+composited cursor. It also covers DMA: register state before start, uploads,
+the mask, descriptor and done interrupts, pointer bit 0, the driver's chain
+layout, a 1,024-descriptor chain, unaligned spans, out-of-range descriptors,
+abort, pause and resume, reset and migration mid-transfer and a looping chain.
+Its ``/psitech-rad4-km/`` cases cover the RAD4-KM identity, the shared BAR0 and
+BAR2 layout, channel status, the aggregate interrupt reaching PCI and a PS/2
+reset round trip on each channel.
 
 ``tests/qtest/sgi-graphics-pipes-test.c`` checks the Origin 200 slots the
 card may occupy and the refusals for others.

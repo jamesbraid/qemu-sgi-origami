@@ -381,17 +381,17 @@ router. The model chooses the path as follows, an *approximation*.
    next router takes, from the link the message entered by.
 4. The output port's cable leads to the next router or to the target.
 
-Step 3 follows what the stock IP35 :term:`PROM` 6.210 programs, a *software
-expectation*. On the Origin 3400 with two R-bricks (C-bricks 0 and 1 on
-ports 2 and 3 of router A, C-bricks 2 and 3 on ports 2 and 3 of router B,
-the routers joined port 1 to port 1 and port 6 to port 6) the PROM writes,
-for each destination behind the other router, the next router's turn on
-the two links its C-bricks enter by and ``0xf`` on every other link: router
-B holds turn 1 for node 0 (into router A at port 1, out at port 2) and
-turn 5 for node 1 (in at port 6, out at port 3) on links 2 and 3, and
-``0xf`` on links 1 and 6. Read on the output link instead, those routes
-leave router A by port 8 and port 5, and every access between the two
-routers fails. How the silicon itself indexes its tables is *unknown*.
+Step 3 follows what the stock IP35 :term:`PROM` 6.210 programs, a
+*software expectation*. On the Origin 3400 with two R-bricks (C-bricks 0 and 1
+on ports 2 and 3 of router A, C-bricks 2 and 3 on ports 2 and 3 of router B,
+the routers joined port 1 to port 1 and port 6 to port 6) the PROM writes, for
+each destination behind the other router, the next router's turn on the two
+links its C-bricks enter by and ``0xf`` on every other link. For example,
+router B holds turn 1 for node 0 (into router A at port 1, out at port 2) and
+turn 5 for node 1 (in at port 6, out at port 3) on links 2 and 3, and ``0xf``
+on links 1 and 6. Read on the output link instead, those routes leave router A
+by port 8 and port 5, and every access between the two routers fails. How the
+silicon itself indexes its tables is *unknown*.
 
 The route succeeds only if every output is cabled, the path has no repeated
 router, ingress and turn combination, and it ends within 15 routers on a
@@ -573,22 +573,21 @@ Tests
 
 ``tests/qtest/sgi-sn1-router-test.c`` drives the router through the
 ``sgi-sn1-router-test`` adapter in ``hw/misc/sgi-sn1-router-test.c`` and
-through a full machine. It covers register masks and refusals in both
-profiles, status and link bits as cables change, local reset, error
-registers, port reset, global port definition and diagnostic words, the
-barrier images, route-table words, the routing arithmetic, vector links,
-silent peers, power and reset hold on both ends of a cable, cold reset,
-the revision range and overflow checks, the UART
-window and migration, including profile mismatch. The warm reset cases
-cover a reset forwarded by permit and mask, a refusal when the permit is
-clear, the mask direction, three routers in a cabled ring visited once
-each, each router applying its own rule, registers kept, and an offline
-router or neighbour forwarding nothing.
-``tests/qtest/sn1-bedrock-link-test.c`` covers a two-router vector read,
-the ``0x27`` return route, each cable down, a powered-off target,
-route-table words and the UART window through the Bedrock local block.
-``tests/qtest/sn1-cross-node-test.c`` reads memory across both routers of
-the Origin 3400 with two R-bricks with the PROM's table values, which fails
-when the next turn is read on the output link.
-``tests/qtest/sn-builder-test.c`` and ``tests/qtest/sn-builder-fault-test.c``
-cover how the machine builder constructs routers and cables.
+through a full machine. It covers register masks and refusals in both profiles,
+status and link bits as cables change, local reset, error registers, port
+reset, global port definition and diagnostic words, the barrier images,
+route-table words, the routing arithmetic, vector links, silent peers, power
+and reset hold on both ends of a cable, cold reset. It also covers the revision
+range and overflow checks, the UART window and migration, including profile
+mismatch. The warm reset cases cover a reset forwarded by permit and mask, a
+refusal when the permit is clear, the mask direction, three routers in a cabled
+ring visited once each, each router applying its own rule, registers kept, and
+an offline router or neighbour forwarding nothing.
+``tests/qtest/sn1-bedrock-link-test.c`` covers a two-router vector read, the
+``0x27`` return route, each cable down, a powered-off target, route-table words
+and the UART window through the Bedrock local block.
+``tests/qtest/sn1-cross-node-test.c`` reads memory across both routers of the
+Origin 3400 with two R-bricks with the PROM's table values, which fails when
+the next turn is read on the output link. ``tests/qtest/sn-builder-test.c`` and
+``tests/qtest/sn-builder-fault-test.c`` cover how the machine builder
+constructs routers and cables.

@@ -588,16 +588,15 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sn0-ds1685-test.c`` drives the Octane IOC3 population and
-covers the initial calendar and mode writes, address-latch persistence and
-seven-bit masking, bank switching of only ``40h``-``7Fh``, the common low
-half, the model byte, read-only and fixed-zero bits, reserved locations,
-register C and extended-flag clearing, the level interrupt, extended RAM
-addressing, the three RAM regions, ``INCR`` reading clear, reset behaviour,
-the ``PAB`` shutdown and wake-up rule, counter hold, IOC3 populations with
-and without the part, migration, and the whole persistence path: image
-restore cases, rejected backends, write errors, snapshots, migration with
-storage and process restart. ``tests/qtest/octane-test.c`` covers the
-``nvram0`` and ``nvram0-clock`` bindings, the older drive names and the
-refusals. ``tests/qtest/sn0-ioc3-test.c`` checks which IOC3 boards carry the
-part.
+``tests/qtest/sn0-ds1685-test.c`` drives the Octane IOC3 population and covers
+the initial calendar and mode writes, address-latch persistence and seven-bit
+masking, bank switching of only ``40h``-``7Fh``, the common low half, the model
+byte, read-only and fixed-zero bits, reserved locations, register C and
+extended-flag clearing, the level interrupt, extended RAM addressing, the three
+RAM regions, ``INCR`` reading clear, reset behaviour, the ``PAB`` shutdown and
+wake-up rule, counter hold, IOC3 populations with and without the part, and
+migration. It also covers the whole persistence path: image restore cases,
+rejected backends, write errors, snapshots, migration with storage and process
+restart. ``tests/qtest/octane-test.c`` covers the ``nvram0`` and
+``nvram0-clock`` bindings, the older drive names and the refusals.
+``tests/qtest/sn0-ioc3-test.c`` checks which IOC3 boards carry the part.

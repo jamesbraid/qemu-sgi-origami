@@ -419,14 +419,16 @@ failure.
 At realize the model restores the clock from the saved cells.
 
 - Cells that are all zero, or not valid BCD in range, count as never saved,
-  and the clock follows the host. - A saved seconds cell with bit 7 set
-  restores a stopped clock at the saved instant, with no time added. - A
-  saved calendar with a clock record advances by the host time since the
+  and the clock follows the host.
+- A saved seconds cell with bit 7 set restores a stopped clock at the saved
+  instant, with no time added.
+- A saved calendar with a clock record advances by the host time since the
   record's instant, counted in the part's calendar so it crosses February as
-  the part would. - A saved calendar with no record or a record without the
-  magic is restored as saved, with no time added, and logs ``LOG_UNIMP``. It
-  does not fall back to the host time. An old record against a later date
-  would break the pairing with the leap-cycle record in storage.
+  the part would.
+- A saved calendar with no record or a record without the magic is restored
+  as saved, with no time added, and logs ``LOG_UNIMP``. It does not fall back
+  to the host time. An old record against a later date would break the pairing
+  with the leap-cycle record in storage.
 
 Reset and migration
 -------------------
@@ -674,15 +676,15 @@ Tests
 
 M48T35, qtests:
 
-- ``tests/qtest/sn0-ioc3-test.c`` pins the clock on an Origin 200: the
-  time it is given and the 1970 year cell, the date-derived fresh image,
-  the freeze, the year wrapping below its base, the control register reading
-  back, a guest-set time, storage surviving a system reset and persisting
-  with a drive, February following the part's rule, century and month
-  carry, an empty or missing clock record, restore after a restart with the
-  record and the fallbacks, the stop bit written by a guest and held across a
-  save, backing writes that are no-ops or retried, storage that holds a write,
-  migration with a backed clock (running and stopped), and the ``year-base``,
+- ``tests/qtest/sn0-ioc3-test.c`` pins the clock on an Origin 200: the time it
+  is given and the 1970 year cell, the date-derived fresh image, the freeze,
+  the year wrapping below its base, the control register reading back, a
+  guest-set time, storage surviving a system reset and persisting with a drive,
+  February following the part's rule, century and month carry, an empty or
+  missing clock record, restore after a restart with the record and the
+  fallbacks, the stop bit written by a guest and held across a save, backing
+  writes that are no-ops or retried, storage that holds a write, migration with
+  a backed clock (running and stopped). It also covers the ``year-base``,
   start-range and supplied-storage cases for base 1968.
 - ``tests/qtest/sn0-baseio-test.c`` pins storage across a reset on an Origin
   2000 BaseIO, the leap record and checksum bytes written from several

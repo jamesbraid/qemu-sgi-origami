@@ -2356,29 +2356,28 @@ Composition and machine tests:
   (``sn1/bedrock-link/unpowered-node-clears-the-router-port``) and a
   routed target that loses and regains main power
   (``sn1/bedrock-link/routed-powered-off-target-no-reply``).
-- ``tests/qtest/sn1-cross-node-test.c``: node-number decode, the
-  block-transfer engines' routes, and an unpowered node's memory absent
-  from both the processors' and the engines' view, direct and routed,
-  also across migration, including a migration while the first node is
-  off, which guards that path and not device load order
-  (``sn1/cross-node/unpowered-node-memory-is-absent``,
+- ``tests/qtest/sn1-cross-node-test.c``: node-number decode, the block-transfer
+  engines' routes, and an unpowered node's memory absent from both the
+  processors' and the engines' view, direct and routed, also across migration,
+  including a migration while the first node is off, which guards that path and
+  not device load order (``sn1/cross-node/unpowered-node-memory-is-absent``,
   ``sn1/cross-node/unpowered-node-survives-migration``,
-  ``sn1/cross-node/unpowered-first-node-survives-migration``), a
+  ``sn1/cross-node/unpowered-first-node-survives-migration``). It also covers a
   supply cycle that halts and restarts only its own node's processors
-  (``sn1/cross-node/node-power-halts-only-its-processors``), counting
-  code that runs on both nodes while one is off, ignores the Bedrock's NMI
-  input and a stop and continue, and restarts when the supply returns
-  (``sn1/cross-node/node-power-stops-one-node``), an off node that
-  stays off across a migration
-  (``sn1/cross-node/off-node-survives-migration``), a supply cycle that
-  re-arms a processor's cache-as-RAM window
+  (``sn1/cross-node/node-power-halts-only-its-processors``), counting code that
+  runs on both nodes while one is off, ignores the Bedrock's NMI input and a
+  stop and continue, and restarts when the supply returns
+  (``sn1/cross-node/node-power-stops-one-node``), an off node that stays off
+  across a migration (``sn1/cross-node/off-node-survives-migration``), a supply
+  cycle that re-arms a processor's cache-as-RAM window
   (``sn1/cross-node/power-return-rearms-the-cache-as-ram-window``), a
-  power-up's start that is owed and runs once (``sn1/cross-node/owed-start-runs-once``),
-  the supply levels of source and destination differing in either
-  direction (``sn1/cross-node/load-into-off-nodes``,
+  power-up's start that is owed and runs once
+  (``sn1/cross-node/owed-start-runs-once``), the supply levels of source and
+  destination differing in either direction
+  (``sn1/cross-node/load-into-off-nodes``,
   ``sn1/cross-node/load-into-on-nodes``,
-  ``sn1/cross-node/load-keeps-running-processors``), and the order of a
-  last node's loss and the shutdown
+  ``sn1/cross-node/load-keeps-running-processors``), and the order of a last
+  node's loss and the shutdown
   (``sn1/cross-node/last-brick-power-down-announces-after-the-stop``,
   ``sn1/cross-node/repeated-loss-announces-when-the-last-stop-ran``,
   ``sn1/cross-node/stop-cont-keeps-the-pending-announcement``).
