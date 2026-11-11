@@ -9976,8 +9976,8 @@ static void test_pci_admission_keeps_abort_pending(void)
     for (unsigned i = 0; i < sizeof(pattern); i++) {
         pattern[i] = i * 19 + 3;
     }
-    qtest_memwrite(qts, 0x20008, pattern, sizeof(pattern));
-    host_dma_program(qts, 0x20008, sizeof(pattern));
+    qtest_memwrite(qts, 0x2000f, pattern, sizeof(pattern));
+    host_dma_program(qts, 0x2000f, sizeof(pattern));
     qtest_writeb(qts, REG_BASE + 0x93, 0x0d);
     g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 1);
     qtest_writeb(qts, REG_BASE + 0x93, 4);
@@ -9995,7 +9995,7 @@ static void test_pci_admission_keeps_abort_pending(void)
     config_writew(qts, 4, 6);
     g_assert_cmphex(config_readl(qts, 4) >> 16 & 0x2000, ==, 0x2000);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0x40);
-    g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x20108);
+    g_assert_cmphex(host_dma_read_bytes(qts, 0x88, 4), ==, 0x2010f);
     g_assert_cmphex(host_dma_read_bytes(qts, 0x8c, 3), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 0);
