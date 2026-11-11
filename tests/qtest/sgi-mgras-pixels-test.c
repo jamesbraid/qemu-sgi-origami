@@ -5373,9 +5373,10 @@ static void test_gl_readpixels_dma_ssi_deep_buffers(void)
 
     gl_ssi_expect_read(s, 2, 2, 0x404, 1, 1, 4, NULL);
     gl_ssi_expect_read(s, 0, 2, 0x404, 2, 2, 8, NULL);
+    /* One descriptor row per image row is a strided read, deep or not. */
     gl_client_read_buffer(s, 0, 2, 0x404);
-    gl_ssi_expect_selected_shape(s, 2, 2, 8, 0xcd0, 2, 8, NULL);
-    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 1, 8, NULL);
+    gl_ssi_expect_selected_shape(s, 2, 2, 8, 0xcd0, 2, 8, want_new_back);
+    gl_ssi_expect_read(s, 0, 2, 0x404, 2, 1, 8, want_new_back);
     gl_read_dma_map_pages_slot(s, 2, 3, 9u << 16);
     gl_client_read_buffer(s, 0, 2, 0x404);
     gl_ssi_expect_selected_shape(s, 2, 2, 16, 0xff8, 1, 16,
@@ -5438,9 +5439,33 @@ static void test_gl_readpixels_dma_deep_two_re(gconstpointer data)
     gl_read_dma_map_pages_slot(s, 1, 3, 9u << 16);
     gl_ssi_expect_read(s, 0, 2, 0x404, 1, 1, 4, want_front);
     gl_ssi_expect_read(s, 2, 0, 0x405, 1, 1, 4, want_slot2);
+
+    /*
+     * A strided read of the deep back buffer through image slot 0, as
+     * Discreet Flame 7.0 reads its own deep window: pitch past the row.
+     */
+    {
+        static const uint8_t poison[16] = { [0 ... 15] = 0xa5 };
+        uint8_t got[16];
+
+        gl_read_dma_map_pages_slot(s, 1, 0, 9u << 16);
+        gl_client_read_buffer(s, 2, 0, 0x405);
+        qtest_memwrite(s, 0x30000, poison, sizeof(poison));
+        gl_word(s, GL_READ_OPEN);
+        gl_read_registers(s, 1, 1, 1, 1, 1, 0x00c00080, false);
+        gl_read_dma_class_a_signature_format(s, 1, 1, 0x00c00080);
+        gl_read_dma_descriptor_at(s, 8, 0x8, 1, 4, 0xb9);
+        gl_word(s, 0x0000da00);
+        gl_word(s, GL_READ_CLOSE);
+        qtest_memread(s, 0x30000, got, sizeof(got));
+        g_assert_cmpmem(got, 8, poison, 8);
+        g_assert_cmpmem(got + 8, 4, want_slot2, 4);
+        g_assert_cmpmem(got + 12, 4, poison + 12, 4);
+    }
     g_assert_cmphex(mgras_qom_get_uint(s, "x-test-error"), ==, 0);
     log = gl_eviction_log_end(s, log_path);
     g_assert_null(strstr(log, "unsupported client read buffer tuple"));
+    g_assert_null(strstr(log, "captured OpenGL client DMA read"));
 }
 
 static void test_gl_readpixels_dma_ssi_deep_reset(void)
@@ -5820,6 +5845,85 @@ static void test_gl_readpixels_dma_captured_rgb64x1(void)
             }
             g_assert_cmpmem(got + 0x900, 16, poison + 0x900, 16);
         }
+        g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+    }
+}
+
+/*
+ * A strided split read, as Discreet Flame 7.0 reads its message line and
+ * screen on IRIX 6.5.13f: each row is split into an 8-byte-aligned part
+ * and a remainder, each its own read with one descriptor row per image
+ * row and the whole image row's pitch, mode bits 10:8 the destination's
+ * low three bits. Widths no capture whitelists, 13 + 7 over two rows,
+ * land interleaved in the destination; a mode whose bits 10:8 disagree
+ * with the destination is refused and writes nothing.
+ */
+static void test_gl_readpixels_dma_strided_split(void)
+{
+    enum { WIDTH = 20, ROWS = 2, FIRST = 13, PAGE_COUNT = 1 };
+    const uint32_t pitch = WIDTH * 4;
+    const uint32_t second = WIDTH - FIRST;
+    uint32_t pixels[ROWS][WIDTH];
+    uint8_t image[ROWS][WIDTH * 4];
+    uint8_t poison[PAGE_COUNT * 4096];
+    uint8_t got[sizeof(poison)];
+
+    for (uint32_t row = 0; row < ROWS; row++) {
+        for (uint32_t pixel = 0; pixel < WIDTH; pixel++) {
+            uint8_t red = 0x10 + pixel, green = 0x40 + row;
+            uint8_t blue = 0x80 + pixel + row;
+
+            pixels[row][pixel] = (uint32_t)red << 24 |
+                                 (uint32_t)green << 16 |
+                                 (uint32_t)blue << 8 | 0xff;
+            image[row][pixel * 4] = red;
+            image[row][pixel * 4 + 1] = green;
+            image[row][pixel * 4 + 2] = blue;
+            image[row][pixel * 4 + 3] = 0xff;
+        }
+    }
+    memset(poison, 0xa5, sizeof(poison));
+
+    gl_pixels_context(qts, 0);
+    for (uint32_t row = 0; row < ROWS; row++) {
+        gl_draw_rgba_row(qts, 1, 1 + row, pixels[row], WIDTH);
+    }
+    gl_read_dma_map_pages_slot(qts, PAGE_COUNT, 3, 0x19u << 16);
+
+    for (unsigned int malformed = 0; malformed < 2; malformed++) {
+        uint32_t second_mode = malformed ? 0xc10080 : 0xc10480;
+
+        qtest_memwrite(qts, 0x30000, poison, sizeof(poison));
+        gl_word(qts, GL_READ_OPEN);
+        gl_read_registers(qts, 1, 1, ROWS, FIRST, ROWS, 0xc10080, false);
+        gl_read_dma_class_a_signature_format(qts, FIRST, ROWS, 0xc10080);
+        gl_read_dma_descriptor_at(qts, pitch, 0x800, ROWS, FIRST * 4, 0xbf);
+        gl_word(qts, 0x0000da00);
+        gl_read_registers(qts, 1 + FIRST, 1, ROWS, second, ROWS,
+                          second_mode, false);
+        gl_read_dma_class_a_signature_format(qts, second, ROWS,
+                                             second_mode);
+        gl_read_dma_descriptor_at(qts, pitch, 0x800 + FIRST * 4, ROWS,
+                                  second * 4, 0xbf);
+        gl_word(qts, 0x0000da00);
+        gl_word(qts, GL_READ_CLOSE);
+
+        qtest_memread(qts, 0x30000, got, sizeof(got));
+        g_assert_cmpmem(got, 0x800, poison, 0x800);
+        for (uint32_t row = 0; row < ROWS; row++) {
+            const uint8_t *line = got + 0x800 + row * pitch;
+
+            g_assert_cmpmem(line, FIRST * 4, image[row], FIRST * 4);
+            if (malformed) {
+                g_assert_cmpmem(line + FIRST * 4, second * 4,
+                                poison, second * 4);
+            } else {
+                g_assert_cmpmem(line + FIRST * 4, second * 4,
+                                image[row] + FIRST * 4, second * 4);
+            }
+        }
+        g_assert_cmpmem(got + 0x800 + ROWS * pitch, 16,
+                        poison + 0x800 + ROWS * pitch, 16);
         g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
     }
 }
@@ -7072,6 +7176,10 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-readpixels-dma-captured-one-row-selectors",
         test_gl_readpixels_dma_captured_one_row_selectors, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/"
+        "gl-readpixels-dma-strided-split",
+        test_gl_readpixels_dma_strided_split, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-readpixels-dma-bracket-migration",
         test_gl_readpixels_dma_bracket_migration, true);

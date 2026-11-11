@@ -1069,6 +1069,26 @@ the kernel's; the model sends a transfer with bit 4 clear to the pending
 OpenGL pixel draw, a texture load or a context restore when one is
 waiting, *inferred* from that split, and to the raster engine otherwise.
 
+The OpenGL client's ``glReadPixels`` reads arrive inside its read bracket
+with a signature in descriptor class ``0x000a`` and the transfer mode in
+raster register ``0x159``: bits 3:0 the context type, bits 7:4 the
+format, 8 for RGBA, bits 10:8 the destination address's low three bits
+and bits 16:14 a stride skip, *software expectation* from the client
+library, with bits 10:8 *inferred*. The client splits a wide row into a
+part starting on an 8-byte boundary and a remainder, each its own read
+with one descriptor row per image row and the whole row's pitch. The
+model returns such a strided read whenever the signature's mode equals
+the one in ``0x159`` (an *inferred* requirement), the context type is 0,
+the format RGBA, bits 10:8 match the destination, and the rows, bytes
+per row and a pitch of whole pixels
+no shorter than the row agree with the signature, from either buffer of
+a deep visual and through any mapping slot. The stride skip in bits
+16:14 and the mode's other bits are not checked: the descriptor's pitch
+decides the stride. Other reads keep to the
+shapes captured from stock clients and are otherwise refused with
+``LOG_UNIMP``, writing nothing. Discreet Flame 7.0 on IRIX 6.5.13f reads
+its screen and message line this way.
+
 Display lists
 -------------
 
