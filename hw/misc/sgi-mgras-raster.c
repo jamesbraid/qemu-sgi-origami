@@ -3052,6 +3052,7 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
                            (signature_width == 23 && signature_height == 32 &&
                             signature_format == 0xc10480);
     bool captured_split;
+    bool strided;
     bool one_descriptor, per_row_descriptors;
     bool client_read_active;
     uint32_t signature_word3 =
@@ -3082,17 +3083,42 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
      */
     s->gl_context[s->gl_current].client_read_kicked = 1;
 
+    /*
+     * A strided read: one row of the image per descriptor row, the rows a
+     * pitch apart that may exceed the row, and the mode the signature
+     * names. The client splits a wide row into a part that starts on an
+     * 8-byte boundary and a remainder, each a read of its own with the
+     * whole image row's pitch (Discreet Flame 7.0 on IRIX 6.5.13f reads its
+     * 1280-pixel screen as 1265 + 15 columns at pitch 5120, and its
+     * message line as 689 + 12 at 2804). The mode's fields, as the IRIX
+     * 6.5.30 client library sets them: bits 3:0 the context type, zero
+     * here; bits 7:4 the format, RGBA 8; bits 10:8 the destination
+     * address's low three bits, inferred; bits 16:14 the stride skip, which
+     * the descriptor's pitch already carries. The read is taken from those
+     * fields rather than from the captured widths below, and may name
+     * either buffer of a deep visual through any image slot: Flame reads
+     * its own deep window through slot 0.
+     */
+    strided = signature_format == mode && !(mode & 0xf) &&
+              (mode & MGRAS_XFRMODE_GL_FORMAT_MASK) ==
+                  MGRAS_XFRMODE_GL_FORMAT_RGBA &&
+              ((mode >> 8) & 7) == (mgras_raster_dma_src_offset(s) & 7) &&
+              rows == signature_height &&
+              bpr == signature_width * 4 && pitch >= bpr && !(pitch % 4);
+    captured_format = captured_format || strided;
+
     if (signature_size != signature_width * 4 ||
         !captured_format || selector == MGRAS_CLIENT_READ_UNSUPPORTED ||
         (offset_read && (mode != 0x00400480 ||
                          mgras_raster_dma_src_offset(s) % 8 != 4))) {
         goto rejected;
     }
-    if (deep && (!sgi_mgras_deep_reads(s) || slot != 3 ||
-                 signature_format != 0x00400080 ||
-                 mode != 0x00400080 ||
-                 !((signature_width == 1 && signature_height == 1) ||
-                   (signature_width == 2 && signature_height == 2)))) {
+    if (deep && (!sgi_mgras_deep_reads(s) ||
+                 (!strided &&
+                  (slot != 3 || signature_format != 0x00400080 ||
+                   mode != 0x00400080 ||
+                   !((signature_width == 1 && signature_height == 1) ||
+                     (signature_width == 2 && signature_height == 2)))))) {
         goto rejected;
     }
     captured_split =
@@ -3118,7 +3144,8 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
          pitch == 0x100) ||
         (signature_width == 23 && signature_height == 1 &&
          signature_format == 0x00c00080 && mode == 0x00010480 &&
-         pitch == 0x100);
+         pitch == 0x100) ||
+        strided;
 
     if (x0 > x1 || y0 > y1 ||
         !sgi_mgras_gl_client_read_window(s, &origin_x, &origin_y,
@@ -3158,7 +3185,7 @@ static bool mgras_raster_dma_client_read(SGIMgrasState *s,
     per_row_descriptors = rows == height && bpr == row_bytes &&
                           (pitch == row_bytes || captured_split);
     if ((!one_descriptor && !per_row_descriptors) ||
-        (deep && !one_descriptor)) {
+        (deep && !one_descriptor && !strided)) {
         goto rejected;
     }
 
