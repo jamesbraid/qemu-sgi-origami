@@ -490,6 +490,20 @@ enum {
  */
 #define MGRAS_GL_VERTEX3I        0x3800000c
 #define MGRAS_GL_RASTER_POS3I    0x3800380c
+/*
+ * glVertex2s, 3s and 4s: 0x59000004, 0x39000006 and 0x19000008, the
+ * shorts packed two to a word from bit 31 down, so glVertex3s's z sits in
+ * the high half of its second word (the client's emitters, see the
+ * datasheet's attribute table). 3s is matched in its rounded-up form, as
+ * glColor3ub is. Read signed and unscaled, as glVertex3i's integers are,
+ * inferred from the class's short type.
+ * Discreet Flame 7.0 draws its panels, bars and button outlines with
+ * glVertex2s: on IRIX 6.5.13f a model without the header logged thousands
+ * of them as unimplemented and drew none.
+ */
+#define MGRAS_GL_VERTEX2S        0x59000004
+#define MGRAS_GL_VERTEX3S        0x39000008
+#define MGRAS_GL_VERTEX4S        0x19000008
 #define MGRAS_GL_TEX_COORD3F     0x2000080c
 #define MGRAS_GL_TEX_COORD3I     0x3800080c
 #define MGRAS_GL_TEX_COORD2F     0x40000808
@@ -1130,6 +1144,9 @@ bool sgi_mgras_gl_header(uint32_t header)
     case MGRAS_GL_COLOR4F:
     case MGRAS_GL_VERTEX2I:
     case MGRAS_GL_VERTEX3I:
+    case MGRAS_GL_VERTEX2S:
+    case MGRAS_GL_VERTEX3S:
+    case MGRAS_GL_VERTEX4S:
     case MGRAS_GL_VERTEX2D:
     case MGRAS_GL_VERTEX3D:
     case MGRAS_GL_VERTEX4D:
@@ -6368,6 +6385,23 @@ void sgi_mgras_gl_execute(SGIMgrasState *s, uint32_t header,
 
             memcpy(&d, &bits, sizeof(d));
             f[i] = d;
+        }
+        memcpy(word, f, n * sizeof(f[0]));
+        mgras_gl_vertex(s, ops[n - 2], word, n);
+        return;
+    }
+    case MGRAS_GL_VERTEX2S:
+    case MGRAS_GL_VERTEX3S:
+    case MGRAS_GL_VERTEX4S: {
+        static const uint32_t ops[] = {
+            SGI_GL_OP_VERTEX2F, SGI_GL_OP_VERTEX3F, SGI_GL_OP_VERTEX4F,
+        };
+        uint32_t n = header == MGRAS_GL_VERTEX2S ? 2 :
+                     header == MGRAS_GL_VERTEX3S ? 3 : 4;
+        float f[4];
+
+        for (uint32_t i = 0; i < n; i++) {
+            f[i] = (int16_t)(payload[i / 2] >> (i & 1 ? 0 : 16));
         }
         memcpy(word, f, n * sizeof(f[0]));
         mgras_gl_vertex(s, ops[n - 2], word, n);
