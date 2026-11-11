@@ -538,6 +538,32 @@ the ring is stopped; a continuous start with a nonzero interval and both
 sets naming the same address with limit ``0xffffc078``, when stopped; and
 the stop word. Anything else is refused.
 
+A guest that stops reading the ring sees it fill. The message ``ALERT:
+RAD thread held off for more than 32 mS`` comes from the status-ring
+reader in the IRIX 6.5.13f kernel (SHA-256
+``4bea3b9fd0da5acc38e908079dc1d247c19f1fea84427a8db1aa6f90ddc0d59b``,
+the image of the disk the shutdown runs below used; it is not the image
+hashed above). Disassembly of that image, *inferred*: the branch at
+``0xa8000000200df20c`` leads to the call that logs the alert, at
+``0xa8000000200df5a8``, followed by a stop and restart of the status DMA;
+the branch compares the slots the pass has consumed against one less
+than the ring size, which is 127 for a 128-slot ring. The reader is
+reached from a periodic kernel thread, not from a RAD interrupt: the
+routine that starts that thread passes an interval of 12500 at
+``0xa80000002033d4c8`` (*inferred*; the unit was not checked).
+
+A 128-slot ring of 250 µs completions is 32 ms, which fits the message.
+The model keeps completing slots whether or not the driver reads them,
+so a guest whose thread does not run for 32 ms of guest time logs the
+alert; that is *inferred*. Why the thread goes 32 ms without running
+is not explained. Seen (*observed*) in runs on 2026-11-11 with the 6.5.13f
+image above: one alert at a shutdown after a graphical session with
+``--icount 3``, and three alerts at the same step without ``--icount``.
+Earlier logs, not re-run, show the same message on iris, on 6.5.21f
+(43 in one SYSLOG) and during Discreet Flame start-up. Whether the chip
+keeps completing slots while the driver has stopped polling is
+*unknown*.
+
 .. _sgi-rad1-channels:
 
 Audio channels
