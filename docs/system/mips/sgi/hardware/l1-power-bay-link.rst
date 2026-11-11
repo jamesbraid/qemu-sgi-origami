@@ -155,25 +155,26 @@ A pass reads the supplies' sensors (when any of bits 0 to 2 is set) and the
 ports' (bit 3), and each message goes to the L1 log, *software expectation*.
 The line texts begin with ``Power Bay DPS n`` or ``Power Bay DCport n`` and
 carry the words the polling task logs. The model keeps the last value of each
-sensor, and nothing is stored at start, so a fault already present on the
-first pass counts as new. For sensors 1 to 6 (``DPS`` 1 to 6) bit 0 set means
-not inserted and clears the stored value, so a returning supply's faults are
-new. Per supply the first matching test wins, so a pass logs at most one
-fault for it: AC fail (bit 3 newly set), then fail (bit 1), then predictive
-fail (bit 2). Fail and predictive fail are logged at once. An AC fail is
-logged on the fourth consecutive sighting, with three immediate re-reads of
-all six supplies between; a supply whose bit is gone at any re-read is not
-logged. For sensors 7 to 14 (``DCport`` 1 to 8) a port whose bit 0 is set is
-skipped and keeps its stored value, and bit 1 newly set on a port is logged
-on the third consecutive sighting, with a re-read of the ports after 100
-ticks. The source material does not say whether the two port re-reads are one
-wait each or one wait in all, nor whether a supply with an AC candidate that
-fails the debounce still lets the fail test run; the model waits 100 ticks
-before each of two re-reads and lets the AC candidate take the supply's turn,
-an *approximation*. A consequence of that choice: a supply with a new AC-fail
-bit that then fails the debounce, and whose fail bit is also set, logs
-neither fault on that pass, and the fail is new again only if its bit goes
-from 0 to 1 later. The fail and predictive tests use the last reading.
+sensor, and nothing is stored at start, so a fault already present on the first
+pass counts as new. For sensors 1 to 6 (``DPS`` 1 to 6) bit 0 set means not
+inserted and clears the stored value, so a returning supply's faults are new.
+Per supply the first matching test wins, so a pass logs at most one fault for
+it: AC fail (bit 3 set where the stored value has it clear), then fail (bit 1),
+then predictive fail (bit 2). Fail and predictive fail are logged at once. An
+AC fail is logged on the fourth consecutive sighting, with three immediate
+re-reads of all six supplies between; a supply whose bit is gone at any re-read
+is not logged. For sensors 7 to 14 (``DCport`` 1 to 8) a port whose bit 0 is
+set is skipped and keeps its stored value, and bit 1 set on a port where the
+stored value has it clear is logged on the third consecutive sighting, with a
+re-read of the ports after 100 ticks. The source material does not say whether
+the two port re-reads are one wait each or one wait in all, nor whether a
+supply with an AC candidate that fails the debounce still lets the fail test
+run; the model waits 100 ticks before each of two re-reads and lets the AC
+candidate take the supply's turn, an *approximation*. A consequence of that
+choice: a supply with a new AC-fail bit that then fails the debounce, and whose
+fail bit is also set, logs neither fault on that pass, and the fail is new
+again only if its bit goes from 0 to 1 later. The fail and predictive tests use
+the last reading.
 
 The set of supplies with bit 0 clear is compared with L1 setting 105, the
 expected-supply mask (bit n-1 for supply n; zero means no presence messages).
