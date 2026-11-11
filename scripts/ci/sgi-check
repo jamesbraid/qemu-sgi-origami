@@ -169,10 +169,60 @@ def run_concurrently(commands, workers, logdir):
         return {label: future.result() for label, future in futures.items()}
 
 
+# Where a failed run leaves the names of its failing tests for the workflow's
+# failing-step status, relative to the build directory.
+FAILING_TESTS_FILE = 'failing-tests.txt'
+# How many failing tests the status names, and how many lines of each test's
+# output the log shows. A status description is short.
+FAILING_NAMES_SHOWN = 3
+FAILING_TAIL_LINES = 40
+BAD_RESULTS = ('FAIL', 'ERROR', 'TIMEOUT', 'UNEXPECTEDPASS')
+
+
+def failed_tests(text):
+    """Return the failed tests of a Meson JSON test log, in log order.
+
+    Each is a dict with name, result, duration, returncode and the last
+    FAILING_TAIL_LINES lines of its output.
+    """
+    failed = []
+    for line in text.splitlines():
+        if not line.startswith('{'):
+            continue
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        result = str(entry.get('result', '')).upper().replace(' ', '')
+        if result not in BAD_RESULTS:
+            continue
+        output = str(entry.get('stdout') or '').splitlines()
+        failed.append({
+            'name': entry.get('name', '?'),
+            'result': result,
+            'duration': entry.get('duration'),
+            'returncode': entry.get('returncode'),
+            'tail': output[-FAILING_TAIL_LINES:],
+        })
+    return failed
+
+
+def failing_summary(failed):
+    """One line naming the first failed tests, short enough for a status."""
+    names = [f"{item['name'].split('/')[-1]} {item['result']}"
+             + (f" {item['duration']:.0f}s"
+                if isinstance(item['duration'], (int, float)) else '')
+             for item in failed[:FAILING_NAMES_SHOWN]]
+    more = len(failed) - FAILING_NAMES_SHOWN
+    return ', '.join(names) + (f' and {more} more' if more > 0 else '')
+
+
 class Build:
     def __init__(self, path):
         self.path = path
         self.python = path / 'pyvenv/bin/python3'
+        # A reused build directory must not report an earlier run's failures.
+        (path / FAILING_TESTS_FILE).unlink(missing_ok=True)
         self.meson = path / 'pyvenv/bin/meson'
 
     def ninja(self, *targets):
@@ -198,10 +248,42 @@ class Build:
         run([sys.executable, CHECKER, '--junit', reports[0],
              '--expect', expect])
 
+    def report_failures(self, logbase):
+        """Print the failed tests of a finished Meson run and keep their names.
+
+        The log's console is long and the forge's API does not serve it, so
+        end a failed run with each failed test's name, result, time and last
+        output, and leave one line of names in FAILING_TESTS_FILE for the
+        workflow to put in its failing-step status.
+        """
+        failed = []
+        for log in sorted((self.path / 'meson-logs').glob(f'{logbase}*.json')):
+            failed += failed_tests(log.read_text(encoding='utf-8',
+                                                 errors='replace'))
+        if not failed:
+            return
+        print(f'\n== {len(failed)} failed test(s) in {logbase} ==',
+              flush=True)
+        for item in failed:
+            print(f"-- {item['name']}: {item['result']}, exit "
+                  f"{item['returncode']}, {item['duration']} s; last "
+                  f"{len(item['tail'])} lines:")
+            print('\n'.join(item['tail']), flush=True)
+        summary = failing_summary(failed)
+        print(f'failed: {summary}', flush=True)
+        # A run with several Meson invocations keeps the first one's names.
+        kept = self.path / FAILING_TESTS_FILE
+        if not kept.exists():
+            kept.write_text(summary + '\n', encoding='utf-8')
+
     def meson_test(self, logbase, args, expect, processes=None,
                    setup='qemu:thorough'):
         """Run one Meson test invocation and check its JUnit report."""
-        run(self.meson_command(logbase, args, processes, setup))
+        try:
+            run(self.meson_command(logbase, args, processes, setup))
+        except subprocess.CalledProcessError:
+            self.report_failures(logbase)
+            raise
         self.check_report(logbase, expect)
 
     def test_prerequisites(self, names=(), suites=()):
@@ -240,6 +322,8 @@ class Build:
                     for logbase, args, _ in jobs]
         codes = run_concurrently(commands, workers, self.path)
         failed = [logbase for logbase, code in codes.items() if code]
+        for logbase in failed:
+            self.report_failures(logbase)
         for logbase, _, expect in jobs:
             try:
                 self.check_report(logbase, expect)

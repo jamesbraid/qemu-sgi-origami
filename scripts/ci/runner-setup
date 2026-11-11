@@ -95,6 +95,14 @@ case "${1-}" in
     : "${RUN_URL:?RUN_URL is required}"
     : "${COMMIT_SHA:?COMMIT_SHA is required}"
     step=$(cat "$CI_STEP" 2>/dev/null || echo "before any step ran")
+    # A part that ran tests leaves the names of the failed ones beside its
+    # build, so the status says which test failed and not only the step.
+    failed_tests=$(head -c 160 build-ci/failing-tests.txt 2>/dev/null \
+        | tr -d '\r"\\' | tr '\n' ' ')
+    if [ -n "$failed_tests" ]; then
+      step="$step: $failed_tests"
+    fi
+    step=$(printf '%s' "$step" | head -c 250)
     echo "failing step: $step"
     # The full run's parts each publish their own failing step. With
     # ONLY_IF_UNREPORTED=1 the job that collects them publishes only when
