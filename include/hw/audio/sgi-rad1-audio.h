@@ -279,6 +279,27 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIRad1AudioState, SGI_RAD1_AUDIO)
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO   0x4e8
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI   0x51c
 #define SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL      0x4ec
+/*
+ * The digital outputs' set B sits in Octane descriptor RAM at the entry their
+ * tag names, entry 3 and entry 5; IRIX 6.5.13f programs both before setting
+ * the enable bit. The MediaIO model does not read them.
+ */
+#define SGI_RAD1_AUDIO_REG_AES_OUT_B_ADDR_LO    0x424
+#define SGI_RAD1_AUDIO_REG_AES_OUT_B_ADDR_HI    0x428
+#define SGI_RAD1_AUDIO_REG_AES_OUT_B_CTRL       0x42c
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_B_ADDR_LO   0x43c
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_B_ADDR_HI   0x440
+#define SGI_RAD1_AUDIO_REG_ADAT_OUT_B_CTRL      0x444
+/*
+ * The Octane digital outputs' ring geometry, the only one the Octane model
+ * accepts: a 4 KiB AES3 ring of 512 two-word frames and a 16 KiB ADAT ring
+ * of 512 eight-word frames, each tagged with its channel type.
+ */
+#define SGI_RAD1_OCTANE_AES_OUT_CTRL            0xfffff018u
+#define SGI_RAD1_OCTANE_ADAT_OUT_CTRL           0xffffc028u
+
+/* The Octane BAR0 words held in octane_startup, listed in the model. */
+#define SGI_RAD1_OCTANE_STARTUP_WORDS           24
 
 /*
  * The input subcode DMA channels, types 6 and 7, from the per-type table:
@@ -710,7 +731,7 @@ struct SGIRad1AudioState {
     MemoryRegion bar0;
 
     /* Octane synthetic startup readback, separate from MediaIO state. */
-    uint32_t octane_startup[26];
+    uint32_t octane_startup[SGI_RAD1_OCTANE_STARTUP_WORDS];
     /* Two excluded doubleword holes remain unused in this address span. */
     uint64_t octane_subcode[68];
 

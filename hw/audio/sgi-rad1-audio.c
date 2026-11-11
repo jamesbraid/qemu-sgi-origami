@@ -25,9 +25,9 @@
  * modeled. Those registers and the output subcode windows accept and shadow
  * writes with no signal path.
  * The Octane variant supports its UST counter, bounded status DMA,
- * internal-clock analog input and output, and the AES3-input subcode channel
- * with no AES3 source connected. Other channels and general board controls
- * remain unsupported.
+ * internal-clock analog input and output, the AES3 and ADAT outputs, and the
+ * AES3-input subcode channel with no AES3 source connected. Other channels
+ * and general board controls remain unsupported.
  * The PCI Digital Audio Board (board 13) runs the MediaIO engines for the
  * digital channels only: its analog interface does not exist.
  */
@@ -1508,6 +1508,8 @@ typedef enum SGIRad1OctaneRing {
     SGI_RAD1_OCTANE_RING_INPUT,
     SGI_RAD1_OCTANE_RING_OUTPUT,
     SGI_RAD1_OCTANE_RING_AES_SUB,
+    SGI_RAD1_OCTANE_RING_AES_OUT,
+    SGI_RAD1_OCTANE_RING_ADAT_OUT,
     SGI_RAD1_OCTANE_RING_NONE,
 } SGIRad1OctaneRing;
 
@@ -1535,6 +1537,22 @@ static const hwaddr sgi_rad1_octane_ring_regs[][6] = {
         SGI_RAD1_AUDIO_REG_AES_SUB_B_ADDR_HI,
         SGI_RAD1_AUDIO_REG_AES_SUB_B_CTRL,
     },
+    [SGI_RAD1_OCTANE_RING_AES_OUT] = {
+        SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_LO,
+        SGI_RAD1_AUDIO_REG_AES_OUT_A_ADDR_HI,
+        SGI_RAD1_AUDIO_REG_AES_OUT_A_CTRL,
+        SGI_RAD1_AUDIO_REG_AES_OUT_B_ADDR_LO,
+        SGI_RAD1_AUDIO_REG_AES_OUT_B_ADDR_HI,
+        SGI_RAD1_AUDIO_REG_AES_OUT_B_CTRL,
+    },
+    [SGI_RAD1_OCTANE_RING_ADAT_OUT] = {
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_LO,
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_A_ADDR_HI,
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_A_CTRL,
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_B_ADDR_LO,
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_B_ADDR_HI,
+        SGI_RAD1_AUDIO_REG_ADAT_OUT_B_CTRL,
+    },
 };
 
 static SGIRad1OctaneRing sgi_rad1_octane_descriptor(hwaddr addr)
@@ -1560,6 +1578,10 @@ static bool sgi_rad1_octane_ring_running(SGIRad1AudioState *s,
         return s->chan[SGI_RAD1_AUDIO_CH_OUT].running;
     case SGI_RAD1_OCTANE_RING_AES_SUB:
         return s->chan[SGI_RAD1_AUDIO_CH_AES_SUB].running;
+    case SGI_RAD1_OCTANE_RING_AES_OUT:
+        return s->chan[SGI_RAD1_AUDIO_CH_AES_OUT].running;
+    case SGI_RAD1_OCTANE_RING_ADAT_OUT:
+        return s->chan[SGI_RAD1_AUDIO_CH_ADAT_OUT].running;
     default:
         return s->status_running;
     }
@@ -1586,13 +1608,17 @@ static bool sgi_rad1_octane_ring_valid(SGIRad1AudioState *s,
            bank[SGI_RAD1_AUDIO_DMA_IDX(reg[5])] == limit;
 }
 
-/* Startup readback is storage only; unsupported interfaces stay disabled. */
+/*
+ * Startup readback is storage only; unsupported interfaces stay disabled.
+ * The digital outputs' set-A low words, 0x4e8 and 0x4f0, are descriptor
+ * words of running channels instead.
+ */
 static int sgi_rad1_octane_startup_index(hwaddr addr)
 {
-    static const uint16_t offsets[] = {
+    static const uint16_t offsets[SGI_RAD1_OCTANE_STARTUP_WORDS] = {
         0x44, 0x48, 0x4c, 0x50, 0x54, 0x70, 0x74, 0x78, 0x7c, 0x80,
         0x88, 0x8c, 0x90, 0xa0, 0xa4, 0xa8, 0xac, 0xb0, 0xb4, 0xb8,
-        0xbc, 0x4c0, 0x4c8, 0x4d8, 0x4e8, 0x4f0,
+        0xbc, 0x4c0, 0x4c8, 0x4d8,
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(offsets); i++) {
@@ -1937,8 +1963,6 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
             unsupported = 5;
             break;
         case 0x48:
-        case 0x50:
-        case 0x54:
             unsupported = 1;
             break;
         }
@@ -1962,6 +1986,25 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
             if ((value & SGI_RAD1_AUDIO_SUBCODE_ENABLE_BIT) && !c->running &&
                 !sgi_rad1_octane_ring_valid(s, SGI_RAD1_OCTANE_RING_AES_SUB,
                                             0xfffff030)) {
+                goto unsupported;
+            }
+            sgi_rad1_audio_enable_write(c, value);
+        } else if (addr == SGI_RAD1_AUDIO_REG_PREDISPATCH_C ||
+                   addr == SGI_RAD1_AUDIO_REG_PREDISPATCH_D) {
+            /*
+             * ADAT and AES3 output control: bit 0 runs the output. The other
+             * bits, including the AES3 output subcode flags, are stored.
+             */
+            bool adat = addr == SGI_RAD1_AUDIO_REG_PREDISPATCH_C;
+            SGIRad1AudioChannel *c = &s->chan[adat ?
+                SGI_RAD1_AUDIO_CH_ADAT_OUT : SGI_RAD1_AUDIO_CH_AES_OUT];
+
+            if ((value & SGI_RAD1_AUDIO_ENABLE_BIT) && !c->running &&
+                !sgi_rad1_octane_ring_valid(s,
+                    adat ? SGI_RAD1_OCTANE_RING_ADAT_OUT :
+                           SGI_RAD1_OCTANE_RING_AES_OUT,
+                    adat ? SGI_RAD1_OCTANE_ADAT_OUT_CTRL :
+                           SGI_RAD1_OCTANE_AES_OUT_CTRL)) {
                 goto unsupported;
             }
             sgi_rad1_audio_enable_write(c, value);
@@ -2487,13 +2530,14 @@ static const VMStateDescription vmstate_sgi_rad1_octane_cg = {
 
 static const VMStateDescription vmstate_sgi_rad1_octane = {
     .name = "sgi-rad1-octane",
-    .version_id = 6,
-    .minimum_version_id = 6,
+    .version_id = 7,
+    .minimum_version_id = 7,
     .pre_save = sgi_rad1_octane_pre_save,
     .post_load = sgi_rad1_octane_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIRad1AudioState),
-        VMSTATE_UINT32_ARRAY(octane_startup, SGIRad1AudioState, 26),
+        VMSTATE_UINT32_ARRAY(octane_startup, SGIRad1AudioState,
+                             SGI_RAD1_OCTANE_STARTUP_WORDS),
         VMSTATE_STRUCT_ARRAY(octane_cg, SGIRad1AudioState,
                              SGI_RAD1_OCTANE_NUM_CG, 1,
                              vmstate_sgi_rad1_octane_cg,
@@ -2598,7 +2642,8 @@ static void sgi_rad1_octane_class_init(ObjectClass *klass, const void *data)
     PCIDeviceClass *pc = PCI_DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
 
-    dc->desc = "SGI Octane RAD status, analog and AES3 subcode model";
+    dc->desc = "SGI Octane RAD status, analog, digital output and AES3 "
+               "subcode model";
     dc->vmsd = &vmstate_sgi_rad1_octane;
     pc->revision = 0xc0;
     pc->class_id = PCI_CLASS_NOT_DEFINED;

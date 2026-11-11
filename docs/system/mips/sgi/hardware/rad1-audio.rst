@@ -69,7 +69,17 @@ Sources
   ``e5fa4e36e4f9100a8dbebcbf1d707145f5c8164b69af2fbbeca490ab81d3be08``)
   and the IRIX 6.5.30 Origin audio driver (SHA-256
   ``7928b382eecc2c62039c3a09aa7e420b531c0a7d5dc50567f9e3aa43666bc6f5``),
-  read as shipped binaries. Every register below comes from them.
+  read as shipped binaries. Every register below comes from them, except
+  the Octane digital outputs' set B, which comes from the next source.
+- The IRIX 6.5.13f IP30 kernel, which links the Octane audio driver in
+  (SHA-256
+  ``417db52e4ec94249dff6fd023cc35f8324753ba6b8d9fdc34cfc385bfc820e56``),
+  read as a shipped binary and observed in a guest run under Discreet
+  Flame 7.6: the descriptor words it left in BAR0 and the audio mixer's
+  zero-fill loop at image addresses ``0xa800000020334dcc`` to
+  ``0xa800000020334e9c``.
+- A comp.sys.sgi.hardware post: the Octane has coaxial AES3 and ADAT
+  optical input and output :src:`usenet-396673aa lines 1-2`.
 
 .. _sgi-rad1-identity:
 
@@ -176,12 +186,14 @@ values IRIX writes are each a *software expectation*.
    * - ``0x50``
      - ADAT output control
      - R/W
-     - Bit 0 runs the ADAT output. The Octane driver writes ``0x60000000``.
+     - Bit 0 runs the ADAT output. The Octane driver writes ``0x60000000``
+       at start and ``0x60000001`` to run the output.
    * - ``0x54``
      - AES3 output control
      - R/W
      - Bit 0 runs the AES3 output. Bits 2 and 3 are subcode flags,
-       stored. The Octane driver writes ``0x40000000``.
+       stored. The Octane driver writes ``0x40000000`` at start and
+       ``0x40000001`` to run the output.
    * - ``0x58``
      - Analog output control
      - R/W
@@ -375,13 +387,13 @@ high and control, *software expectation*:
      - not used by the model
    * - AES3 output (3)
      - ``0x4f0``, ``0x520``, ``0x4f4``
-     - not used by the model
+     - ``0x424``, ``0x428``, ``0x42c`` (Octane)
    * - ADAT input (4)
      - ``0x4c0``, ``0x508``, ``0x4c4``
      - not used by the model
    * - ADAT output (5)
      - ``0x4e8``, ``0x51c``, ``0x4ec``
-     - not used by the model
+     - ``0x43c``, ``0x440``, ``0x444`` (Octane)
    * - AES3-input subcode (6)
      - ``0x4e0``, ``0x518``, ``0x4e4``
      - ``0x448``, ``0x44c``, ``0x450``
@@ -402,12 +414,16 @@ low, address high and control, twelve bytes apart. IRIX links to entry
 1 and Linux to entry 7, each programmed with a copy of the working
 descriptor, a *software expectation*. The sixteen-entry count follows
 from the four-bit link field, and the rest of the layout from those two
-entries, *inferred*. Entry 15 shares its words with the status ring's
-set B. Every entry word takes 32-bit reads and writes, except that a
-write to a channel's own set while that channel runs is refused. Above
-the descriptor RAM, the low-address words ``0x4c0``, ``0x4c8``,
-``0x4d8``, ``0x4e8`` and ``0x4f0``, which the Octane driver writes at
-start with the engines off, are stored with no effect.
+entries, *inferred*. Each set B in the table sits at the entry its
+channel's tag names; IRIX 6.5.13f left the AES3 output's ring in entry 3
+and the ADAT output's in entry 5, copies of their set A, *software
+expectation*. Entry 15 shares its words with the status ring's set B.
+Every entry word takes 32-bit reads and writes, except that a write to
+a channel's own set while that channel runs is refused. Above the
+descriptor RAM, the low-address words ``0x4c0``, ``0x4c8`` and
+``0x4d8``, which the Octane driver writes at start with the engines
+off, are stored with no effect; the digital outputs' set A words are
+descriptor words like the analog ones.
 
 When an Octane output pass ends without end of descriptor, the model
 loads the entry that control bits 6:3 name into the working registers
@@ -531,7 +547,12 @@ Rates, each an *approximation*:
 
 - Analog input and output, AES3 output and ADAT output: 44.1 kHz, the
   software rate the driver gives the analog output clock. Which bits of
-  ``0xa0`` and ``0xa4`` select a hardware rate is *unknown*.
+  ``0xa0`` and ``0xa4`` select a hardware rate is *unknown*. On the
+  Octane the analog pair follows its clock generators, and the AES3 and
+  ADAT outputs stay at 44.1 kHz: their control words carry clock bits
+  (``0x40000000`` and ``0x60000000``) that the analog output's
+  one-generator rule does not explain, so which clock paces them is
+  *unknown*.
 - ADAT input: 48 kHz, the driver's ADAT clock default.
 - AES3 input: the ``aes-input-rate`` property, or 48 kHz with none.
 - MediaIO subcode channels: one record per frame of the parent input.
@@ -549,12 +570,24 @@ capture, the input records silence.
 
 On the Octane only the analog input (``0x4c`` bit 0, both sets the same
 nonzero address, control ``0xfffff000``), the analog output (``0x58`` =
-``0x20000001``, control ``0xfffff008``) and the AES3-input subcode
-channel (``0x48`` bit 2, control ``0xfffff030``) run, each on a 4 KiB
-ring. An enable without valid sets is refused and changes nothing.
-Writing bit 0 of ``0x44``, ``0x48``, ``0x50`` or ``0x54``, or bit 2 of
-``0x44``, is refused. ``0x58`` accepts only ``0x20000000`` and
-``0x20000001``.
+``0x20000001``, control ``0xfffff008``), the AES3-input subcode channel
+(``0x48`` bit 2, control ``0xfffff030``) and the AES3 output (``0x54``
+bit 0, control ``0xfffff018``) run, each on a 4 KiB ring, and the ADAT
+output (``0x50`` bit 0, control ``0xffffc028``) runs on a 16 KiB ring,
+each geometry the one IRIX programs. An enable without valid sets is
+refused and changes nothing. Writing bit 0 of ``0x44`` or ``0x48``, or
+bit 2 of ``0x44``, is refused. ``0x58`` accepts only ``0x20000000`` and
+``0x20000001``. The Octane opens no host voice for the AES3 and ADAT
+outputs, so their samples are read from the ring and dropped, an
+*approximation*.
+
+The digital outputs must run once enabled. IRIX 6.5.13f's audio mixer
+takes each output's status-slot pointer as the hardware's place in the
+ring, *software expectation*. When the model refused these enables, the
+pointer stayed zero, the mixer's index landed far outside its 16 KiB
+ADAT buffer, and its zero-fill loop rewrote that buffer without end, so
+a guest opening the outputs (Discreet Flame 7.6 with ``Audiodevice
+sgi``) stopped responding.
 
 .. _sgi-rad1-receivers:
 
