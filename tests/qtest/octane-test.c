@@ -3596,6 +3596,95 @@ static void test_rad_digital_outputs(void)
 }
 
 /*
+ * The AES3 and ADAT outputs migrate while running: the destination keeps
+ * their rings, their phase and their positions, goes on walking the rings
+ * and still refuses a rewrite of a running ring. The source stops after
+ * 1 ms, 44 frames in; frame n is due at the first ns where
+ * floor(t * 44100 / 1e9) reaches n, so the 45th follows 20409 ns later.
+ */
+static void test_rad_digital_outputs_migration(void)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *directory = g_dir_make_tmp("octane-rad-digital-XXXXXX",
+                                               &error);
+    g_autofree char *socket = g_build_filename(directory, "mig.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = octane_start();
+    QTestState *to = octane_start_args("-incoming defer");
+    const uint64_t buffer = RAM + 0x8000;
+    const uint32_t aes = 0xa000a000, adat = 0xa000c000;
+    uint32_t count;
+
+    g_assert_no_error(error);
+    octane_rad_map(from);
+    qtest_writel(from, CFG(3) + 4, 6);
+    qtest_writel(from, BRIDGE_REG(0x080), 8u << 20);
+    qtest_writel(from, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(from, RAD_BAR0 + 0x40, 0x0a);
+    octane_rad_digital_out_program(from, false, aes, 0xfffff018);
+    octane_rad_digital_out_program(from, true, adat, 0xffffc028);
+    qtest_writel(from, RAD_BAR0 + 0x54, 0x40000001);
+    qtest_writel(from, RAD_BAR0 + 0x50, 0x60000001);
+    qtest_clock_step(from, 1000000);
+    g_assert_cmpuint(qtest_readl(from, RAD_BAR0 + 0x24) >> 18, ==, 44);
+    g_assert_cmpuint(qtest_readl(from, RAD_BAR0 + 0x1c) >> 18, ==, 44);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming', 'arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_migrate_resume(to);
+
+    /* The saved state: enables, rings and positions. */
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x54), ==, 0x40000001);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x50), ==, 0x60000001);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4f0), ==, aes);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4e8), ==, adat);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4f4), ==, 0xfffff018);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4ec), ==, 0xffffc028);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, 44);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, 44);
+
+    /* Both keep their phase: the next frame is due 20409 ns on. */
+    qtest_clock_step(to, 20408);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, 44);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, 44);
+    qtest_clock_step(to, 1);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, 45);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, 45);
+
+    /* The destination still treats both rings as running. */
+    qtest_writel(to, RAD_BAR0 + 0x4f0, 0xa000b000);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x4f0), ==, aes);
+    qtest_writel(to, RAD_BAR0 + 0x444, 0xfffff028);
+    g_assert_cmphex(qtest_readl(to, RAD_BAR0 + 0x444), ==, 0xffffc028);
+
+    /* Past a lap of each 512-frame ring the walk wraps and goes on. */
+    qtest_clock_step(to, 23979591);
+    count = 1102;
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, count);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, count);
+    octane_rad_status_program(to, 0xa0008000, 0xfffffffc);
+    qtest_writel(to, RAD_BAR0 + 0x5c, 0x40001);
+    g_assert_cmphex(qtest_readl(to, buffer + 0x30), ==,
+                    aes + count * 8 % 0x1000);
+    g_assert_cmphex(qtest_readl(to, buffer + 0x28), ==,
+                    adat + count * 32 % 0x4000);
+    qtest_clock_step(to, 22675);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, count + 1);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, count + 1);
+
+    /* Stopping on the destination holds the count. */
+    qtest_writel(to, RAD_BAR0 + 0x54, 0x40000000);
+    qtest_writel(to, RAD_BAR0 + 0x50, 0x60000000);
+    qtest_clock_step(to, 1000000);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x24) >> 18, ==, count + 1);
+    g_assert_cmpuint(qtest_readl(to, RAD_BAR0 + 0x1c) >> 18, ==, count + 1);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(g_rmdir(directory), ==, 0);
+}
+
+/*
  * Clock generator words IRIX 6.5.30 writes for each rate, measured on another
  * emulator's RAD1 model (iris, github.com/jamesbraid/iris, commit 4ec2939's
  * rad1/tests.rs): 0xa0, 0xa4 and, in every case, 1 in the master-select word
@@ -6991,6 +7080,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
     qtest_add_func("/octane/rad-digital-outputs", test_rad_digital_outputs);
+    qtest_add_func("/octane/rad-digital-outputs-migration",
+                   test_rad_digital_outputs_migration);
     qtest_add_func("/octane/rad-clock-irix-words", test_rad_clock_irix_words);
     qtest_add_func("/octane/rad-clock-master", test_rad_clock_master);
     qtest_add_func("/octane/rad-clock-generators", test_rad_clock_generators);
