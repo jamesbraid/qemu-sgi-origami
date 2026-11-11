@@ -1193,6 +1193,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-slrndi91sn``
    *comp.sys.sgi.hardware, 2005-09-11, Message-ID <slrndi91sn.313.wilhelm.greiner@sammy.erwo.net>*. Usenet. Capture, cited by line. Message-ID ``<slrndi91sn.313.wilhelm.greiner@sammy.erwo.net>``. Public web page; may be quoted.
 
+.. _sgi-ref-wtc-1002:
+
+``wtc-1002``
+   *WACOM Software Interface Reference Manual, UD-, KT- and SD-Series (WTC-1002)*. Wacom. Manual, cited by page. `<https://vt100.net/wacom/wacom-progman.pdf>`__ SHA-256 ``e82364719221ed9a36a14c4b0be1d702666d166afe7758fc88c54336e9b176e4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-xbridge-asic-spec-0-5:
 
 ``xbridge-asic-spec-0.5``
@@ -1202,6 +1207,11 @@ Firmware images
 ---------------
 
 Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256.
+
+.. _sgi-ref-dlwacom-3-03:
+
+``dlwacom-3.03``
+   *Discreet dlwacom tablet driver object*. Discreet Logic. Firmware, cited by address. For Discreet Inferno, Flame and Flint tablet driver for IRIX 6.5 on IP27. Version 3.03. Banner ``dlwacom version 3.03``. Found on the DLWacom product installed with Inferno 4.7.2IR2 for IRIX 6.5; addresses are offsets into the object's text section. Hashed as the container image. SHA-256 ``c63d02f8cf34ade4cb174ed5f5590c387735f26e55e516e1b3ff2ff2e11ec356``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-io6-prom-6-156:
 
@@ -1247,6 +1257,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 
 ``ip35-prom-6.210``
    *IP35 PROM*. Silicon Graphics. Firmware, cited by address. For Origin 300, Origin 350, Onyx 350, Fuel and Tezro IP35-family node boards. Version 6.210. Banner ``SGI Version 6.210  built 02:33:51 PM Aug 26, 2004``. Found on IRIX 6.5.30 installation media, /usr/cpu/firmware/ip35prom.img. Hashed as the payload image. SHA-256 ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-irix-wacom-6-5-30:
+
+``irix-wacom-6.5.30``
+   *IRIX wacom tablet STREAMS module*. Silicon Graphics. Firmware, cited by address. For IRIX 6.5.30 optional input devices (eoe.sw.optinput) on IP27. Version 6.5.30. Found on IRIX 6.5.30 installation media, eoe.sw.optinput, installed as /usr/cpu/sysgen/IP27boot/wacom.o; addresses are file offsets into the object. Hashed as the container image. SHA-256 ``e7a46650d1ebcce32cab381c64308144ceddff53df20d170e5b2a6e5bd849dfb``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-l1-firmware-1-44-0:
 

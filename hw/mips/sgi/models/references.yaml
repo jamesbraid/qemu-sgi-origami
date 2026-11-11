@@ -1272,6 +1272,15 @@ web:
     obtain:
       url: https://datasheet.octopart.com/USS312TC-Lucent-datasheet-180610558.pdf
       sha256: 5e4b19ced7d90480afcc1d6b8eea663f100f85b3321d98eaaf078c411bd53a45
+  wtc-1002:
+    title: "WACOM Software Interface Reference Manual, UD-, KT- and SD-Series (WTC-1002)"
+    publisher: Wacom
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://vt100.net/wacom/wacom-progman.pdf
+      sha256: e82364719221ed9a36a14c4b0be1d702666d166afe7758fc88c54336e9b176e4
   ics1890-rev-g:
     title: "ICS1890 10Base-T/100Base-TX Integrated PHYceiver, revision G, 1997-10-21"
     publisher: "Integrated Circuit Systems"
@@ -2079,6 +2088,31 @@ firmware:
       distribution: "IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img"
       image: payload
       sha256: c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd
+  dlwacom-3.03:
+    title: "Discreet dlwacom tablet driver object"
+    publisher: Discreet Logic
+    kind: firmware
+    product: "Discreet Inferno, Flame and Flint tablet driver for IRIX 6.5 on IP27"
+    version: "3.03"
+    banner: "dlwacom version 3.03"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the DLWacom product installed with Inferno 4.7.2IR2 for IRIX 6.5; addresses are offsets into the object's text section"
+      image: container
+      sha256: c63d02f8cf34ade4cb174ed5f5590c387735f26e55e516e1b3ff2ff2e11ec356
+  irix-wacom-6.5.30:
+    title: "IRIX wacom tablet STREAMS module"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "IRIX 6.5.30 optional input devices (eoe.sw.optinput) on IP27"
+    version: "6.5.30"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, eoe.sw.optinput, installed as /usr/cpu/sysgen/IP27boot/wacom.o; addresses are file offsets into the object"
+      image: container
+      sha256: e7a46650d1ebcce32cab381c64308144ceddff53df20d170e5b2a6e5bd849dfb
   ip30-prom-4.17:
     title: "IP30 PROM"
     publisher: Silicon Graphics

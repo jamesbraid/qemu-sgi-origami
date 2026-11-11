@@ -124,6 +124,7 @@ I/O and system control
    hardware/timekeepers
    hardware/ds1685
    hardware/at29c040a
+   hardware/wacom-iv
 
 Network
 ~~~~~~~
