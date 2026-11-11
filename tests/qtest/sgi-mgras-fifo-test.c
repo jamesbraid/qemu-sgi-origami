@@ -3464,6 +3464,61 @@ static void test_overlay_fill_honours_clip_rectangle(void)
 }
 
 /*
+ * On a board with two raster engines (an MXI here) the X server names the
+ * overlay planes with DRBPOINTERS 0x380e0, page A 0x0e0, where a
+ * one-engine board's server uses 0x101c0: the IRIX 6.5.13f 4Dwm menus
+ * fill with that word and COLORMASKMSBS 0x70, and the server takes a menu
+ * down with the same word, COLORMASKMSBS 0xf0 and logic op CLEAR.
+ * Main-plane draws in the same session carry 0xc8240 and leave the
+ * overlay alone.
+ */
+static void overlay_fill_6513(uint32_t drb, uint32_t msbs, uint32_t op,
+                              uint32_t index)
+{
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, drb));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, msbs));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, op << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, index));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (100u << 16) | 200u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (129u << 16) | 229u));
+}
+
+static void test_overlay_fill_irix_6513_pointer(void)
+{
+    QTestState *shared = qts;
+
+    qts = qtest_init(MACHINE_ARGS ",product=mxi");
+    mgras_enter_context(qts);
+
+    overlay_fill_6513(0x000c8240, 0x70, MGRAS_LOGIC_OP_COPY, 0x3);
+    g_assert_cmphex(mgras_test_overlay(qts, 110, 210), ==, 0);
+
+    overlay_fill_6513(0x000380e0, 0x70, MGRAS_LOGIC_OP_COPY, 0x1);
+    g_assert_cmphex(mgras_test_overlay(qts, 100, 200), ==, 0x1);
+    g_assert_cmphex(mgras_test_overlay(qts, 129, 229), ==, 0x1);
+    g_assert_cmphex(mgras_test_overlay(qts, 130, 215), ==, 0);
+
+    overlay_fill_6513(0x000380e0, 0xf0, MGRAS_LOGIC_OP_CLEAR, 0);
+    g_assert_cmphex(mgras_test_overlay(qts, 110, 210), ==, 0);
+
+    /* A one-engine board's overlay page is not this board's. */
+    overlay_fill_6513(0x000101c0, 0x70, MGRAS_LOGIC_OP_COPY, 0x2);
+    g_assert_cmphex(mgras_test_overlay(qts, 110, 210), ==, 0);
+    qtest_quit(qts);
+    qts = shared;
+}
+
+/*
  * The box limits a fill whatever its op and colour mask, and only the
  * pixels inside take the fill's format tag. The seed is an RGB fill of
  * 0x0f0f0f over two rows; the box covers four columns of the second.
@@ -4522,6 +4577,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/overlay-fill-honours-clip-rectangle",
         test_overlay_fill_honours_clip_rectangle, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/overlay-fill-irix-6513-pointer",
+        test_overlay_fill_irix_6513_pointer, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/masked-fill-honours-clip-rectangle",
         test_masked_fill_honours_clip_rectangle, true);
