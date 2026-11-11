@@ -580,6 +580,25 @@ static void test_pci_bridge_rom_refused(void)
     qtest_quit(s);
 }
 
+static void test_pci_unused_aic_regions(void)
+{
+    QTestState *s = qtest_init(MEMTX_TEST_DEVICE "-M none -cpu R10000 "
+        "-device sgi-mace,id=mace -device aic7880,bus=mace.0,addr=1");
+    static const uint32_t unused[] = { 0x18, 0x1c, 0x20, 0x24, 0x30 };
+
+    qtest_sysbus_mmio_map(s, "/machine/peripheral/mace", 0, MACE_BASE);
+    for (unsigned i = 0; i < ARRAY_SIZE(unused); i++) {
+        qtest_writel(s, MACE_PCI_CFGADDR, (1u << 11) | unused[i]);
+        g_assert_cmpuint(memtx_writel(s, MACE_PCI_CFGDATA, 0xffffffff), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_CFGDATA), ==, 0);
+        g_assert_cmpuint(memtx_writel(s, MACE_PCI_CFGDATA, 0x12345678), ==,
+                         MEMTX_OK);
+        g_assert_cmphex(qtest_readl(s, MACE_PCI_CFGDATA), ==, 0);
+    }
+    qtest_quit(s);
+}
+
 static void test_pci_absent_device(void)
 {
     QTestState *s = mace_start();
@@ -817,6 +836,8 @@ int main(int argc, char **argv)
                    test_pci_bar_decode_refused);
     qtest_add_func("/sgi/mace/pci-bridge-rom-refused",
                    test_pci_bridge_rom_refused);
+    qtest_add_func("/sgi/mace/pci-unused-aic-regions",
+                   test_pci_unused_aic_regions);
     qtest_add_func("/sgi/mace/pci-absent-device", test_pci_absent_device);
     qtest_add_func("/sgi/mace/pci-control-bits", test_pci_control_bits);
     qtest_add_func("/sgi/mace/pci-flush", test_pci_flush);
