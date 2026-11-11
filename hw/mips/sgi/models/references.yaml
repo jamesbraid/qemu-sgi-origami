@@ -830,6 +830,15 @@ web:
     obtain:
       url: https://happy-yapph.github.io/sgi-pca-numbers/
       sha256: c7d2ad8f1325ad57f17c33e98b0a25ef2cb6932fffbb0d123a720d8338e31376
+  lkml-aha-f950-lspci:
+    title: "Adaptec AHA-F950 FC card, lspci -v of an AIC-1160 board, 2004-06-18"
+    publisher: "Mark Watts, Linux kernel mailing list"
+    kind: web-post
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://lkml.rescloud.iu.edu/0406.2/0688.html
+      sha256: 9de24a7d07d9eb4da6db9e6cdea51cbd0340c5a7d523aba730184e62f53ebd2f
   preterhuman-tezro:
     title: "SGI Tezro"
     publisher: "Higher Intellect wiki"

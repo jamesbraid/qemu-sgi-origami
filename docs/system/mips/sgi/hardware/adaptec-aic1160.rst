@@ -80,10 +80,44 @@ BAR 0, the chip registers; and BAR 3, the sequencer memory
 the function with command ``0x55``, I/O space, bus master,
 memory-write-and-invalidate and parity response, and never sets memory space
 (*software expectation*), but no one has read the BAR type bit from the chip.
-The chip has BARs 0 to 3; the driver writes 0 to BARs 1 and 2 as a workaround for
-a chip bug and never uses them, and IRIX sizes all six (*software
-expectation*). It connects one interrupt per function
-(*software expectation*).
+The driver writes 0 to BARs 1 and 2 as a workaround for a chip bug and
+never uses them, and IRIX sizes all six (*software expectation*). It connects
+one interrupt per function (*software expectation*).
+
+One ``lspci -v`` of an Adaptec AHA-F950 board, an AIC-1160 at revision 2 on an
+unknown host, shows the chip's BARs (*observed*, one capture,
+:src:`lkml-aha-f950-lspci`):
+
+.. list-table::
+   :header-rows: 1
+
+   * - BAR
+     - Type and size
+     - Rating
+   * - 0
+     - I/O, 256 bytes
+     - *observed*
+   * - 1 and 2
+     - Memory, 64-bit, non-prefetchable, 4 KiB: BAR 2 is the upper dword of
+       BAR 1
+     - *observed*
+   * - 3
+     - I/O, 256 bytes
+     - *observed*
+   * - 4 and 5
+     - Not shown by the capture
+     - *unknown*
+   * - Expansion ROM
+     - 64 KiB, disabled when captured
+     - *observed*
+
+The capture is one board; it does not print the numeric ID pair, and the
+XIO board's controllers are taken to have the same configuration space
+because the chip and revision match (*inferred*). The IRIX driver
+sets I/O space and never memory space (*software expectation*). In the
+Octane traces the boot firmware writes command ``0x7`` after placing BAR 1,
+which enables memory space, and the kernel later writes ``0x55``, which
+disables it (*observed*).
 
 The model's choices for what no source gives, each an *approximation*:
 
@@ -93,8 +127,13 @@ The model's choices for what no source gives, each an *approximation*:
   property.
 - The interrupt pin is INTA.
 - The subsystem pair is left at 0.
-- BAR 0 and BAR 3 are 256-byte I/O windows. BARs 1 and 2 are not modelled
-  and read 0; the driver's zero writes to them change nothing.
+- BAR 0 and BAR 3 are 256-byte I/O windows. BAR 1 is a 4 KiB 64-bit
+  non-prefetchable memory BAR with BAR 2 as its upper dword, and the
+  expansion ROM BAR is 64 KiB. Nothing is known to sit behind either, so
+  an access to the memory BAR or to an enabled ROM is logged as
+  unimplemented, reads all ones and writes nothing. The placeholder ROM has no contents
+  because no image is held; with ``romfile`` or ``rombar=0`` the PCI core
+  owns the ROM BAR instead. BARs 4 and 5 read 0.
 - Config register ``0x40`` is writable. The driver sets bit 2, the
   dual-address-cycle enable, at attach (*software expectation*), and the
   model stores it without gating DMA on it. The cache line size and latency
@@ -750,49 +789,46 @@ from them (*observed*, an Octane PCI module boot, whose Bridge behaves the
 same way). ``sgi-fc-board-test`` drives the probe's reads on each machine
 that has an XIO Bridge.
 
-On an Octane under IRIX 6.5.21, the second controller attaches and the
-first does not. The first prints ``error -2 in getting config`` for
-``pci/0`` and lists no disk; the second lists its disks in ``hinv`` and
-``fx`` opens one (*observed* on the model, with the board at ``widget-9``
-and at ``widget-12``). The driver returns that error when its link-speed
-read of the chip does not give a listed value (*software expectation*), so
-the read on device 0 is *inferred* to have missed the registers: no capture
-holds the value, and the register trace shows no access reaching device 0.
+On an Octane under IRIX 6.5.21, both controllers attach and list their
+disks in ``hinv``, ``fx`` opens a disk on port 0, and the console has no
+``error -2 in getting config`` (*observed* on the model, with the board at
+``widget-9`` and disks on both ports). With the BAR 1 the model had before,
+which read 0, the first controller printed that error for ``pci/0`` and
+listed no disk. The error comes from the driver's link-speed read of the
+chip missing a listed value (*software expectation*), and the old register
+trace showed no access reaching device 0.
 
-A trace of the type-0 configuration cycles shows why (*observed*). The
-boot firmware places BAR 0 of each controller, at ``0x200000`` on device 0
-and ``0x400000`` on device 1, and writes command ``0x7``; it also probes BAR 1,
-which reads 0, and does not touch BARs 2 and 3. The kernel leaves BAR 0
-alone, sizes BAR 3 as a 256-byte I/O window, and gives it ``0x200000`` and
-``0x300000``. On device 0 the sequencer memory therefore sits on top of the
-registers (*observed* in the memory map), which is what would send the
-driver's register reads elsewhere (*inferred*). A memory-space BAR 3 does
-not help: the kernel enables I/O decode only for this part, and the Bridge
-reports a device-select time-out (*observed*).
+A trace of the configuration cycles shows the placement (*observed*, 6.5.21
+on the model). The boot firmware sizes the three BARs with all ones and gets
+``0xffffff01`` for BAR 0, ``0xfffff004`` for BAR 1, which is a 64-bit memory
+BAR, and ``0xffffff01`` for BAR 3. It writes 0 to the upper dword at BAR 2,
+steps over it, and places the BARs of device 0 at ``0x200000`` (I/O),
+``0x200000`` (memory) and ``0x204000`` (I/O), and those of device 1 at
+``0x400000``, ``0x400000`` and ``0x404000``. BAR 4 sizes to zero and the walk
+ends there. It writes command ``0x7`` afterwards. It also sizes the ROM
+register at ``0x30``, gets ``0xffff0000``, and writes ``0x210000`` or
+``0x410000`` with the enable bit clear. The kernel then reads BAR 0 and BAR 3
+as placed, writes 0 to BAR 1 and BAR 2, and sets command ``0x55``, which
+leaves memory decode off. It does not move BAR 3. Neither the firmware nor
+the kernel enables the ROM (*observed* in the configuration cycles). The
+memory BAR is decoded between the firmware's command write and the
+kernel's; whether anything accesses it or the ROM was not traced and is
+*unknown*.
 
-Why the kernel allocates over the firmware's BAR is read from a debugger
-breakpoint on the allocator in the 6.5.21 kernel. The *observed* values are
-the pool selector that each call passes. The two reserves for this board's
-BAR 0 pass ``0xffffffffa8000000``. The onboard Bridge's four reserves pass 5,
-and the BAR 3 allocations on both Bridges pass 2. The reading of those
-values is *inferred* from the kernel code: the kernel reserves each
-firmware-placed BAR in a per-Bridge pool before allocating the unplaced
-ones, 2 names the I/O pool and 5 the second memory pool, and
-``0xffffffffa8000000`` names no pool, so the reservation does nothing and
-BAR 3 is allocated over BAR 0. The selector is read from a stack slot that
-the I/O-BAR path never sets (*inferred* from the binary), and the value
-looks like the upper word of a kernel address left by earlier code. The
-calls' return values do not show a drop by themselves. The same selectors
-appear with ``widget-12``. The model gives the kernel values that a PCI
-function with an I/O BAR 0 and an I/O BAR 3 can give (command ``0x7``, a
-BAR 0 that reads back with its type bit and address, a BAR 3 that sizes to
-256 bytes); the real chip's BAR types and sizes are *unknown*, so those
-are an *approximation*, and whether a real Octane shows the same failure
-is *unknown*. The model is not changed to avoid it.
+Before BAR 1 was modelled the firmware's walk stopped at the zero-sized BAR 1
+and never placed BAR 3. The kernel then allocated BAR 3 itself at
+``0x200000`` on device 0, on top of BAR 0 (*observed* in the memory map). A
+debugger breakpoint on the 6.5.21 kernel's allocator showed that its
+reservation of the firmware-placed BAR 0 passes a pool selector that names
+no pool, so the reservation does nothing (*observed*, the values; the
+reading is *inferred* from the binary). That defect is still there, and is
+harmless once the firmware has placed every BAR. Whether the same overlap
+happens on a real Octane is *unknown*.
 
 IRIX 6.5.30 on the same Octane model attaches both controllers, and the
-disks on port 0 appear in ``hinv`` with no error (*observed*, one run on
-the 6.5.30m kernel).
+disks on both ports appear in ``hinv`` with no error (*observed*, one run
+each on the 6.5.30m kernel). It sets the ROM register to ``0x800000`` and
+``0x900000``, again with the enable bit clear.
 
 Model limits
 ============
@@ -806,9 +842,10 @@ Model limits
   restarts.
 - Hardware error status at ``0x23``.
 - The PCI class code, the XIO widget identity and the Bridge revision.
-- Port 0 of the board on an Octane under IRIX 6.5.21: the two I/O BARs
-  overlap, as above, and the guest's reservation is *inferred* to be
-  dropped. Whether a real Octane does the same is *unknown*.
+- The memory BAR and the expansion ROM have no registers or contents. The
+  ROM image is not held; ``romfile`` supplies one and ``rombar=0`` hides the
+  BAR. Whether any guest reads either is *unknown*. BARs 4 and 5 are not
+  shown by the one capture and are not modelled.
 - Commands in flight do not migrate.
 
 Tests
@@ -816,7 +853,7 @@ Tests
 
 ``tests/qtest/adaptec-aic1160-test.c`` runs the controller behind the
 Bridge on the libqos head. It covers the identity, class, config space and revision
-property, the two windows and the absence of the others, the reset values,
+property, the two I/O windows, the 64-bit memory BAR and the ROM size, and the absence of BARs 4 and 5, the reset values,
 the register banks, the chip reset, host control, the download and its
 read-back, the RAM capacity, the sequencer memory pages and RAM sweep, the self-test RAMs, the config collection, the
 interrupt line with the master enable, the status mask, the loop event hook,
