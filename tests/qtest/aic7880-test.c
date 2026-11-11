@@ -11516,6 +11516,30 @@ static void manual_ack(QTestState *qts, uint8_t phase, uint8_t byte,
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, hdone);
 }
 
+/*
+ * Explicitly acknowledge the incoming byte without reading the latch first.
+ * REQ retires, the byte is held for repeated reads and peeks until ACK falls,
+ * and a repeated ACK write changes nothing.
+ */
+static void manual_ack_unread(QTestState *qts, uint8_t phase, uint8_t byte)
+{
+    uint8_t sdone = qtest_readb(qts, REG_BASE + 0x0b) & 4;
+    uint8_t hdone = qtest_readb(qts, REG_BASE + 0x94) & 8;
+
+    qtest_writeb(qts, REG_BASE + 3, phase | 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, phase | 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, byte);
+    for (unsigned i = 0; i < 3; i++) {
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, byte);
+    }
+    qtest_writeb(qts, REG_BASE + 3, phase | 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3, ==, phase | 1);
+    qtest_writeb(qts, REG_BASE + 3, phase);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0b) & 4, ==, sdone);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, hdone);
+}
+
 static uint8_t manual_incoming(QTestState *qts, uint8_t phase, bool sequencer)
 {
     uint8_t byte;
@@ -11634,12 +11658,22 @@ static void test_manual_inquiry(void)
             got[i] = manual_incoming(qts, 0x40, sequencer);
             manual_check_counters(qts);
             if (!sequencer && i + 1 < sizeof(got)) {
-                ManualGuard before;
-
-                manual_capture(qts, &before);
-                /* The held latch did not sample the next byte. */
+                /*
+                 * An explicit ACK acknowledges the pending byte without a
+                 * prior latch read, retires REQ and holds the byte in the
+                 * latch until ACK falls.
+                 */
                 manual_signal_write(qts, 0x41, sequencer);
-                manual_unchanged(qts, &before);
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 3) & 0xe3,
+                                ==, 0x41);
+                i++;
+                got[i] = qtest_readb(qts, REG_BASE + 6);
+                for (unsigned read = 0; read < 2; read++) {
+                    g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==,
+                                    got[i]);
+                }
+                manual_signal_write(qts, 0x40, sequencer);
+                manual_check_counters(qts);
             }
         }
         g_assert_cmpmem(got, sizeof(got), expected, sizeof(expected));
@@ -12033,10 +12067,11 @@ static void test_manual_sample_channel_clear(void)
             manual_unchanged(qts, &before);
             /* Channel clear discarded the local sample, not the target byte. */
             if (!automatic) {
-                qtest_writeb(qts, REG_BASE + 3, phase | 1);
-                manual_unchanged(qts, &before);
+                /* An explicit ACK still acknowledges the target's byte. */
+                manual_ack_unread(qts, phase, byte);
+            } else {
+                g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, byte);
             }
-            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x12), ==, byte);
             if (automatic && !data) {
                 qtest_writeb(qts, REG_BASE + 1, 8);
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, byte);
@@ -12064,9 +12099,6 @@ static void test_manual_sample_channel_clear(void)
                 g_assert_cmphex(got[8], ==, byte);
                 g_assert_cmpmem(got + 16, 7, "LABTEST", 7);
                 qtest_writeb(qts, REG_BASE + 0x93, 0);
-            } else {
-                g_assert_cmphex(qtest_readb(qts, REG_BASE + 6), ==, byte);
-                manual_ack(qts, phase, byte, true, false);
             }
             if (data) {
                 if (!automatic) {
@@ -12621,12 +12653,11 @@ static void test_manual_pending_migration(void)
             qtest_writeb(to, REG_BASE + 0x92, 4);
             qtest_writeb(to, REG_BASE + 3, phase);
             if (!sampled) {
-                manual_capture(to, &before);
-                qtest_writeb(to, REG_BASE + 3, phase | 1);
-                manual_unchanged(to, &before);
-                g_assert_cmphex(qtest_readb(to, REG_BASE + 6), ==, byte);
+                /* The unread byte is acknowledged and held, not refused. */
+                manual_ack_unread(to, phase, byte);
+            } else {
+                manual_ack(to, phase, byte, true, false);
             }
-            manual_ack(to, phase, byte, true, false);
             if (!message) {
                 manual_incoming(to, 0xe0, false);
             }
