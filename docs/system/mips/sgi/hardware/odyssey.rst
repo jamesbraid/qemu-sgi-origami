@@ -818,8 +818,7 @@ pulse at the next start is then the only reset the board gets on an
 Octane2. The IP30 kernel and PROM write ``0x200`` to the reset control
 register at ``0x100c``, wait, and write 0, when the Crossbow's revision
 code is 5 or more (the Octane2's is 5). On an older Crossbow they write
-``0x16d`` instead and then link-reset the board's port; the model does not
-act on that link reset. The IP35 kernel writes ``0x200`` only, from the
+``0x16d`` instead and then link-reset the board's port. The IP35 kernel writes ``0x200`` only, from the
 driver's start-up path, and never link-resets the board. The IP35
 kernel's pulse routine retries the store up to four times unless the
 port's link status bit 31 and auxiliary bit 5 read set afterwards
@@ -829,7 +828,8 @@ The IP30 and IP35 pulses and the code-4 link reset are *inferred* from
 analysis of the shipped kernels and PROMs.
 
 The model takes a write of ``0x200`` or ``0x16d`` as a reset of the whole
-board (*approximation*). What a real board keeps through either, and what
+board, and a link reset on the board's port the same way
+(*approximation*). What a real board keeps through any of them, and what
 bit 9 of ``0x200`` or the bits of ``0x16d`` mean, is *unknown*. That
 ``0x16d`` is a reset at all is *inferred* only from the role of the
 routine that writes it. Before this, a pulse was accepted and ignored,
@@ -999,7 +999,7 @@ covers the context switch and shadow page. The ``gl`` group and the
 ``texture-3d`` groups cover the OpenGL command stream. ``tests/qtest/sn1-odyssey-query-test.c``
 covers the current-attribute query records.
 ``tests/qtest/octane-vpro-test.c`` covers the board's reset by a
-``0x100c`` pulse in the Octane2's graphics port.
+``0x100c`` pulse and by a link reset in the Octane2's graphics port.
 
 ``tests/qtest/octane-vpro-test.c`` checks each product's identity and
 memory size, and the default board's interrupt path to HEART, at

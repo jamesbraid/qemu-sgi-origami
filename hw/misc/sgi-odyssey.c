@@ -14653,6 +14653,7 @@ static bool odyssey_build_widget(SGIXioBoardState *board, Error **errp)
     odyssey_reset_registers(s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
+    board->link_reset = qdev_get_gpio_in_named(DEVICE(s), "link-reset", 0);
     return true;
 }
 
@@ -14839,6 +14840,24 @@ static void odyssey_unrealize(DeviceState *dev)
     sgi_board_memory_cleanup(&s->obj_mem);
     sgi_board_memory_cleanup(&s->depth_mem);
     sgi_board_memory_cleanup(&s->stencil_mem);
+}
+
+/*
+ * A link reset from the Crossbow port the board sits on. The IP30 driver
+ * sends one only on a Crossbow of revision code 4 or less, after its own
+ * 0x16d pulse of ODSY_RESET_CONTROL, and no other software is known to
+ * (inferred from analysis of the shipped kernels and PROMs). Taken as a full
+ * board reset, an approximation: what a real board keeps through a link
+ * reset is unknown.
+ */
+static void odyssey_link_reset(void *opaque, int line, int level)
+{
+    SGIOdysseyState *s = opaque;
+
+    if (level) {
+        trace_sgi_odyssey_board_reset("link", 0);
+        device_cold_reset(DEVICE(s));
+    }
 }
 
 static void odyssey_reset_hold(Object *obj, ResetType type)
@@ -15162,6 +15181,7 @@ static void odyssey_instance_init(Object *obj)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
 
+    qdev_init_gpio_in_named(DEVICE(obj), odyssey_link_reset, "link-reset", 1);
     memory_region_init_io(&s->regs, obj, &odyssey_ops, s, "sgi-odyssey.regs",
                           ODSY_APERTURE);
     /*

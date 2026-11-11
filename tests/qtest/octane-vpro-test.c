@@ -42,8 +42,10 @@
 /* Each Crossbow link's status register, in its slot's data half. */
 #define XBOW_LINK_STATUS(w) (XBOW + 0x100 + ((w) - 8) * 0x40 + 0x10 + 4)
 #define XBOW_LINK_ALIVE (1u << 31)
+#define XBOW_LINK_RESET(w) (XBOW + 0x100 + ((w) - 8) * 0x40 + 0x30 + 4)
 #define XBOW_LINK_AUX(w) (XBOW + 0x100 + ((w) - 8) * 0x40 + 0x38 + 4)
 #define XBOW_AUX_PRESENT (1u << 5)
+#define XBOW_LINK_RESET_NS 20
 
 /*
  * HEART takes an interrupt packet as an eight-byte write at 0x80 of its
@@ -364,6 +366,28 @@ static void test_reset_control_pulse_resets_board(void)
     qtest_quit(qts);
 }
 
+/*
+ * A link reset to the board's Crossbow port resets it too. The IP30 driver
+ * sends one only on a Crossbow of revision code 4 or less, after the 0x16d
+ * pulse; the Octane2's is code 5, so this is the model's reading of an
+ * input nothing sends on that machine.
+ */
+static void test_link_reset_resets_board(void)
+{
+    QTestState *qts = start(true, "v12");
+
+    qtest_writel(qts, VPRO_SHORT + ODSY_FLCTL_CONFIG, 0x12345);
+    qtest_writel(qts, XBOW_LINK_RESET(VPRO_WIDGET), 0);
+    g_assert_cmphex(qtest_readl(qts, VPRO_SHORT + ODSY_FLCTL_CONFIG), ==,
+                    ODSY_FLCTL_CONFIG_RESET);
+    qtest_clock_step(qts, XBOW_LINK_RESET_NS);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_STATUS(VPRO_WIDGET)) &
+                    XBOW_LINK_ALIVE, ==, XBOW_LINK_ALIVE);
+    g_assert_cmphex(qtest_readl(qts, XBOW_LINK_AUX(VPRO_WIDGET)) &
+                    XBOW_AUX_PRESENT, ==, XBOW_AUX_PRESENT);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     const struct {
@@ -402,6 +426,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane2/vpro/posted-fifo", test_posted_fifo);
     qtest_add_func("/octane2/vpro/reset-control-pulse-resets-board",
                    test_reset_control_pulse_resets_board);
+    qtest_add_func("/octane2/vpro/link-reset-resets-board",
+                   test_link_reset_resets_board);
     result = g_test_run();
     g_assert_cmpint(unlink(flash_path), ==, 0);
     g_free(flash_path);
