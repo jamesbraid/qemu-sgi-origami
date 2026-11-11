@@ -312,25 +312,36 @@
 #define MGRAS_FILLMODE_RECT_FILL_VALUE 0x00100000
 
 /*
- * A primitive draws into the overlay planes when DRBPOINTERS holds the overlay
- * pointer word and COLORMASKMSBS enables planes in bits 6:4. Inferred from
- * IRIX 6.5.30 desktop sessions recorded on the model: every fill, glyph row,
- * byte transfer and line the server issues for a window on its overlay visual
- * (popup and Toolchest menus, XOR drag outlines) carries DRBPOINTERS 0x101c0,
- * COLORMASKMSBS 0x70 and COLORMASKLSBSA 0, and no main-plane drawing carries
- * that pointer word. How the hardware decodes the pointer word's fields is
- * unknown, so the whole word is compared. The same word with COLORMASKMSBS
- * 0xf0 and logic op CLEAR is how the server erases an overlay window, over the
- * whole screen at start-up and over a popup's rectangle when it is taken down.
+ * DRBPOINTERS carries two draw-buffer page fields: page A in bits 9:0,
+ * the one drawn and read, and page B in bits 19:10, the X driver merging
+ * the two under 0xfff003ff and setting B equal to A for a single-buffered
+ * window (software expectation; how the board decodes the fields is
+ * unknown). The X server loads whole words from its video-format file and
+ * has no other plane select in the word: which page it names, with
+ * COLORMASKMSBS, picks the planes. Software expectation from the IMPACT X
+ * driver's format files: a board with one raster engine gets main 0x90240
+ * and overlay 0x101c0, a board with two (the MXI and EMXI) main 0xc8240
+ * and overlay 0x380e0, so the main page is 0x240 on both and the overlay
+ * page 0x1c0 or 0x0e0. The model ignores bits 31:20, its own choice: the
+ * GL windows' words carry stack garbage there. The IRIX 6.5.30 desktop
+ * captures on one-engine boards and the IRIX 6.5.13f 4Dwm menus on an MXI
+ * agree: every fill, glyph row, byte transfer and line on the overlay
+ * visual carries the overlay page with COLORMASKMSBS 0x70 and
+ * COLORMASKLSBSA 0, and the server erases an overlay window with the same
+ * page, COLORMASKMSBS 0xf0 and logic op CLEAR. What the board does with
+ * the other page values is unknown.
  */
-#define MGRAS_DRBPOINTERS_OVERLAY 0x000101c0
+#define MGRAS_DRB_PAGE_A_MASK 0x3ff
+#define MGRAS_DRB_PAGE_MAIN 0x240
+#define MGRAS_DRB_PAGE_OVERLAY_ONE_RE 0x1c0
+#define MGRAS_DRB_PAGE_OVERLAY_TWO_RE 0x0e0
 #define MGRAS_COLORMASKMSBS_OVERLAY 0x70
 
 /*
  * Clip IDs. When a GL window is covered by more windows than the kernel's
  * four clip rectangles can describe, the IRIX 6.5.30 X server tags the
- * window's visible region with a clip ID: rectangle fills with DRBPOINTERS
- * 0x90240 (the main-plane pointer word), COLORMASKMSBS 0xff,
+ * window's visible region with a clip ID: rectangle fills into the main
+ * page (DRBPOINTERS 0x90240 on that board), COLORMASKMSBS 0xff,
  * COLORMASKLSBSA/B 0, PP1FILLMODE 0x142600 and the ID in FILLCOLOR_R. Its
  * fill routine (in the IMPACT X driver module) sends FILLCOLOR_R as the ID
  * when the ID is at most 3 and 0 otherwise, so an ID has two bits; that
@@ -340,7 +351,6 @@
  * would leave every window's ID 0. How a GL fragment is tested against
  * the ID is in sgi-mgras-gl.c (mgras_gl_owns()).
  */
-#define MGRAS_DRBPOINTERS_MAIN 0x00090240
 #define MGRAS_COLORMASKMSBS_CLIP_ID 0x03
 
 /*
@@ -1220,9 +1230,18 @@ static void mgras_put_row(SGIMgrasState *s, int y, int x0, int x1,
 }
 
 
+static uint32_t mgras_drb_page_a(SGIMgrasState *s)
+{
+    return s->rss[MGRAS_RSS_DRBPOINTERS] & MGRAS_DRB_PAGE_A_MASK;
+}
+
 static bool mgras_overlay_target(SGIMgrasState *s)
 {
-    return s->rss[MGRAS_RSS_DRBPOINTERS] == MGRAS_DRBPOINTERS_OVERLAY &&
+    uint32_t overlay = s->board->re_count == 2 ?
+                       MGRAS_DRB_PAGE_OVERLAY_TWO_RE :
+                       MGRAS_DRB_PAGE_OVERLAY_ONE_RE;
+
+    return mgras_drb_page_a(s) == overlay &&
            (s->rss[MGRAS_RSS_COLORMASKMSBS] & MGRAS_COLORMASKMSBS_OVERLAY);
 }
 
@@ -1336,7 +1355,7 @@ static void mgras_draw_fill(SGIMgrasState *s)
      * No fill writes a window ID: scanout takes each pixel's WID from the
      * VC3's display-ID tables (sgi-mgras-display.c). The fills that carry
      * a nonzero COLORMASKMSBS are overlay draws and clears and, with
-     * DRBPOINTERS 0x90240 and COLORMASKMSBS bits 1:0, clip-ID writes
+     * the main page and COLORMASKMSBS bits 1:0, clip-ID writes
      * (including the server's two start-up fills), handled below. Clip IDs
      * are not displayed; only GL fragments read them.
      */
@@ -1344,7 +1363,7 @@ static void mgras_draw_fill(SGIMgrasState *s)
         MGRAS_FILLMODE_RECT_FILL_VALUE) {
         return;
     }
-    if (s->rss[MGRAS_RSS_DRBPOINTERS] == MGRAS_DRBPOINTERS_MAIN &&
+    if (mgras_drb_page_a(s) == MGRAS_DRB_PAGE_MAIN &&
         (s->rss[MGRAS_RSS_COLORMASKMSBS] & MGRAS_COLORMASKMSBS_CLIP_ID)) {
         mgras_fill_clip_id(s);
     }

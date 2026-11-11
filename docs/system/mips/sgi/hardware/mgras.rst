@@ -1169,6 +1169,21 @@ not implemented. Register ``0x161`` (``PP1FILLMODE``, which carries the
 logic operation) resets to ``0x0c000000`` and ``0x163`` to all ones,
 each an *approximation*.
 
+Register ``0x16d`` (``DRBPOINTERS``) names the draw buffer as two page
+fields, page A in bits 9:0, the page drawn and read, and page B in bits
+19:10, which the X driver sets equal to A for a single-buffered window,
+*software expectation*; how the board decodes the fields is *unknown*,
+and the model ignores bits 31:20, an *approximation*. The X server loads
+whole words from its video-format files: a
+board with one raster engine gets main ``0x90240`` and overlay
+``0x101c0``, a board with two, the MXI and EMXI, main ``0xc8240`` and
+overlay ``0x380e0``, *software expectation*. The model takes a paint as
+an overlay draw when page A is the board's overlay page, ``0x1c0`` or
+``0x0e0``, and ``COLORMASKMSBS`` enables bits 6:4, and as a clip-ID fill
+when page A is the main page ``0x240``; how the board decodes other page
+values is *unknown*. The IRIX 6.5.30 desktop on one-engine boards and the
+IRIX 6.5.13f 4Dwm menus on an MXI match this.
+
 The X server reads small boxes through the data port: after an
 ``IR_ALIAS`` execute with ``0x102`` = ``0xa``, each 8-byte unit is read as
 ``0x02d1c0`` then ``0x02c1c4``, two 4-byte pixels a unit, rows from the
