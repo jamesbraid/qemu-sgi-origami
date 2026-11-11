@@ -6836,13 +6836,17 @@ static QTestState *start_pending_fifo(uint32_t guest_addr)
     }
     start_program(qts, command, (wait_at + 1) * 4);
     for (unsigned i = 0; i < 1000; i++) {
-        if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe6) == 0x46 &&
+        if ((qtest_readb(qts, REG_BASE + 0x03) & 0xe6) == 0x44 &&
             !(qtest_readb(qts, REG_BASE + 0x94) & 1)) {
             break;
         }
         qtest_clock_step(qts, 1000);
     }
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0x46);
+    /*
+     * The incoming buffer is exhausted while the host FIFO still holds the
+     * short response, so the DATA request flag (0x02) is retired.
+     */
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0x44);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 1, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x08), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x14), ==,
@@ -6951,6 +6955,18 @@ static size_t build_auto_flush_program(uint8_t *program,
     return n;
 }
 
+/*
+ * The flush programs finish by polling BUSFREE after the Message In byte, so
+ * they complete only once the 400 ns bus-free qualification has elapsed.
+ */
+static void wait_bus_free_program(QTestState *qts)
+{
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
+    wait_register(qts, 0x9e, 0xff, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
+}
+
 static void prepare_short_inquiry(QTestState *qts, uint32_t addr,
                                   uint8_t stcnt, bool disabled)
 {
@@ -7019,6 +7035,7 @@ static void test_auto_fifo_flush_after_host_dma_resumes(void)
     g_assert_cmphex(guarded[3], ==, 0);
     g_assert_cmpmem(guarded + 11, 4, "QEMU", 4);
     g_assert_cmpmem(guarded + 3, 36, expected, sizeof(expected));
+    wait_bus_free_program(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
     g_assert_true(qtest_get_irq(qts, 11));
@@ -7044,6 +7061,7 @@ static void test_auto_flush_disable_keeps_manual_flush(void)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & 8, ==, 8);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x8c), ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 2, ==, 0);
+    wait_bus_free_program(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
     g_assert_true(qtest_get_irq(qts, 11));
@@ -7121,6 +7139,7 @@ static void test_phase_mismatch_requests_fifo_flush(void)
     g_assert_cmphex(guarded[3], ==, 0);
     g_assert_cmpmem(guarded + 11, 4, "QEMU", 4);
     g_assert_cmpmem(guarded + 3, 36, expected, sizeof(expected));
+    wait_bus_free_program(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
     g_assert_true(qtest_get_irq(qts, 11));
@@ -7148,6 +7167,7 @@ static void test_phase_mismatch_disable_requires_manual_flush(void)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 2, ==, 0);
     qtest_memread(qts, 0x10000, guarded, sizeof(guarded));
     g_assert_cmpmem(guarded + 3, 36, expected, sizeof(expected));
+    wait_bus_free_program(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
     qtest_quit(qts);
@@ -7179,6 +7199,7 @@ static void test_phase_mismatch_flushes_with_host_dma_active(void)
     qtest_writeb(qts, REG_BASE + 0x92, 1);
     resume_program(qts, 2);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x11, ==, 0);
+    wait_bus_free_program(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
     qtest_quit(qts);
