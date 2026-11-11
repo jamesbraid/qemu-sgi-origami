@@ -1571,6 +1571,25 @@ static void peer_event(QTestState *qts, const char *event)
     }
 }
 
+/*
+ * The bus is qualified free 400 ns after BSY and SEL negate, not at the
+ * access that consumed the last byte or the release.  "elapsed" is the
+ * time already advanced since that edge.
+ */
+static void bus_free_qualify(QTestState *qts, int64_t elapsed)
+{
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+    qtest_clock_step(qts, 399 - elapsed);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0);
+    qtest_clock_step(qts, 1);
+}
+
+static void peer_release_qualified(QTestState *qts)
+{
+    peer_event(qts, "release");
+    bus_free_qualify(qts, 0);
+}
+
 static void peer_event_rejected(QTestState *qts, const char *event)
 {
     g_autoptr(QDict) reply = qtest_qmp_assert_failure_ref(qts,
@@ -5753,7 +5772,7 @@ static void test_peer_data_in_parity(void)
                                 ==, 0);
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 4,
                                 ==, 0);
-                peer_event(qts, "release");
+                peer_release_qualified(qts);
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x0c,
                                 ==, 0x08);
                 g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 0);
@@ -5769,7 +5788,7 @@ static void test_peer_parity_latches_across_bus_free(void)
 
     peer_event(qts, "bad:data-in:0:00");
     peer_event(qts, "good:data-in:1:00");
-    peer_event(qts, "release");
+    peer_release_qualified(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0x10, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x0c, ==, 0x0c);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 4, ==, 4);
@@ -5801,7 +5820,7 @@ static void test_peer_bad_sample_survives_bus_free(void)
     QTestState *qts = start_peer_data_in(true, true, true);
 
     peer_event(qts, "bad:data-in:0:00");
-    peer_event(qts, "release");
+    peer_release_qualified(qts);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0x10, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x0c, ==, 0x0c);
     qtest_writeb(qts, REG_BASE + 0x0c, 0x04);
@@ -6305,6 +6324,8 @@ static void test_spioen_gates_input_phases(void)
     qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, message_read, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x03) & 0xe6, ==, 0);
+    /* The sequencer edge is the instruction deadline, 1 ns behind the clock. */
+    bus_free_qualify(qts, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
     qtest_quit(qts);
 }
@@ -12598,6 +12619,35 @@ static void test_manual_pending_migration(void)
     }
 }
 
+/* A bus-free qualification pending on the source completes on schedule. */
+static void test_manual_bus_free_pending_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-bus-free-XXXXXX", NULL);
+    g_autofree char *socket = g_build_filename(dir, "migrate.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = manual_status();
+    QTestState *to = start_disk_mode("-S -incoming defer");
+    int64_t source_time;
+
+    manual_incoming(from, 0xc0, false);
+    manual_incoming(from, 0xe0, false);
+    g_assert_cmphex(qtest_readb(from, REG_BASE + 0x0c) & 8, ==, 0);
+    source_time = qtest_clock_step(from, 10);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    qtest_clock_set(to, source_time);
+    sgi_migrate_resume(to);
+    /* The 400 ns count began on the source, 10 ns before the hand-off. */
+    bus_free_qualify(to, 10);
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 8, ==, 8);
+    qtest_quit(to);
+    qtest_quit(from);
+    g_unlink(socket);
+    g_rmdir(dir);
+}
+
 static void test_manual_host_command_refused(void)
 {
     for (unsigned automatic = 0; automatic < 2; automatic++) {
@@ -13841,6 +13891,7 @@ static void test_wide_status_migration(void)
             QTestState *from = start_wide_targets(1u << ids[i], "");
             QTestState *to = start_wide_targets(1u << ids[i],
                                                "-S -incoming defer");
+            int64_t source_time;
 
             wide_select(from, ids[i], 7, false);
             for (unsigned byte = 0; byte < 6; byte++) {
@@ -13857,8 +13908,16 @@ static void test_wide_status_migration(void)
             qtest_qmp_assert_success(to,
                 "{'execute':'migrate-incoming','arguments':{'uri':%s}}",
                     uri);
+            source_time = qtest_clock_step(from, 1);
             sgi_migrate_stopped(from, uri);
             sgi_wait_migration(to, "completed");
+            /*
+             * Resume the destination from the source's clock so the final
+             * latch read and ACK fall, which start the bus-free
+             * qualification, run there.
+             */
+            qtest_clock_set(to, source_time);
+            sgi_migrate_resume(to);
             check_selection_identity(to, identity);
             g_assert_cmphex(qtest_readb(to, REG_BASE + 5), ==, 0x76);
             g_assert_cmphex(qtest_readb(to, REG_BASE + 6), ==, message ? 0 : 2);
@@ -13867,6 +13926,7 @@ static void test_wide_status_migration(void)
                 g_assert_cmphex(qtest_readb(to, REG_BASE + 6), ==, 0);
             }
             check_selection_identity(to, "none");
+            bus_free_qualify(to, 0);
             g_assert_cmphex(qtest_readb(to, REG_BASE + 0x0c) & 8, ==, 8);
             qtest_quit(to);
             qtest_quit(from);
@@ -15387,6 +15447,8 @@ int main(int argc, char **argv)
     qtest_add_func("aic7880/manual/resets", test_manual_resets);
     qtest_add_func("aic7880/manual/pending-migration",
                    test_manual_pending_migration);
+    qtest_add_func("aic7880/manual/bus-free-pending-migration",
+                   test_manual_bus_free_pending_migration);
     qtest_add_func("aic7880/manual/host-command-refused",
                    test_manual_host_command_refused);
     qtest_add_func("aic7880/manual/dma-owned-refused",
