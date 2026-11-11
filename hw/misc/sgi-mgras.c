@@ -1886,6 +1886,23 @@ static bool mgras_realize_banks(SGIMgrasState *s, Error **errp)
 }
 
 /*
+ * A link reset from the Crossbow port this board sits on. An in-guest
+ * reboot restarts the PROM without a machine reset, so this is the only
+ * reset the board gets then; the IRIX graphics driver sends it while
+ * resetting the board at start-up (inferred from the shipped kernels).
+ * Taken as a full widget reset, an approximation: what the part keeps
+ * through a link reset is not documented.
+ */
+static void mgras_link_reset(void *opaque, int line, int level)
+{
+    SGIMgrasState *s = opaque;
+
+    if (level) {
+        device_cold_reset(DEVICE(s));
+    }
+}
+
+/*
  * The board's widget: one MMIO region answers both a processor's access
  * and a packet routed to this widget. Built before the base class moves
  * the board under its module, so nothing here may depend on the board's
@@ -1950,6 +1967,7 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     address_space_init(&s->fabric_as, s->fabric, "sgi-mgras.fabric");
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
+    board->link_reset = qdev_get_gpio_in_named(DEVICE(s), "link-reset", 0);
     return true;
 }
 
@@ -2924,6 +2942,7 @@ static void mgras_instance_init(Object *obj)
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
 
+    qdev_init_gpio_in_named(DEVICE(obj), mgras_link_reset, "link-reset", 1);
     sgi_mgras_gl_init(s);
     object_property_add(obj, "x-test-line-phase", "uint32",
                         mgras_test_get_line_phase, NULL, NULL, NULL);

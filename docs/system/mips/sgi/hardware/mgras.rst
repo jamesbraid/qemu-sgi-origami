@@ -1378,6 +1378,31 @@ first retrace falls one stock period later. What a real board keeps
 across its cold, warm, link and HQ resets is *unknown*; these values are
 each an *approximation*.
 
+A pulse on the :term:`Crossbow` link the board sits on is a cold reset of
+the board too. Observed on an Octane MXI with IRIX 6.5.13f: a guest reboot
+(``init 6``) restarts the stock PROM without a machine reset, and the
+only reset the board sees is that pulse. The pulse comes from the IRIX
+graphics driver, which link-resets the board's Crossbow port as part of
+resetting the board at start-up; the stock PROM sends this board no link
+reset. Both are *inferred* from analysis of the shipped IRIX kernels and
+PROMs. Without the reset input the board kept
+whatever the earlier boot left in it (which register made the difference
+was not isolated), and the next OpenGL client (``gr_osview``, Discreet
+Flame 7.0) failed to start with ``MGRAS GL : Cannot open
+/usr/gfx/ucode/MGRAS/hq3.u``, a file the release does not install. That
+a link pulse resets the board at all is *inferred* from the :term:`Bridge`'s
+behaviour on the same link (:ref:`sgi-bridge-reset`), not from a source
+on this board. Which registers a real board keeps through it is
+*unknown*: the board's link-interface registers are *inferred* to be
+lost, since the driver rewrites them after the reset, and whether its
+internals reset is *unknown*. The model's full cold reset is an
+*approximation*; the driver re-initialises the board's registers after
+the reset either way.
+
+Residual risk, the same as the Bridge's: reset clears the interrupt flags
+without sending a deassert packet, so an interrupt already latched at its
+destination stays latched.
+
 .. _sgi-mgras-migration:
 
 Migration
@@ -1461,8 +1486,8 @@ with the board in IO3:
   ``sgi-mgras-migration-glstate-test.c``: migration of the retrace, FIFO
   and GE state, GL contexts and pipeline state.
 - ``tests/qtest/octane-mgras-test.c``: the board in each Octane port on
-  ``octane`` and ``octane2``, link reset, local DMA with 32-bit page lists
-  and interrupt transport.
+  ``octane`` and ``octane2``, link reset, the board's reset by a link
+  reset, local DMA with 32-bit page lists and interrupt transport.
 - ``tests/qtest/sgi-replay-test.c`` replays recorded MMIO sessions from
   ``tests/data/mgras/`` and checks the resulting pixels.
 

@@ -476,6 +476,49 @@ static void test_reset(gconstpointer data)
 }
 
 /*
+ * A link reset to the board's Crossbow port resets the board without a
+ * machine reset. After an in-guest reboot it is the only reset the board
+ * gets; the IRIX graphics driver sends it while resetting the board at
+ * start-up. IRIX 6.5.13f's OpenGL library failed to find HQ
+ * microcode after such a reboot when the board kept its state.
+ */
+static void test_link_reset_resets_board(gconstpointer data)
+{
+    QTestState *qts = start(GPOINTER_TO_INT(data), SI_AT_11, "");
+
+    qtest_writel(qts, SI_SHORT + CONTROL, 0xc1d28354);
+    qtest_writel(qts, SI_LONG + 0x040000, 0x75e68192);
+    enter_context(qts, SI_SHORT);
+    g_assert_cmphex(qtest_readl(qts, SI_SHORT + CONTROL), ==, 0xc1d28354);
+    g_assert_cmphex(qtest_readl(qts, SI_LONG + 0x040000), ==, 0x75e68192);
+    {
+        g_autoptr(QDict) reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{"
+            "'path':'/machine/module0/widget-11',"
+            "'property':'x-test-first-ack'}}");
+
+        g_assert_true(qdict_get_bool(reply, "return"));
+    }
+
+    assert_link_alive(qts, 11, true);
+    reset_link(qts, 11);
+    assert_link_alive(qts, 11, false);
+    qtest_clock_step(qts, 19);
+    qtest_clock_step(qts, 1);
+    assert_link_alive(qts, 11, true);
+    assert_reset(qts);
+    {
+        g_autoptr(QDict) reply = qtest_qmp(qts,
+            "{'execute':'qom-get','arguments':{"
+            "'path':'/machine/module0/widget-11',"
+            "'property':'x-test-first-ack'}}");
+
+        g_assert_false(qdict_get_bool(reply, "return"));
+    }
+    qtest_quit(qts);
+}
+
+/*
  * HQ4 DMA through HEART SDRAM. On Octane the page list holds 32-bit
  * page-frame numbers from a list address that is only 4-byte aligned:
  * IRIX 6.5.30's IP30 X server lists that way, and the Linux IMPACTSR
@@ -859,6 +902,7 @@ int main(int argc, char **argv)
         { "link-reset-absent", test_link_reset_absent },
         { "core-link-reset-recovery", test_core_link_reset_recovery },
         { "reset", test_reset },
+        { "link-reset-resets-board", test_link_reset_resets_board },
         { "local-dma", test_local_dma },
         { "interrupt-transport", test_interrupt_transport },
         { "rejected-family", test_rejected_family },
