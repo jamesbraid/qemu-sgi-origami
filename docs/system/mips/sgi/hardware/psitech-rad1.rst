@@ -476,11 +476,11 @@ Model limits
 Tests
 =====
 
-``tests/qtest/psitech-rad1-test.c`` covers the PCI identity, subsystem
-and BAR sizes; the control and status registers and a safe unsupported
-offset; the palette round trip; framebuffer copies from local and host
-memory, under the write mask, and back to the host; a negative origin in
-the copy and fill paths; a point, a rectangle fill, FastFill colour and a
-fill with no colour source; a trapezoid; the bypass DMA registers, a
-transfer and its edge byte masks; IntFlags write-to-clear; flash
-programming with and without the unlock; and reset.
+``tests/qtest/psitech-rad1-test.c`` covers the PCI identity, subsystem and BAR
+sizes; the control and status registers and a safe unsupported offset; the
+palette round trip; framebuffer copies from local and host memory, under the
+write mask, and back to the host; a negative origin in the copy and fill paths.
+It also covers a point, a rectangle fill, FastFill colour and a fill with no
+colour source; a trapezoid; the bypass DMA registers, a transfer and its edge
+byte masks; IntFlags write-to-clear; flash programming with and without the
+unlock; and reset.

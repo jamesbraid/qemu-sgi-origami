@@ -1514,18 +1514,17 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sn0-hub-test.c`` (``/sn0/hub/*``) covers reset values,
-the 32-bit halves, processor number, presence and enable, the error
-stack address mask, the counter's rate, width and writes, comparator
-matching and wrap, pending banks, masks and lines, the rendezvous holds
-and their migration, the indicators, the bring-up UART, the slot
-identity on every machine, widget identity and control, the access and
-protection registers, the link register and link log, the inbound link
-reset, the scratch registers, vector PIO and its decode, the port
-registers and link reset, routing tables and node numbering, the claim
-floor, the cached alias, memory configuration, the error and DIMM
-registers, the one-wire master, the DS2505 part and the node records,
-the big windows, the engines' registers, modes, completion, errors and
+``tests/qtest/sn0-hub-test.c`` (``/sn0/hub/*``) covers reset values, the 32-bit
+halves, processor number, presence and enable, the error stack address mask,
+the counter's rate, width and writes, comparator matching and wrap, pending
+banks, masks and lines, the rendezvous holds and their migration, the
+indicators, the bring-up UART, the slot identity on every machine. It also
+covers widget identity and control, the access and protection registers, the
+link register and link log, the inbound link reset, the scratch registers,
+vector PIO and its decode, the port registers and link reset, routing tables
+and node numbering, the claim floor, the cached alias, memory configuration,
+the error and DIMM registers, the one-wire master, the DS2505 part and the node
+records, the big windows, the engines' registers, modes, completion, errors and
 routing, and the graphics flow-control registers.
 
 ``tests/qtest/sn0-hub-inbound-test.c`` (``/sn0/hub-inbound/*``) covers

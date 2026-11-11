@@ -1773,20 +1773,19 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sn0-bridge-test.c`` drives the Origin 200's Bridge and
-standalone instances. It covers identity, the slot convention and the
-slot's upper half, the ``0x19c`` store, reset values and each slot's
-window, field widths, read-only registers and target flush, configuration
-space layout and byte positions, window aiming and decode, the translation
-table and its lower-half view, page-straddling and invalid-entry
-transfers, the level-following status, the OR of wire and PCI sources,
-raise and lower packets with and without their enable and mode bits, the
-per-pin host and widget destination composition, the one-wire master and
-part (reset, search, match, both memory reads, status, data past the
-record, record validation), DMA placement on both windows with every swap
-setting, mixed 32-bit and 64-bit functions, cross-node direct DMA, 64-bit
-cycles, the 64-bit device window, inbound and Hub warm resets, and the
-``0x40000000`` range.
+``tests/qtest/sn0-bridge-test.c`` drives the Origin 200's Bridge and standalone
+instances. It covers identity, the slot convention and the slot's upper half,
+the ``0x19c`` store, reset values and each slot's window, field widths,
+read-only registers and target flush, configuration space layout and byte
+positions, window aiming and decode, the translation table and its lower-half
+view, page-straddling and invalid-entry transfers, the level-following status,
+the OR of wire and PCI sources, raise and lower packets with and without their
+enable and mode bits, the per-pin host and widget destination composition. It
+also covers the one-wire master and part (reset, search, match, both memory
+reads, status, data past the record, record validation), DMA placement on both
+windows with every swap setting, mixed 32-bit and 64-bit functions, cross-node
+direct DMA, 64-bit cycles, the 64-bit device window, inbound and Hub warm
+resets, and the ``0x40000000`` range.
 
 ``tests/qtest/sn0-bridge-invalid-addr-test.c`` covers the posted
 invalid-address error, its latch, the per-group reset strobes, delivery

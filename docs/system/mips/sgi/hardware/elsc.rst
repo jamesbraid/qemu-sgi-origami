@@ -1155,30 +1155,29 @@ Model limits
 Tests
 =====
 
-``tests/qtest/sn0-elsc-test.c`` drives the PCF8584 register sequences the
-PROM uses and covers framing and the request grammar, ``ver``, ``rsw``,
-errors, the Origin 200 command set, console input and output with and
-without a backend, the operator's command line and supervisor mode,
-``pwr`` in every form with its countdowns and cold-power latch, ``rst``
-and the deferred-action rules (supersession, NACK of the last byte, no
-STOP, bus release, migration), ``tas``, the ``hbt`` stages, ``sel`` and
-``see``, ``nmi`` timing, ``aut``, ``nic``, ``info elsc``, the Origin 200
-grant ring (one-millisecond tick, busy ticks, signal 2 for a pending
-response) and two-module behaviour (one AUX, a shared five-tick ring,
-slave power-off).
+``tests/qtest/sn0-elsc-test.c`` drives the PCF8584 register sequences the PROM
+uses and covers framing and the request grammar, ``ver``, ``rsw``, errors, the
+Origin 200 command set, console input and output with and without a backend. It
+also covers the operator's command line and supervisor mode, ``pwr`` in every
+form with its countdowns and cold-power latch, ``rst`` and the deferred-action
+rules (supersession, NACK of the last byte, no STOP, bus release, migration),
+``tas``, the ``hbt`` stages, ``sel`` and ``see``, ``nmi`` timing, ``aut``,
+``nic``, ``info elsc``, the Origin 200 grant ring (one-millisecond tick, busy
+ticks, signal 2 for a pending response) and two-module behaviour (one AUX, a
+shared five-tick ring, slave power-off).
 
 ``tests/qtest/sn0-elsc-nvram-test.c`` covers fresh-store values, block
 addressing, the twelve-byte block write, survival across
 ``system_reset``, a caller image winning over the defaults, persistence
 across processes, migration and the two-module stores.
 
-``tests/qtest/sn0-module-management-test.c`` covers the Origin 2000
-module: four separate adapters, one controller, the shared NVRAM, the
-eight-code grant rotation, STOP placement and arbitration loss on the
-shared wire, recovery after a STOP following an acknowledged read byte,
-the Origin 2000 build's commands and display, messages to every code and
-their expiry, module reset, power-down, power cycle and start-up
-power-up, the serial line, NMI and migration.
+``tests/qtest/sn0-module-management-test.c`` covers the Origin 2000 module:
+four separate adapters, one controller, the shared NVRAM, the eight-code grant
+rotation, STOP placement and arbitration loss on the shared wire, recovery
+after a STOP following an acknowledged read byte, the Origin 2000 build's
+commands and display, messages to every code and their expiry. It also covers
+module reset, power-down, power cycle and start-up power-up, the serial line,
+NMI and migration.
 
 ``tests/qtest/sn0-migration-test.c`` checks that loads reject out-of-range
 framing lengths and ring positions. The functional test

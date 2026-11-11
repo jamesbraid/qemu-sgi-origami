@@ -1310,18 +1310,17 @@ loads and reads back the SRAM address.
 Retrace period
 --------------
 
-When the guest enables the display, the model derives the retrace period
-from VC3 register 0's frame table and the DAC PLL: one frame is the sum of
-each line sequence's durations (bits 14:8 of each first halfword) times
-its repeat count, in VC3 clocks at half the pixel clock, and the pixel
-clock is ``33 MHz * (4 * (v + 2) + cntl[7:6]) / ((r + 2) * 2^cntl[5:4] *
-2^cntl[2])`` from DAC registers ``0x0c``, ``0x0f`` and ``0x09``. For the
-stock 1280x1024 60 Hz timing this gives 894,600 clocks at 53.625 MHz,
-about 59.943 Hz. The walk, the clock ratio and the PLL relation are
-*inferred* from every timing table IRIX ships, MAME's VC2 model and the
-rates SGI's timing compiler records. ``0x072408`` bit 24 selects another
-PLL reference that no shipped table uses; the model's 64 MHz for it is a
-placeholder, *unknown*.
+When the guest enables the display, the model derives the retrace period from
+VC3 register 0's frame table and the DAC PLL: one frame is the sum of each line
+sequence's durations (bits 14:8 of each first halfword) times its repeat count,
+in VC3 clocks at half the pixel clock. The pixel clock is ``33 MHz * (4 * (v +
+2) + cntl[7:6]) / ((r + 2) * 2^cntl[5:4] * 2^cntl[2])`` from DAC registers
+``0x0c``, ``0x0f`` and ``0x09``. For the stock 1280x1024 60 Hz timing this
+gives 894,600 clocks at 53.625 MHz, about 59.943 Hz. The walk, the clock ratio
+and the PLL relation are *inferred* from every timing table IRIX ships, MAME's
+VC2 model and the rates SGI's timing compiler records. ``0x072408`` bit 24
+selects another PLL reference that no shipped table uses; the model's 64 MHz
+for it is a placeholder, *unknown*.
 
 Deriving the period only at the enable write, restarting the phase only
 when the period changes, and running the stock period before any table is

@@ -956,26 +956,24 @@ machines the DS2502 holding the Ethernet address is on the PCI riser
 board, *software expectation*. Whether an O2 board
 fits one-wire part on this line is *unknown*.
 
-By default the model has no part on the line: bit 3 reads 0 and the
-release bit is only stored. The O2 machine always fits one (see
+By default the model has no part on the line: bit 3 reads 0 and the release bit
+is only stored. The O2 machine always fits one (see
 :ref:`sgi-ip32-system-serial` for what it holds); the register test profile
-fits one with ``identity-diagnostic=on``. The model fits a DS2502
-(family code ``0x09``, 48-bit serial, CRC-8 with polynomial
-x^8 + x^5 + x^4 + 1) with a 128-byte image, a serial number and a 7-byte
-status, *established* for the part
-(:src:`maxim-ds2502-datasheet p. 3, 18`), an *approximation* for the
-board. The ``sgi-mace-id`` device takes them as ``eprom-file`` or
-``eprom-hex`` (256 hexadecimal digits), ``test-serial`` (12 digits) and
-``status`` (14 digits); the O2 machine sets them on MACE, and a register
-test sets them with ``-global sgi-mace-id.test-serial=...`` and its
-siblings. The model decodes the host's pulse widths in virtual time: a low
-of 480 µs up to under 960 µs after a high of at least as long resets the
-part; the model answers with presence from 30 µs to 150 µs later; a low of
-60 µs to under 120 µs writes a zero; a low of 1 µs to under 24 µs writes
-or reads a one. The datasheet's limit for a one is 15 µs; the model widens
-it. The model holds the line low from release to the end of a 60 µs slot to
-read a zero. After a reset of the device, the first high after a low of at
-least 480 µs, of any length, also starts a session. This is a model
+fits one with ``identity-diagnostic=on``. The model fits a DS2502 (family code
+``0x09``, 48-bit serial, CRC-8 with polynomial x^8 + x^5 + x^4 + 1) with a
+128-byte image, a serial number and a 7-byte status, *established* for the part
+(:src:`maxim-ds2502-datasheet p. 3, 18`), an *approximation* for the board. The
+``sgi-mace-id`` device takes them as ``eprom-file`` or ``eprom-hex`` (256
+hexadecimal digits), ``test-serial`` (12 digits) and ``status`` (14 digits);
+the O2 machine sets them on MACE, and a register test sets them with ``-global
+sgi-mace-id.test-serial=...`` and its siblings. The model decodes the host's
+pulse widths in virtual time: a low of 480 µs up to under 960 µs after a high
+of at least as long resets the part; the model answers with presence from 30 µs
+to 150 µs later. A low of 60 µs to under 120 µs writes a zero; a low of 1 µs to
+under 24 µs writes or reads a one. The datasheet's limit for a one is 15 µs;
+the model widens it. The model holds the line low from release to the end of a
+60 µs slot to read a zero. After a reset of the device, the first high after a
+low of at least 480 µs, of any length, also starts a session. This is a model
 choice. The option makes the machine refuse migration and snapshots.
 
 With ``misc-word-pio=on`` (and the identity diagnostic on) the miscellaneous

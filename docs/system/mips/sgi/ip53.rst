@@ -486,22 +486,21 @@ suffix.
      - widget 15
      - 33,333,333 Hz
 
-Each processor profile also carries a flash configuration word that the
-stock PROM prints as the secondary-cache tap. Each word is the word of a row
-of the PROM's configuration table; the rows carry machine type 2 where the
-profiles store 0: ``0x589bad85`` for the Origin 350 and the Tezro,
-700 MHz with 4 MiB and tap ``0xc``, and ``0x549caf85`` for the Onyx 350,
-800 MHz with 8 MiB and tap ``0xa``, the taps the captured boards of those
-tuples print (all but one ``030-1868-001`` board; that one prints ``0x1c``
-under an older PROM). The Origin 3900 Cx-brick uses ``0x549cad85``, 700 MHz
-with 8 MiB and tap ``0xa``. The reset words in the table are not table rows:
-each is the low 25 bits of its flash word, a model derivation, as is the
-Onyx 4 host's pair below. The tap bits (28:25) lie outside the low 25 bits
-only for taps up to ``0xf``; a ``0x1x`` tap such as the 1 GHz ``0x15`` sets
-bit 22, which the reset word keeps. The Origin 350 profile uses the 4 MiB
-tuple of the ``030-1868-001`` board; the only 700 MHz, 8 MiB board is
-``030-1812-002``, seen in one Onyx 350, and the Cx-brick word borrows its
-tap.
+Each processor profile also carries a flash configuration word that the stock
+PROM prints as the secondary-cache tap. Each word is the word of a row of the
+PROM's configuration table. The rows carry machine type 2 where the profiles
+store 0: ``0x589bad85`` for the Origin 350 and the Tezro, 700 MHz with 4 MiB
+and tap ``0xc``, and ``0x549caf85`` for the Onyx 350, 800 MHz with 8 MiB and
+tap ``0xa``, the taps the captured boards of those tuples print (all but one
+``030-1868-001`` board; that one prints ``0x1c`` under an older PROM). The
+Origin 3900 Cx-brick uses ``0x549cad85``, 700 MHz with 8 MiB and tap ``0xa``.
+The reset words in the table are not table rows: each is the low 25 bits of its
+flash word, a model derivation, as is the Onyx 4 host's pair below. The tap
+bits (28:25) lie outside the low 25 bits only for taps up to ``0xf``; a
+``0x1x`` tap such as the 1 GHz ``0x15`` sets bit 22, which the reset word
+keeps. The Origin 350 profile uses the 4 MiB tuple of the ``030-1868-001``
+board; the only 700 MHz, 8 MiB board is ``030-1812-002``, seen in one Onyx 350,
+and the Cx-brick word borrows its tap.
 
 The reset mode words, PIC placement and revision, IOC4 clocks, Bedrock
 board word ``0x2001`` and L1 identities are software inputs, not

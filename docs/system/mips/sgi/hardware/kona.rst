@@ -641,19 +641,18 @@ selectors whose word count is unsettled are not framed.
 Texel readback
 ~~~~~~~~~~~~~~
 
-``0x52`` reads a texture level back: 18 words, the target, the width and
-height, the format, type and storage code of the answer, the region's
-first and last texel, and five words copied from the level's load: the
-size exponents (word 14, load header word 16), the format and layout byte
-(word 15), the first-level bank in bit 28 of word 13 and the two bank
-addresses (words 16 and 17, load header words 18 and 19). The client
-library sends it bare when the answer fits 16368 bytes and brackets it
-with ``0x1f5`` and ``0x1f6`` when it does not (*software expectation*,
-from a Quake GL trace). A bracketed read completes by output DMA. A bare
-read is answered on the return page: the data at offset 8, then a nonzero
-word 0, which the client polls with no timeout; an unanswered read hangs
-the client. The order is *inferred*, as for the other return-page
-answers.
+``0x52`` reads a texture level back. The answer is 18 words: the target, the
+width and height, the format, type and storage code of the answer, the region's
+first and last texel, and five words copied from the level's load: the size
+exponents (word 14, load header word 16), the format and layout byte (word 15),
+the first-level bank in bit 28 of word 13 and the two bank addresses (words 16
+and 17, load header words 18 and 19). The client library sends it bare when the
+answer fits 16368 bytes and brackets it with ``0x1f5`` and ``0x1f6`` when it
+does not (*software expectation*, from a Quake GL trace). A bracketed read
+completes by output DMA. A bare read is answered on the return page: the data
+at offset 8, then a nonzero word 0, which the client polls with no timeout; an
+unanswered read hangs the client. The order is *inferred*, as for the other
+return-page answers.
 
 The model answers every bare read. It finds the level by target, size
 exponents, bank (bit 28 of word 13, against bit 3 of the load's word 17)
@@ -888,18 +887,17 @@ the only thing the waiting process polls. Every field is a 32-bit
 big-endian word, an *approximation*: the readers' widths do not settle it.
 
 For a configured pipe the block carries the board set, engine and
-raster-manager counts, ``4MB external`` FIFO memory, the display channel
-count at ``0x14`` and ``0x44``, the video option code, external gamma, a
-presence word and texture size code per raster manager, the active engine
-mask, 1280 and 1024 at ``0x84`` and ``0x88``, the pixel depth at ``0x8c``,
-the chip identity words ``gfxinfo -v`` prints, and a ``0x4c``-byte
-identity record for each raster manager, texture board, display board
-and option. The chip identity words are those of the captured pipes
-(:src:`irixnet-post-32192`, :src:`nekonomicon-16285`), *observed*; the
-words that differ between captures follow the geometry board, one
-*inferred* and one an *approximation*. Record serials are synthetic. The
-geometry and Ktown records stay zero: the kernel keeps its own one-wire
-reading of them.
+raster-manager counts, ``4MB external`` FIFO memory, the display channel count
+at ``0x14`` and ``0x44``, the video option code, external gamma, a presence
+word and texture size code per raster manager, the active engine mask, 1280 and
+1024 at ``0x84`` and ``0x88``, the pixel depth at ``0x8c``. For a configured
+pipe the block also carries the chip identity words ``gfxinfo -v`` prints, and
+a ``0x4c``-byte identity record for each raster manager, texture board, display
+board and option. The chip identity words are those of the captured pipes
+(:src:`irixnet-post-32192`, :src:`nekonomicon-16285`), *observed*; the words
+that differ between captures follow the geometry board, one *inferred* and one
+an *approximation*. Record serials are synthetic. The geometry and Ktown
+records stay zero: the kernel keeps its own one-wire reading of them.
 
 Four pipe-memory pool descriptors follow at ``0x90 + 0x1c * class``:
 co-processor, display lists (15 MiB), geometry engines and texture. Their
@@ -1115,14 +1113,14 @@ access error.
 Raster memory
 =============
 
-No capture gives the pipe's framebuffer organisation, so board memory is
-the model's own layout, an *approximation*: front and back colour banks of
-1280x1024 32-bit pixels, a tag byte per pixel for each bank saying whether
-the pixel holds a textport index, an X index or direct RGB, list memory, a
-24-bit depth buffer and a stencil byte per pixel. Rows count up from the
-bottom display line. A tagged index resolves through its colour map at
-scanout. The X colour map holds 32,768 entries, the colour-index map size
-the published paper gives (:src:`montrym-infinitereality-1997`).
+No capture gives the pipe's framebuffer organisation, so board memory is the
+model's own layout, an *approximation*. It has front and back colour banks of
+1280x1024 32-bit pixels, a tag byte per pixel for each bank saying whether the
+pixel holds a textport index, an X index or direct RGB, list memory, a 24-bit
+depth buffer and a stencil byte per pixel. Rows count up from the bottom
+display line. A tagged index resolves through its colour map at scanout. The X
+colour map holds 32,768 entries, the colour-index map size the published paper
+gives (:src:`montrym-infinitereality-1997`).
 
 Texture memory is held as 32-bit texels plus coverage, per context. The
 model allows host memory of nine times the reported texture memory, its

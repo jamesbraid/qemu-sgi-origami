@@ -1493,25 +1493,25 @@ Tests
 =====
 
 ``scripts/tests/test_sgi_model_validation_contract.py`` has
-``Origin3000BrickValidationTests``. They check that the Origin 3200
-reference validates, that the I-brick's connectors record XBridge ports
-``0xa`` and ``0xb`` and that a connector port must be a crossbar XIO port,
-be unique and sit on a crossbar, that the C-brick cables to I-brick port A,
-that an XIO cable has two distinct XIO connectors that share a bus and
-carries evidence, and that the C-brick's L1 brick type is ``C`` while any
-other letter, or a letter on a non-chassis, is refused. The same class
-validates the P-brick and X-brick compositions and refuses a port that two
-P-brick cables share or two X-brick connectors name.
+``Origin3000BrickValidationTests``. They check that the Origin 3200 reference
+validates. They also check that the I-brick's connectors record XBridge ports
+``0xa`` and ``0xb`` and that a connector port must be a crossbar XIO port, be
+unique and sit on a crossbar, that the C-brick cables to I-brick port A, that
+an XIO cable has two distinct XIO connectors that share a bus and carries
+evidence, and that the C-brick's L1 brick type is ``C`` while any other letter,
+or a letter on a non-chassis, is refused. The same class validates the P-brick
+and X-brick compositions and refuses a port that two P-brick cables share or
+two X-brick connectors name.
 
-``scripts/tests/test_sgi_model_resolution_contract.py`` checks that the
-C-brick has one ``XIO (II)`` connector with a Crosstown2 interface on an
-``xio`` bus mastered by its Bedrock, that the I-brick attaches to the
-C-brick through a bus binding, that the R-brick's router reaches its cable
-through a binding and fails without one, the composition-rule counts,
-exclusions and requirements (including ``g-brick`` against ``v-brick`` and
-``n-brick`` only with ``g-brick``), that the Origin 3200 resolves to two
-C-bricks and an I-brick and refuses a third C-brick, no I-brick, three I/O
-bricks or an R-brick, and that it still does not compile.
+``scripts/tests/test_sgi_model_resolution_contract.py`` checks that the C-brick
+has one ``XIO (II)`` connector with a Crosstown2 interface on an ``xio`` bus
+mastered by its Bedrock, that the I-brick attaches to the C-brick through a bus
+binding, that the R-brick's router reaches its cable through a binding and
+fails without one, the composition-rule counts, exclusions and requirements
+(including ``g-brick`` against ``v-brick`` and ``n-brick`` only with
+``g-brick``). It also checks that the Origin 3200 resolves to two C-bricks and
+an I-brick and refuses a third C-brick, no I-brick, three I/O bricks or an
+R-brick, and that it still does not compile.
 
 ``scripts/tests/test_sgi_model_resolution_contract.py`` also checks the
 X-brick layer (four slots on ports 8, 9, C and D, port B and the slots on

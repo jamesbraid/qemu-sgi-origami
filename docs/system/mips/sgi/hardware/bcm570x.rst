@@ -901,17 +901,17 @@ Model limits
 Tests
 =====
 
-``tests/qtest/bcm570x-test.c`` is the register-contract test for the MAC
-and PHY behind a test PCI bridge head. It covers the PCI identity, both indirect
-windows, the reset handshake and progress register, self-clearing mode
-bits, buffer manager startup, MII reads and writes, PHY readback and link,
-the station address registers and mailbox, the EEPROM controller and its
-migration checks, the interrupt mailbox, masks and acknowledge, status
+``tests/qtest/bcm570x-test.c`` is the register-contract test for the MAC and
+PHY behind a test PCI bridge head. It covers the PCI identity, both indirect
+windows, the reset handshake and progress register, self-clearing mode bits,
+buffer manager startup, MII reads and writes, PHY readback and link, the
+station address registers and mailbox, the EEPROM controller and its migration
+checks. It also covers the interrupt mailbox, masks and acknowledge, status
 block gating, byte order and word swap, transmit with its errors, source
-address, segmentation and checksum offload, split doorbells and
-coalescing, receive on both rings with every checksum case, shortages,
-oversize frames and ring wrap, the arrival deadline, DMA errors, reset
-during coalescing, state and link migration, and the dual-port variant.
+address, segmentation and checksum offload, split doorbells and coalescing,
+receive on both rings with every checksum case, shortages, oversize frames and
+ring wrap, the arrival deadline, DMA errors, reset during coalescing, state and
+link migration, and the dual-port variant.
 
 ``tests/qtest/sn-builder-test.c`` covers the IP53 instantiation:
 ``sn/builder/ip53-static-bcm5701-network-backend`` and

@@ -1360,37 +1360,34 @@ the controller to the bay model, covering the initialisation order, polling
 and its log lines, the receive rules, a missing bay, the bricks that do not
 run the task and the migration block.
 
-``tests/qtest/sn1-l1-test.c`` covers the UART registers, interrupts and
-their migration, framing and receive tolerance, output escaping, every
-general request and reply code, the command interpreter, console mode,
-retargeting and short frames, the power, reset, NMI and power-cycle
-paths, controller restart and node position, raw, whole-image and built
-EEPROM records, the Fuel station-address record, the peer pair, the
-query and attached routing models (with
-``tests/qtest/l1-query-routing-fixture.c``), the expansion, router and
-reference profiles, the interface-board start-up (with
-``tests/qtest/l1-bic-startup-fixture.c``), the multi-frame transport for
-both selections, the management USB byte calculations and migration of
-each. ``tests/qtest/sn1-address-map-test.c`` checks the window at both
-Hub forms, the interrupt reaching the processor, the operator console,
-revisions, type codes and built records on the machines.
-``tests/qtest/sn1-bedrock-test.c`` checks the Bedrock's refusals and
-protection for the window, ``tests/qtest/sn1-cross-node-test.c`` the
-local form on a second node and, on an Origin 3200, each brick's power
-acting on its own node, the machine ending with the last one and resuming
-with only the brick switched on
+``tests/qtest/sn1-l1-test.c`` covers the UART registers, interrupts and their
+migration, framing and receive tolerance, output escaping, every general
+request and reply code, the command interpreter, console mode, retargeting and
+short frames, the power, reset, NMI and power-cycle paths, controller restart
+and node position, raw, whole-image and built EEPROM records, the Fuel
+station-address record. It also covers the peer pair, the query and attached
+routing models (with ``tests/qtest/l1-query-routing-fixture.c``), the
+expansion, router and reference profiles, the interface-board start-up (with
+``tests/qtest/l1-bic-startup-fixture.c``), the multi-frame transport for both
+selections, the management USB byte calculations and migration of each.
+``tests/qtest/sn1-address-map-test.c`` checks the window at both Hub forms, the
+interrupt reaching the processor, the operator console, revisions, type codes
+and built records on the machines. ``tests/qtest/sn1-bedrock-test.c`` checks
+the Bedrock's refusals and protection for the window,
+``tests/qtest/sn1-cross-node-test.c`` the local form on a second node and, on
+an Origin 3200, each brick's power acting on its own node, the machine ending
+with the last one and resuming with only the brick switched on
 (``sn1/cross-node/brick-power-ends-the-machine-last``,
 ``sn1/cross-node/broadcast-power-down-ends-the-machine``,
 ``sn1/cross-node/brick-power-stops-one-counter``,
 ``sn1/cross-node/last-brick-power-down-announces-after-the-stop``),
-``tests/qtest/sn1-fuel-test.c`` the Fuel
-type code and NMI routing, ``tests/qtest/sn-builder-test.c`` the peer
-wiring and the Origin 350 family type selection, and
-``tests/qtest/sgi-sn1-router-test.c`` the router module's window.
-``tests/functional/mips64/test_sn1_l1_reset.py`` runs real guest code:
-one processor sends a framed ``0x2001`` while another spins, across
-repeated resets, and power cycles through the host console stop every
-processor. It needs the stock IP35 PROM image.
+``tests/qtest/sn1-fuel-test.c`` the Fuel type code and NMI routing,
+``tests/qtest/sn-builder-test.c`` the peer wiring and the Origin 350 family
+type selection, and ``tests/qtest/sgi-sn1-router-test.c`` the router module's
+window. ``tests/functional/mips64/test_sn1_l1_reset.py`` runs real guest code:
+one processor sends a framed ``0x2001`` while another spins, across repeated
+resets, and power cycles through the host console stop every processor. It
+needs the stock IP35 PROM image.
 
 ``tests/qtest/sgi-l1-o3k-test.c`` covers the L2 link with a stub peer in
 ``tests/qtest/sgi-l1-l2-stub.h``: the no-route reply with no peer, the

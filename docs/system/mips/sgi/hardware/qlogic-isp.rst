@@ -1543,41 +1543,38 @@ Tests
 =====
 
 - ``tests/qtest/qlogic-isp-test.c`` is the ISP1040 register contract on a
-  stand-alone PCI bus. It covers identity and the PCI revision, the
-  Latency Timer write the reference Octane2's value needs
-  (``latency-timer``), both BARs,
-  bus configuration 0 and 1, soft reset and the signature (including the
-  exact Linux product-ID comparison), the DMA block configuration and
-  control registers, bus control and status, the semaphore, the mailbox
-  register test, the queue pointers, the host commands, the bank select (bit
-  3 switches and bit 0 does not), no-op and invalid commands, the firmware
-  download, checksum failure, the RAM word round trip, block RAM DMA and its
-  byte order, About firmware and Firmware status, every setter, queue
-  initialisation with stale high mailboxes, a command round trip, stale
-  status bytes, the sense phase flag, the missing-target flags, unknown
-  entry types and continuations, the bounded ring walk, SCSI bus resets,
-  data transfers through type 0 and 64-bit entries with continuations, NVRAM
-  reads, a full response ring, a stale acknowledgement, a held
-  completion and a completion that lands between the handler's pointer read
-  and its interrupt clear.
+  stand-alone PCI bus. It covers identity and the PCI revision, the Latency
+  Timer write the reference Octane2's value needs (``latency-timer``), both
+  BARs, bus configuration 0 and 1, soft reset and the signature (including the
+  exact Linux product-ID comparison), the DMA block configuration and control
+  registers, bus control and status, the semaphore, the mailbox register test,
+  the queue pointers, the host commands, the bank select (bit 3 switches and
+  bit 0 does not), no-op and invalid commands, the firmware download, checksum
+  failure, the RAM word round trip, block RAM DMA and its byte order. It also
+  covers About firmware and Firmware status, every setter, queue initialisation
+  with stale high mailboxes, a command round trip, stale status bytes, the
+  sense phase flag, the missing-target flags, unknown entry types and
+  continuations, the bounded ring walk, SCSI bus resets, data transfers through
+  type 0 and 64-bit entries with continuations, NVRAM reads, a full response
+  ring, a stale acknowledgement, a held completion and a completion that lands
+  between the handler's pointer read and its interrupt clear.
 - ``tests/qtest/sn0-qlogic-isp-test.c`` repeats the access contract through
   the :term:`XIO` to PCI path on the Origin topology: the PCI Status reset value,
   the swap bit, the signature through the fabric, RAM DMA through the
   Bridge, ring byte placement with the swap bit clear and set, missing
   targets, checksum mailboxes, target parameters, reset delay, refused CDB
   reads and refused status writes.
-- ``tests/qtest/sn0-isp12160-test.c`` is the ISP12160 contract through the
-  same path. It covers identity and 16-bit-only access, both BARs, the
-  three banks, bus configuration 1, the flat DMA registers, bus
-  configuration 0, the reset signature, mailbox test patterns, RAM word, flat
-  and 64-bit load and dump (range, failed DMA, byte order, translation),
-  checksum, execute, firmware status, reset delay for both channels, a
-  submission while a result is held, queue initialisation in either order
-  and with the high words, two LUNs behind one target, writes on channel 1,
-  cursor roles, check condition with real sense, missing targets on each
-  channel, abort device, abort command, abort target and bus reset scoped to
-  a channel, a completion racing an abort, handle reuse and migration of
-  distinct state.
+- ``tests/qtest/sn0-isp12160-test.c`` is the ISP12160 contract through the same
+  path. It covers identity and 16-bit-only access, both BARs, the three banks,
+  bus configuration 1, the flat DMA registers, bus configuration 0, the reset
+  signature, mailbox test patterns, RAM word, flat and 64-bit load and dump
+  (range, failed DMA, byte order, translation), checksum, execute, firmware
+  status, reset delay for both channels, a submission while a result is held,
+  queue initialisation in either order and with the high words, two LUNs behind
+  one target, writes on channel 1. It also covers cursor roles, check condition
+  with real sense, missing targets on each channel, abort device, abort
+  command, abort target and bus reset scoped to a channel, a completion racing
+  an abort, handle reuse and migration of distinct state.
 - ``tests/qtest/qlogic-isp-migration-test.c`` migrates an ISP1040 between
   a handler's read of the response pointer and its interrupt clear, once
   with an entry posted after the read and once with none, and checks the

@@ -87,14 +87,14 @@ The reference Octane2's V12 reads exactly that word
 *established* for that board. For the other products bit 0 set remains
 an *approximation*.
 
-The IRIX 6.5.30 kernel turns widget revisions 1 to 3 into a BUZZ A part
-and 9 to 15 into a BUZZ B part, and rejects 0 and 4 to 8. gfxinfo prints
-the minor number as the revision's offset less one, so revision 2 is A.1
-and revision 10 is B.1. hinv names the board from the generation and the
-memory size: A with 32 MB is V6, A with 128 MB V8, B with 32 MB V10 and
-B with 128 MB V12. Each of the three is a *software expectation* of
-the shipped IRIX 6.5.30 binaries; what gfxinfo and hinv print on a
-real machine is *observed* where the table below cites a capture.
+The IRIX 6.5.30 kernel turns widget revisions 1 to 3 into a BUZZ A part and 9
+to 15 into a BUZZ B part. The kernel rejects 0 and 4 to 8. gfxinfo prints the
+minor number as the revision's offset less one, so revision 2 is A.1 and
+revision 10 is B.1. hinv names the board from the generation and the memory
+size: A with 32 MB is V6, A with 128 MB V8, B with 32 MB V10 and B with 128 MB
+V12. Each of the three is a *software expectation* of the shipped IRIX 6.5.30
+binaries; what gfxinfo and hinv print on a real machine is *observed* where the
+table below cites a capture.
 
 The ``product`` property selects one board. It sets the revision, memory
 size, bank count, back-end version and identity record together:
@@ -642,18 +642,17 @@ page granularity, ended by a zero-length entry. A table with no
 terminator within 256 entries logs ``LOG_GUEST_ERROR`` and fails the
 transfer.
 
-The model reads the header as the board buffer (word 0, in 16-byte
-units, ``0x2000`` for the screen), the rectangle origin and size (words
-1 and 3), the source row skip and row length (words 5 and 6), a pixel
-size code (word 7 bits 18:16), the DMA-done interrupt request (word 7
-bit 31) and the direction (word 7 bit 24 set for board to host). The
-descriptor packing, the table and header layouts and the direction bit
-are the model's (*approximation*). Word 7 bit 30 set puts the bottom
-row first; the IRIX 6.5.30 GL library sets it when source and
-destination descriptions differ, a *software expectation* from the
-shipped library. A completed transfer that asked for it sends the
-DMA-done interrupt. Command word ``0xe03`` logs ``LOG_UNIMP`` and does
-nothing.
+The model reads the header as the board buffer (word 0, in 16-byte units,
+``0x2000`` for the screen), the rectangle origin and size (words 1 and 3), the
+source row skip and row length (words 5 and 6), a pixel size code (word 7 bits
+18:16). It also reads the DMA-done interrupt request (word 7 bit 31) and the
+direction (word 7 bit 24 set for board to host). The descriptor packing, the
+table and header layouts and the direction bit are the model's
+(*approximation*). Word 7 bit 30 set puts the bottom row first; the IRIX 6.5.30
+GL library sets it when source and destination descriptions differ, a
+*software expectation* from the shipped library. A completed transfer that
+asked for it sends the DMA-done interrupt. Command word ``0xe03`` logs
+``LOG_UNIMP`` and does nothing.
 
 Transfers that name a buffer other than the screen land in the model's
 board-memory object store (:ref:`sgi-odyssey-memory`). The IRIX 6.5.30

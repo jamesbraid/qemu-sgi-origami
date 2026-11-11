@@ -1627,14 +1627,14 @@ Model limits
 Tests
 =====
 
-- ``tests/qtest/sn0-ioc3-test.c``: configuration space, board
-  population and its validation, the interrupt status and enable aliases,
-  the second interrupt reaching Bridge pin 3, chip control including the
-  arbiter-idle bit reading clear from inside a serial DMA transfer, the
-  interrupt output in every mode, pin control and pin registers, the
-  one-wire engine and station-address part, the Ethernet filter,
-  transmit, checksum, threshold, timer, reset and PHY scan, buffer RAM
-  size and parity, the PS/2 controller and its clamps, and the M48T35.
+- ``tests/qtest/sn0-ioc3-test.c``: configuration space, board population and
+  its validation, the interrupt status and enable aliases, the second interrupt
+  reaching Bridge pin 3, chip control including the arbiter-idle bit reading
+  clear from inside a serial DMA transfer, the interrupt output in every mode,
+  pin control and pin registers, the one-wire engine and station-address part.
+  It also covers the Ethernet filter, transmit, checksum, threshold, timer,
+  reset and PHY scan, buffer RAM size and parity, the PS/2 controller and its
+  clamps, and the M48T35.
 - ``tests/qtest/sn0-ioc3-serial-test.c``: the 16550 extras and the
   pre-divider, the transmit record, ring geometry and both alias pages,
   transmit entry types, the receive packer, timer and drain, pause,

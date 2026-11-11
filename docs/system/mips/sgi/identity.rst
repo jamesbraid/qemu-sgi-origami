@@ -181,18 +181,18 @@ Modules
 -------
 
 The Origin 2000 and Onyx2 guest reads a module serial only when its first
-character is ``K``: a guest printed 0 for ``lmhostid`` and could not retrieve
-the system serial for ``M2100887``, ``00M2100887``, ``00K2100887`` and
+character is ``K``. In runs, a guest printed 0 for ``lmhostid`` and could not
+retrieve the system serial for ``M2100887``, ``00M2100887``, ``00K2100887`` and
 ``M210088799``, and printed ``d5100887`` for ``KEMU100887`` and ``10088799``
 for ``K210088799`` (*software expectation*, from the analysis of the IRIX
 6.5.30 IP27 kernel, entry ``unix.IP27-6.5.30``, at address
-``0xc000000000040974``, and these guest runs on the model). So
-``serial=`` on these machines must start with ``K`` and is otherwise refused
-with "serial 'M2100887' must start with K on this machine: the guest ignores a
-module serial that does not". An 8-character serial such as ``K0017299`` folds
-to an id starting ``b``, the fold of ``K``, as the Origin 2000 ids in the
-captures of real machines do (*inferred*); for a 10-character serial the first
-two characters never reach the id.
+``0xc000000000040974``, and these guest runs on the model). So ``serial=`` on
+these machines must start with ``K`` and is otherwise refused with "serial
+'M2100887' must start with K on this machine: the guest ignores a module serial
+that does not". An 8-character serial such as ``K0017299`` folds to an id
+starting ``b``, the fold of ``K``, as the Origin 2000 ids in the captures of
+real machines do (*inferred*); for a 10-character serial the first two
+characters never reach the id.
 
 Module ``i`` has the id of the base plus ``i``, and module 0 keeps the serial
 as given. The module record is ten characters, so a shorter serial is padded
