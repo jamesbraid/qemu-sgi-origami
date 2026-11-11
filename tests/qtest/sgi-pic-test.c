@@ -3935,6 +3935,139 @@ static void test_remaining_pin_edges(void)
     }
 }
 
+/*
+ * The force registers resend a pin's set packet without a new edge and
+ * ignore the data written. Force-always sends whatever the input's level,
+ * force-with-pin only while the input is high. Neither changes the status
+ * register, and reading either sends nothing.
+ */
+static void test_force_registers(void)
+{
+    QTestState *qts = pic_start(false, "");
+    const unsigned pin = 2;
+    const uint64_t bit = 1U << pin;
+    const uint64_t always = HEAD(0) + 0x180 + pin * 8;
+    const uint64_t with_pin = HEAD(0) + 0x1c0 + pin * 8;
+
+    qtest_writeq(qts, HEAD(0) + 0x130 + pin * 8, 0x1234000000001000ULL);
+    qtest_writeq(qts, HEAD(0) + 0x108, bit);
+
+    /* Input low: only force-always sends. */
+    qtest_writeq(qts, with_pin, 1);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x1000), ==, 0);
+    qtest_writeq(qts, always, 0);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 1);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x1000), ==, 0x11234);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x100), ==, 0);
+
+    /* Input high: the edge sends once, and every force sends again. */
+    qtest_set_irq_in(qts, PIC "/head-0", NULL, pin, 1);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 2);
+    qtest_writeq(qts, TARGET + 0x1000, 0);
+    qtest_writeq(qts, always, UINT64_MAX);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 3);
+    g_assert_cmphex(qtest_readq(qts, TARGET + 0x1000), ==, 0x11234);
+    qtest_writeq(qts, with_pin, 0);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 4);
+    qtest_writeq(qts, with_pin, UINT64_MAX);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 5);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x100), ==, bit);
+
+    /* Reads return zero and send nothing. */
+    g_assert_cmphex(qtest_readq(qts, always), ==, 0);
+    g_assert_cmphex(qtest_readq(qts, with_pin), ==, 0);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 5);
+    g_assert_cmphex(qtest_readq(qts, HEAD(0) + 0x100), ==, bit);
+
+    /* Only the addressed pin of the addressed head sends. */
+    g_assert_cmpuint(pic_requests(qts, 0, pin + 1, true), ==, 0);
+    g_assert_cmpuint(pic_requests(qts, 0, pin - 1, true), ==, 0);
+    g_assert_cmpuint(pic_requests(qts, 1, pin, true), ==, 0);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, false), ==, 0);
+
+    /* A disabled input is not forced. */
+    qtest_writeq(qts, HEAD(0) + 0x108, 0);
+    qtest_writeq(qts, always, 1);
+    qtest_writeq(qts, with_pin, 1);
+    g_assert_cmpuint(pic_requests(qts, 0, pin, true), ==, 5);
+    qtest_quit(qts);
+}
+
+/*
+ * The 32-bit processor view at +4 reaches the force registers too, and
+ * a forced packet reaches the Bedrock as an interrupt packet.
+ */
+static void test_cpu_word_view_force(void)
+{
+    QTestState *qts = pic_bedrock_parent_start(false, true);
+    uint64_t destination = (UINT64_C(0x34) << 48) | II_REGISTER |
+                           II_NODE(0) | II_HUB_REMOTE | 0x90;
+    uint64_t calls;
+
+    qtest_sysbus_mmio_map(qts, PIC_CHILD, 0, CPU_BASE);
+    qtest_writeq(qts, CPU_HEAD(0) + 0x130, destination);
+    qtest_writel(qts, CPU_HEAD(0) + 0x10c, 1);
+    calls = target_metric(qts, "x-test-packet-calls");
+
+    qtest_writel(qts, CPU_HEAD(0) + 0x1c4, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==, calls);
+    qtest_writel(qts, CPU_HEAD(0) + 0x184, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                     calls + 1);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, 0, 1);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                     calls + 2);
+    qtest_writel(qts, CPU_HEAD(0) + 0x1c4, 0xffffffff);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                     calls + 3);
+    g_assert_cmphex(qtest_readl(qts, CPU_HEAD(0) + 0x1c4), ==, 0);
+    g_assert_cmpuint(target_metric(qts, "x-test-packet-calls"), ==,
+                     calls + 3);
+    qtest_quit(qts);
+}
+
+/*
+ * A delivered force registers the input as a Bedrock level source, as a
+ * rising edge does. Rewriting the destination of a held input drops the
+ * source, so the Bedrock stops setting a cleared pending bit again; a
+ * force-with-pin restores it.
+ */
+static void test_force_restores_level_source(void)
+{
+    const uint64_t pending = UINT64_C(1) << 11;
+    const uint64_t address = II_REGISTER | II_NODE(0) | II_HUB_REMOTE | 0x90;
+    const uint64_t destination = (UINT64_C(11) << 48) | address;
+    const unsigned pin = 3;
+    QTestState *qts = pic_bedrock_parent_start(false, true);
+
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_writeq(qts, 0x10000000 + 0xa8, pending);
+    qtest_writeq(qts, HEAD(0) + 0x20, 14);
+    qtest_writeq(qts, HEAD(0) + 0x130 + pin * 8, destination);
+    qtest_writeq(qts, HEAD(0) + 0x108, 1U << pin);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, pin, 1);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+
+    /* The destination rewrite drops the source: no re-set after a clear. */
+    qtest_writeq(qts, HEAD(0) + 0x130 + pin * 8, destination);
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    qtest_clock_step(qts, 1500000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==, 0);
+
+    /* The force sends a packet and makes the input a source again. */
+    qtest_writeq(qts, HEAD(0) + 0x1c0 + pin * 8, 0);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+    qtest_writeq(qts, 0x10000000 + 0x90, 11);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==, 0);
+    qtest_clock_step(qts, 1500000);
+    g_assert_cmphex(qtest_readq(qts, 0x10000000 + 0x98) & pending, ==,
+                    pending);
+    qtest_quit(qts);
+}
+
 static void test_direct_dma(void)
 {
     GError *error = NULL;
@@ -5494,6 +5627,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/pin-and-reset", test_pin_and_reset);
     qtest_add_func("/sgi-pic/remaining-pin-edges",
                    test_remaining_pin_edges);
+    qtest_add_func("/sgi-pic/force-registers", test_force_registers);
+    qtest_add_func("/sgi-pic/cpu-word-view-force", test_cpu_word_view_force);
+    qtest_add_func("/sgi-pic/force-restores-level-source",
+                   test_force_restores_level_source);
     qtest_add_func("/sgi-pic/direct-dma", test_direct_dma);
     qtest_add_func("/sgi-pic/linked-dma", test_linked_dma);
     qtest_add_func("/sgi-pic/linked-receiving-ii-denial",

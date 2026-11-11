@@ -301,6 +301,18 @@ processor view's 32-bit word view also reaches the slot.
      - ``0``
      - read/write
      - Level in bits 63:48, address in bits 47:0.
+   * - ``0x180``-``0x1b8``
+     - Force always 0-7
+     - 64, +4
+     - none
+     - write
+     - Sends the pin's set packet. See :ref:`sgi-pic-force`.
+   * - ``0x1c0``-``0x1f8``
+     - Force with pin 0-7
+     - 64, +4
+     - none
+     - write
+     - Sends the set packet while the pin is high.
    * - ``0x200``-``0x218``
      - Device 0-3
      - 64, +4
@@ -763,6 +775,31 @@ when the destination was truncated to 32 bits and resumed when all 64
 bits were written (:src:`miod-openbsd-sgi-story part 5`), *observed*. The
 model keeps all 64 bits.
 
+.. _sgi-pic-force:
+
+Force registers
+---------------
+
+Each input *n* has two write-only force registers, force-always at
+``0x180 + 8n`` and force-with-pin at ``0x1c0 + 8n``, named in the Linux
+IA64 PIC header (``pic.h``), a *software expectation*. A write ignores
+its data and sends input *n*'s set packet to its destination without a
+new edge: force-always whatever the input's level, force-with-pin only
+while the input is high. Neither changes the status register. Both views
+accept the write: a 64-bit write at the register and, in the runtime
+profiles, a 32-bit processor write at ``+4``. Reads return zero, log
+``LOG_UNIMP`` and send nothing.
+
+The Linux SN2 PIC driver writes force-with-pin at the end of each
+interrupt dispatch (``pcibr_intr.c``), a *software expectation*, so an
+input still high after its handler runs is serviced again. The register
+behaviour is *inferred* from the XBridge, whose force registers sit at
+the same offsets (:ref:`sgi-xbridge-interrupts`); no PIC specification
+is held. Whether a force reaches a disabled input is *unknown*. The
+model sends nothing and logs ``LOG_UNIMP``, an *approximation*, as the
+XBridge model does. A delivered force updates the input's Bedrock level
+source the same way a rising edge does (:ref:`sgi-pic-reassert`).
+
 .. _sgi-pic-reassert:
 
 Held inputs
@@ -779,8 +816,12 @@ or re-targeting the input removes the source. This is an *approximation*:
 the 1 ms delay is a model choice placed after the IRIX 6.5.30 kernel's
 rapid clear sequence, not a measured latency, and what revision-3 PIC
 does when a cleared input stays high is *unknown*. A destination
-rewrite while an input stays high loses the source until the next edge;
-the public drivers program destinations before enabling inputs.
+rewrite while an input stays high loses the source until the next edge
+or force; the public drivers program destinations before enabling inputs.
+
+The drivers' own way to service a held input is the force-with-pin write
+at the end of each dispatch (:ref:`sgi-pic-force`). The model keeps both
+mechanisms; the 1 ms re-set has no hardware source.
 
 .. _sgi-pic-error-interrupt:
 
@@ -919,9 +960,10 @@ refusals and boundaries, processor byte lanes against conventional
 devices, the IOC4 and the ISP12160, 32-bit and 64-bit direct DMA with the
 attribute matrix, requester width and refusals, swapped transfers written
 a data phase at a time, interrupt pins, edges, clear and enable effects,
-packets to a Bedrock, held-input reassertion with migration, the
-link-error interrupt, the direct-map mask, and migration between
-matching and mismatched profiles and older stream versions.
+the force registers on both views, packets to a Bedrock, held-input
+reassertion with migration, the link-error interrupt, the direct-map
+mask, and migration between matching and mismatched profiles and older
+stream versions.
 
 ``tests/qtest/sn-builder-test.c`` builds IP53 machines with one and two
 PICs and IO9 on either head, and checks reset, independent per-widget

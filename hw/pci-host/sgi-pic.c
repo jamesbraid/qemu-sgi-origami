@@ -1227,6 +1227,42 @@ static void pic_update_level_source(SGIPICHead *s, unsigned pin,
     }
 }
 
+static bool pic_force_register(hwaddr addr)
+{
+    return addr >= 0x180 && addr <= 0x1f8 && !(addr & 7);
+}
+
+/*
+ * Force-always (0x180 + 8n) and force-with-pin (0x1c0 + 8n) are
+ * write-only and ignore the data written. A write sends pin n's set
+ * packet with no new edge: force-always whatever the input's level,
+ * force-with-pin only while the input is high. The chip sends a packet
+ * only on a transition, so drivers write force-with-pin after servicing
+ * an input to have one still high serviced again (Linux SN2
+ * pcibr_intr.c). Neither touches the status register.
+ *
+ * The offsets and names are the Linux IA64 PIC header's; the behaviour
+ * is inferred from the XBridge, whose registers at the same offsets work
+ * this way. Whether a force reaches a disabled input is unknown; the
+ * model sends nothing, as the XBridge model does.
+ */
+static void pic_force(SGIPICHead *s, hwaddr addr)
+{
+    unsigned pin = (addr - 0x180) / 8 % PIC_PIN_COUNT;
+    bool with_pin = addr >= 0x1c0;
+
+    if (!(REG(s, 0x108) & BIT(pin))) {
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-pic: head %u force of disabled pin %u sends"
+                      " nothing\n", s->head, pin);
+        return;
+    }
+    if (with_pin && !(s->pins & BIT(pin))) {
+        return;
+    }
+    pic_update_level_source(s, pin, pic_packet(s, pin, true));
+}
+
 void sgi_pic_set_bedrock_pi(SGIPICState *s, unsigned pi,
                             SGIBedrockPIState *bedrock_pi,
                             unsigned source_base)
@@ -1386,6 +1422,13 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         unsigned index = ((addr - 0x18000) % 0x800) / 8;
 
         s->req[bank][index] = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
+        return;
+    }
+    if (pic_force_register(addr)) {
+        pic_force(s, addr);
         if (trace) {
             trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
         }
@@ -1563,6 +1606,11 @@ static void pic_cpu_word_write(SGIPICHead *s, hwaddr addr, uint32_t value)
     hwaddr slot;
     uint64_t merged;
 
+    if (pic_force_register(addr - 4)) {
+        pic_force(s, addr - 4);
+        trace_sgi_pic_head_reg_write(s->head, addr, 4, value);
+        return;
+    }
     if (!pic_cpu_word_slot(s, addr, &slot) || slot == 0 ||
         slot == 0x50 || slot == 0x100 || slot == 0x120 || slot == 0x170) {
         pic_unsupported(s, addr, 4, value, true);
