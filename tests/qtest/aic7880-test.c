@@ -7414,10 +7414,12 @@ static void test_unsupported_scsi_controls(void)
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x00) & 0x20, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
     qtest_writeb(qts, REG_BASE + 0x87, 1);
+    /* WIDEODD (bit 6) is a latched control; only bit 7 stays unsupported. */
     qtest_writeb(qts, REG_BASE + 0x93, 0x40);
-    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x40, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x40, ==, 0x40);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
     qtest_writeb(qts, REG_BASE + 0x87, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x40, ==, 0);
     qtest_writeb(qts, REG_BASE + 0x93, 0x80);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93) & 0x80, ==, 0);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92) & 0x40, ==, 0);
