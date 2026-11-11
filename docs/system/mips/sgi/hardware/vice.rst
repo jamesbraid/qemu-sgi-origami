@@ -436,8 +436,14 @@ a stored ``0xffffffff`` reads back ``0x003fffff``. The sizes of the
 instruction RAMs and the table follow the specification's entry counts
 (1K x 16 for the BSP instructions, 1280 x 22 for the table,
 :src:`099-0123-003 p. 24`). That the 4 KiB MSP instruction RAM holds
-1K 32-bit words is *inferred* from the 4-byte fetch width. A host write
-to the MSP instruction RAM while the MSP is running is refused.
+1K 32-bit words is *inferred* from the 4-byte fetch width. A host read of
+the MSP instruction RAM while the MSP is running is refused, which fits
+the specification: the host and DMA may read that RAM only while the MSP
+is halted (:src:`099-0123-003 p. 115`), *established*. A host write while
+the MSP is running is refused as well, but the specification allows the
+host and DMA to write that RAM at any time (:src:`099-0123-003 p. 115`),
+*established*, so the model's write refusal is narrower than the hardware,
+an *approximation*. Both refusals are pinned by ``active-ports``.
 
 .. _sgi-vice-interrupts:
 
@@ -641,6 +647,21 @@ says they are not implemented and harmless
 (half-pel flags, chroma-only, interleave and the Y/C split modes) are
 refused.
 
+The register table gives bit 13 as 1 for a read, system memory to VICE
+(:src:`099-0123-003 p. 69`). The descriptor figure labels the two values
+the other way round (:src:`099-0123-003 p. 111`). The model follows the
+table, an *approximation* where the two sources disagree. ``transfer``
+pins the table's reading in both directions.
+
+The stride is described as the number of bytes from the start of one strip
+to the start of the next (:src:`099-0123-003 p. 71`), *established*,
+although the register map labels the field "# Bytes to Skip"
+(:src:`099-0123-003 p. 42`), which reads as a gap, so the meaning is
+*inferred* from the page-71 text and its 1440-byte example. A stride
+smaller than the width then makes strips overlap, and the model
+places row *r* at the descriptor's system address plus *r* times the
+stride, pinned by ``stride`` with a width of 8 and a stride of 4.
+
 A descriptor is refused when:
 
 - the width or the line count is zero, or their product exceeds 65535;
@@ -697,10 +718,64 @@ Data RAM and instruction RAM writes during the commit step become visible
 to host reads on that clock. Words written to the table RAM are masked to
 22 bits.
 
+The specification updates the system pointer once data has moved from
+system memory into the channel's buffer, and the local pointer and the
+count once it has moved from the buffer into local memory
+(:src:`099-0123-003 p. 66`), *established*. For a read the model follows
+that order: after the first source fetch ``DMA_MEM_PT`` shows the source
+address, ``DMA_COUNT`` still holds the whole width and no local byte has
+changed, and the count falls as each unit commits. ``boundaries`` pins
+this for a read from system memory, and ``fill-progress`` pins the count
+and the local pointer for a fill.
+
+STOP lets the unit already staged finish and then halts. The bytes
+committed stay, ``DMA_COUNT`` keeps what is left, done stays clear and
+``VICE_INT`` gets no completion bit (``boundaries``,
+``typed-stop-reset``). A channel reset instead discards the staged unit
+and writes nothing more (``boundaries``, ``typed-stop-reset``). The
+specification says STOP stops a DMA in progress and RESET resets the
+state machine and the FIFOs (:src:`099-0123-003 p. 64`), *established*,
+and does not say whether a unit in flight completes, *unknown*. The
+model's choice is an *approximation*. A channel reset leaves the
+descriptor words and the fill value as they were, and an external reset
+clears the fill value (``reset-duration``, ``reset-restart``). The
+specification names only the state machine and the FIFOs for a channel
+reset, so keeping the descriptors and the fill value is an *approximation*.
+
+If every set in the ring is skipped and none halts, the channel keeps
+walking the ring. It stays active, never sets done or error and raises no
+interrupt, and the model spends one step on each skipped set
+(``chain``, ``skip-progress``). The specification says a skipped set
+passes to the next (:src:`099-0123-003 p. 70`), so the endless walk
+follows from it, *inferred*. The one-step cost is an *approximation*.
+
+With both channels running, a unit of channel 2 can read local memory
+before channel 1's unit has committed to it. Overlapping transfers
+therefore see ordered unit traffic, not one snapshot and not a
+``memmove``: in ``concurrent`` channel 2 writes out the old bytes of the
+area channel 1 is filling. The ordering follows from the alternation
+above, an *approximation*.
+
+For the instruction RAMs and the table RAM, the write unit is also the
+unit of visibility. When the system source of one unit splits into
+several requests at a memory boundary, no byte of the unit reaches local
+memory, and ``DMA_COUNT`` does not fall, until the model has fetched
+every source byte of the unit and committed it (``typed-assembly``,
+``typed-small-units``). A permission or mapping change after the last
+source request does not undo a staged unit. The unit commits and the next
+request faults (``typed-staged-grant``). In the write direction the
+destination bytes accepted before a fault stay, and the count falls by
+their number (``typed-revocation``). The specification describes no
+such buffering, *unknown*. These unit rules are an *approximation*.
+
 An MSP load or store to a data bank reserves that bank for one MSP clock.
 A DMA unit that would touch the bank in that clock waits for the next
-one. The specification describes bank arbitration between the MSP and
-DMA (:src:`099-0123-003 p. 48`), *established*. The model's clock-level
+one. Only the bank the access used is reserved, even when all three grant
+bits are set, so a unit for a bank the MSP has not touched goes ahead
+(``msp-first-contention``). A reservation already accepted survives a
+write to ``MSP_D_RAM`` that revokes the grant (``initial-dma-deferral``).
+The specification describes bank arbitration between the MSP and DMA
+(:src:`099-0123-003 p. 48`), *established*. The model's clock-level
 ordering is an *approximation*: the specification gives no cycle table for
 it.
 
@@ -755,7 +830,29 @@ accepts a new GO only after a channel reset.
 
 With ``VICE_CFG`` bit 1 and the channel's bypass bit both set, the
 descriptor's address is physical. The model still limits the range to
-32 bits.
+32 bits. If either bit is clear the channel translates, and a channel
+bypass bit set alone does not give physical access
+(:src:`099-0123-003 p. 44, 64`), *established*. The model reads ``VICE_CFG``
+for each system-memory request. The channel's own bypass bit cannot change
+while the channel is active, because such a control write is refused.
+Clearing ``VICE_CFG`` bit 1 while a
+transfer runs makes the next request translate, so it faults when no entry
+is valid. A unit already fetched still reaches local memory, and a unit
+staged for a write to system memory is not written when its translation
+faults (``translation``, ``permission-changes``). The specification does
+not say when the permission is sampled, *unknown*. The per-request check
+is an *approximation*.
+
+The specification lets the DMA engine write the translation buffer once a
+permission bit set by the host allows it (:src:`099-0123-003 p. 25`),
+*established*, and lists the translation RAM as a local destination in the
+descriptor's location field (:src:`099-0123-003 p. 69`), where the same
+table marks the field not implemented and says the local address comes from
+the Y and C address words. The pages read here name no register for that
+permission bit, so the permission is
+*unknown*. The model refuses a descriptor whose local address falls in the
+translation buffer (``held-descriptors``), which is narrower than the
+hardware, an *approximation*.
 
 .. _sgi-vice-msp:
 
@@ -774,6 +871,40 @@ reset (:src:`099-0123-003 p. 49`), *established*. Writing bit 0 as zero
 to a running MSP lets the instructions in flight finish and then stops
 it. Writing bit 1 as zero resets it.
 
+Writing ``MSP_CTL_STAT`` as zero halts and resets a running MSP
+(:src:`099-0123-003 p. 49`), *established*. The reset takes effect at
+once: an instruction that has not committed is dropped, where a halt lets
+it finish (``host-reset-halt``). The specification does not say where in
+the pipeline the cut falls, *unknown*, so the model's cut is an
+*approximation*. While the MSP runs, a host write of ``MSP_PC`` or a
+second GO stops the model (``active-ports``). The specification says only
+that the PC must be written before each start
+(:src:`099-0123-003 p. 50`), *established*.
+
+The PC is 14 bits wide: bits 31:16 and 1:0 are grounded
+(:src:`099-0123-003 p. 29, 50`), *established*. Every value that reaches
+it is cut to bits 15:2, so a jump-register target with high or low bits
+set, and a branch whose target runs past 16 bits, land on the masked
+address without an exception (:src:`099-0123-003 p. 117`), *established*.
+The model does the same for a write to ``MSP_PC``, a jump-register target
+and a branch target (``fetch-pc``, ``register-jumps``, ``branch-wrap``).
+The fetch-range check uses the masked address. A jump or jump-and-link to
+an address outside the instruction RAM raises the instruction fetch
+exception with the target in EPC. In the model a jump-and-link still
+writes its link register, an *approximation* because the specification does
+not say (``jump-fetch-fault``).
+
+Until the MSP runs, ``MSP_PC`` reads the decode PC, not the value
+written. In the model it reads zero on a fresh device, where the
+specification gives no reset value (:src:`099-0123-003 p. 50`), *unknown*,
+so the zero is an *approximation*. After a halt the model keeps the PC of
+the last decoded instruction (``fetch-pc``, ``partial-fetch-pc``). The
+specification says a write to ``MSP_PC`` sets the fetch PC while a read
+returns the decode PC (:src:`099-0123-003 p. 50`), *established*, and that
+the PC is indeterminate while the MSP is halted
+(:src:`099-0123-003 p. 31`), *established*. Reading back the last decode PC
+is an *approximation*.
+
 The model's scalar unit is a simplified version of the specification's
 five-stage pipeline (:src:`099-0123-003 p. 124-143`). It fetches two
 words at a time, issues one scalar instruction per device clock, and
@@ -786,11 +917,60 @@ moves that reach the host registers. Multiply, divide, system call and
 coprocessor branches are not in the set and raise the reserved-instruction
 exception.
 
+The scalar unit has 32 general registers of 32 bits that the host cannot
+address (:src:`099-0123-003 p. 30, 131`), *established*. Register 0 reads
+zero and ignores writes (``gprs``). The specification does not say so, but
+the instruction set is a MIPS subset (:src:`099-0123-003 p. 115`), so the
+reading is *inferred*.
+
 Loads and stores reach only the three data banks, ``0x8000`` to
-``0x97ff``. Coprocessor 1 moves reach the host registers at ``0x100`` and
-above, and coprocessor 3 moves reach the descriptor sets
-(:src:`099-0123-003 p. 39`), *established*. Any other coprocessor
-operation or register is a refusal.
+``0x97ff``. The grant bits in ``MSP_D_RAM`` decide only whether the MSP may
+use a bank. In the model, host accesses and DMA do not depend on them: the
+DMA tests run with every grant clear, and a host read of a bank the MSP was
+denied returns its contents (``contention-watch``), an *approximation*
+because the specification does not say. The specification says that
+denying the MSP a bank lets DMA and the BSP use it without waiting
+(:src:`099-0123-003 p. 48, 119`), *established*.
+
+The coprocessor moves reach the registers and descriptors over the chip's
+common bus (:src:`099-0123-003 p. 39, 118`), *established*. ``CTC1`` and
+``CFC1`` with selector *n* reach the register map slot at ``0x100`` plus
+8 *n*. ``MTC3`` and ``MFC3`` reach the channel 1 descriptor words at
+``0x1000`` plus 8 *n*, and ``CTC3`` and ``CFC3`` those of channel 2 at
+``0x1100`` plus 8 *n* (:src:`099-0123-003 p. 40-43`), *established*.
+``common-dma`` pins selectors 0, 1, 16, 23 and 24 of coprocessor 1 and the
+descriptor selectors of both channels. The direction follows the
+register's access type. The software-interrupt strobe is written with
+``CTC1`` and cannot be read, and reads of the unnamed slots at selectors 6,
+7 and 22 or of the BSP registers at selectors 2 and 13, a write
+of the counter at selector 1 and the move-from form ``MFC1`` all stop the
+model (``common-directions``, ``held-words``). Three details differ
+between sources. Table 6 gives ``MSP_SW_INT`` as ``CFC1`` selector 23,
+while the register's own text says ``CTC1`` selector 31
+(:src:`099-0123-003 p. 41, 47`); the model uses selector 23. The
+overview says channel 2 descriptors use ``CTC1`` and ``CFC1``
+(:src:`099-0123-003 p. 118`), where Table 7 gives ``CTC3`` and ``CFC3``;
+the model follows Table 7. Table 7 prints selector 11 twice for channel 2,
+at ``0x1150`` and ``0x1158`` (:src:`099-0123-003 p. 43`); the model uses 10
+for the first. Each of these three model choices is an *approximation*.
+Any other coprocessor operation or register is a refusal.
+
+A taken branch or jump costs no extra cycle, and an untaken branch costs
+one to refetch the straight-line stream
+(:src:`099-0123-003 p. 125-126`), *established*. The instruction after a
+branch, its delay slot, runs whether or not the branch is taken
+(:src:`099-0123-003 p. 117, 131`), *established*. ``branch-penalty`` and
+``branches`` pin both. A load, ``MFCz`` or ``CFCz`` result is not ready for
+the next two instructions. A dependent instruction waits two cycles, an
+independent instruction between them absorbs one, and two absorb both
+(:src:`099-0123-003 p. 127`), *established*; ``load-interlocks`` pins this.
+The hardware compares the load's destination with the ``rs`` field of
+every scalar instruction and with the ``rt`` field of every one except
+``LWC2``, ``SWC2`` and the immediate class (Table 70,
+:src:`099-0123-003 p. 127`), *established*, so it can stall when no real
+dependency exists. The table never says which opcodes the immediate class
+holds. The model takes opcodes 8 to 15, *inferred* (``interlock-classes``,
+``immediate-false-dependency``).
 
 Exceptions are imprecise: the MSP stops issuing, completes what is in
 flight, then halts and latches ``VICE_INT`` bit 3
@@ -810,7 +990,9 @@ matching bit in ``MSP_ExcpFlag`` (:src:`099-0123-003 p. 27-29, 51-52`):
        ``MSP_BadAddr`` keeps the address.
    * - 2
      - Breakpoint
-     - ``BREAK``.
+     - ``BREAK`` with any code field (``ri-break-payload``). The
+       model ignores the code, an *approximation* because the
+       specification does not describe it.
    * - 3
      - Watchpoint
      - A load or store whose address, ignoring the low 3 bits, equals a
@@ -835,6 +1017,43 @@ specification's priority order (fetch, breakpoint, scalar and vector
 reserved, contention, load, store, watchpoint). The cause and EPC
 registers are updated only while every flag is clear
 (:src:`099-0123-003 p. 29`), *established*.
+
+EPC is the instruction that was the direct cause of the exception
+(:src:`099-0123-003 p. 50`), *established*, and the branch-delay flag, bit
+31 of ``MSP_CAUSE``, says the exception was taken in a delay slot
+(:src:`099-0123-003 p. 51`), *established*. The specification does not say
+what EPC holds then. The model reports the delay-slot instruction's own
+address with the flag set (``delay-fault``), an *approximation*. For a
+fetch exception the specification says EPC points to the instruction that
+causes it (:src:`099-0123-003 p. 29`), so the failed fetch address is
+*inferred*, and the model reports it (``fetch-pc``).
+
+``MSP_BadAddr`` changes only when an address error wins the priority
+order. When a breakpoint and a load fault arise together, the flags show
+both, EPC and cause describe the breakpoint, and ``MSP_BadAddr`` keeps its
+old value (``simultaneous-faults``). The specification gives the register
+the address of the load or store that caused the exception
+(:src:`099-0123-003 p. 27`), *established*, and says nothing about this
+case, *unknown*. The model's rule is an *approximation*.
+
+``MSP_ExcpFlag`` is read/write and software clears it explicitly
+(:src:`099-0123-003 p. 52`), *established*. That it is not
+write-one-to-clear is *inferred*. In the model writing a one sets a bit and
+writing zero clears it, events keep setting flags while the capture
+registers are frozen, clearing the ``VICE_INT`` bit does not touch the
+flags, and clearing every flag re-arms capture for the next exception
+(``capture-rearming``). The specification does not describe the last
+three, so they are an *approximation*.
+
+A load that faults on an address error, or on a bank the MSP was denied,
+writes zero to its register. A store that faults writes nothing
+(``address-faults``, ``contention-watch``). For a denied bank the
+specification says the load reads unknown data and the store does not
+write (:src:`099-0123-003 p. 48`), *established*, so only the zero is the
+model's choice. For an address error the specification says a load returns
+undefined data and a store writes undefined data
+(:src:`099-0123-003 p. 27`), *established*. The model's zero and its
+missing store are each an *approximation*.
 
 The model sets ``VICE_INT`` bit 3 when the MSP halts after an exception.
 A MSP that halts on request does not.
@@ -888,8 +1107,13 @@ Model limits
 - **MSP vector unit**: any vector instruction, vector load or store, or a
   group that pairs a vector instruction with a scalar one stops the model.
   The vector reserved-instruction exception never fires.
-- **MSP scalar details**: the model stops on signed overflow in ``ADD``,
-  ``ADDI`` and ``SUB``, on a halfword at the upper half of a word, on
+- **MSP scalar details**: a start at ``0x2ffc``, where the second word of
+  the fetch pair lies outside the instruction RAM, stops the model
+  (``held-data-cases``). The specification checks the fetch range on bits
+  15:3 only and does not say what the pair does there
+  (:src:`099-0123-003 p. 29`), *unknown*. The model also stops on signed
+  overflow in ``ADD``, ``ADDI`` and ``SUB``, on a halfword at the upper
+  half of a word, on
   noncanonical encodings, on a branch whose target cannot be fetched, on
   a branch or ``BREAK`` in a delay slot, on a delay-slot operand that
   depends on the previous two instructions, and on the other cases in the
