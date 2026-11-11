@@ -46,7 +46,11 @@ Sources
   ``drivers/video/fbdev/gbefb.c`` and ``include/video/gbe.h`` at
   ``db2ddb871435``, NetBSD ``sys/arch/sgimips/dev/crmfb.c`` and
   ``crmfbreg.h`` at ``07004b2a9dac``, and OpenBSD
-  ``sys/arch/sgi/dev/gbereg.h`` at ``2df91d80c104``.
+  ``sys/arch/sgi/dev/gbereg.h`` at ``2df91d80c104``. For the DMA
+  address and descriptor facts below it also reads Linux
+  ``arch/mips/sgi-ip32/ip32-dma.c`` at ``db2ddb871435``, NetBSD
+  ``sys/arch/sgimips/sgimips/bus.c`` at ``07004b2a9dac`` and OpenBSD
+  ``sys/arch/sgi/dev/gbe.c`` at ``2df91d80c104``.
 - Two published O2 boot reports and one published hardware inventory
   (:ref:`sgi-gbe-identity`).
 
@@ -300,10 +304,25 @@ QEMU I2C bus, named ``i2c`` and ``i2cfp``, through the generic bit-bang
 interface. Both buses are empty unless a test attaches slaves, so no
 monitor answers DDC reads.
 
+A write sets the output pins, but a read returns the state of the bus,
+which in general is not the state of the outputs. The input pins are
+synchronised to the 66 MHz memory clock, and GBE assumes it is the only
+master on the bus (:src:`sgi-gbe-1.1-spec p. 22`), *established*. The model
+reads the resolved bus level, so a slave that holds the data line low
+shows in the read, and it supports one master only. Reset ends any
+addressed transfer and leaves both interfaces stopped with no slave
+addressed (``/sgi-gbe/i2c-slaves``, ``/sgi-gbe/i2c-reset-blocker``).
+
 SYSCLK controls the system-clock PLL's test and analog inputs
-(:src:`sgi-gbe-1.1-spec p. 37`), *established*. The model always reads 8,
-the reset value. A write with any other value in bits 14:8 or 3:0 logs
-``LOG_UNIMP`` and is dropped.
+(:src:`sgi-gbe-1.1-spec p. 37`), *established*. The table names
+``tdwni``, ``tupi``, ``tm(1)`` and ``tm(0)`` in bits 0 to 3, ``vgain`` in
+9:8, ``cgain`` in 11:10 and ``divsel`` in 14:12, each described as the
+normal operation state of that input; ``tdwni`` and ``tupi`` are inputs
+"to system pll". Bit 3 is set at
+reset and the other defined bits are clear. Reading ``vgain`` and ``cgain``
+as voltage and current gain, and ``divsel`` as a divider select, is
+*inferred* from the names. The model always reads 8, the reset value. A write with any other
+value in bits 14:8 or 3:0 logs ``LOG_UNIMP`` and is dropped.
 
 Video timing registers
 ----------------------
@@ -343,6 +362,19 @@ and the ``off`` field in bits 11:0, except where noted
      - ``startx`` 11:0 and ``starty`` 23:12 presets for the DID, cursor and
        capture counters
 
+The specification contradicts itself in places. The ``on`` row of VT_2
+repeats the ``off`` comparator in its description
+(:src:`sgi-gbe-1.1-spec p. 38`), and the register diagram on p. 21 puts the
+VT_1 maxima in the opposite halves to the p. 38 table, *established* as
+printed. The model uses the table, which agrees with the totals Linux and
+NetBSD write, *software expectation*. For the DID counter, p. 20 presets it
+when ``vt_x`` reaches its maximum and p. 40 when ``vt_x`` reaches the VT_17
+start, and the p. 40 condition for the cursor Y counter is incomplete
+(:src:`sgi-gbe-1.1-spec p. 20, 40`), *established* as printed. The model
+follows p. 40 for the DID counter, an *approximation* (see
+:ref:`sgi-gbe-did`). The full condition of the cursor Y counter is
+*unknown*.
+
 Display timing
 ==============
 
@@ -370,7 +402,15 @@ reading the silicon uses is *unknown*; a read of ``vt_x`` at a known
 dot-clock count would settle it.
 
 Writing VT_0 or VT_1 reduces the stored counters modulo the new periods.
-Writing VT_0 with ``vt_freeze`` set stops the counters.
+Writing VT_0 with ``vt_freeze`` set stops the counters. The specification
+does not say what a freeze does to the clock phase or to interrupts, which
+is *unknown*. The model keeps the counters and the sub-dot phase through a
+freeze and does not credit the time spent frozen, and clearing the freeze
+raises no interrupt, since an event fires only when the counters advance
+into its line (``/sgi-gbe/freeze-phase``). When a change alters the
+effective clock rate the model keeps the counters and restarts the sub-dot
+phase at the write (``/sgi-gbe/fractional-clock``,
+``/sgi-gbe/clock-pin-phase``). All three are an *approximation*.
 
 Sync, blank and flat-panel outputs
 ----------------------------------
@@ -432,9 +472,18 @@ and cleared only there (:src:`sgi-gbe-1.1-spec p. 7, 20`),
 ``vt_y`` equal to the VT_7 ``vt_f2rf`` field toggles the stereo line. A
 rising edge on the frame-lock input presets ``vt_y`` to ``vt_frmlock`` at
 the next line wrap (:src:`sgi-gbe-1.1-spec p. 19-20, 39`), *established*.
-A ``vt_frmlock`` above ``vt_maxy`` logs ``LOG_UNIMP`` and the edge is
-ignored. The frame-lock, auxiliary and sense inputs are model GPIO input
-lines.
+The specification does not say what a ``vt_frmlock`` above or equal to
+``vt_maxy`` does, which is *unknown*. The model ignores the edge for a
+value above ``vt_maxy`` and selects line 0 for a value equal to it, and a
+rising edge leaves at most one preset pending, so an input that stays high
+is consumed once, an *approximation*
+(``/sgi-gbe/frame-lock-period``, ``/sgi-gbe/frame-lock-outputs``). The
+specification advises programming
+``vt_frmlock`` a little before the end of vertical blanking, so that a
+small mismatch between the external rate and the programmed one gains or
+loses blanking time and does not make the image jump
+(:src:`sgi-gbe-1.1-spec p. 20`), *established*. The frame-lock, auxiliary
+and sense inputs are model GPIO input lines.
 
 Shadow registers and vertical blank
 -----------------------------------
@@ -497,6 +546,13 @@ of a dot are not lost. It treats the Linux range as the lock window, an
   not run. The machine passes ``gbe-external-ttl-hz`` to ``external-ttl-hz``.
 - The model does not enforce the 140 MHz limit.
 
+The specification lists the external TTL dot-clock input as optional,
+the differential input as separate and the 20 MHz crystal of the internal
+PLL as another input (:src:`sgi-gbe-1.1-spec p. 3-4`), *established*. The
+20 MHz TTL clock that the ``o2`` machine supplies is a model input, not a
+statement that a fitted board wires one, an *approximation*. Which input
+a fitted O2 board uses is *unknown*.
+
 CTRLSTAT resets to select the external TTL input, so a guest that has not
 chosen the PLL sees no clock unless the machine supplies one. Linux writes
 ``0x300aa000`` to CTRLSTAT, which selects the PLL, in ``gbe_reset`` and
@@ -524,8 +580,28 @@ contiguous in memory. A list of 16-bit entries holds the upper 16 bits of
 each tile's physical address. The list is ordered left to right, then top
 to bottom. It starts on a 32-byte boundary and must not cross an 8 KiB
 boundary. A zero entry means no memory access for that tile and pixels of
-value 0 (:src:`sgi-gbe-1.1-spec p. 14, 17`), *established*. The same
-tile size appears in the VICE specification (:ref:`sgi-gbe-vice`).
+value 0 (:src:`sgi-gbe-1.1-spec p. 14, 17`), *established* for the overlay
+list. The specification describes the normal list as nearly identical and
+does not restate the entry format, the zero rule or the order for it
+(:src:`sgi-gbe-1.1-spec p. 14, 16-17`), so applying them to the normal plane is *inferred*, and the model does so, an
+*approximation*. Linux, NetBSD and OpenBSD fill 16-bit upper-address
+entries for the normal plane (``gbefb.c``, ``crmfb.c``, ``gbe.c``),
+*software expectation*, and none of them tests a zero normal entry. The
+same tile size appears in the VICE specification (:ref:`sgi-gbe-vice`).
+
+A plane's storage width in bytes is 512 times the whole-tile count plus 32
+times ``rhs``, and its width in pixels is that divided by the bytes per
+pixel. The model finds a pixel in list entry ``row / 128 * tiles_per_row +
+column / tile_width`` at byte ``row % 128 * 512 + column % tile_width *
+bytes_per_pixel`` of that tile, an *approximation* because the byte
+placement inside a row is the model's choice (see `Pixel format and order`_).
+The tile size and row length come from the specification
+(:src:`sgi-gbe-1.1-spec p. 13-14`), *established*. The model divides a
+pixel stream index by the storage width to get the row and column, so a
+plane may be narrower and taller than the display. A row at or past the
+FRM_1 height gives zero pixels, and the model latches that as a plane
+fault: the whole plane reads zero until the next list fetch, not just that
+row.
 
 The same specification pages give the plane registers:
 
@@ -536,9 +612,8 @@ The same specification pages give the plane registers:
 - FRM_1 bits 31:16 hold the height in pixels, shared by both planes.
 - OVR_1 and FRM_2 hold the list pointer in bits 31:5 and the DMA enable in
   bit 0. OVR_2 and FRM_3 are their shadows.
-- OVR_0 bit 13 and FRM_0 bit 15 reset the plane FIFO. The specification
-  marks both "diagnostic bit, do not modify". Linux pulses FRM_0 bit 15
-  while it turns the display off (``gbefb.c``), *software expectation*.
+- OVR_0 bit 13 and FRM_0 bit 15 reset the plane FIFO (see
+  `Plane FIFO reset`_).
 
 At each vertical blank the model reads the list of each enabled plane:
 ``(whole tiles + 1 if rhs is non-zero)`` entries for each 128 lines of
@@ -546,14 +621,49 @@ height, at most 4096. A list that would cross an 8 KiB boundary, a
 zero-size plane, a depth field of 3 or an ``rhs`` above 15 logs
 ``LOG_UNIMP`` and the plane produces zero pixels until the next fetch. A
 list read outside the linked memory logs ``LOG_GUEST_ERROR`` and has the
-same effect. With the FIFO-reset bit set the model holds the plane: it
-fetches nothing and produces zero pixels. Setting the bit also clears the
-list, so the plane stays blank until the bit clears and the next vertical
-blank refetches it, an *approximation*. Without the display option the
-device is register-only and rejects the bit.
+same effect.
 
 Each pixel read is a 512-byte row read from the tile; the model caches the
 last row.
+
+Plane FIFO reset
+----------------
+
+OVR_0 bit 13 and FRM_0 bit 15 reset the plane FIFOs. The specification
+marks both "diagnostic bit, do not modify" and gives no assertion time,
+self-clear rule, FIFO contents, behaviour during active DMA or completion
+indication (:src:`sgi-gbe-1.1-spec p. 42-43`), *established*; each of those
+is *unknown*. Linux, when the counters are running, and NetBSD ask for the plane DMA to
+stop, wait a bounded time for the active controls and the clocks, and pulse
+FRM_0 bit 15 high and then low, going on to the pulse when the wait times
+out (``gbefb.c``, ``crmfb.c``), *software expectation*. Neither pulses the
+overlay bit or shows that DMA has stopped when it pulses. The model's
+behaviour, in the display mode only, is an *approximation*
+(``/sgi-gbe/dma-reset/*``):
+
+- The bit is a level held by the last write. A read returns that level,
+  not FIFO occupancy or readiness.
+- A write that sets the bit discards the plane's fetched list and fault.
+  While the bit is set the plane reads no descriptor and no pixel and
+  supplies zero pixels. Zero is transparent for the overlay. For the normal
+  plane it still goes through the WID, colour and gamma lookups, so it is
+  not necessarily black.
+- The plane's shape fields, active and shadow pointers and enables are
+  unchanged. A shadow write made during the hold stays pending and is
+  copied at the next vertical blank as usual. The other plane, the DID
+  table, the cursor, the counters and the clock carry on. The write raises
+  no event and clears no cause in CRIME.
+- Writing the bit set again changes nothing. Clearing it fetches nothing:
+  the plane stays at zero until the next vertical blank, even when the
+  clear follows the set at the same instant. With the clock frozen or
+  stopped no vertical blank comes, so the plane stays unfetched until
+  timing runs again. A released plane then fetches its list afresh from the
+  guest's current descriptors.
+- A write applies its shape bits and its reset level together.
+- Reset clears both bits. A saved state carries the levels and each
+  plane's fetched or unfetched state: a held plane stays held, a released
+  one waits for its next vertical blank, and loading issues no descriptor
+  read, vertical blank or event.
 
 Pixel format and order
 ----------------------
@@ -579,7 +689,10 @@ The pixel formats (:src:`sgi-gbe-1.1-spec p. 13`), *established*:
      - 8-bit colour-map index
 
 Components of 2 to 5 bits widen to 8 bits by bit replication
-(:src:`sgi-gbe-1.1-spec p. 18`), *established*.
+(:src:`sgi-gbe-1.1-spec p. 18`), *established*: a 2-bit value repeats four
+times, a 3-bit value repeats twice and then appends its upper two bits, a
+4-bit value repeats twice and a 5-bit value appends its own upper three
+bits.
 
 Multi-byte pixels are big-endian in memory. The specification says pixels
 appear "in big endian format within the 256 bit memory width, where the
@@ -594,12 +707,29 @@ The pixel-enable window of VT_13 and VT_14 decides which dots take pixels
 from the planes. The model reads the planes as one continuous stream
 through that window, in raster order. A window whose length differs from
 the stored plane width wraps rows within the stream. Outside the window the
-output is the colour of pixel value 0 for the DID at that dot. The
-model offsets the window by the pipeline delay Linux and NetBSD program
-(19 dots before the ``on`` field), an *approximation*.
+output is the colour of pixel value 0 for the DID at that dot, and the
+cursor is still drawn there.
+
+The specification says the horizontal and vertical enables are logically
+OR'ed (:src:`sgi-gbe-1.1-spec p. 20`), *established* as the wording. Read as
+two on/off intervals, OR would enable dots outside the rectangle the
+drivers describe, so the model combines them with AND, an *approximation*.
+The horizontal window starts 19 dots after the VT_13 ``on`` field and ends
+21 dots after its ``off`` field, so it is two dots longer than the
+programmed interval. Linux and NetBSD both program ``on`` as the line total
+less 19, *software expectation*, and the model's offsets follow them, an
+*approximation*. An empty interval produces nothing, and a lengthened
+window longer than a line produces nothing. The
+vertical window runs from ``on`` to ``off`` with no added delay, an
+*approximation*. A dot's place in the pixel stream is its distance from the
+window start, row by row, and does not restart where the visible rectangle
+crops the window, so moving or shortening the window moves the picture
+without changing which memory it reads (``/sgi-gbe/wrapped-producer``).
 
 Display modes and colour
 ========================
+
+.. _sgi-gbe-did:
 
 Display ID table
 ----------------
@@ -628,6 +758,31 @@ vertical blank, produces ID 0 and logs ``LOG_UNIMP`` or
 20-dot pipeline offset, which matches the ``htotal - 20`` that NetBSD
 programs (``crmfb.c``), an *approximation*.
 
+The model stops reading a line table at the first entry whose ``xend`` is
+at or above the dot and returns that entry's ID. It never reads later
+entries to look for a terminator, so a later duplicate, a missing
+terminator or a bad fetch cannot change a pixel whose run was already
+matched, and a match in the last halfword of a 512-byte block reads nothing
+beyond it. The specification says the hardware moves to the next line-table
+entry when the endpoint matches the current X position and that the last
+entry should end at 2047 (:src:`sgi-gbe-1.1-spec p. 15`), *established*.
+Whether the hardware fetches beyond the entry it consumes is *unknown*, and
+reading only the consumed prefix is an *approximation*. The frame table is
+read from the start of the 64 KiB block in four-byte entries and cannot run
+past its end (``/sgi-gbe/did-prefix``, ``/sgi-gbe/did-prefix-final-halfword``,
+``/sgi-gbe/did-boundary-malformed``).
+
+The DID X coordinate is the number of dots since the latest match of the
+VT_17 X field, less 20, modulo the line period. The DID Y coordinate is
+the signed VT_17 Y field plus the lines since the ``vt_vblank_on`` line,
+plus one. A coordinate outside 0 to 2047 gives ID 0.
+NetBSD programs the DID start Y as the blanking length less
+one, negated, and the cursor start Y as the length less two, negated,
+*software expectation*. Under the model's single fixed phase these place
+DID Y 2 on the first visible line, so the runs start two lines early, and
+move the cursor glyph two lines down, an *approximation*. The model has no
+per-driver phase (``/sgi-gbe/netbsd-vertical-phase``).
+
 Window-mode table
 -----------------
 
@@ -642,7 +797,10 @@ WID[0..31] hold, per ID (:src:`sgi-gbe-1.1-spec p. 16, 44`),
 - ``aux`` bits 12:11: output to the digital pixel bus.
 
 Halves let a 16- or 32-bit plane hold two 8- or 16-bit buffers, for double
-buffering. The model supports a half when it is wide enough for the type:
+buffering. The specification gives no layout for a half
+(:src:`sgi-gbe-1.1-spec p. 16`), so that the selected half supplies the low
+bits of the type's input word is *inferred* from the depth-sized halves,
+and the model does so, an *approximation*. The model supports a half when it is wide enough for the type:
 8 bits for I8 or RG3B2, 16 bits for the others. A zero ``buf``, a type of 6
 or 7, a plane depth field of 3 or a half too narrow for its type logs
 ``LOG_UNIMP`` and gives colour 0. The ``aux`` field has no output.
@@ -652,6 +810,14 @@ Colour and gamma maps
 
 The colour map has 4608 entries of red, green, blue in bits 31:8. I8
 indexes it with ``cm`` and the 8-bit pixel. I12 indexes entries 0 to 4095.
+Entries 4096 to 4351 are in the physical array, which the specification
+sizes at 4608 entries, but neither I12 nor the overlay addresses them; the
+model reads and writes them like any other entry
+(``/sgi-gbe/coverage/indexed``). The Linux header allocates 6144 colour-map
+words and a separate 1024-entry gamma extension, and NetBSD's size comment
+and overlay offset differ from this revision's, *software expectation*.
+They describe other software interfaces; the model keeps 4608 entries with
+the overlay at 4352.
 For direct-colour types with a non-zero ``cm`` each component is mapped
 separately through entry ``cm << 8 | component``, for X direct-colour
 visuals. With ``cm`` zero the components pass straight to gamma
@@ -663,7 +829,10 @@ pixels always use it and other pixels use it unless ``gm`` is set
 is a diagnostic operation, because it is single-ported and a read in the
 active area disturbs the picture; colour-map writes are drained during
 blanking by a 64-entry FIFO (:src:`sgi-gbe-1.1-spec p. 18`),
-*established*. The model has neither the artefact nor the FIFO.
+*established*. The free-entry count in CMFIFO may be lower than the true
+number but never higher, and software must keep no more than 64 writes
+pending (:src:`sgi-gbe-1.1-spec p. 18`), *established*. The model has
+neither the artefact nor the FIFO.
 
 The model logs ``LOG_UNIMP`` once per entry when it uses a WID, colour map
 or gamma entry that no write has set. Such an entry reads as zero.
@@ -694,7 +863,8 @@ transparent value, or a crosshair (:src:`sgi-gbe-1.1-spec p. 21-22`),
 - CRS_1 bit 0 enables the cursor and bit 1 selects the crosshair.
 - CRS_CM[1..3] hold the three colours. Glyph value 0 is transparent.
 - CRS_GLY[0..63] hold the glyph, 16 two-bit pixels per word, left pixel in
-  bits 31:30. Words 0 and 1 are the left and right halves of the top row.
+  bits 31:30 and right pixel in bits 1:0. Words ``2k`` and ``2k + 1`` are the
+  left and right halves of row ``k``, top row first.
 - In crosshair mode the glyph is ignored and colour 1 is used.
 
 The cursor wins over overlay and normal pixels and bypasses gamma
@@ -708,6 +878,26 @@ offset. NetBSD programs ``htotal - 54`` in the VT_18 start field
 alignment in the specification (:src:`sgi-gbe-1.1-spec p. 21`) are
 *approximation*. The model composes the cursor into the pixel row
 itself. It does not use the host mouse cursor.
+
+The specification offsets the cursor coordinates by (31, 31), so that a
+cursor at (0, 0) shows only the glyph's lower-right pixel at the screen's
+upper left (:src:`sgi-gbe-1.1-spec p. 21`), *established*. The model drops
+that bias. With both alignment corrections zero, CRS_0 holds the glyph's
+top-left corner: position (0, 0) puts the first glyph pixel at the origin
+of the visible rectangle and (-31, -31) leaves only the last, an
+*approximation* that suits software which writes the pointer position less
+its hotspot (NetBSD ``crmfb.c``), *software expectation*. The X correction
+is the dots from the latest VT_18 X match to the colour-map origin, less
+54. The Y correction is the signed VT_18 Y field plus the lines from the
+``vt_vblank_on`` line to the colour-map origin. Changing VT_18 moves the
+glyph by the change. The model draws a glyph pixel only for local
+coordinates 0 to 31 on both axes, clips it to the visible rectangle and
+never wraps it. In crosshair mode it draws the vertical and horizontal
+lines through the corrected position across the visible rectangle in colour
+1, with no 31 bias, and the specification calls that position the crosshair
+centre (:src:`sgi-gbe-1.1-spec p. 22`), *established*. Both modes need the
+enable bit. A line period of 54 dots or fewer disables the cursor
+(``/sgi-gbe/cursor-projection``, ``/sgi-gbe/cursor-boundaries``).
 
 Video capture
 =============
@@ -775,6 +965,46 @@ window or the memory logs ``LOG_GUEST_ERROR``, and the plane or table
 involved stays blank until the next fetch. The memory must not exceed
 3 GiB. The model has no DMA write path, no 16-deep request queue and no
 bus ownership token.
+
+Each DMA request carries a full 32-bit address in bits 31:0, separate from
+the 24-bit offset of a register access, and is aligned to 256 bits and a
+multiple of 256 bits (:src:`sgi-gbe-1.1-spec p. 5-7`), *established*. The
+p. 7 summary says 512-byte alignment and eight outstanding requests, which
+disagrees with the 256-bit alignment and the 16-entry queue on p. 6 and the
+32-byte list alignment on p. 14. The model keeps the logical list and tile
+bounds and models no bursts or queue, an *approximation*.
+
+The two views exclude each other for a device. The property cannot change
+after realize, reset keeps the view, and the saved state carries it, so a
+destination with the other view refuses the stream. The model checks a
+request against the window of the device's own view before it forms an
+offset: the whole span must lie in one window, with a non-zero length and
+no 32-bit overflow. An address in the other view's window is refused, so
+``0x00d60000`` is valid only with ``legacy-software`` and ``0x40d60000``
+only with ``crime-1.5``. The CRIME table marks ``0x80000000`` and above reserved for GBE
+(:src:`sgi-crime-1.5-spec PDF p. 49-50` Table 3-3), *established* for the
+``crime-1.5`` view. The model refuses it in both views, an *approximation*,
+because the ``legacy-software`` view has no CRIME table. The model never masks an address, ORs in ``0x40000000`` or
+falls back to the other window. A refused request logs ``LOG_GUEST_ERROR``
+with the raw address and length, stops the affected plane's list or tile
+reads or the DID traversal, and gives zero pixels, with no partial data and
+no wrap into memory. The list pointer uses all of bits 31:5, a non-zero
+descriptor entry supplies address bits 31:16, and the DID base field
+supplies the same bits of the DID block, each checked in the view's window.
+The ``legacy-software`` window ends at ``0x0fffffff``. Whether legacy GBE DMA
+reaches above it is *unknown*. An address that passes becomes an offset into the
+CRIME model's decoded memory, which applies its bank gaps, overlaps and
+priority, so GBE reads the bytes that the CRIME renderer and
+memory-transfer engine write (``/sgi-gbe/dma-address/*``).
+
+The low window comes from public driver behaviour, not from the CRIME
+table. NetBSD programs its list pointer and tile entries from DMA map
+segment addresses without adding ``0x40000000``, so a low allocation gives
+a low GBE address (``crmfb.c``, ``sgimips/bus.c``). Linux's O2 DMA mapper
+adds ``0x40000000`` only when its device argument is null, and ``gbefb.c``
+passes the platform device (``ip32-dma.c``, ``gbefb.c``), *software
+expectation*. Neither shows the numeric address a fitted CRIME sees, so the
+low window is an *approximation*.
 
 Display output
 ==============
@@ -852,7 +1082,9 @@ counter phase, the capture bounds and the I2C pin latches. The saved
 ``model_config`` byte and the three clock inputs must match on the
 destination, because the stream carries equality checks on them. Migration
 is only valid between identical builds. It is blocked while an I2C transfer
-is in progress on either bus.
+is in progress on either bus. Loading a state pulses no interrupt, reads no
+descriptor and replays no I2C edge; pending causes stay in CRIME
+(``/sgi-gbe/migration``, ``/sgi-gbe/dma-reset/migration``).
 
 Measurements
 ============
@@ -879,6 +1111,8 @@ Model limits
   as occupancy, a *software expectation* that disagrees with the
   specification.
 - **Counter period.** VT_1 is the period, not ``period - 1``.
+- **Pixel enable.** The horizontal and vertical windows are combined with
+  AND, not the specification's OR.
 - **Pixel order.** Leftmost pixel at the lowest address. *unknown*.
 - **DOTCLK status.** Resets with out-of-range and out-of-lock set, which
   reads as locked under the spec's p. 32 table. The
@@ -907,6 +1141,11 @@ Model limits
   ``LOG_UNIMP``: PLL test bits, SYSCLK controls, clock source 2, invalid
   timing, plane geometry, uninitialised table entries and unsupported WID
   modes.
+- **Later-revision extensions.** The revision 2 configuration and
+  self-test registers, the 10-bit gamma extension and the linear-frame
+  mode that the Linux header names are not modelled, and the model keeps
+  the GBE 1.1 list-pointer mask of bits 31:5 where the Linux and NetBSD
+  masks differ.
 - **Revision.** The model is revision 1.1 (CTRLSTAT revision 1). It does not
   model the 27 MHz reference Linux selects for later revisions, except
   through ``reference-hz``.
@@ -929,6 +1168,9 @@ is set. It uses synthetic fixtures, not captured data. Its cases cover:
   ``invalid-timing-reports`` and ``events``: PLL maths, the external
   inputs, the lock window, one-shot events and the frame-lock preset.
 - ``/sgi-gbe/frame-lock-outputs``: the output lines and VT_6 controls.
+- ``/sgi-gbe/freeze-phase`` and ``frame-lock-period``: the counters and
+  clock phase through a freeze, and frame-lock presets at and above
+  ``vt_maxy``.
 - ``/sgi-gbe/dma-reset/*``: the FIFO-reset bits and plane holds.
 - ``/sgi-gbe/multitile``, ``shadow-bounds``, ``descriptor-cache``,
   ``formats``, ``depth-halves``, ``rgb8-geometry-cursor``,

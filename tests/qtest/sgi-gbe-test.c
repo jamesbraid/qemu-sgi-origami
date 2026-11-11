@@ -1533,6 +1533,51 @@ static void test_frame_lock_outputs(void)
     qtest_quit(q);
 }
 
+static void test_freeze_phase(void)
+{
+    QTestState *q = start("");
+
+    mode(q);
+    qtest_irq_intercept_out_named(q, PATH, "sysbus-irq");
+    wr(q, VT(8), 0); /* Events 0 and 1 match line 0. */
+    wr(q, VT(0), 0);
+    qtest_clock_step(q, 150); /* One dot and half of the next. */
+    g_assert_cmphex(rd(q, VT(0)), ==, 1);
+    wr(q, VT(0), 1u << 31 | 1);
+    qtest_clock_step(q, 1000000);
+    g_assert_cmphex(rd(q, VT(0)), ==, 1u << 31 | 1);
+    wr(q, VT(0), 1);
+    g_assert_cmpuint(qtest_get_irq_raise_count(q, 0), ==, 0);
+    /* The half dot is kept and the frozen second is not credited. */
+    qtest_clock_step(q, 49);
+    g_assert_cmphex(rd(q, VT(0)), ==, 1);
+    qtest_clock_step(q, 1);
+    g_assert_cmphex(rd(q, VT(0)), ==, 2);
+    g_assert_cmpuint(qtest_get_irq_raise_count(q, 0), ==, 0);
+    /* The first event comes when the counters wrap to line 0. */
+    qtest_clock_step(q, 650000);
+    g_assert_cmpuint(qtest_get_irq_raise_count(q, 0), ==, 1);
+    qtest_quit(q);
+}
+
+static void test_frame_lock_period(void)
+{
+    /* A preset equal to vt_maxy selects line 0; a larger one is ignored. */
+    for (unsigned preset = 67; preset <= 68; preset++) {
+        QTestState *q = start("");
+
+        mode(q);
+        wr(q, VT(7), 3 | preset << 12);
+        /* Line 5, so the natural next line (6) differs from 68 % 67. */
+        wr(q, VT(0), 5 << 12);
+        qtest_clock_step(q, 2000);
+        qtest_set_irq_in(q, PATH, NULL, 11, 1);
+        qtest_clock_step(q, 7700);
+        g_assert_cmphex(rd(q, VT(0)), ==, preset == 67 ? 0 : 6 << 12);
+        qtest_quit(q);
+    }
+}
+
 static void test_timing_output_connect_midline(void)
 {
     QTestState *q = start("");
@@ -3099,6 +3144,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-gbe/depth-halves", test_depth_and_halves);
     qtest_add_func("/sgi-gbe/access-unsupported", test_access_and_unsupported);
     qtest_add_func("/sgi-gbe/frame-lock-outputs", test_frame_lock_outputs);
+    qtest_add_func("/sgi-gbe/freeze-phase", test_freeze_phase);
+    qtest_add_func("/sgi-gbe/frame-lock-period", test_frame_lock_period);
     qtest_add_func("/sgi-gbe/timing-output-connect-midline",
                    test_timing_output_connect_midline);
     qtest_add_func("/sgi-gbe/timing-output-connect-level",
