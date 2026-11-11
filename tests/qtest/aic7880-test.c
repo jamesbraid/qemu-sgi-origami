@@ -325,6 +325,40 @@ static void test_reserved_host_count_byte(void)
     qtest_quit(qts);
 }
 
+static void test_dfcntrl_wideodd(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-wideodd-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "qemu.log", NULL);
+    g_autofree char *log = NULL;
+    QTestState *qts = start_aic_logged(path);
+
+    /* WIDEODD (bit 6) is a plain latch in the narrow-only model. */
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0x40);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94), ==, 0x21);
+    /* FIFORESET self-clears and FIFOFLUSH has no effect on an empty FIFO. */
+    qtest_writeb(qts, REG_BASE + 0x93, 0x43);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x93, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x40);
+    qtest_writeb(qts, REG_BASE + 0x87, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x40);
+    qtest_system_reset(qts);
+    config_writel(qts, 0x14, REG_BASE);
+    config_writew(qts, 0x04, 0x0006);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x93), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91), ==, 0);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &log, NULL, NULL));
+    g_assert_null(strstr(log, "aic7880:"));
+    g_assert_cmpint(g_unlink(path), ==, 0);
+    g_rmdir(dir);
+}
+
 static void test_host_dma_memory_to_fifo(void)
 {
     uint8_t guarded[272], got[272];
@@ -15118,6 +15152,7 @@ int main(int argc, char **argv)
                    test_workload_dma_scb_branch_clear);
     qtest_add_func("aic7880/workload-dma-scb-branch-set",
                    test_workload_dma_scb_branch_set);
+    qtest_add_func("aic7880/dfcntrl-wideodd", test_dfcntrl_wideodd);
     qtest_add_func("aic7880/internal-refusal-pci-status-clear",
                    test_internal_refusal_keeps_pci_status_clear);
     qtest_add_func("aic7880/pci-error-status-survives-chip-reset",
