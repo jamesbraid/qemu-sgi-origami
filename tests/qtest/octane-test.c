@@ -5277,6 +5277,66 @@ static void test_rad_link_bad(void)
 }
 
 /*
+ * Entries 3 and 5 are the AES3 and ADAT outputs' set B, so while those run
+ * a write to them is refused (model policy; whether the chip gates the
+ * entries is unknown). An analog output that links to such an entry needs
+ * no write: it loads the digital ring and keeps playing it, while a driver
+ * that programmed the entry with its own descriptor is refused and logged.
+ */
+static void test_rad_digital_entry_link(gconstpointer data)
+{
+    const unsigned entry = GPOINTER_TO_UINT(data);
+    const bool adat = entry == 5;
+    const uint32_t digital = 0xa0030000, analog = 0xa000a000;
+    const uint32_t dctrl = adat ? 0xffffc028 : 0xfffff018;
+    const uint32_t link = 0xfffff000 | (entry << 3);
+    const uint32_t slot = 0x400 + entry * 12;
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *quoted = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("octane-rad-entry-XXXXXX", &log_path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    quoted = g_shell_quote(log_path);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", quoted);
+    qts = octane_start_args(extra);
+    octane_rad_clock_map(qts);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0e);
+    qtest_writel(qts, RAD_BAR0 + 0x40, 0x0a);
+    octane_rad_digital_out_program(qts, adat, digital, dctrl);
+    qtest_writel(qts, RAD_BAR0 + (adat ? 0x50 : 0x54),
+                 adat ? 0x60000001 : 0x40000001);
+
+    /* The analog output's working descriptor links to the digital entry. */
+    qtest_writel(qts, RAD_BAR0 + 0x4f8, analog);
+    qtest_writel(qts, RAD_BAR0 + 0x524, 0);
+    qtest_writel(qts, RAD_BAR0 + 0x4fc, link);
+    qtest_writel(qts, RAD_BAR0 + 0x58, 0x20000001);
+
+    /* The driver's copy of its descriptor cannot replace the running ring. */
+    qtest_writel(qts, RAD_BAR0 + slot, analog);
+    qtest_writel(qts, RAD_BAR0 + slot + 8, link);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + slot), ==, digital);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + slot + 8), ==, dctrl);
+
+    /* Two laps of the analog ring and more: it follows the link and plays. */
+    qtest_clock_step(qts, 30000000);
+    g_assert_cmpuint(octane_rad_out_frames(qts), ==, 1323);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x58), ==, 0x20000001);
+    g_assert_cmphex(qtest_readl(qts, RAD_BAR0 + 0x4f8), ==, digital);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, adat ?
+        "unsupported 4-byte BAR0 write at 0x43c value 0xa000a000" :
+        "unsupported 4-byte BAR0 write at 0x424 value 0xa000a000"));
+    g_assert_null(strstr(log, "links to descriptor"));
+    g_assert_cmpint(g_unlink(log_path), ==, 0);
+}
+
+/*
  * The release values IRIX and Linux write (0x88 = 3, 0x8c = 2) leave the
  * output audible, and a mute set between sample-clock timer callbacks still
  * lets the frames due before the write play: 1 ms is 44 frames, not a
@@ -7080,6 +7140,10 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-output-clock", test_rad_output_clock);
     qtest_add_func("/octane/rad-input-clock", test_rad_input_clock);
     qtest_add_func("/octane/rad-digital-outputs", test_rad_digital_outputs);
+    qtest_add_data_func("/octane/rad-digital-entry-link/aes3",
+                        GINT_TO_POINTER(3), test_rad_digital_entry_link);
+    qtest_add_data_func("/octane/rad-digital-entry-link/adat",
+                        GINT_TO_POINTER(5), test_rad_digital_entry_link);
     qtest_add_func("/octane/rad-digital-outputs-migration",
                    test_rad_digital_outputs_migration);
     qtest_add_func("/octane/rad-clock-irix-words", test_rad_clock_irix_words);

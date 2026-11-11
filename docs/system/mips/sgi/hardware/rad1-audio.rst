@@ -419,7 +419,26 @@ channel's tag names; IRIX 6.5.13f left the AES3 output's ring in entry 3
 and the ADAT output's in entry 5, copies of their set A, *software
 expectation*. Entry 15 shares its words with the status ring's set B.
 Every entry word takes 32-bit reads and writes, except that a write to
-a channel's own set while that channel runs is refused. Above the
+a channel's own set while that channel runs is refused, a model policy
+rated *approximation*. Entries 3 and 5 are therefore read-only while
+the AES3 or ADAT output runs. The IRIX 6.5.30 Octane audio driver
+(SHA-256 ``e5fa4e36e4f9100a8dbebcbf1d707145f5c8164b69af2fbbeca490ab81d3be08``,
+read as a shipped binary, *software expectation*) sets each channel's
+link field equal to its type, so the analog output links to entry 1
+and never to entry 3 or 5. The only code that writes a descriptor
+is its start-DMA routine, at text offsets ``0x3334``-``0x37f0``, and its
+stop routine (``0x39b4``-``0x3bd8``) clears the enable bit and writes no
+descriptor RAM. Neither IRIX nor Linux, which links index 7 for the
+analog output alone, writes a running channel's entry. What the
+chip does with such a write, or with an analog link to entry 3 or 5
+while that output runs, is *unknown*: no permitted source says whether
+the engines share one RAM, whether a write to a live entry takes
+effect, is ignored or corrupts the ring. With the refusal in place a
+driver that copied its own descriptor into entry 3 or 5 is refused and
+logged, and an analog output linked there loads and plays the digital
+ring without any write. A real Octane would settle it: rewrite a
+self-linked analog entry mid-stream and read ``0x4f8`` and ``0x4fc``;
+separately link entry 1 to entry 3 while the AES3 output plays. Above the
 descriptor RAM, the low-address words ``0x4c0``, ``0x4c8`` and
 ``0x4d8``, which the Octane driver writes at start with the engines
 off, are stored with no effect; the digital outputs' set A words are
