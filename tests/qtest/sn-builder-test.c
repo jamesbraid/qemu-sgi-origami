@@ -11625,6 +11625,24 @@ static void assert_serial_fits_router_scratch(QTestState *qts,
 }
 
 /*
+ * The resident memory of the QEMU process behind qts, in KiB, or 0 where
+ * /proc does not say.
+ */
+static uint64_t process_rss_kib(QTestState *qts)
+{
+    g_autofree char *path = g_strdup_printf("/proc/%d/status",
+                                            (int)qtest_pid(qts));
+    g_autofree char *text = NULL;
+    const char *line;
+
+    if (!g_file_get_contents(path, &text, NULL, NULL)) {
+        return 0;
+    }
+    line = strstr(text, "VmRSS:");
+    return line ? g_ascii_strtoull(line + strlen("VmRSS:"), NULL, 10) : 0;
+}
+
+/*
  * Each router L1 is given its product's board record, which the stock PROM
  * reads at router initialisation and prints an EEPROM vector read error
  * without. The Origin 3400 R-brick takes the R-brick row, each of the two
@@ -11682,6 +11700,15 @@ static void test_router_l1_board_records(void)
         g_assert_cmpstr(profile, ==, "router");
         g_assert_cmpstr(board, ==, cases[i].board);
         assert_serial_fits_router_scratch(qts, cases[i].router_l1);
+        /*
+         * Log the machine's resident set (0 where /proc says nothing). The
+         * Bedrock memory tables once made it 9.5 GiB for the 32 GiB Origin
+         * 3800, which the 16 GiB CI builders cannot back with four tests
+         * running. No bound is asserted: the figure varies with the host,
+         * and a test that fails on one builder blocks every change.
+         */
+        g_test_message("%s: %" PRIu64 " MiB resident", cases[i].machine,
+                       process_rss_kib(qts) / 1024);
         qtest_quit(qts);
     }
     qts = qtest_initf(

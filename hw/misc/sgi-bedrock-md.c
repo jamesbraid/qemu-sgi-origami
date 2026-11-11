@@ -10,6 +10,8 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/bitmap.h"
+#include "qemu/madvise.h"
+#include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
 #include "trace.h"
@@ -3557,16 +3559,75 @@ static void md_soft_reset_input(void *opaque, int n, int level)
     }
 }
 
+/*
+ * The directory, page counter and ECC tables together are a quarter of the
+ * node's memory, 8 GiB for a 32 GiB Origin 3800 node set. Calloc'd, cleared
+ * with memset() at reset and, with transparent huge pages on, touched by a
+ * few writes into 2 MiB pages, they took 9.5 GiB of resident memory from a
+ * machine that had run nothing, enough to get four parallel qtests
+ * OOM-killed on a 16 GiB CI builder. Map them anonymously without huge
+ * pages, and on Linux reset them by giving the pages back, which also
+ * leaves them zero.
+ */
+static void *md_table_alloc(size_t size, Error **errp)
+{
+    uint64_t align;
+#ifdef _WIN32
+    /* Windows cannot skip the reservation. */
+    const bool noreserve = false;
+#else
+    /* Do not make the kernel count tables that are mostly never touched. */
+    const bool noreserve = true;
+#endif
+    void *table = qemu_anon_ram_alloc(size, &align, false, noreserve);
+
+    if (!table) {
+        error_setg(errp, "sgi-bedrock-md: cannot map %zu bytes of tables",
+                   size);
+        return NULL;
+    }
+    qemu_madvise(table, size, QEMU_MADV_NOHUGEPAGE);
+    return table;
+}
+
+static void md_tables_free(SGIBedrockMDState *s)
+{
+    if (s->directory) {
+        qemu_anon_ram_free(s->directory,
+                           s->directory_entries * sizeof(*s->directory));
+        s->directory = NULL;
+    }
+    if (s->page_counters) {
+        qemu_anon_ram_free(s->page_counters,
+                           s->directory_entries * sizeof(*s->page_counters));
+        s->page_counters = NULL;
+    }
+    if (s->ecc) {
+        qemu_anon_ram_free(s->ecc, s->ecc_entries * sizeof(*s->ecc));
+        s->ecc = NULL;
+    }
+}
+
+static void md_table_zero(void *table, size_t size)
+{
+#ifdef CONFIG_LINUX
+    if (!qemu_madvise(table, size, QEMU_MADV_DONTNEED)) {
+        return;
+    }
+#endif
+    memset(table, 0, size);
+}
+
 static void md_reset_enter(Object *obj, ResetType type)
 {
     SGIBedrockMDState *s = SGI_BEDROCK_MD(obj);
 
     md_reset_registers(s);
     if (s->directory) {
-        memset(s->directory, 0,
-               s->directory_entries * sizeof(*s->directory));
-        memset(s->page_counters, 0,
-               s->directory_entries * sizeof(*s->page_counters));
+        md_table_zero(s->directory,
+                      s->directory_entries * sizeof(*s->directory));
+        md_table_zero(s->page_counters,
+                      s->directory_entries * sizeof(*s->page_counters));
     }
     memset(s->directory_compat_offsets, 0,
            sizeof(s->directory_compat_offsets));
@@ -3574,7 +3635,7 @@ static void md_reset_enter(Object *obj, ResetType type)
            sizeof(s->directory_compat_values));
     s->directory_compat_count = 0;
     if (s->ecc) {
-        memset(s->ecc, 0, s->ecc_entries * sizeof(*s->ecc));
+        md_table_zero(s->ecc, s->ecc_entries * sizeof(*s->ecc));
     }
     s->ecc_admitted_halfword_low = 0;
     s->ecc_admitted_halfword = 0;
@@ -4055,9 +4116,20 @@ static void md_realize(DeviceState *dev, Error **errp)
     md_update_memory_aliases(s);
     s->directory_entries = node_size / 128;
     s->ecc_entries = node_size / 8;
-    s->directory = g_new0(uint64_t, s->directory_entries);
-    s->page_counters = g_new0(uint64_t, s->directory_entries);
-    s->ecc = g_new0(uint8_t, s->ecc_entries);
+    s->directory = md_table_alloc(s->directory_entries *
+                                  sizeof(*s->directory), errp);
+    if (s->directory) {
+        s->page_counters = md_table_alloc(s->directory_entries *
+                                          sizeof(*s->page_counters), errp);
+    }
+    if (s->page_counters) {
+        s->ecc = md_table_alloc(s->ecc_entries * sizeof(*s->ecc), errp);
+    }
+    if (!s->ecc) {
+        /* The finalizer frees what is left of the other tables. */
+        md_tables_free(s);
+        return;
+    }
     s->named_lines = bitmap_new(s->directory_entries);
     s->named_line_bits = s->directory_entries;
 }
@@ -4082,10 +4154,8 @@ static void md_unrealize(DeviceState *dev)
         address_space_destroy(&s->node_as);
         s->node_as_initialized = false;
     }
-    g_clear_pointer(&s->directory, g_free);
-    g_clear_pointer(&s->page_counters, g_free);
+    md_tables_free(s);
     g_clear_pointer(&s->protection, g_free);
-    g_clear_pointer(&s->ecc, g_free);
     g_clear_pointer(&s->named_lines, g_free);
     s->directory_entries = 0;
     s->protection_entries = 0;
@@ -4144,10 +4214,8 @@ static void md_finalize(Object *obj)
     if (s->node_as_initialized) {
         address_space_destroy(&s->node_as);
     }
-    g_clear_pointer(&s->directory, g_free);
-    g_clear_pointer(&s->page_counters, g_free);
+    md_tables_free(s);
     g_clear_pointer(&s->protection, g_free);
-    g_clear_pointer(&s->ecc, g_free);
     g_clear_pointer(&s->named_lines, g_free);
 }
 
