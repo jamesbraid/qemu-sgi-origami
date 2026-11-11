@@ -47,6 +47,14 @@ trees:
     browse: https://github.com/NetBSD/src
 
 documents:
+  007-2392-003:
+    title: "OpenGL on Silicon Graphics Systems"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/2000/007-2392-003/pdf/007-2392-003.pdf
   007-3439-002:
     title: "Origin and Onyx2 Theory of Operations Manual"
     publisher: Silicon Graphics
