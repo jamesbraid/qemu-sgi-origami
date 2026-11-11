@@ -9,6 +9,7 @@ import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -335,6 +336,131 @@ class MesonTestsConcurrently(unittest.TestCase):
         build, error = self.run_jobs({'a': 0, 'b': 'report', 'c': 0})
         self.assertEqual(error, 'failed: b')
         self.assertEqual(len(build.checked), 3)
+
+
+class FailingTests(unittest.TestCase):
+    LOG = "\n".join(json.dumps(entry) for entry in (
+        {"name": "qtest-mips64/a-test", "result": "OK", "duration": 1.5},
+        {"name": "qtest-mips64/b-test", "result": "TIMEOUT",
+         "duration": 60.2, "returncode": -15,
+         "stdout": "\n".join(f"line {i}" for i in range(100))},
+        {"name": "qtest-mips64/c-test", "result": "ERROR", "duration": 3.0,
+         "returncode": -6, "stdout": "ERROR:x:y: assertion failed"},
+        {"name": "qtest-mips64/d-test", "result": "SKIP", "duration": 0.1},
+        {"name": "qtest-mips64/e-test", "result": "FAIL", "duration": 9.0},
+        {"name": "qtest-mips64/f-test", "result": "FAIL", "duration": 9.0},
+    )) + "\n"
+
+    def test_only_bad_results_are_listed_in_log_order(self):
+        failed = sgi_check.failed_tests(self.LOG)
+        self.assertEqual([f['name'].split('/')[1] for f in failed],
+                         ['b-test', 'c-test', 'e-test', 'f-test'])
+
+    def test_the_tail_is_the_last_lines_of_the_output(self):
+        tail = sgi_check.failed_tests(self.LOG)[0]['tail']
+        self.assertEqual(len(tail), sgi_check.FAILING_TAIL_LINES)
+        self.assertEqual(tail[-1], 'line 99')
+
+    def test_the_summary_names_the_first_tests_and_counts_the_rest(self):
+        summary = sgi_check.failing_summary(sgi_check.failed_tests(self.LOG))
+        self.assertEqual(summary, 'b-test TIMEOUT 60s, c-test ERROR 3s, '
+                                  'e-test FAIL 9s and 1 more')
+
+    def test_a_log_without_failures_has_none(self):
+        self.assertEqual(sgi_check.failed_tests(
+            '{"name": "t", "result": "OK"}\nnot json\n'), [])
+
+    def run_failing(self, log):
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(io.StringIO()) as out:
+            build = FakeBuild(Path(tmp), {'p': 1})
+            logs = Path(tmp) / 'meson-logs'
+            logs.mkdir()
+            if log is not None:
+                (logs / 'p-qemu_thorough.json').write_text(log)
+            with self.assertRaises(subprocess.CalledProcessError):
+                build.meson_test('p', ['x'], 'p.expected')
+            kept = Path(tmp) / sgi_check.FAILING_TESTS_FILE
+            return out.getvalue(), (kept.read_text() if kept.exists()
+                                    else None)
+
+    def test_a_failed_run_prints_the_tails_and_keeps_the_names(self):
+        printed, kept = self.run_failing(self.LOG)
+        self.assertIn('4 failed test(s) in p', printed)
+        self.assertIn('ERROR:x:y: assertion failed', printed)
+        self.assertIn('line 99', printed)
+        self.assertNotIn('line 10\n', printed)
+        self.assertEqual(kept, 'b-test TIMEOUT 60s, c-test ERROR 3s, '
+                               'e-test FAIL 9s and 1 more\n')
+
+    def test_expected_failures_are_not_failures(self):
+        self.assertEqual(sgi_check.failed_tests(
+            '{"name": "t", "result": "EXPECTEDFAIL"}\n'), [])
+
+    def test_a_new_build_forgets_an_earlier_runs_names(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            kept = Path(tmp) / sgi_check.FAILING_TESTS_FILE
+            kept.write_text('old-test FAIL 1s\n')
+            sgi_check.Build(Path(tmp))
+            self.assertFalse(kept.exists())
+
+    def test_the_first_invocations_names_are_kept(self):
+        with tempfile.TemporaryDirectory() as tmp, \
+                contextlib.redirect_stdout(io.StringIO()):
+            build = FakeBuild(Path(tmp), {})
+            logs = Path(tmp) / 'meson-logs'
+            logs.mkdir()
+            (logs / 'p-x.json').write_text(self.LOG)
+            (logs / 'q-x.json').write_text(
+                '{"name": "qtest-mips64/z-test", "result": "FAIL"}\n')
+            build.report_failures('p')
+            build.report_failures('q')
+            kept = (Path(tmp) / sgi_check.FAILING_TESTS_FILE).read_text()
+        self.assertIn('b-test TIMEOUT', kept)
+        self.assertNotIn('z-test', kept)
+
+    def test_a_failure_with_no_failed_test_keeps_nothing(self):
+        printed, kept = self.run_failing(None)
+        self.assertIsNone(kept)
+
+
+class ReportFailureScript(unittest.TestCase):
+    """runner-setup report-failure puts the failed tests in the status."""
+
+    def publish(self, failing_file):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            (tmp / 'build-ci').mkdir()
+            if failing_file is not None:
+                (tmp / 'build-ci/failing-tests.txt').write_text(failing_file)
+            (tmp / 'step').write_text('qtest-3-of-3: run this part\n')
+            bin_dir = tmp / 'bin'
+            bin_dir.mkdir()
+            curl = bin_dir / 'curl'
+            curl.write_text('#!/bin/sh\nwhile [ $# -gt 0 ]; do\n'
+                            '  [ "$1" = -d ] && printf %s "$2" > '
+                            f'{tmp}/posted\n  shift\ndone\n')
+            curl.chmod(0o755)
+            env = dict(os.environ, PATH=f'{bin_dir}:{os.environ["PATH"]}',
+                       CI_STEP=str(tmp / 'step'), FORGE_API='http://x',
+                       FORGE_TOKEN='t', RUN_URL='http://x/run',
+                       COMMIT_SHA='abc')
+            subprocess.run(['bash', str(SOURCE / 'scripts/ci/runner-setup'),
+                            'report-failure'], cwd=tmp, env=env, check=True,
+                           stdout=subprocess.DEVNULL)
+            return json.loads((tmp / 'posted').read_text())['description']
+
+    def test_the_description_names_the_failed_tests(self):
+        self.assertEqual(
+            self.publish('b-test TIMEOUT 60s, c-test ERROR 3s\n'),
+            'qtest-3-of-3: run this part: b-test TIMEOUT 60s, '
+            'c-test ERROR 3s ')
+
+    def test_without_a_list_the_description_is_the_step(self):
+        self.assertEqual(self.publish(None), 'qtest-3-of-3: run this part')
+
+    def test_the_description_fits_a_status(self):
+        self.assertLessEqual(len(self.publish('x' * 400 + '\n')), 250)
 
 
 class FullFunctional(unittest.TestCase):
