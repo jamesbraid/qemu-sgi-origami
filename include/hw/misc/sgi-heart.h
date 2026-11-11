@@ -34,6 +34,11 @@ struct SGIHeartState {
     MemoryRegion *cpu_memory;
     qemu_irq processor[HEART_PROCESSOR_LINES];
     MemoryRegion backing[HEART_BANKS];
+    /*
+     * Writes through the ECC overlay land here, so translated code from
+     * the bytes they change is discarded.
+     */
+    AddressSpace backing_as[HEART_BANKS];
     MemoryRegion views[HEART_BANKS][HEART_MAX_UNITS];
     MemoryRegion packet_views[HEART_BANKS][HEART_MAX_UNITS];
     MemoryRegion packet_guards[HEART_BANKS * 2];

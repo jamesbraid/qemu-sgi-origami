@@ -680,14 +680,27 @@ static MemTxResult heart_ecc_access(SGIHeartState *s, hwaddr offset,
         }
     }
     if (write) {
+        bool whole = true;
+
         stn_be_p(data, size, *value);
         for (unsigned i = 0; i < size; i++) {
-            if (!mapped[i]) {
-                continue;
+            whole = whole && mapped[i] &&
+                    keys[i] >> 32 == keys[0] >> 32 &&
+                    bytes[i] == bytes[0] + i;
+        }
+        /* Not a host-pointer store: that would leave stale code. */
+        if (whole) {
+            address_space_write(&s->backing_as[keys[0] >> 32],
+                                (uint32_t)keys[0] + (address & 7),
+                                MEMTXATTRS_UNSPECIFIED, data, size);
+        } else {
+            for (unsigned i = 0; i < size; i++) {
+                if (mapped[i]) {
+                    address_space_write(&s->backing_as[keys[i] >> 32],
+                        (uint32_t)keys[i] + ((address + i) & 7),
+                        MEMTXATTRS_UNSPECIFIED, &data[i], 1);
+                }
             }
-            *bytes[i] = data[i];
-            memory_region_set_dirty(&s->backing[keys[i] >> 32],
-                (uint32_t)keys[i] + ((address + i) & 7), 1);
         }
         if (inject || poisoned) {
             unsigned fault = inject ?
@@ -1307,6 +1320,10 @@ static void heart_realize(DeviceState *dev, Error **errp)
         if (capacity && !memory_region_init_ram(&s->backing[bank],
                 OBJECT(dev), bank_name, capacity, errp)) {
             return;
+        }
+        if (capacity) {
+            address_space_init(&s->backing_as[bank], &s->backing[bank],
+                               bank_name);
         }
         for (unsigned unit = 0; unit < HEART_MAX_UNITS; unit++) {
             g_autofree char *name = g_strdup_printf("heart.bank%u.unit%u",

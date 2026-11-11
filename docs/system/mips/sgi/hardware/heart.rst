@@ -936,6 +936,21 @@ write while either generation bit is set, and a descriptor write while
 any word is faulty. Each refusal logs ``LOG_UNIMP`` and fails the
 transaction.
 
+A write the checked path accepts, including a forced write with bit
+21 set, stores its data in RAM, an *approximation*: no public source
+says what a forced write does to the data. Code fetched from those
+bytes afterwards sees the new contents on the model, because it has no
+instruction cache and discards the code it translated from them. What
+the R10000's instruction cache holds after such a store on real
+hardware is *unknown*.
+The 6.5.30 IP30 PROM, observed on the model after a machine reset,
+writes test patterns this way with bit 21 set over the first page of
+SDRAM, which holds the exception vectors in the low window, before it
+copies its own handlers there, a *software expectation*. Before the
+model discarded those translations, the processor kept running the
+previous system's vector code and hung after "Running power-on
+diagnostics".
+
 .. _sgi-heart-dma:
 
 PCI DMA through Crossbow
@@ -1451,7 +1466,9 @@ and re-arming, the PROM and IRIX clear sequences, reads against writes,
 the three approximations above, reset and migration.
 
 ``tests/qtest/sgi-heart-cpu-test.c`` runs code on R10000 and R12000
-processors: a DMA into RAM the processor then executes, and double-bit
+processors: a DMA into RAM the processor then executes, a forced-write
+ECC store over code the processor is running
+(``/heart/cpu/ecc-write-code``), and double-bit
 ECC reads that must take the data bus error exception with the right
 EPC and branch-delay state, leave the destination register untouched,
 and succeed after repair. ``/heart/cpu/*/dropped-requests`` stores to
