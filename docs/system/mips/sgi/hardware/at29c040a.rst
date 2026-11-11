@@ -70,6 +70,23 @@ multi-byte write with ``LOG_UNIMP`` and a bus error, whatever the bit says, an
 the bit is clear. A single-byte write while the bit is clear is dropped and
 succeeds. A ROM reset clears the enable.
 
+The part latches the sector address and data internally and frees the bus
+during the cycle :src:`atmel-at29c040a-0333i p. 2`, *established*, and the
+MACE register text says writes go into the bit bucket while the bit is clear
+:src:`sgi-mace-2.0-spec p. 124`, *established*. Neither source says what
+clearing the bit does to a cycle that has begun. Taken together they mean it
+does not cancel the cycle (*inferred*). The model follows that: with the bit
+clear, a load in progress still ends at its 150 µs deadline, a program cycle
+already running still completes, and read polling carries on. A byte write
+made while the bit is clear is dropped before the flash model sees it, so it
+does not restart the 150 µs timer or replace the last loaded byte
+(*approximation*).
+
+A ROM reset does not cancel a load or program cycle that is under way either.
+The cycle runs to its deadline with the enable clear, and the array and the
+protection setting keep their values (*approximation*). The model has no
+flash power loss, so it says nothing about a reset that removes power.
+
 Without the AT29C040A option, a write with the enable set logs
 ``LOG_UNIMP`` and takes a bus error, so the ROM stays read-only
 (*approximation*).
@@ -92,14 +109,33 @@ and the internal write begins :src:`atmel-at29c040a-0333i p. 1-2, 9`,
 *established*. The write cycle takes at most 10 ms
 :src:`atmel-at29c040a-0333i p. 9`, *established*.
 
+A byte load is a low pulse on WE or CE while CE or WE is low and OE is high.
+The part latches the address on the falling edge of CE or WE, whichever comes
+last, and the data on the first rising edge. A8 to A18 give the sector, A0 to
+A7 give the byte within it, and the sector address must be valid at every
+falling edge :src:`atmel-at29c040a-0333i p. 2`, *established*. The pulse must
+last at least 90 ns and the high time between pulses at least 100 ns
+:src:`atmel-at29c040a-0333i p. 8`, *established*. The model sees each byte
+write on the MACE bus as one complete byte load and does not model pulse
+widths, setup times or hold times (*approximation*).
+
 The model matches those numbers in virtual time. The first byte opens a
 sector. Each further byte restarts a 150 µs timer and must stay inside the
 sector. A byte outside it abandons the load and logs ``LOG_UNIMP`` with a
-bus error. With protection off, a program cycle needs no command prefix. When
-the 150 µs timer expires, or when the 256th distinct byte arrives, the part
-turns busy. The write completes 10 ms after the last byte loaded. It
+bus error. The staged bytes and the timer are discarded, and nothing from
+that load reaches the array when later deadlines pass. The data sheet does
+not say what the part does with a byte from another sector, so the abort is
+an *approximation*. With protection off, a program cycle needs no command
+prefix. When the 150 µs timer expires, or when the 256th distinct byte
+arrives, the part turns busy. The write completes 10 ms after the last byte loaded. It
 always takes the full 10 ms, an *approximation*: the data sheet gives 10 ms
 as a maximum.
+
+The model counts distinct byte positions. A byte loaded a second time
+replaces the staged value and restarts the 150 µs timer, but does not count
+towards the 256, so 256 writes that cover fewer positions still wait for the
+timer. A byte value of ``0xff`` counts as loaded. The data sheet does not
+describe a repeated load (*approximation*).
 
 Bytes of the sector that were not loaded are written as ``0xff``. The data
 sheet is inconsistent here. It says unloaded bytes "will be erased to read
@@ -117,7 +153,13 @@ While busy, a read of the last byte loaded returns the complement of its bit 7
 returns true data when the cycle ends. Reads of other addresses return the
 stored bytes with bit 6 toggling. A write during the busy period is refused
 with ``LOG_UNIMP`` and a bus error. The data sheet does not say what a
-write does there.
+write does there. The refusal leaves the running cycle alone, which completes
+at its deadline (*approximation*).
+
+Polling may start at any point of the cycle :src:`atmel-at29c040a-0333i p. 3`,
+*established*. The level of I/O6 at the start and the end of the cycle varies,
+and software should poll one fixed address
+:src:`atmel-at29c040a-0333i p. 11`, *established*.
 
 Software data protection
 ------------------------
@@ -126,16 +168,33 @@ The shipped part has protection off. The three-byte command ``0xaa`` to
 ``0x5555``, ``0x55`` to ``0x2aaa`` and ``0xa0`` to ``0x5555``, followed by a
 sector load, enables protection when the cycle ends. Once protection is on,
 every program cycle needs the same prefix, and power transitions do not
-clear it :src:`atmel-at29c040a-0333i p. 3, 10`, *established*. A write to
+clear it :src:`atmel-at29c040a-0333i p. 3, 10`, *established*. The protection
+covers every sector, not one, and stays on until the disable command is
+given :src:`atmel-at29c040a-0333i p. 3`, *established*. A write to
 the device without the prefix starts the write timer, stores nothing, and
 turns reads into polling for the duration of tWC
-:src:`atmel-at29c040a-0333i p. 3`.
+:src:`atmel-at29c040a-0333i p. 3`. In the model such a write is a cycle that
+stores nothing: a read of the written address returns the complement of bit 7
+of the written byte, bit 6 toggles on every read, and the cycle ends 10 ms
+after the write (*approximation*). The data sheet gives 10 ms as a maximum,
+and the model always takes the full 10 ms. The data sheet also does not say
+which data the polling reads return.
 
 The model implements this. Each prefix byte must arrive within 150 µs of
 the last, as the data sheet requires of all command bytes
 (:src:`atmel-at29c040a-0333i p. 3`). A wrong address or data byte ends the
 sequence with ``LOG_UNIMP`` and a bus error. The protection bit is part of
-the option settings and persists across reset.
+the option settings and persists across reset. A load that follows the prefix
+and covers fewer than 256 positions also turns protection on when it
+completes. The data sheet's flow loads all 256 bytes on this path
+:src:`atmel-at29c040a-0333i p. 10`, so the partial case is an *approximation*.
+
+The part also guards against stray programs in hardware. Programming is
+inhibited while VCC is below 3.8 V (typical). The part waits 5 ms (typical)
+after VCC reaches that level, and holding OE low, CE high or WE high inhibits
+a program cycle. Pulses shorter than 15 ns (typical) on WE or CE do not
+start one :src:`atmel-at29c040a-0333i p. 3`, *established*. The model has none
+of these inputs.
 
 Boot block lockout
 ------------------
@@ -147,6 +206,47 @@ lock states as settings. A program or protected-poll cycle that starts in a
 locked block logs ``LOG_UNIMP`` and takes a bus error. The seven-byte
 command that sets a lockout is not implemented, so the locks cannot change
 at run time.
+
+Commands the model refuses
+--------------------------
+
+The part has software commands beyond the enable prefix. The disable, product
+identification and lockout sequences are series of byte writes. The command
+addresses ``0x5555`` and ``0x2aaa`` fit in A14 to A0, but the lockout write
+and the lock-detection reads use the full A18 to A0 address. The data sheet's
+own note "Address Format: A14 - A0" is loose on those pages
+:src:`atmel-at29c040a-0333i p. 10, 12`.
+
+- The disable sequence for software data protection is ``0xaa`` to
+  ``0x5555``, ``0x55`` to ``0x2aaa``, ``0x80`` to ``0x5555``, ``0xaa`` to
+  ``0x5555``, ``0x55`` to ``0x2aaa`` and ``0x20`` to ``0x5555``, followed by
+  a sector load of all 256 bytes. Protection ends with that program period
+  :src:`atmel-at29c040a-0333i p. 10`, *established*.
+- The software product identification entry is ``0xaa`` to ``0x5555``,
+  ``0x55`` to ``0x2aaa`` and ``0x90`` to ``0x5555``, then a pause of 10 ms.
+  The exit is ``0xaa`` to ``0x5555``, ``0x55`` to ``0x2aaa`` and ``0xf0`` to
+  ``0x5555``, then a pause of 10 ms. In the mode, with A1 to A18 low, A0 low
+  reads the manufacturer code ``0x1f`` and A0 high reads the device code
+  ``0xa4``. The part does not stay in the mode through a power-down
+  :src:`atmel-at29c040a-0333i p. 12`, *established*.
+- In that mode a read of address ``0x00002`` shows whether the lower boot
+  block is locked out, and a read of ``0x7fff2`` does so for the upper block.
+  The value ``0xfe`` means the block can be programmed and ``0xff`` means
+  it is locked out :src:`atmel-at29c040a-0333i p. 4`, *established*.
+- The lockout enable sequence is ``0xaa`` to ``0x5555``, ``0x55`` to
+  ``0x2aaa``, ``0x80`` to ``0x5555``, ``0xaa`` to ``0x5555``, ``0x55`` to
+  ``0x2aaa`` and ``0x40`` to ``0x5555``, then ``0x00`` to ``0x00000`` for
+  the lower block or ``0xff`` to ``0x7ffff`` for the upper block, and a pause
+  of 10 ms :src:`atmel-at29c040a-0333i p. 12`, *established*. Once either
+  block is locked out the chip erase function is disabled
+  :src:`atmel-at29c040a-0333i p. 4`, *established*.
+- The hardware product identification mode needs a 12 V level on A9
+  :src:`atmel-at29c040a-0333i p. 5`, *established*.
+
+The model refuses the disable, identification and lockout write sequences at
+their third byte, with a bus error. The lock-detection reads and the 12 V
+hardware identification mode have no model counterpart. See
+:ref:`sgi-at29c040a-limits`.
 
 Persistence
 -----------
@@ -194,6 +294,19 @@ Model limits
 
 Tests
 =====
+
+``/sgi/o2-rom/at29-partial-controls`` pins the write-enable and reset
+behaviour during a load and during a program cycle.
+``/sgi/o2-rom/at29-sector-program`` pins that the array survives a reset and
+``/sgi/o2-rom/at29-protection`` that protection does.
+``/sgi/o2-rom/at29-partial-abort`` pins the abort on a byte from another
+sector, ``/sgi/o2-rom/at29-partial-counts`` the distinct-position count and
+repeated loads, ``/sgi/o2-rom/at29-partial-protection`` protection after a
+partial load, ``/sgi/o2-rom/at29-full-sector-starts-busy`` the refused write
+during a program cycle, ``/sgi/o2-rom/at29-protection`` the polling of a
+protected write and ``/sgi/o2-rom/at29-refused-sequences`` the refusal of the
+disable, identification and lockout sequences at the third byte for the
+data values ``0x90``, ``0xf0`` and ``0x80``.
 
 ``tests/qtest/sgi-o2-rom-test.c`` covers the aliases and
 image placement, write protection and the MACE-driven write enable, sector
