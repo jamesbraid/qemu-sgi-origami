@@ -105,7 +105,7 @@ layer:
                   rm-type: {values: [rm9]}
                   rm-count: {values: ["1", "2", "4"], default: "1"}
                   texture-mb: {values: ["64"]}
-                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+                  display: {values: [dg5-2, dg5-8, dg5-2-gvo], default: dg5-2}
               - product: ir3
                 fidelity: approximated
                 limitations:
@@ -117,7 +117,7 @@ layer:
                   rm-type: {values: [rm9]}
                   rm-count: {values: ["1", "2", "4"], default: "1"}
                   texture-mb: {values: ["256"]}
-                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+                  display: {values: [dg5-2, dg5-8, dg5-2-gvo], default: dg5-2}
         refusals:
           - family: kona
             product: ir2
@@ -142,7 +142,7 @@ layer:
                   rm-type: {values: [rm9]}
                   rm-count: {values: ["1", "2"], default: "1"}
                   texture-mb: {values: ["64"]}
-                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+                  display: {values: [dg5-2, dg5-8, dg5-2-gvo], default: dg5-2}
               - product: ir3
                 fidelity: approximated
                 limitations:
@@ -155,7 +155,7 @@ layer:
                   rm-type: {values: [rm9]}
                   rm-count: {values: ["1", "2"], default: "1"}
                   texture-mb: {values: ["256"]}
-                  display: {values: [dg5-2, dg5-8], default: dg5-2}
+                  display: {values: [dg5-2, dg5-8, dg5-2-gvo], default: dg5-2}
         refusals:
           - family: kona
             product: ir2
