@@ -849,13 +849,18 @@ A port starts empty, its presence clear, as it is with no board. A board
 claims its port when it realizes: it takes its fabric from the port's
 link, attaches to the realized Crossbow, and maps its 64 GiB long window
 at widget times 64 GiB of physical space, through HEART's port with the
-widget number in address bits 51:48. The machine's init-done notifier
-then brings the link alive with the same pre-reset health restore the
-HEART and Bridge links get. On an IMPACT board the machine sets the
-serial-number record the PROM names the board by, whose barcode and ROM
-serial are the marked synthetic ``EMUG00``, and 32-bit DMA page-list
-entries, which IRIX 6.5.30's X server and kernel and the Linux IMPACTSR
-driver write.
+widget number in address bits 51:48. The window carries the 36-bit
+offset to the widget with no bit 47, *inferred*: the Bridge specification
+puts the Bridge's registers at large-window offset 0
+(:src:`bridge-asic-spec-4.0` Appendix B, Table 98) and these pages do not
+state the address HEART sends on the link. Fitted Bridge boards, graphics
+boards and the onboard Bridge are all reached the same way. The machine's
+init-done notifier then brings the link alive with the same pre-reset
+health restore the HEART and Bridge links get. On an IMPACT board the
+machine sets the serial-number record the PROM names the board by, whose
+barcode and ROM serial are the marked synthetic ``EMUG00``, and 32-bit
+DMA page-list entries, which IRIX 6.5.30's X server and kernel and the
+Linux IMPACTSR driver write.
 
 .. _sgi-ip30-pci-boards:
 

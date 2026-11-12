@@ -2397,9 +2397,20 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                        1ULL << SGI_BRIDGE_PACKET_ADDRESS_BITS);
     memory_region_init_alias(&s->packet_io, obj, "sgi-bridge.packet-io",
                              &s->widget, 0, memory_region_size(&s->widget));
+    /*
+     * The widget space answers at XIO offset 0 and with bit 47 set. The
+     * Bridge ASIC specification puts its registers at the bottom of the
+     * widget space and nothing in it decodes bit 47 (bridge-asic-spec-4.0,
+     * Appendix B, Table 98), so the bit is ignored, *inferred*. A Hub's
+     * I/O-space packets carry it; a processor large window does not.
+     */
+    memory_region_add_subregion(&s->packet, 0, &s->packet_io);
+    memory_region_init_alias(&s->packet_io_view, obj,
+                             "sgi-bridge.packet-io-view", &s->widget, 0,
+                             memory_region_size(&s->widget));
     memory_region_add_subregion(&s->packet,
                                 1ULL << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1),
-                                &s->packet_io);
+                                &s->packet_io_view);
 
     /* Interrupt packets travel the same fabric a processor's access does. */
     address_space_init(&s->fabric_as, s->fabric, "sgi-bridge.fabric");

@@ -244,6 +244,24 @@ static void reg_wr16(QTestState *qts, const Fit *f, unsigned dev,
     qtest_writew(qts, io_reg(f, dev, reg, 2), val);
 }
 
+/*
+ * An Octane's large window reaches the board's Bridge as its small window
+ * does: widget << 36 is the processor's 64 GiB view of the widget.
+ */
+static void test_large_window(gconstpointer data)
+{
+    const Fit *f = data;
+    uint64_t large = ((f->base - OCTANE_XBOW) >> 24) << 36;
+    QTestState *qts = fit_start(f, "");
+
+    for (unsigned int dev = 0; dev < 2; dev++) {
+        g_assert_cmphex(rd32(qts, large + 0x020000 + dev * 0x1000), ==,
+                        AIC_ID_PAIR);
+    }
+    g_assert_cmphex(rd32(qts, large + 0x020000 + 2 * 0x1000), ==, 0xffffffff);
+    qtest_quit(qts);
+}
+
 /* Each controller's registers are its own, reached through the Bridge. */
 static void test_registers(gconstpointer data)
 {
@@ -353,6 +371,10 @@ int main(int argc, char **argv)
         }
         path = g_strdup_printf("sgi-fc-board/%s/identity", f->name);
         qtest_add_data_func(path, f, test_identity);
+        if (f->octane) {
+            path = g_strdup_printf("sgi-fc-board/%s/large-window", f->name);
+            qtest_add_data_func(path, f, test_large_window);
+        }
         path = g_strdup_printf("sgi-fc-board/%s/registers", f->name);
         qtest_add_data_func(path, f, test_registers);
         path = g_strdup_printf("sgi-fc-board/%s/interrupt-pins", f->name);

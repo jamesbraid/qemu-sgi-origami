@@ -9,7 +9,8 @@
  * flash window an empty board answers, a function in every slot (a QLogic
  * ISP1040 for the register paths, an ISP2200 for the identity of the card
  * the Fibre Channel arrays use), an interrupt reaching HEART through the
- * slot's Bridge pin, and a bus master reaching RAM. The refusals cover the
+ * slot's Bridge pin, a bus master reaching RAM, and the large window to the
+ * Bridge in every port a board can take. The refusals cover the
  * slots the topology lacks.
  */
 #include "qemu/osdep.h"
@@ -29,6 +30,8 @@
 #define XBOW_LINK_ALIVE (1u << 31)
 
 #define WIDGET_BASE(w) (XBOW + ((uint64_t)(w) << 24))
+/* The processor's large window to a widget: 64 GiB at widget << 36. */
+#define WIDGET_LONG(w) ((uint64_t)(w) << 36)
 #define REG_DATA 4
 #define BRIDGE_REG(w, offset) (WIDGET_BASE(w) + (offset) + REG_DATA)
 #define CFG(w, dev) (WIDGET_BASE(w) + 0x020000 + (dev) * 0x1000)
@@ -368,6 +371,42 @@ static void test_slot_functions(bool octane2, const PciBoard *b)
     qtest_quit(qts);
 }
 
+/*
+ * The large window reaches a fitted board's Bridge as the small window
+ * does: the same identity, and a BAR written through one reads back
+ * through the other.
+ */
+static void test_large_window(bool octane2, const PciBoard *b)
+{
+    g_autofree char *cards = isp_cards(b, "qlogic-isp1040");
+    QTestState *qts = start_board(octane2, b, cards);
+    uint64_t cfg = WIDGET_LONG(b->widget) + 0x020000 +
+                   b->first_slot * 0x1000;
+    uint32_t id, small, large;
+
+    g_assert_cmpuint(read32(qts, WIDGET_LONG(b->widget) + REG_DATA, &large),
+                     ==, MEMTX_OK);
+    g_assert_cmpuint(read32(qts, BRIDGE_REG(b->widget, 0), &small), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(large, ==, small);
+    g_assert_cmphex(large, ==, WIDGET_ID_BRIDGE_REVISION(b->bridge_revision));
+    /* The onboard Bridge's long view takes the same plain widget << 48. */
+    g_assert_cmpuint(read32(qts, WIDGET_LONG(15) + REG_DATA, &large), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(read32(qts, BRIDGE_REG(15, 0), &small), ==, MEMTX_OK);
+    g_assert_cmphex(large, ==, small);
+
+    g_assert_cmpuint(read32(qts, cfg, &id), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, ISP1040_ID);
+    qtest_writel(qts, cfg + 0x14, 0x00200000);
+    g_assert_cmpuint(read32(qts, cfg + 0x14, &large), ==, MEMTX_OK);
+    g_assert_cmpuint(read32(qts, CFG(b->widget, b->first_slot) + 0x14,
+                            &small), ==, MEMTX_OK);
+    g_assert_cmphex(large, ==, small);
+    g_assert_cmphex(large & 0xfff00000u, ==, 0x00200000);
+    qtest_quit(qts);
+}
+
 static void test_isp2200_identity(bool octane2, const PciBoard *b)
 {
     g_autofree char *cards = isp_cards(b, "qlogic-isp2200");
@@ -695,6 +734,7 @@ static void add_board_test(const char *name, BoardTest test, bool octane2,
 int main(int argc, char **argv)
 {
     const PciBoard *boards[] = { &shoehorn, &cage };
+    const PciBoard *slots[] = { &shoehorn_9, &shoehorn, &shoehorn_12, &cage };
     int fd, result;
 
     g_test_init(&argc, &argv, NULL);
@@ -717,6 +757,11 @@ int main(int argc, char **argv)
                            boards[i]);
             add_board_test("dma-to-ram", test_dma_to_ram, m, boards[i]);
             add_board_test("sonic-hdsp", test_sonic_hdsp, m, boards[i]);
+        }
+    }
+    for (unsigned int m = 0; m < 2; m++) {
+        for (unsigned int i = 0; i < G_N_ELEMENTS(slots); i++) {
+            add_board_test("large-window", test_large_window, m, slots[i]);
         }
     }
     for (unsigned int m = 0; m < 2; m++) {
