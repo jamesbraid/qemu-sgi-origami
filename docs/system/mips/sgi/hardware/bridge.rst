@@ -160,6 +160,12 @@ Offsets are from the start of the Bridge's widget space, *established*
 (:src:`bridge-asic-spec-4.0 p. 55-56`, Tables 43 and 44; Linux
 ``bridge.h``; OpenBSD ``xbridgereg.h``).
 
+The widget space is also what a processor's large window reaches at
+offset 0 (:src:`bridge-asic-spec-4.0` Appendix B, Table 98), *inferred*
+as the specification gives no other base. No decode in the Bridge needs
+XIO address bit 47, which a Hub's I/O-space packets set; the model
+answers at offset 0 and with bit 47 set, *approximation*.
+
 .. list-table::
    :header-rows: 1
 

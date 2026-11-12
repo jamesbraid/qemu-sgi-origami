@@ -863,7 +863,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                                         heart_local, 1);
     memory_region_init_alias(long_view, OBJECT(machine), "octane.bridge-long",
                              sgi_xbow_packet_ingress(crossbow, 8),
-                             (15ULL << 48) | (1ULL << 47),
+                             15ULL << 48,
                              SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
 

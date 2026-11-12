@@ -637,9 +637,9 @@ static void test_explicit_fabric_must_match_its_slot(const void *data)
  * hw/pci-host/sgi-bridge.c) and the low 48 bits pass straight through to
  * sgi_bridge_compose_xio() -- the same composer sgi_bridge_send_
  * interrupt() uses, so a widget's own decode of the result cannot tell
- * the two delivery mechanisms apart. Bit 47 of that low half is what
- * sgi_bridge_realize() maps a widget's own registers onto (the packet_io
- * alias sits at 1 << (SGI_BRIDGE_PACKET_ADDRESS_BITS - 1)), and REG_DATA is
+ * the two delivery mechanisms apart. A Bridge maps its widget registers at
+ * offset 0 and again at bit 47 of that low half (the packet_io and
+ * packet_io_view aliases of sgi_bridge_realize()), and REG_DATA is
  * the same +4 skew every read in this file adds at the point of access; here
  * it has to be baked into the destination address itself, since a DMA
  * transfer has no separate access-time step once under way.
@@ -732,6 +732,11 @@ static void test_pci_expansion_delivers_through_spare_fabric(const void *data)
 
     spare_card_transfer(qts, DEST_PCI_ADDRESS, sizeof(uint32_t), DEST_SEED);
     assert_spare_landed(qts, dest + REG_DATA, DEST_SEED);
+
+    /* A Bridge ignores XIO bit 47: the same register answers without it. */
+    spare_card_transfer(qts, DEST_PCI_ADDRESS & ~DEST_PACKET_IO,
+                        sizeof(uint32_t), DEST_SEED + 0x40);
+    assert_spare_landed(qts, dest + REG_DATA, DEST_SEED + 0x40);
 
     qtest_quit(qts);
 }

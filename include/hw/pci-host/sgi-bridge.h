@@ -190,6 +190,7 @@ struct SGIBridgeState {
     MemoryRegion widget;
     MemoryRegion packet;
     MemoryRegion packet_io;
+    MemoryRegion packet_io_view;
     MemoryRegion regs;
     MemoryRegion reserved_data_half;
 
