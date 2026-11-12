@@ -12753,10 +12753,17 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
         p->pack_alignment = value;
         break;
     /*
-     * Packing for GetTexImage of 3D and 4D textures alone (OpenGL 1.2.1,
-     * table 4.5 and section 6.1.4; SGIS_texture4D). Zero is their initial
-     * value, so storing it changes nothing; the library sends it.
+     * Packing the model keeps no state for: the skip rows and pixels of
+     * a ReadPixels or GetTexImage, and for GetTexImage of 3D and 4D
+     * textures alone (OpenGL 1.2.1, table 4.5 and section 6.1.4;
+     * SGIS_texture4D) the image skip and height. Zero is their initial
+     * value, so storing it changes nothing; the library sends it, as
+     * the pixel-mode wrapper an application draws images through does
+     * around each DrawPixels. Another value is not modelled, and refuses
+     * the image transfers that follow.
      */
+    case 0x0d03:                /* GL_PACK_SKIP_ROWS */
+    case 0x0d04:                /* GL_PACK_SKIP_PIXELS */
     case 0x806d:                /* GL_PACK_SKIP_IMAGES */
     case 0x806e:                /* GL_PACK_IMAGE_HEIGHT */
     case 0x8132:                /* GL_PACK_SKIP_VOLUMES_SGIS */
