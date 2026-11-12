@@ -47,14 +47,7 @@ jobs:
       - name: build QEMU's MIPS64 test image
         run: |
           echo "build QEMU's MIPS64 test image" > "$CI_STEP"
-          image_id=$(docker build -q \
-              -f tests/docker/dockerfiles/debian-sgi.docker \
-              tests/docker/dockerfiles)
-          if [ -z "$image_id" ]; then
-            echo "QEMU test image build returned no image ID"
-            exit 1
-          fi
-          printf 'IMAGE_ID=%s\n' "$image_id" >> "$GITHUB_ENV"
+          bash scripts/ci/runner-setup image
 
       # The workspace is a docker volume the guest's daemon knows by a per-run
       # name; a sibling container is handed that, not this job's $PWD.

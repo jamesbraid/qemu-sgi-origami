@@ -30,6 +30,20 @@ reap_orphans() {
   done <<< "$children"
 }
 
+# Build a test image from tests/docker/dockerfiles and print its ID. The
+# image is tagged with the committed tree of that directory, its whole build
+# context: between steps no container holds it, and an untagged image is
+# what a builder's cache and image cleanup may remove, which leaves the next
+# step's docker run with "No such image". One tag per version of the
+# directory, so tags do not pile up.
+build_image() {
+  local name=$1 dockerfile=$2 tree
+
+  tree=$(git rev-parse HEAD:tests/docker/dockerfiles)
+  docker build -q -t "qemu-ci/$name:${tree:0:16}" \
+      -f "tests/docker/dockerfiles/$dockerfile" tests/docker/dockerfiles
+}
+
 case "${1-}" in
   docker)
     # Install Docker only if absent and fail before build steps if its
@@ -59,8 +73,7 @@ case "${1-}" in
     ;;
   image)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"
-    image_id=$(docker build -q -f tests/docker/dockerfiles/debian-sgi.docker \
-        tests/docker/dockerfiles)
+    image_id=$(build_image debian-sgi debian-sgi.docker)
     test -n "$image_id"
     echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
     ;;
@@ -187,9 +200,7 @@ case "${1-}" in
     # which the release build uses, so code that builds only on POSIX
     # hosts fails here rather than when a release is cut.
     : "${WORKSPACE_VOLUME:?WORKSPACE_VOLUME is required}"
-    windows_image=$(docker build -q \
-        -f tests/docker/dockerfiles/fedora-win64-cross.docker \
-        tests/docker/dockerfiles)
+    windows_image=$(build_image fedora-win64-cross fedora-win64-cross.docker)
     test -n "$windows_image"
     IMAGE_ID=$windows_image bash "$0" run -v "$WORKSPACE_VOLUME:/src" \
         -w /src "$windows_image" python3 scripts/ci/sgi-check windows

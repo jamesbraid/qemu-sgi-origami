@@ -73,14 +73,7 @@ jobs:
 
       - name: build QEMU's MIPS64 test image
         run: |
-          image_id=$(docker build -q \
-              -f tests/docker/dockerfiles/debian-sgi.docker \
-              tests/docker/dockerfiles)
-          if [ -z "$image_id" ]; then
-            echo "QEMU test image build returned no image ID"
-            exit 1
-          fi
-          echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
+          bash scripts/ci/runner-setup image
 
       - name: find the workspace volume
         run: bash scripts/ci/runner-setup volume
