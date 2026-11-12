@@ -704,8 +704,14 @@ the processor's interrupt line (Linux ``hubpi.h``). Writing zero to the
 pending bit acknowledges it, which Linux's handler does first
 (``ip27-timer.c``), a *software expectation*.
 
-A comparator written at or behind the counter does not match until the
-counter wraps round to it, up to 114 years later. The IRIX 6.5.30
+A comparator written behind the counter does not match until the
+counter wraps round to it, up to 114 years later. One written equal to the
+counter matches at once. The IRIX 6.5.21f kernel arms a processor's
+timeouts only with a deadline ahead of the counter, re-reads the counter
+after the store and handles the deadline itself only when it is strictly
+behind (``set_timer_intr`` in the shipped kernel), so it depends on an
+equal comparator matching, a *software expectation*; what the silicon does
+in that instant is otherwise *unknown*. The IRIX 6.5.30
 kernel parks a secondary processor's tick by writing zero to its
 comparator with the counter high and depends on no interrupt following,
 a *software expectation*; matching at once turns that write into a
