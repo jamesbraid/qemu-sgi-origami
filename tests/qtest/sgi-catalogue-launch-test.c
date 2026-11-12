@@ -169,8 +169,8 @@ static void check_scsi_adapters(QDict *o, const char *machine,
             "bus: %s\\r\\n", qdict_get_str(adapter, "bus"));
 
         if (!strstr(out, line)) {
-            g_test_message("%s lists %s, which it does not build", machine,
-                           qdict_get_str(adapter, "bus"));
+            g_printerr("%s lacks expected SCSI bus %s\nQMP stdout:\n%s\n",
+                       machine, qdict_get_str(adapter, "bus"), out);
         }
         g_assert_nonnull(strstr(out, line));
     }
