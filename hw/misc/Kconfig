@@ -315,6 +315,13 @@ config SGI_IOC3
     select SGI_IOC3_PARALLEL
     select SGI_IOC_SERIAL_DMA
 
+config SGI_SONIC_HDSP
+    bool
+    default y if SGI_DEVICES
+    depends on PCI
+    select I960_CORE
+    select DSP56300_CORE
+
 config SGI_IOC4
     bool
     depends on PCI

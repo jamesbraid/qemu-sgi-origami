@@ -1587,6 +1587,8 @@ F: tests/qtest/octane-test.c
 F: tests/qtest/octane-mgras-test.c
 F: tests/qtest/octane-timer-test.c
 F: tests/qtest/sgi-rad1-pci-test.c
+F: tests/qtest/sgi-sonic-hdsp-image.h
+F: tests/qtest/sgi-sonic-hdsp-test.c
 F: tests/qtest/r10000-identity-test.c
 F: tests/qtest/o2-r10k-cache-test.c
 F: tests/qtest/o2-r10k-scache-reset-test.c

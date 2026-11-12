@@ -337,6 +337,8 @@ hw/misc/sgi-odyssey.c
 hw/misc/sgi-pbay.c
 hw/misc/sgi-pio-forward.c
 hw/misc/sgi-router.c
+hw/misc/sgi-sonic-hdsp-iop.c
+hw/misc/sgi-sonic-hdsp.c
 hw/misc/sgi-xbow.c
 hw/misc/sgi-xbridge-xbow.c
 hw/misc/sgi-xt-digvid.c
@@ -431,6 +433,7 @@ include/hw/misc/sgi-onewire-slot.h
 include/hw/misc/sgi-pbay.h
 include/hw/misc/sgi-pio-forward.h
 include/hw/misc/sgi-router.h
+include/hw/misc/sgi-sonic-hdsp.h
 include/hw/misc/sgi-xbow.h
 include/hw/misc/sgi-xbridge-xbow.h
 include/hw/net/bcm570x_phy.h
@@ -913,6 +916,8 @@ tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-rad1-pci-test.c
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-scsi-inquiry-test.h
+tests/qtest/sgi-sonic-hdsp-image.h
+tests/qtest/sgi-sonic-hdsp-test.c
 tests/qtest/sgi-synthetic-serial-test.c
 tests/qtest/sgi-test.h
 tests/qtest/sgi-wait.h

@@ -18,6 +18,7 @@
 #include "libqtest.h"
 #include "memtx.h"
 #include "sgi-launch.h"
+#include "sgi-sonic-hdsp-image.h"
 
 #define XBOW 0x10000000ULL
 #define HEART 0x0ff00000ULL
@@ -518,6 +519,66 @@ static void test_dma_to_ram(bool octane2, const PciBoard *b)
     qtest_quit(qts);
 }
 
+/*
+ * The Sonic Solutions HDSP audio card (sonic-hdsp.rst, "Placement") is a
+ * two-function device with a PCI-to-PCI bridge unit on function 0, so it
+ * must sit in a slot of either board and answer there once its own firmware
+ * has cleared the configuration-retry bit. A synthetic image stands in for
+ * the card's firmware. The card's BAR0 is 128 MiB, which only the Bridge's
+ * 0x40000000 range through the widget's large window can reach; this test
+ * does not go there (see the page's "Placement").
+ */
+#define SONIC_FN(w, dev, fn) (CFG(w, dev) + 0x100 * (fn))
+
+static void test_sonic_hdsp(bool octane2, const PciBoard *b)
+{
+    Image img = { FW_RAISE_OMR, 0x03c1 };
+    g_autofree char *firmware = flash_file(&img);
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *args = g_strdup_printf(
+        "-device %s,slot=widget-%u,pci-bus-name=pci%u "
+        "-device sgi-sonic-hdsp,bus=pci%u,addr=%u,flash-image=%s",
+        b->device, b->widget, b->widget, b->widget, b->first_slot, firmware);
+    QTestState *qts;
+    unsigned int w = b->widget, dev = b->first_slot;
+    uint32_t value, pin = 1u << (dev ^ 4);
+
+    if (octane2) {
+        qts = qtest_initf(MEMTX_TEST_DEVICE "-vga none -M octane2 -m 256M "
+                          "-cpu " OCTANE2_CPU " -bios %s %s", quoted, args);
+    } else {
+        qts = qtest_initf(MEMTX_TEST_DEVICE "-vga none -M octane -m 128M "
+                          "-cpu R10000 -bios %s %s", quoted, args);
+    }
+
+    /* The card retries every configuration cycle until its firmware is up. */
+    g_assert_cmpuint(read32(qts, SONIC_FN(w, dev, 0), &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0xffffffff);
+    qtest_clock_step(qts, 5 * 1000 * 1000);
+
+    g_assert_cmpuint(read32(qts, SONIC_FN(w, dev, 0), &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x060e1263);
+    /* Header type 0x81: the slot scan probes functions 1 to 7. */
+    g_assert_cmpuint(read32(qts, SONIC_FN(w, dev, 0) + 0x0c, &value), ==,
+                     MEMTX_OK);
+    g_assert_cmphex((value >> 16) & 0xff, ==, 0x81);
+    g_assert_cmpuint(read32(qts, SONIC_FN(w, dev, 1), &value), ==, MEMTX_OK);
+    g_assert_cmphex(value, ==, 0x05dc1263);
+    /* Function 2 does not exist. */
+    g_assert_cmpuint(read32(qts, SONIC_FN(w, dev, 2), &value), !=, MEMTX_OK);
+
+    /*
+     * INTB: the image has written outbound message 0, which the model raises
+     * on the pin the ATU's interrupt pin register names, INTB. The Bridge
+     * takes it on pin device ^ 4, not on the device's own number.
+     */
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(w, 0x100)) & pin, ==, pin);
+    g_assert_cmphex(qtest_readl(qts, BRIDGE_REG(w, 0x100)) & (1u << dev), ==,
+                    0);
+    qtest_quit(qts);
+    unlink(firmware);
+}
+
 /* Slots the topology lacks, and a card where the board has no slot. */
 static void test_refusals(void)
 {
@@ -655,6 +716,7 @@ int main(int argc, char **argv)
             add_board_test("interrupt-to-heart", test_interrupt_to_heart, m,
                            boards[i]);
             add_board_test("dma-to-ram", test_dma_to_ram, m, boards[i]);
+            add_board_test("sonic-hdsp", test_sonic_hdsp, m, boards[i]);
         }
     }
     for (unsigned int m = 0; m < 2; m++) {

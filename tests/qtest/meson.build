@@ -498,6 +498,8 @@ sgi_bridge_card_qtests = \
   (config_all_devices.has_key('CONFIG_TIGON') ? ['tigon-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_RAD1_AUDIO') ?
     ['sgi-rad1-pci-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SONIC_HDSP') ?
+    ['sgi-sonic-hdsp-test'] : []) + \
   (config_all_devices.has_key('CONFIG_XFRAME_PCI') ? ['xframe-test'] : []) + \
   (config_all_devices.has_key('CONFIG_BCM570X') ? ['bcm570x-test'] : []) + \
   (config_all_devices.has_key('CONFIG_QLOGIC_ISP_SCSI_PCI') ?
