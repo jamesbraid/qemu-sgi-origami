@@ -22,6 +22,7 @@
 
 #include "hw/core/sysbus.h"
 #include "hw/input/ps2.h"
+#include "qemu/timer.h"
 #include "qom/object.h"
 
 #define TYPE_SGI_IOC3_KBC "sgi-ioc3-kbc"
@@ -113,6 +114,16 @@ struct SGIIOC3KBCBusState {
                                      SGI_IOC3_KBC_CTRL_TO_EN_MASK | \
                                      SGI_IOC3_KBC_CTRL_CLAMP_MASK)
 
+/*
+ * How long a clamp that has just been released takes to start the stopped
+ * device sending again: one PS/2 character, 11 bits (start, eight data, parity,
+ * stop), at a clock of 10 to 16.7 kHz, which is 0.66 to 1.1 ms. The bit
+ * timing is Adam Chapweske's "The PS/2 Mouse/Keyboard Protocol" (public); that
+ * the chip's own delay equals one character time is an approximation, see
+ * docs/system/mips/sgi/hardware/ioc3.rst.
+ */
+#define SGI_IOC3_KBC_RESUME_NS      1000000
+
 /* The two ports, in the order their GPIO inputs and registers are wired. */
 #define SGI_IOC3_KBC_PORT_KBD       0
 #define SGI_IOC3_KBC_PORT_AUX       1
@@ -145,6 +156,13 @@ struct SGIIOC3KBCState {
 
     uint32_t control;
     SGIIOC3KBCPort port[SGI_IOC3_KBC_PORTS];
+
+    /*
+     * Pending while a read has released a clamp and the stopped device has
+     * not yet sent its next character. Only created on a controller that has
+     * ports.
+     */
+    QEMUTimer *resume_timer;
 
     /*
      * Set while a fill is moving characters in. Popping one re-raises the

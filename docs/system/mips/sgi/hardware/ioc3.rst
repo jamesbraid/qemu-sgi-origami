@@ -1074,6 +1074,8 @@ off, bit 17 reads zero and the written parity bit is stored. No frame
 data passes through this RAM in the model; the MAC reads and writes guest
 memory directly. Reset leaves it unchanged.
 
+.. _sgi-ioc3-ps2:
+
 PS/2 controller
 ===============
 
@@ -1112,8 +1114,21 @@ character is lost with bit 28 set. Linux arms clamp-after-three on both
 ports. The controller asserts its line for every character it takes and
 lowers it when a read leaves both holdings empty. The chip latches that
 into status bit 22, which only a write-one-to-clear acknowledges.
-Per-character assertion and the release of a clamp within the read are
-each an *approximation*. Writes setting the emulation or fast-clock bits (12,
+Linux acknowledges and then reads; OpenBSD reads until the register comes
+back empty and then acknowledges, *software expectation*
+(``drivers/input/serio/ioc3kbd.c``, ``sys/arch/sgi/dev/iockbc.c``). A
+character whose interrupt arrives between the last read and the
+acknowledge would be lost to a latch, so the release of a clamp is not
+instant: a read that empties a clamped holding starts a timer, and the
+stopped device sends its next character, and raises the line, when it
+fires. The period is one PS/2 character, 11 bits at the 10 to 16.7 kHz
+clock (0.66 to 1.1 ms; Adam Chapweske, *The PS/2 Mouse/Keyboard
+Protocol*), modelled as 1 ms on the virtual clock and migrated while
+pending. Per-character assertion, the timer's period and the release of
+a clamp on a read at all are each an *approximation*; a trace of the
+interval between a receive read and the next interrupt on the physical
+chip would settle the period. A guest that acknowledges and never reads
+sees the source go quiet. Writes setting the emulation or fast-clock bits (12,
 13) log ``LOG_UNIMP``. Reads of the transmit registers and writes to the
 receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the
 write, so the write-pending status never reads set.

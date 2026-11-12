@@ -269,7 +269,9 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
  * register acknowledges it, which is what both Linux's edge handler and
  * IRIX's acknowledge writes expect. Nothing here remembers the line: a byte
  * the controller is still holding when the guest acknowledges is signalled
- * again by the controller, not re-latched here.
+ * again by the controller, not re-latched here. It does so one character time
+ * after the guest's read (see hw/input/sgi-ioc3-kbc.c), which is what keeps
+ * that signal from landing before the acknowledge and being swallowed.
  */
 static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
 {
