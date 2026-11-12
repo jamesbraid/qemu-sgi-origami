@@ -78,7 +78,7 @@ layer:
                   rm-type: {values: [rm7]}
                   rm-count: {values: ["1", "2"], default: "2"}
                   texture-mb: {values: ["64"]}
-                  display: {values: [dg5-8, dg5-2], default: dg5-8}
+                  display: {values: [dg5-8, dg5-2, dg5-2-gvo], default: dg5-8}
               - product: ir2e
                 fidelity: approximated
                 limitations:
@@ -90,7 +90,7 @@ layer:
                   rm-type: {values: [rm9]}
                   rm-count: {values: ["1", "2"], default: "2"}
                   texture-mb: {values: ["64"]}
-                  display: {values: [dg5-8, dg5-2], default: dg5-8}
+                  display: {values: [dg5-8, dg5-2, dg5-2-gvo], default: dg5-8}
         refusals:
           - family: kona
             settings: {rm-count: "4"}

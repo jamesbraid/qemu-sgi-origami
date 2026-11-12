@@ -2317,6 +2317,11 @@
                           "description": "DG5-2, 2 channels",
                           "evidence": "030-1055-001",
                           "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-2 with GVO option channel, 2 channels, no video output",
+                          "evidence": "030-1242-001",
+                          "value": "dg5-2-gvo"
                         }
                       ]
                     }
@@ -2403,6 +2408,11 @@
                           "description": "DG5-2, 2 channels",
                           "evidence": "030-1055-001",
                           "value": "dg5-2"
+                        },
+                        {
+                          "description": "DG5-2 with GVO option channel, 2 channels, no video output",
+                          "evidence": "030-1242-001",
+                          "value": "dg5-2-gvo"
                         }
                       ]
                     }

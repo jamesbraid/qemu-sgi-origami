@@ -7,8 +7,8 @@
 # it never restates a name or description.
 #
 # Only what QEMU builds is listed. Products and values the models do not
-# present (VPro V6, V8 and V10, Reality, InfiniteReality4, GVO) belong in
-# the datasheets, not here.
+# present (VPro V6, V8 and V10, Reality, InfiniteReality4, the GVO as a
+# product) belong in the datasheets, not here.
 graphics_products_version: 1
 families:
   # IMPACT (MGRAS): OCTANE Technical Report Table 4.1; E-series counts
@@ -93,6 +93,8 @@ families:
              evidence: "030-1087-001"}
           - {value: dg5-2, description: "DG5-2, 2 channels",
              evidence: "030-1055-001"}
+          - {value: dg5-2-gvo, description: "DG5-2 with GVO option channel, 2 channels, no video output",
+             evidence: "030-1242-001"}
 
   # PsiTech.
   - family: psitech

@@ -17,7 +17,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
 EXPECTED_CATALOGUE_SHA256 = (
-    "5a8250004209238f71ef642401aad8803783621716f3475b4b1799fe14567ec8"
+    "a488c9e175e99b9dda4fc8ca144ec8c6e31b7dddbb94b2be679d821d88de4f53"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -329,8 +329,50 @@ class GraphicsPipeTests(unittest.TestCase):
         text = json.dumps([topology.get("graphics")
                            for topology in self.catalogue["topologies"]])
         for absent in ('"ir4"', '"reality"', '"v6"', '"v8"', '"v10"',
-                       '"rad1"', '"rad4c-km"', "gvo", "dplex"):
+                       '"rad1"', '"rad4c-km"', "dplex"):
             self.assertNotIn(absent, text)
+        # The GVO option board answers its option mask, its 0xc6 channel and
+        # LoadXilinx (hw/misc/sgi-kona.c), so the DG5-2 with GVO is offered
+        # as a display value. Its video output is not modelled, so the GVO
+        # is never a family or product, and no other option board appears.
+        # Only a "display" value entry named exactly dg5-2-gvo, in a
+        # product's settings, may mention gvo, in any case.
+        for topology in self.catalogue["topologies"]:
+            self.assertEqual(self.gvo_mentions(topology.get("graphics")), [])
+        lowered = text.lower()
+        for absent in ("tvo", "hdgvo", "dvp", "sirius"):
+            self.assertNotIn(absent, lowered)
+
+    def gvo_mentions(self, node, allowed=False):
+        """Return the strings and keys that mention gvo outside the one
+        display value entry that may."""
+        found = []
+        if isinstance(node, dict):
+            for key, child in node.items():
+                if "gvo" in key.lower():
+                    found.append(key)
+                if key == "settings" and isinstance(child, list):
+                    for setting in child:
+                        is_display = (isinstance(setting, dict)
+                                      and setting.get("name") == "display")
+                        for k, v in (setting.items()
+                                     if isinstance(setting, dict) else []):
+                            if k == "values" and is_display:
+                                for entry in v:
+                                    ok = (isinstance(entry, dict) and
+                                          entry.get("value") == "dg5-2-gvo")
+                                    found += self.gvo_mentions(entry, ok)
+                            else:
+                                found += self.gvo_mentions(v)
+                else:
+                    found += self.gvo_mentions(child, allowed)
+        elif isinstance(node, list):
+            for child in node:
+                found += self.gvo_mentions(child, allowed)
+        elif isinstance(node, str):
+            if "gvo" in node.lower() and not allowed:
+                found.append(node)
+        return found
 
     def test_gigachannel_graphics_is_at_io6(self):
         names = [slot["name"] for slot in

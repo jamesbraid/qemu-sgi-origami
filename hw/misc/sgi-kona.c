@@ -2778,7 +2778,7 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
  * prints "GVO option detected" for, the option mask GetBoardConfig
  * answers (0x10) and the option channel's physical id (0xc6), which the
  * X server's channel list carries. The option's identity and its channel
- * state only: the model has no GVO video output.
+ * state and the LoadXilinx status only: the model has no GVO video output.
  */
 static const SGIKonaOption sgi_kona_gvo = {
     "gvo", { "GVO", "030-1184-002", "B" }, 6, 0x10, 0xc6,
@@ -2793,7 +2793,8 @@ static const SGIKonaOption sgi_kona_gvo = {
  * are not given. dg5-2, 030-1055-001: the two-GE owner's DG5-2 (owner list,
  * revision unreadable), two channels. dg5-2-gvo: the rack capture's DG5-2
  * base for an option board, 030-1242-001 revision D, with its GVO record; the
- * model has no GVO output, so the machine catalogue does not offer it.
+ * model has no GVO video output, but answers its option mask, channel and
+ * LoadXilinx, so the machine catalogue offers it as an approximation.
  */
 static const SGIKonaDisplay sgi_kona_displays[] = {
     { "dg5-8", { "", "030-1087-001", "" }, 8, 1, NULL },

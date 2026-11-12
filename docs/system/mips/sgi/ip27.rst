@@ -1782,11 +1782,11 @@ the topology's catalogue record before it realizes
    * - ``onyx2-deskside``
      - ``io4``, widget 8
      - ``ir2``: GE14-4, two RM7, ``dg5-8``
-     - ``ir2``, ``ir2e``; one or two RMs; ``dg5-8``, ``dg5-2``
+     - ``ir2``, ``ir2e``; one or two RMs; ``dg5-8``, ``dg5-2``, ``dg5-2-gvo``
    * - ``onyx2-rack``
      - ``io3``, the Xtown's slot, Crossbow 0 widget F
      - ``ir3``: GE16-4, one RM, 256 MB texture, ``dg5-2``
-     - ``ir2e``, ``ir3``; one, two or four RMs; ``dg5-2``, ``dg5-8``
+     - ``ir2e``, ``ir3``; one, two or four RMs; ``dg5-2``, ``dg5-8``, ``dg5-2-gvo``
 
 The Origin 200 and Origin 2000 fit no pipe by default and may run
 without one. Each Onyx2 topology fits its default unless a graphics
@@ -1794,7 +1794,12 @@ without one. Each Onyx2 topology fits its default unless a graphics
 Onyx2 without a pipe. The deskside default is the captured deskside's
 (:src:`irixnet-post-32192`). The rack default is the captured rack's
 configuration (:src:`nekonomicon-16285`) with a plain DG5-2 in place of
-its DG5-2 with GVO, which has no video output in the model; the plain
+its DG5-2 with GVO, which has no video output in the model. The
+Onyx2 and Onyx 3400 InfiniteReality pipes also offer that board as
+``dg5-2-gvo``: its identity with a GVO record, and the option channel
+the X server's GVO set-up configures (option mask, channel and logic
+download; see :ref:`sgi-kona-commands`) with no video output
+(*approximation*); the plain
 DG5-2 presents 030-1055-001, the part :src:`sgi-pca-numbers` gives for
 a DG5-2, since no capture shows a plain DG5-2 in an
 Onyx2 rack (*approximation*). A pipe in either slot takes that slot's board

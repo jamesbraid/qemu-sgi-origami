@@ -417,7 +417,8 @@ static void test_catalogue_records(void)
 
             g_assert_null(strstr(text->str, quoted));
         }
-        g_assert_null(strstr(text->str, "gvo"));
+        /* The GVO is only a display board's identity, never a product. */
+        g_assert_null(strstr(text->str, "\"gvo\""));
         g_assert_null(strstr(text->str, "\"changeable\": true"));
     }
 
@@ -439,7 +440,8 @@ static void test_catalogue_records(void)
 
     /*
      * The rack's default is the real Onyx2 rack capture's pipe with a
-     * plain DG5-2 in place of its DG5-2 with GVO, which is not modelled.
+     * plain DG5-2 in place of its DG5-2 with GVO, whose video output is not
+     * modelled.
      */
     slot = slot_record("onyx2-rack", "io3");
     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(slot, "default"),
@@ -457,7 +459,10 @@ static void test_catalogue_records(void)
                                       "evidence"), ==,
                         "030-1055-001");
         g_assert_nonnull(find(values, "value", "dg5-8"));
-        g_assert_cmpint(qlist_size(values), ==, 2);
+        g_assert_cmpstr(qdict_get_str(find(values, "value", "dg5-2-gvo"),
+                                      "evidence"), ==,
+                        "030-1242-001");
+        g_assert_cmpint(qlist_size(values), ==, 3);
     }
 
     slot = slot_record("octane", "widget-11");
@@ -577,6 +582,14 @@ static void test_device_replaces_default(void)
     g_free(type);
     type = qom_text(qts, "/machine/module0/io4", "board-part");
     g_assert_cmpstr(type, ==, "030-1129-002");
+    qtest_quit(qts);
+
+    /* The DG5-2 with GVO, which the real Inferno pipe carries. */
+    qts = start(launch_for("onyx2-deskside"),
+                "-device sgi-kona,slot=io4,product=ir2,display=dg5-2-gvo");
+    g_free(type);
+    type = qom_text(qts, "/machine/module0/io4", "display");
+    g_assert_cmpstr(type, ==, "dg5-2-gvo");
     qtest_quit(qts);
 
     /* A bare -device sgi-kona,slot=io4 is the deskside's ir2. */
@@ -729,9 +742,10 @@ static void test_refusals(void)
                    "-device sgi-odyssey,slot=widget-11,product=v8",
                    "does not offer sgi-odyssey product=v8; it offers v12");
     assert_refused(launch_for("onyx2-rack"),
-                   "-device sgi-kona,slot=io3,display=dg5-2-gvo",
+                   "-device sgi-kona,slot=io3,display=dg5-2-dplex",
                    "does not offer sgi-kona product=ir3 with "
-                   "display=dg5-2-gvo; it offers dg5-2 and dg5-8");
+                   "display=dg5-2-dplex; it offers dg5-2, dg5-8 and "
+                   "dg5-2-gvo");
     /* A setting value the slot does not offer, with the record's reason. */
     assert_refused(launch_for("onyx2-deskside"),
                    "-device sgi-kona,slot=io4,product=ir2,rm-count=4",
