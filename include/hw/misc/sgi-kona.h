@@ -2017,6 +2017,7 @@ struct SGIKonaState {
      * managed-area line while a scaled channel samples it.
      */
     SGIKonaChannel channel[SGI_KONA_MAX_CHANNELS];
+    SGIKonaChannel option_channel;  /* the option board's, when fitted */
     SGIScanout channel_scanout[SGI_KONA_MAX_CHANNELS - 1];
     SGIKonaChannelHook channel_hook[SGI_KONA_MAX_CHANNELS];
     uint32_t channel_scanouts;  /* consoles past channel 0's, from config */

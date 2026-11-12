@@ -627,6 +627,148 @@ static void test_configured_channels_answer(void)
     }
 }
 
+/* LoadFormat's request: the format file's name words, size and rate. */
+static void format_request(uint32_t *format, uint32_t channel,
+                           const char *name, uint32_t lines, uint32_t pixels)
+{
+    memset(format, 0, 383 * sizeof(uint32_t));
+    format[0] = channel;
+    format[1] = 1;
+    for (unsigned i = 0; i < 16 && name[4 * i]; i++) {
+        format[2 + i] = ldl_be_p(name + 4 * i);
+    }
+    format[19] = 60 << 16;
+    format[23] = lines;
+    format[24] = pixels;
+}
+
+/* LoadXilinx [type, byte count, four words]: the reply's one status word. */
+static uint32_t load_xilinx(QTestState *s, uint32_t type, int32_t count)
+{
+    uint32_t reply[1];
+    uint32_t sum = 27;
+
+    guest_fill(s, RETURN_PAGE, 0x5a, 0x80);
+    guest_fill_word(s, RETURN_PAGE, 0);
+    video_send(s, 0x52, (uint32_t[]){ type, count, 1, 2, 3, 4 }, 6);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE), ==, 1);
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 8), ==, 27);
+    reply[0] = guest_word(s, RETURN_PAGE + 12);
+    sum += reply[0];
+    g_assert_cmphex(guest_word(s, RETURN_PAGE + 16), ==, sum);
+    return reply[0];
+}
+
+/*
+ * The slot-to-channel mapping a GVO combination load depends on. The X
+ * server builds its channel list from GetBoardConfig: a display channel per
+ * bit of the board mask (words 1) and one option channel per option-mask
+ * bit (word 3), the GVO's carrying physical id 0xc6, whose configuration it
+ * then reads with GetChannelConfig. It sends the combination's GVO slot
+ * (the CCIR601_525_DGO format) to that id and the graphics slot to channel
+ * 0. A pipe that reports no option mask gives the server no id to send
+ * it to, and a real setmon was seen loading the GVO format onto channel 0,
+ * cropping the head to 720x486.
+ *
+ * So the DG5-2 and DG5-8 report option mask 0 and answer no 0xc6, where a
+ * load to it is logged and changes no display channel, and the DG5-2 with
+ * its GVO reports 0x10 and answers 0xc6 as a channel of its own: a load
+ * there names it, runs it and leaves channel 0's 1280x1024 format, size
+ * and rectangle as they were. LoadXilinx, which the server sends the
+ * option board before that load, succeeds (status 1) only on a pipe with an
+ * option board and a type 0 request of 1 to 16 bytes; a count of -1 succeeds
+ * on any pipe, as the firmware does no poll for it.
+ */
+static void test_option_channel_mapping(void)
+{
+    static const struct {
+        const char *dg;
+        uint32_t mask;
+        uint32_t option;
+    } boards[] = {
+        { "dg5-2", 0x3, 0 }, { "dg5-8", 0xff, 0 }, { "dg5-2-gvo", 0x3, 0x10 },
+    };
+
+    for (size_t i = 0; i < ARRAY_SIZE(boards); i++) {
+        g_autofree char *log = NULL;
+        g_autofree char *found = NULL;
+        QTestState *s = kona_init_dg(boards[i].dg, &log);
+        uint32_t format[383];
+        uint32_t reply[19];
+        uint32_t channel0[19];
+        uint32_t resize0[18];
+        uint32_t name[4];
+        bool gvo = boards[i].option != 0;
+
+        kona_register_return_page(s, RETURN_PAGE);
+        video_get(s, GET_BOARD_CONFIG, 0, 6, reply, 5);
+        g_assert_cmphex(reply[0], ==, 1);
+        g_assert_cmphex(reply[1], ==, boards[i].mask);
+        g_assert_cmphex(reply[2], ==, 0);
+        g_assert_cmphex(reply[3], ==, boards[i].option);
+        g_assert_cmphex(reply[4], ==, 0);
+
+        /* The combination's graphics slot: channel 0, 1280x1024. */
+        format_request(format, 0, "1280x1024_2997r2_DL.vfo", 1024, 1280);
+        video_send(s, 0x18, (uint32_t[]){ 0 }, 1);
+        video_send(s, 0x16, format, ARRAY_SIZE(format));
+        video_send(s, 0x14, (uint32_t[]){ 0, 0, 1023, 1280, 1024, 1, 1, 0 },
+                   8);
+        video_get(s, GET_CHANNEL_CONFIG, 0, 7, channel0, 19);
+        g_assert_cmphex(channel0[0], ==, 0xf);
+        video_get(s, GET_RESIZE, 0, 8, resize0, 18);
+
+        /* Its GVO slot: the DGO format, 720x486, for physical id 0xc6. */
+        if (gvo) {
+            video_get(s, GET_CHANNEL_CONFIG, 0xc6, 7, reply, 19);
+            g_assert_cmphex(reply[0], ==, 0x1);
+            g_assert_cmphex(reply[1], ==, 0);
+        }
+        format_request(format, 0xc6, "CCIR601_525_DGO.vfo", 486, 720);
+        memcpy(name, &format[2], sizeof(name));
+        video_send(s, 0x18, (uint32_t[]){ 0xc6 }, 1);
+        video_send(s, 0x16, format, ARRAY_SIZE(format));
+        video_send(s, 0x14, (uint32_t[]){ 0xc6, 0, 1023, 720, 486, 1, 1, 0 },
+                   8);
+        video_send(s, 0x17, (uint32_t[]){ 0xc6, 1, 0 }, 3);
+        if (gvo) {
+            video_get(s, GET_CHANNEL_CONFIG, 0xc6, 7, reply, 19);
+            g_assert_cmphex(reply[0], ==, 0xd);
+            g_assert_cmpmem(&reply[1], sizeof(name), name, sizeof(name));
+            video_get(s, GET_CHANNEL_ENABLES, 0xc6, 19, reply, 2);
+            g_assert_cmphex(reply[1], ==, 1);
+            video_send(s, 0x18, (uint32_t[]){ 0xc6 }, 1);
+            video_get(s, GET_CHANNEL_CONFIG, 0xc6, 7, reply, 19);
+            g_assert_cmphex(reply[0], ==, 0x1);
+        }
+
+        /* Channel 0 kept its graphics format whatever happened to 0xc6. */
+        video_get(s, GET_CHANNEL_CONFIG, 0, 7, reply, 19);
+        g_assert_cmpmem(reply, sizeof(channel0), channel0, sizeof(channel0));
+        video_get(s, GET_RESIZE, 0, 8, reply, 18);
+        g_assert_cmpmem(reply, sizeof(resize0), resize0, sizeof(resize0));
+        g_assert_cmpuint(resize0[2], ==, 1280);
+        g_assert_cmpuint(resize0[3], ==, 1024);
+
+        g_assert_cmpuint(load_xilinx(s, 0, -1), ==, 1);
+        g_assert_cmpuint(load_xilinx(s, 0, 1), ==, gvo);
+        g_assert_cmpuint(load_xilinx(s, 0, 16), ==, gvo);
+        g_assert_cmpuint(load_xilinx(s, 0, 17), ==, 0);
+        g_assert_cmpuint(load_xilinx(s, 0, -2), ==, 0);
+        g_assert_cmpuint(load_xilinx(s, 1, 4), ==, 0);
+
+        /* The option's second channel id is not a channel of its own. */
+        video_send(s, 0x18, (uint32_t[]){ 0xc7 }, 1);
+        assert_textport_in_step(s);
+        qtest_quit(s);
+
+        found = kona_log_read(log);
+        g_assert_nonnull(strstr(found, "unsupported video channel 199"));
+        g_assert_cmpint(!!strstr(found, "unsupported video channel 198"), ==,
+                        !gvo);
+    }
+}
+
 /*
  * The channel setters as the X server's combination load sends them for a
  * 640x480 channel 1 taking (640, 0) of the managed area: DisableChannel,
@@ -1978,6 +2120,8 @@ int main(int argc, char **argv)
                    test_channel_config_reply);
     qtest_add_func("sn0/origin2000/kona-video/configured-channels-answer",
                    test_configured_channels_answer);
+    qtest_add_func("sn0/origin2000/kona-video/option-channel-mapping",
+                   test_option_channel_mapping);
     qtest_add_func("sn0/origin2000/kona-video/channel-setters",
                    test_channel_setters);
     qtest_add_func("sn0/origin2000/kona-video/"
