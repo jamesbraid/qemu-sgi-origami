@@ -8489,10 +8489,16 @@ static void test_draw_pixels(gconstpointer opaque)
     }
     if (mode == 25 || mode == 26) {
         /*
-         * The library's 3D and 4D pack state at its initial zero changes
-         * nothing a DrawPixels does; another value stays unsupported.
+         * The library's pack state at its initial zero changes nothing a
+         * DrawPixels does: the 3D and 4D forms, and the pack skip rows
+         * and pixels that an image-drawing wrapper sends around its
+         * DrawPixels (Discreet Inferno's lrectwrite; with the zero
+         * refused every DrawPixels after it drew nothing). Another value
+         * stays unsupported.
          */
-        static const uint32_t pack[] = { 0x806d, 0x806e, 0x8132, 0x8133 };
+        static const uint32_t pack[] = {
+            0x806d, 0x806e, 0x8132, 0x8133, 0xd03, 0xd04,
+        };
 
         for (unsigned k = 0; k < ARRAY_SIZE(pack); k++) {
             kona_command(s, 0x33, (uint32_t[]) { pack[k], mode == 26 }, 2);
