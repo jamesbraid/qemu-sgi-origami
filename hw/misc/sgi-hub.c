@@ -1809,6 +1809,7 @@ static const char *sgi_hub_rt_hold_kind_name(SGIHubRTHoldKind kind)
 }
 
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index);
+static void sgi_hub_rt_arm_written(SGIHubState *s, unsigned int index);
 static void sgi_hub_rt_release(SGIHubState *s, unsigned int slice,
                                SGIHubRTHoldKind kind);
 
@@ -1826,7 +1827,7 @@ static void sgi_hub_rt_compare_apply(SGIHubState *s, unsigned int arg,
         sgi_hub_rt_release(s, arg ^ 1, SGI_HUB_RT_HOLD_POST);
     }
     s->pi_rt_compare[arg] = val & PI_RT_MASK;
-    sgi_hub_rt_arm(s, arg);
+    sgi_hub_rt_arm_written(s, arg);
 
     /*
      * A progress mailbox only while the slice's interrupt is disabled: the
@@ -2231,8 +2232,8 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
  * The comparator fires when the counter reaches the compare value, never on
  * being merely past it: IRIX parks a processor's tick by writing a value
  * behind the counter and depends on the silence. The next match is the
- * modular distance forward (a whole revolution when the write lands on
- * equality) and is the same arithmetic as an ordinary short deadline.
+ * modular distance forward (a whole revolution when the counter is moved
+ * onto it) and is the same arithmetic as an ordinary short deadline.
 */
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
@@ -2247,6 +2248,23 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 
     timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
               clock_ticks_to_ns(s->rt_clk, ticks));
+}
+
+/*
+ * A comparator written while the counter holds that same value matches at
+ * once. IRIX 6.5.21f's set_timer_intr arms a deadline only while it is
+ * ahead of the counter, re-reads the counter after the write, and pokes the
+ * processor itself only when the deadline is strictly behind. A deadline one
+ * count ahead can become equal before the store lands, and waiting a whole
+ * revolution then loses that processor's timeouts for good.
+ */
+static void sgi_hub_rt_arm_written(SGIHubState *s, unsigned int index)
+{
+    if (index < s->cpus && s->pi_rt_compare[index] == sgi_hub_rt_count(s)) {
+        timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        return;
+    }
+    sgi_hub_rt_arm(s, index);
 }
 
 /*

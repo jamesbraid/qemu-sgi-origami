@@ -775,6 +775,31 @@ static void test_an_ahead_deadline_fires_once_and_the_ack_clears(
 }
 
 /*
+ * Equal is not behind: IRIX re-reads the counter after arming and handles
+ * only a deadline strictly behind it, so a comparator written while the
+ * counter holds its value must match rather than wait for the wrap.
+ */
+static void test_a_comparator_written_equal_matches_at_once(const void *data)
+{
+    uint64_t count;
+
+    hub_reset();
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COMPARE_A, count);
+    qtest_clock_step(qts, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 1);
+
+    /* Once: acknowledged, it stays quiet. */
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_A, 0);
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_RT_PENDING_A), ==, 0);
+}
+
+/*
  * Zero is not the special case, behind is the general one: a comparator a
  * little behind the counter waits for the counter to come around to it,
  * and does not match on being merely past.
@@ -6922,6 +6947,8 @@ int main(int argc, char **argv)
                         test_an_ahead_deadline_fires_once_and_the_ack_clears);
     qtest_add_data_func("sn0/hub/rt-behind-comparator-does-not-match", NULL,
                         test_a_behind_comparator_does_not_match);
+    qtest_add_data_func("sn0/hub/rt-equal-comparator-matches", NULL,
+                        test_a_comparator_written_equal_matches_at_once);
     qtest_add_data_func("sn0/hub/counter-move-pends-nothing", NULL,
                         test_moving_the_counter_past_a_comparator_pends_nothing);
     qtest_add_data_func("sn0/hub/rt-comparator-raises-line", NULL,
