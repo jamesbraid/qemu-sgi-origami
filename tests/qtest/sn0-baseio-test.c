@@ -3044,6 +3044,8 @@ static void test_io6g_ps2(void)
 
     baseio_window_write(qts, IOC3_WINDOW + KBC_KBD_TRANSMIT, 0xff);
     baseio_window_write(qts, IOC3_WINDOW + KBC_AUX_TRANSMIT, 0xff);
+    /* The reply characters come a PS/2 character time apart. */
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(baseio_window_read(qts, IOC3_WINDOW + KBC_KBD_RECEIVE),
                     ==, 0xc0faaa00);
     g_assert_cmphex(baseio_window_read(qts, IOC3_WINDOW + KBC_AUX_RECEIVE),
@@ -3051,6 +3053,7 @@ static void test_io6g_ps2(void)
 
     baseio_window_write(qts, MIO_IOC3_WINDOW + KBC_KBD_TRANSMIT, 0xff);
     baseio_window_write(qts, MIO_IOC3_WINDOW + KBC_AUX_TRANSMIT, 0xff);
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + KBC_KBD_RECEIVE),
                     ==, 0xc0faaa00);
     g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + KBC_AUX_RECEIVE),
@@ -3184,11 +3187,15 @@ static void test_io6g_mio_keyboard_backlog_reaches_bridge_pin_6(void)
 
     /*
      * That read emptied the holding and released the clamp, so the stopped
-     * keyboard sent its second character. Its arrival drives the whole chain
+     * keyboard sent its second character a PS/2 character time later. Its
+     * arrival drives the whole chain
      * again through the source, combined status, SuperIO GPIO-out, and board
      * wire, with
      * no other event to help it, and device 2's pin stays clear.
      */
+    g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
+                    INT_KEYBOARD, ==, 0);
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(baseio_window_read(qts, MIO_IOC3_WINDOW + INT_STATUS) &
                     INT_KEYBOARD, ==, INT_KEYBOARD);
     g_assert_cmphex(baseio_window_read(qts, BRIDGE_INT_STATUS) &

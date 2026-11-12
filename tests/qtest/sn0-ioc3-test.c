@@ -1176,8 +1176,12 @@ static void test_non_ip30_gpio_defaults(const void *data)
 #define KBC_RX_VALID_ALL  (KBC_RX_VALID(0) | KBC_RX_VALID(1) | KBC_RX_VALID(2))
 #define KBC_RX_FLAGS      (KBC_RX_OVERFLOW | KBC_RX_VALID_ALL)
 
-/* Longer than the one PS/2 character time a released clamp takes to resume. */
-#define KBC_RESUME_NS     2000000
+/*
+ * One PS/2 character time (11 bits at 10 to 16.7 kHz), the spacing between
+ * characters on a port; KBC_WIRE_NS(n) is the time for n of them.
+ */
+#define KBC_CHAR_NS       1000000
+#define KBC_WIRE_NS(n)    ((n) * KBC_CHAR_NS)
 
 /* One key down puts one raw scan byte on the keyboard's wire. */
 static void ps2_key_down(QTestState *qts, const char *key)
@@ -1196,7 +1200,12 @@ static void ps2_key_down(QTestState *qts, const char *key)
     qobject_unref(resp);
 }
 
-/* Five characters: two more than the controller can hold at once. */
+/*
+ * Five characters: two more than the controller can hold at once. The keys
+ * are queued together, so the first character lands at once and the next two
+ * one character time apart each; the wait lets them in. With a clamp-after-
+ * three armed the keyboard is then stopped with the other two still in it.
+ */
 static void ps2_type_five_keys(QTestState *qts)
 {
     static const char *keys[] = { "a", "b", "c", "d", "e" };
@@ -1205,6 +1214,7 @@ static void ps2_type_five_keys(QTestState *qts)
     for (i = 0; i < ARRAY_SIZE(keys); i++) {
         ps2_key_down(qts, keys[i]);
     }
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
 }
 
 static void test_the_ps2_ports_read_empty(const void *data)
@@ -1249,6 +1259,7 @@ static void test_the_ps2_keyboard_round_trips(const void *data)
     sn0_ioc3_attach(qts);
 
     qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_clock_step(qts, KBC_WIRE_NS(1));
 
     /*
      * Oldest byte occupies the highest slot: 0xFA in bits 16-23 with its
@@ -1275,6 +1286,7 @@ static void test_the_ps2_mouse_round_trips(const void *data)
     sn0_ioc3_attach(qts);
 
     qtest_writel(qts, KBC_AUX_TRANSMIT, 0xff);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
 
     /*
      * Oldest byte in the highest slot: 0xFA in bits 16-23, 0xAA in bits
@@ -1308,16 +1320,19 @@ static void test_the_ps2_keyboard_acks_set_key_type(const void *data)
 
     for (i = 0; i < ARRAY_SIZE(all_keys); i++) {
         qtest_writel(qts, KBC_KBD_TRANSMIT, all_keys[i]);
+        qtest_clock_step(qts, KBC_WIRE_NS(1));
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
     }
 
     for (i = 0; i < ARRAY_SIZE(one_key); i++) {
         qtest_writel(qts, KBC_KBD_TRANSMIT, one_key[i]);
+        qtest_clock_step(qts, KBC_WIRE_NS(1));
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
 
         /* The key code that follows is consumed, not read back as a
          * command. */
         qtest_writel(qts, KBC_KBD_TRANSMIT, 0x1c);
+        qtest_clock_step(qts, KBC_WIRE_NS(1));
         g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, one_ack);
     }
 }
@@ -1331,6 +1346,7 @@ static void test_the_ps2_receive_drains_on_read(const void *data)
     sn0_ioc3_attach(qts);
 
     qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_clock_step(qts, KBC_WIRE_NS(1));
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
 
     /* Drained: the reads popped both bytes, so nothing remains. */
@@ -1406,7 +1422,7 @@ static void test_the_ps2_receive_holds_three_behind_the_clamp(const void *data)
      * source is latched again with no other event to help it.
      */
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
-    qtest_clock_step(qts, KBC_RESUME_NS);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
@@ -1460,7 +1476,7 @@ static void test_the_ps2_backlog_survives_an_early_acknowledge(const void *data)
                     KBC_RX_VALID_ALL);
 
     /* And the backlog behind the clamp raises the source a second time. */
-    qtest_clock_step(qts, KBC_RESUME_NS);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
@@ -1503,7 +1519,7 @@ static void test_the_ps2_drain_then_acknowledge_takes_one(const void *data)
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
 
     /* The keyboard's next two characters arrive after it: they signal. */
-    qtest_clock_step(qts, KBC_RESUME_NS);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
@@ -1530,7 +1546,7 @@ static void test_the_ps2_resumed_backlog_survives_an_acknowledge(
     ps2_type_five_keys(qts);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID_ALL);
-    qtest_clock_step(qts, KBC_RESUME_NS);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
@@ -1560,6 +1576,7 @@ static void test_the_ps2_receive_overflows_without_a_clamp(const void *data)
     for (i = 0; i < ARRAY_SIZE(keys); i++) {
         ps2_key_down(qts, keys[i]);
     }
+    qtest_clock_step(qts, KBC_WIRE_NS(3));
 
     /* Three characters held and one lost, reported together. */
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
@@ -1587,7 +1604,7 @@ static void test_the_ps2_clamp_after_one_splits_a_reply(const void *data)
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
 
     /* The clamp released with the read, so the self-test byte follows. */
-    qtest_clock_step(qts, KBC_RESUME_NS);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x80aa0000);
@@ -1606,6 +1623,7 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
     g_autofree char *uri = NULL;
     g_autofree char *dir = NULL;
     QTestState *from, *to;
+    int64_t from_clock;
 
     dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
     g_assert_nonnull(dir);
@@ -1618,11 +1636,15 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
     g_assert_cmphex(qtest_readl(from, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
+    /* No clock getter exists: a one nanosecond step reports the time. */
+    from_clock = qtest_clock_step(from, 1);
     to = qtest_initf("-M origin200 -incoming %s", uri);
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     sn0_ioc3_attach(to);
+    /* The qtest clock does not migrate; carry it so timers keep their time. */
+    qtest_clock_set(to, from_clock);
 
     /* The clamp and the pending source both came across. */
     g_assert_cmphex(qtest_readl(to, KBC_CONTROL), ==,
@@ -1635,7 +1657,7 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
     qtest_writel(to, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID_ALL);
-    qtest_clock_step(to, KBC_RESUME_NS);
+    qtest_clock_step(to, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     qtest_writel(to, INT_STATUS, INT_KEYBOARD);
@@ -1656,6 +1678,7 @@ static void test_the_ps2_pending_resume_survives_a_migration(const void *data)
     g_autofree char *uri = NULL;
     g_autofree char *dir = NULL;
     QTestState *from, *to;
+    int64_t from_clock;
 
     dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
     g_assert_nonnull(dir);
@@ -1669,13 +1692,17 @@ static void test_the_ps2_pending_resume_survives_a_migration(const void *data)
                     KBC_RX_VALID_ALL);
     qtest_writel(from, INT_STATUS, INT_KEYBOARD);
 
+    /* No clock getter exists: a one nanosecond step reports the time. */
+    from_clock = qtest_clock_step(from, 1);
     to = qtest_initf("-M origin200 -incoming %s", uri);
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     sn0_ioc3_attach(to);
+    /* The qtest clock does not migrate; carry it so timers keep their time. */
+    qtest_clock_set(to, from_clock);
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
-    qtest_clock_step(to, KBC_RESUME_NS);
+    qtest_clock_step(to, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
@@ -1696,6 +1723,7 @@ static void test_the_ps2_held_character_survives_an_acknowledged_migration(
     g_autofree char *uri = NULL;
     g_autofree char *dir = NULL;
     QTestState *from, *to;
+    int64_t from_clock;
 
     dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
     g_assert_nonnull(dir);
@@ -1707,20 +1735,201 @@ static void test_the_ps2_held_character_survives_an_acknowledged_migration(
     ps2_key_down(from, "a");
     qtest_writel(from, INT_STATUS, INT_KEYBOARD);
 
+    /* No clock getter exists: a one nanosecond step reports the time. */
+    from_clock = qtest_clock_step(from, 1);
     to = qtest_initf("-M origin200 -incoming %s", uri);
     sgi_migrate_stopped(from, uri);
     qtest_quit(from);
 
     sn0_ioc3_attach(to);
+    /* The qtest clock does not migrate; carry it so timers keep their time. */
+    qtest_clock_set(to, from_clock);
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID(2));
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE), ==, 0);
-    qtest_clock_step(to, KBC_RESUME_NS);
+    qtest_clock_step(to, KBC_WIRE_NS(2));
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
 
     qtest_quit(to);
     g_rmdir(dir);
+}
+
+/*
+ * Characters the host queued together reach the holding one character time
+ * apart, with no clamp armed: a device clocks each one out in turn. The
+ * second is not there a nanosecond early and is there on the dot.
+ */
+static void test_the_ps2_characters_arrive_a_character_time_apart(
+    const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+    g_assert_cmphex(qtest_readl(qts, KBC_CONTROL), ==, 0);
+
+    ps2_key_down(qts, "a");
+    ps2_key_down(qts, "b");
+    ps2_key_down(qts, "c");
+
+    /* The first lands at once, alone. */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+
+    qtest_clock_step(qts, KBC_CHAR_NS - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+
+    /* And the third a character time after the second. */
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    qtest_clock_step(qts, KBC_CHAR_NS - 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+}
+
+/*
+ * The race a host flood hit: a guest that reads the holding empty and then
+ * acknowledges (IRIX's order) must not have the next character land between
+ * the two. The device is still clocking it out, so it lands a character time
+ * after the previous one, after the acknowledge, and its interrupt signals.
+ */
+static void test_the_ps2_next_character_follows_the_acknowledge(
+    const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    ps2_key_down(qts, "a");
+    ps2_key_down(qts, "b");
+
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+    qtest_clock_step(qts, 20000);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
+    qtest_clock_step(qts, 20000);
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+
+    qtest_clock_step(qts, KBC_CHAR_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+}
+
+/* A device that has been idle for a character time sends at once. */
+static void test_the_ps2_idle_device_sends_at_once(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    ps2_key_down(qts, "a");
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+
+    qtest_clock_step(qts, 10 * KBC_CHAR_NS);
+    ps2_key_down(qts, "b");
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+}
+
+/*
+ * The two ports are paced separately: a busy keyboard does not delay the
+ * mouse.
+ */
+static void test_the_ps2_ports_are_paced_separately(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+
+    qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xff);
+
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0x88fa0000);
+}
+
+/*
+ * A migration with an unclamped character still on its way: the pacing timer
+ * crosses, and the destination delivers the character on schedule, not
+ * early and not never.
+ */
+static void test_the_ps2_paced_character_survives_a_migration(
+    const void *data)
+{
+    g_autofree char *uri = NULL;
+    g_autofree char *dir = NULL;
+    QTestState *from, *to;
+    int64_t from_clock;
+
+    dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init("-M origin200");
+    sn0_ioc3_attach(from);
+    ps2_key_down(from, "a");
+    ps2_key_down(from, "b");
+    g_assert_cmphex(qtest_readl(from, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+    qtest_writel(from, INT_STATUS, INT_KEYBOARD);
+    qtest_clock_step(from, KBC_CHAR_NS / 2);
+
+    /* No clock getter exists: a one nanosecond step reports the time. */
+    from_clock = qtest_clock_step(from, 1);
+    to = qtest_initf("-M origin200 -incoming %s", uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    sn0_ioc3_attach(to);
+    /* The qtest clock does not migrate; carry it so timers keep their time. */
+    qtest_clock_set(to, from_clock);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    qtest_clock_step(to, KBC_CHAR_NS / 2 - 2);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    qtest_clock_step(to, 1);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+
+    qtest_quit(to);
+    g_rmdir(dir);
+}
+
+/* A reset drops the pacing timer with the characters it was waiting for. */
+static void test_the_ps2_reset_drops_a_pending_character(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+    ps2_key_down(qts, "a");
+    ps2_key_down(qts, "b");
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+
+    ioc3_reset();
+    sn0_ioc3_attach(qts);
+    qtest_clock_step(qts, 10 * KBC_CHAR_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
 }
 
 /*
@@ -6310,6 +6519,8 @@ static bool ps2_is_fitted(QTestState *qts, uint64_t base)
     qtest_writel(qts, base + 0x09c, 0);
     qtest_writel(qts, base + 0x0a8, 0xff);
     qtest_writel(qts, base + 0x0ac, 0xff);
+    /* The replies are clocked out a character time apart. */
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
     keyboard = qtest_readl(qts, base + 0x0a0);
     mouse = qtest_readl(qts, base + 0x0a4);
     if (!keyboard) {
@@ -6837,6 +7048,7 @@ static void test_the_addin_card_ps2_ports_are_independent_of_the_native_ones(
 
     qtest_writel(qts, KBC_KBD_TRANSMIT, 0xff);
     qtest_writel(qts, ADDIN_KBC_AUX_TRANSMIT, 0xff);
+    qtest_clock_step(qts, KBC_WIRE_NS(2));
 
     /* The native board's own keyboard reset reply, untouched by the card. */
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
@@ -6980,6 +7192,21 @@ int main(int argc, char **argv)
     qtest_add_data_func(
         "sn0/ioc3/ps2-held-character-survives-an-acknowledged-migration",
         NULL, test_the_ps2_held_character_survives_an_acknowledged_migration);
+    qtest_add_data_func("sn0/ioc3/ps2-characters-arrive-a-character-time-apart",
+                        NULL,
+                        test_the_ps2_characters_arrive_a_character_time_apart);
+    qtest_add_data_func("sn0/ioc3/ps2-next-character-follows-the-acknowledge",
+                        NULL,
+                        test_the_ps2_next_character_follows_the_acknowledge);
+    qtest_add_data_func("sn0/ioc3/ps2-idle-device-sends-at-once", NULL,
+                        test_the_ps2_idle_device_sends_at_once);
+    qtest_add_data_func("sn0/ioc3/ps2-ports-are-paced-separately", NULL,
+                        test_the_ps2_ports_are_paced_separately);
+    qtest_add_data_func("sn0/ioc3/ps2-paced-character-survives-a-migration",
+                        NULL,
+                        test_the_ps2_paced_character_survives_a_migration);
+    qtest_add_data_func("sn0/ioc3/ps2-reset-drops-a-pending-character", NULL,
+                        test_the_ps2_reset_drops_a_pending_character);
     qtest_add_data_func("sn0/ioc3/serial-dma-indices-take-a-write", NULL,
                         test_the_serial_dma_indices_take_a_write);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
