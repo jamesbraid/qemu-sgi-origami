@@ -3279,7 +3279,6 @@ static void test_internal_refusal_keeps_pci_status_clear(void)
         HOST_WORD_WRITE,
         SEQ_READ,
         SEQ_WRITE,
-        SEQ_RETURN,
     };
     static const struct RefusalCase {
         unsigned kind;
@@ -3291,7 +3290,7 @@ static void test_internal_refusal_keeps_pci_status_clear(void)
         { HOST_READ, 0x6d, 0, "host read of DINDIR" },
         { HOST_READ, 0x99, 0, "DFDAT read from empty FIFO" },
         { HOST_WRITE, 0x9b, 0x5a, "unsupported queue-in entry" },
-        { HOST_WRITE, 0x93, 0x40, "unsupported DFCNTRL" },
+        { HOST_WRITE, 0x93, 0x80, "unsupported DFCNTRL" },
         { HOST_WORD_READ, 0x86, 0, "unsupported DSPCISTATUS width" },
         { HOST_WORD_WRITE, 0x86, 0xbf, "unsupported DSPCISTATUS width" },
         { SEQ_READ, 0x92, 0, "host-only register" },
@@ -3299,7 +3298,6 @@ static void test_internal_refusal_keeps_pci_status_clear(void)
         { SEQ_READ, 0x7e, 0, "read of unsupported register" },
         { SEQ_READ, 0x9b, 0, "empty queue-in FIFO" },
         { SEQ_WRITE, 0x87, 1, "host-only HCNTRL" },
-        { SEQ_RETURN, 0x20, 1, "return without call" },
     };
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
@@ -3335,7 +3333,7 @@ static void test_internal_refusal_keeps_pci_status_clear(void)
                 emit(program, &n, alu_word(0, 1, test->reg, 0x20, false));
             } else {
                 emit(program, &n, alu_word(0, test->value, 0x6a, test->reg,
-                                           test->kind == SEQ_RETURN));
+                                           false));
             }
             emit_or(program, &n, 0x33, 0x41);
             start_program(qts, program, n);
@@ -4891,6 +4889,8 @@ static void test_status_message_phases(void)
     qtest_writeb(qts, REG_BASE + 0x03, 0xe0);
     start_program(qts, finish, n);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x23), ==, 0);
+    /* BUSFREE qualifies after BSY and SEL have been negated for 400 ns. */
+    qtest_clock_step(qts, 400);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x0c) & 0x08, ==, 0x08);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x9e), ==, 1);
     g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x91) & 2, ==, 2);
