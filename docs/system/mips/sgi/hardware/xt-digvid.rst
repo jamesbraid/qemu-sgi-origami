@@ -101,10 +101,12 @@ Identity
        it. A capture of the identification register would settle it.
    * - Board assembly (``Part`` field of the NIC text)
      - ``030-1653-002`` in the model
-     - The user-space module parses the ``Part`` field to choose between
-       two image names for one FPGA (:ref:`sgi-xt-digvid-fpga-names`),
-       :src:`dm2-library-1.1.3 0x4085f0`, *software expectation*. The
-       value is an *approximation*: two published Octane2 inventories
+     - The user-space module reads only the ``Part`` key of the NIC text and
+       takes the middle and last dash groups as decimal numbers at value
+       offsets 4 and 9; its choice between two image names for one FPGA uses
+       the last group, the assembly number and not the revision letter
+       (:ref:`sgi-xt-digvid-fpga-names`), :src:`dm2-library-1.1.3
+       0x4085f0`, *software expectation*. The value is an *approximation*: two published Octane2 inventories
        print it, but they are not registered as sources, so no citation
        supports it here.
    * - Slot
@@ -129,6 +131,24 @@ fixed-offset record of :ref:`sgi-bridge-onewire` with ``board-name``
 ``XT-DIGVID``, and a barcode that is a marked synthetic value, each an
 *approximation*. A capture of the register while a read runs, or the
 accessor routine's source layout, would settle it.
+
+The kernel builds the NIC text from the one-wire part as
+``Part:...;Name:...;Serial:...;Revision:...;Group:...;Capability:...;
+Variety:...;Laser:...;``, :src:`dm2-driver-ip30-1.1.3 0x5e8`, *software
+expectation*; that this board's part uses that layout is *inferred*, since the
+driver supplies only the accessor. Three programs read the text. The driver
+searches it only for ``Name:XT-DIGVID`` (:src:`dm2-driver-ip30-1.1.3
+0xa44`). The module looks up only the ``Part`` key, copies up to 31
+characters to the next ``;`` and converts the groups at value offsets 4 and
+9, which gives 1653 and 2 for ``030-1653-002``; a missing ``Part`` leaves both
+groups 0, which selects the fast HDOC image and the other branch of the
+HDOC status rule (:src:`dm2-library-1.1.3 0x408680`). The diagnostic reads
+``Part`` and ``Revision`` into variables nothing else uses. No component
+validates the revision or the serial, *software expectation*. A record
+therefore needs ``Name:XT-DIGVID`` and a ``Part`` of the form
+``030-1653-00N``; the revision text is free, and the model's is the letter
+``G``, an *approximation*, because the published captures that print ``G``
+and ``H`` are not registered sources.
 
 The driver reads the widget status word at ``0x0c`` once at attach and
 prints a 400 MB/s warning when bit 5 is set,
@@ -247,21 +267,30 @@ is *unknown*.
      - *software expectation*; the model reads zero, an *approximation*.
    * - ``0x24``
      - Control
-     - Read, modified and written back. Attach writes the board's own
-       widget number in bits 3:0, the interrupt target widget number in
-       bits 25:22 and the constant bits 14 and 9 (``0x4200``), then sets
-       bit 17, the XG error interrupt enable, after the interrupt
-       destination is programmed. The error handler clears bit 17 and no
-       software sets it again.
-     - *software expectation*. The field names are *inferred* from the
-       Crosstalk block and from the helper names; bits 14 and 9 are
-       *unknown*. The model stores all 32 bits.
+     - Read, modified and written back. The XG initialisation, at attach
+       and in the widget reset, writes the board's own widget number in bits
+       3:0, the interrupt target widget number in bits 25:22 and the
+       constant bits 14 and 9 (``0x4200``), then sets bit 17, the XG error
+       interrupt enable, after the interrupt destination is programmed. The
+       error handler clears bit 17, and the initialisation is the only code
+       that sets it, so after one error interrupt the error interrupt
+       stays masked until a widget reset (:ref:`sgi-xt-digvid-reset`).
+     - *software expectation*, :src:`dm2-driver-ip30-1.1.3 0x5880`. The
+       field names are *inferred* from the Crosstalk block and from the
+       helper names; bits 14 and 9 are *unknown*. The model stores all 32
+       bits and does not queue errors raised while bit 17 is clear, an
+       *approximation*.
    * - ``0x34``
      - Interrupt destination, upper
-     - Written once: address bits 47:32 in bits 15:0 and the target
-       widget in bits 19:16.
-     - *software expectation* for the value; the field split is
-       *inferred*.
+     - Written at attach and at a widget reset: address bits 47:32 in bits
+       15:0 and the interrupt target widget in bits 19:16, which is the
+       same widget as bits 25:22 of ``0x24``. The driver asserts that the
+       error and both video interrupt objects share one address and target.
+     - *software expectation* for the value and the target field
+       (:src:`dm2-driver-ip30-1.1.3 0x5774`). That the board's own DMA
+       requests go to the same widget is *inferred*: the map RAM entry has
+       no widget field and no other register holds a target, and on every
+       machine the two targets are the same widget.
    * - ``0x3c``
      - Interrupt destination, lower
      - Written once: address bits 31:0.
@@ -316,11 +345,18 @@ is *unknown*.
      - One-wire identity register
      - See :ref:`sgi-xt-digvid-identity`.
      - *software expectation*
-   * - ``0x10``, ``0x18``, ``0x28``, ``0x40``, ``0x48``, ``0x50``
-     - The Crosstalk block's error address, request timeout, error
-       command, link configuration and flush slots
-     - Never touched by any shipped software.
-     - *unknown*; the model stores written values and reads zero at
+   * - ``0x14``, ``0x1c``, ``0x2c``, ``0x44``, ``0x4c``, ``0x54``
+     - The Crosstalk block's error address (upper and lower), request
+       timeout, error command, link configuration and flush registers
+     - Every software access in the driver lands on an odd word and none on a
+       slot base, so these six registers are at the odd words, *inferred*
+       from the uniform layout of the registers the software does reach.
+       The request timeout ``0x2c`` is written 0 once, by the check that the
+       XG initialisation runs before it enables the error interrupt,
+       :src:`dm2-driver-ip30-1.1.3 0x5550`, *software expectation*. The
+       contents of the other five are never written or read.
+     - Write of ``0x2c``: *software expectation*; the contents of the five
+       others are *unknown*. The model stores written values and reads zero at
        reset, an *approximation*.
 
 Stores of zero to ``0x6c`` are the user-space module's only delay: its
@@ -380,14 +416,27 @@ and the double-word underflow message for it, and never tests bit 24.
 Bit 24 is most likely the double-word underflow bit, *inferred* from the
 sequence; what hardware does with it is *unknown*. Bit 31 is not tested.
 The handler reads and clears the register in one visit, then clears
-control bit 17 (which masks further error interrupts), and nothing
-re-enables it, :src:`dm2-driver-ip30-1.1.3 0x3d180`, *software
-expectation*.
+control bit 17, which masks further error interrupts, records the cause in
+both pipes' error words and prints. It posts no event, wakes nobody,
+releases no slot and touches no ring,
+:src:`dm2-driver-ip30-1.1.3 0x3d180`, *software expectation*. The recorded
+error word matters only when the pipe's DMA call ends: it then returns an
+error to the application, *software expectation*. Only a widget reset
+re-enables the error interrupt (:ref:`sgi-xt-digvid-reset`).
 
-A model raises one cause: bit 13, when DMA translates through a map RAM
-entry that is not valid. It never raises the others, an *approximation*;
-raising credit, parity or FIFO errors would need a hardware reference
-for when they occur.
+An access through an invalid map RAM entry is reported by cause bit 13
+and the entry address in ``0x94``, and by nothing else the driver tests;
+the driver never reads bit 13 to decide that a slot finished, and a slot
+finishes only by a slot-done or slot-aborted flag,
+:src:`dm2-driver-ip30-1.1.3 0x3d9a0`, *software expectation*. Whether the
+board also posts slot-done or slot-aborted for that slot, and so a video
+interrupt, is *unknown*. A model raises bit 13 and the error interrupt,
+records ``0x94`` and posts slot-aborted for the slot, which lets the
+driver's drain finish, an *approximation*; a capture of the ring and of
+``0x6c`` after a transfer aimed at an unmapped page would settle it.
+The model raises no other cause, an *approximation*; raising credit,
+parity or FIFO errors would need a hardware reference for when they
+occur.
 
 .. _sgi-xt-digvid-maps:
 
@@ -433,13 +482,20 @@ bit pattern hardware tests for "invalid", the byte order the board
 applies to a map RAM store and whether bits 1:0 or 31:30 are attributes
 are *unknown*; nothing reads an entry back.
 
+The driver invalidates all ``0x8000`` entries, the 32 K entries of
+configuration type 0, at attach and in the widget reset, so every entry
+reads invalid until a buffer is mapped. It does not use the size code of
+``0x64`` to bound this, :src:`dm2-driver-ip30-1.1.3 0x17a0`, *software
+expectation*.
+
 A model reads an entry as written, treats an entry with bit 29 set and
 bit 28 clear as valid and any other as invalid, and sends the resulting
 host address as a Crosstalk read or write request through the Crossbow, an
 *approximation*. A translation through an invalid entry raises error
 cause bit 13 and records the entry's byte offset in ``0x94``
 (:ref:`sgi-xt-digvid-xg`). Reset values of the entries are *unknown*; the
-model resets them to zero, an *approximation*, which makes them invalid.
+model resets them to zero, an *approximation*, which makes them invalid,
+and a widget reset sets them to zero again.
 
 Driver conventions a model must keep working:
 
@@ -456,6 +512,81 @@ Driver conventions a model must keep working:
   expectation*. For a full 1024-page buffer in slot 0 of pipe 0 the
   "before" page is the last page of slot 3 of pipe 1, so that entry is
   overwritten; whether any caller fills a slot is *unknown*.
+
+.. _sgi-xt-digvid-reset:
+
+Attach and reset
+================
+
+Attach makes no access to the GIF register file. The driver maps the
+window, reads the one-wire identity part and the status word, allocates
+the status pages and the three interrupt objects, runs the XG
+initialisation, invalidates the whole map RAM and sets the Crossbow
+arbitration bit, in that order, :src:`dm2-driver-ip30-1.1.3 0x884`,
+*software expectation*. The one-wire exchange runs twice at attach, once
+to check the name and once to build the text the identity command returns
+(:src:`dm2-driver-ip30-1.1.3 0x5e8`, *software expectation*). The GIF
+identification word is read in one place only, the GIF initialisation,
+which the reset command below reaches after the library has loaded the GIF,
+:src:`dm2-driver-ip30-1.1.3 0x5c48`, *software expectation*. A model keeps
+that gating: the identification word reads as the GIF identification only
+once GIF DONE is set. What a read before then returns is *unknown*.
+
+The reset command carries one argument word, tested bit by bit in this
+order, :src:`dm2-driver-ip30-1.1.3 0xc268`, *software expectation*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Condition
+     - What the driver does
+   * - bits 0 or 2 set
+     - clears the video-control shadow of both pipes
+   * - bit 0 set
+     - if GIF DONE is set, stores 0 to both pipes' DMA control words,
+       then widget reset, XG initialisation, and invalidation of all
+       ``0x8000`` map RAM entries
+   * - bit 1 clear
+     - runs the GIF initialisation, with its re-initialise flag set when
+       bit 2 is set
+
+The library issues the command twice, with argument 3 (bits 0 and 1)
+after the GIF load and argument 4 (bit 2) after all eight loads. Argument 3
+resets the widget and the map RAM and skips the GIF initialisation.
+Argument 4 touches no widget state and runs the GIF initialisation with the
+flag set: it checks GIF DONE and the identification word, re-maps each
+pipe's status ring and guard entries, zeroes the ring pointer words,
+rewrites the initial DMA control shadows, clears the UST word and stores 0
+to ``0x800004``, :src:`dm2-driver-ip30-1.1.3 0x599c`, *software
+expectation*.
+
+After a widget reset the XG initialisation rewrites, in this order,
+control ``0x24`` (widget number, target and ``0x4200``), reads ``0x24``
+back, writes the destination words ``0x3c`` then ``0x34`` and the
+vectors ``0x5c``, runs a check that reads the error cause ``0x6c``, logs
+if it is non-zero, stores 0 to ``0x2c`` and writes ``0x6c`` back, sets
+bit 17 of ``0x24`` and finally rewrites the water marks ``0x74``,
+:src:`dm2-driver-ip30-1.1.3 0x55c0`, *software expectation*. The driver
+expects the error cause to read 0 after the reset, *software
+expectation*. A model's widget reset returns the XG block to its power-on
+values and leaves the configured FPGAs configured, an *approximation*: the
+seven loads after the first reset check GIF DONE, which makes that
+retention *inferred* for the real board, and what the reset does to the
+XG block is *unknown*. The power-up values of the XG and GIF registers are
+*unknown* and the model uses zero (:ref:`sgi-xt-digvid-model-choices`).
+
+After an FPGA reload the library rewrites every register of the reloaded
+block it uses: VIF control, input mux, active-video and lines-per-frame;
+the whole packer or unpacker block; the HDOC status, format and timing
+registers. It never relies on a value surviving a reload,
+:src:`dm2-library-1.1.3 0x409e50`, *software expectation*. Whether a
+reload clears the block or the other blocks is *unknown*; the model
+leaves each block's registers as written when a reload starts, an
+*approximation* that is irrelevant to this library because of the
+rewrites. The two colour converters and the CLINK FPGA are not reloaded
+after initialisation in SGI's module (:ref:`sgi-xt-digvid-flame` for
+Flame's). The CLINK UART reset pulse writes nothing the library needs
+again.
 
 .. _sgi-xt-digvid-fpga:
 
@@ -702,7 +833,8 @@ expectation*. GIF
 initialisation reads GIF DONE (bit 0 of ``0x120000``) and the GIF
 identification word, which is why the GIF image must have loaded before
 everything else, :src:`dm2-driver-ip30-1.1.3 0x599c`, *software
-expectation*.
+expectation*. :ref:`sgi-xt-digvid-reset` has the full reset argument
+rules.
 
 .. _sgi-xt-digvid-fpga-names:
 
@@ -1190,8 +1322,10 @@ driver keeps a shadow of every bit it keeps and rewrites the whole word,
        of writing 0 to a valid bit are *unknown*. A capture of a running
        board's control word would settle it.
    * - 4
-     - Abort. Set by the abort path: the shadow with bit 4 ORed in.
-     - *software expectation*
+     - Abort. The abort path writes the shadow with bit 4 ORed in and the
+       valid bits 3:0 and bit 16 clear.
+     - *software expectation*, :src:`dm2-driver-ip30-1.1.3 0x14bb0`. What
+       the board does with it is under "Abort" below.
    * - 16
      - Interrupt enable. Written with the valid bit at the start of a
        transfer and cleared at the end.
@@ -1206,11 +1340,40 @@ driver keeps a shadow of every bit it keeps and rewrites the whole word,
        GIF initialisation; they are driver-chosen, not reset values.
 
 A model keeps bits 3:0 as latches that clear on slot completion or abort,
-holds the abort bit, and reads the written word back for the bits in the
+holds nothing for the abort bit, and reads the written word back for the bits in the
 diagnostic's mask. The valid-latch behaviour, the clear on completion and
 treating a valid bit that arrives while the slot is armed as a no-op are
 an *approximation*. The model does not gate pipe interrupts on bit 16, and
 stores it, an *approximation* (:ref:`sgi-xt-digvid-int`).
+
+Abort
+~~~~~
+
+The driver consumes a slot-aborted flag exactly like a slot-done flag, in
+slot order from its completion counter: it posts a transfer error event
+and releases the slot, :src:`dm2-driver-ip30-1.1.3 0x36b24`, *software
+expectation*. At the end of every transfer it drains all four slots with
+no timeout, so after an abort write the board must report each armed,
+incomplete slot or the call never returns. That the board posts
+slot-aborted for every such slot, in arming order, instead of slot-done is
+therefore *inferred* (:src:`dm2-driver-ip30-1.1.3 0x18454`). Whether it posts one entry per armed slot or
+only for the slots it started, and whether an already posted slot-done is
+replaced, is *unknown*. What the valid bits and the abort bit do after an
+abort is *unknown*: the next writes (the bare shadow, then the next
+stream's valid-bit write) clear bit 4 either way. Bit 16 is clear in the
+abort write and in the end-of-stream write, yet the slot-aborted entries
+and their interrupts still have to arrive, so either bit 16 does not gate
+ring posting or it is also a set-only latch; which is *unknown*. A
+capture of the control word before and after an abort write on a running
+pipe would settle it.
+
+A model, on a control write with bit 4 set, posts slot-aborted for each
+armed incomplete slot of the pipe in arming order, one entry per slot,
+clears the valid latches, and does not retain the abort bit, an
+*approximation*.
+
+
+.. _sgi-xt-digvid-start:
 
 Start order
 -----------
@@ -1228,9 +1391,12 @@ The driver streams buffers through the four slots in turn,
    (``0x80200c``), which presumably fills the output FIFO first;
    that reason is *unknown*.
 4. It arms the slot by one control write: ``(1 << slot) | shadow |
-   0x10000``. In a replicate-a-field mode it holds the first slot, and when
-   a second is pending writes two words in a row, each with one valid bit,
-   to arm both. The flags that choose the mode are *unknown*.
+   0x10000``, when the raster's progressive flag or interleaved flag is
+   set and its frame-forcing flag is clear. Otherwise, for a single-field or
+   frame-forced path, it runs in a replicate-a-field mode: it holds the
+   first slot, and when a second is pending writes two words in a row, each
+   with one valid bit, to arm both (:ref:`sgi-xt-digvid-pipes`),
+   *software expectation*.
 5. At the end it clears the enable bit, stops interrupts, and, on the
    pipe on the IP27 and IP35 builds, stores the abort bit when it leaves
    with an error and the board reported none. The IP30 build does not
@@ -1243,8 +1409,65 @@ sleeps on a per-slot semaphore that the interrupt side posts from the
 status ring (:ref:`sgi-xt-digvid-ring`). A model completes a slot by
 writing a status entry with the slot's DONE bit.
 
+.. _sgi-xt-digvid-pipes:
+
+Pipe start, counters and timing
+-------------------------------
+
+Before the start ioctl the library programs the raster with a 28-byte
+block that the driver keeps in the pipe record; the driver fields behind
+the three flag halfwords that the start order tests are the raster's
+interleaved flag (1 for a progressive path, else 1 for interleaved and
+0 for single-field), its frame-forcing flag (the frame-forcing control) and
+its progressive flag (temporal sampling is progressive),
+:src:`dm2-library-1.1.3 0x40ba98`, *software expectation*. The raster
+block also holds the field size, the line order, the line length in words
+(which must be even), the two field lengths, an interlace mode, a stream
+counter increment and the video dominance. The driver refuses a raster
+whose line length is odd, whose progressive flag is set without
+the interleaved flag, or whose line length or field lengths reach 4096. The
+increment is read by the library (1 for progressive and single-field, 2 for
+interleaved interlaced) and not by the IP30 driver. None of these is a
+board register; the registers the driver derives from them are in
+:ref:`sgi-xt-digvid-gif`.
+
+An input pipe sets video enable before the first valid bit and an output
+pipe sets the valid bit and then video enable
+(:ref:`sgi-xt-digvid-start`). The input pipe needs a VBOB signal and
+the output pipe needs genlock lock unless the source is internal
+(:ref:`sgi-xt-digvid-vbob`); both gates are the library's.
+
+The stream counter. The library picks an initial device counter, 100 for a
+field-1-first or progressive stream and 101 otherwise, and the driver
+holds it in memory as its field counter (:src:`dm2-library-1.1.3
+0x40bfdc`, :src:`dm2-driver-ip30-1.1.3 0x15de4`, *software expectation*).
+No register carries it. The hardware counter in word 0 of each status
+entry has an unknown value at stream start: the driver neither writes it
+nor clears its extension. The model starts it at 0 when the pipe reset
+word is stored and counts one per field interrupt on the pipe, an
+*approximation*; a capture of word 0 across a start would settle it.
+
+Field parity. After each field interrupt of an interlaced pipe the driver
+adds one to its counter and compares the counter's low bit with the
+field-parity flag of the entry; on a difference it adds one more and logs
+(:src:`dm2-driver-ip30-1.1.3 0x3a0a4`, *software expectation*). A
+progressive pipe skips the check. Any alternating sequence is therefore
+accepted, and a stream that starts with the wrong parity costs one extra
+increment. The model's flag is 1 on the first field interrupt of a stream
+and alternates, an *approximation*; whether 1 means the second field in
+the video standard's sense is *unknown*.
+
+Whether video enable starts the pixel clock at once or at the next field
+boundary is *unknown*; a model starts both at the next field boundary of
+its timing. An input pipe also has a driver timer of 200 ticks, armed at
+video enable and cancelled by the first completion, and a signal-loss
+watchdog of 175 ticks that each field interrupt re-arms, both in the
+driver (:src:`dm2-driver-ip30-1.1.3 0x27fdc`, *software expectation*).
+They are not device behaviour, but a model that raises no field interrupts
+on an input pipe lets them abort the stream.
+
 The data transfer
------------------
+~~~~~~~~~~~~~~~~~
 
 The extent of a slot's transfer, the line order, the interleave and the
 packing are fixed by the raster registers and the loaded packer and
@@ -1255,9 +1478,10 @@ the slot's first start address, and transfers no payload bytes, an
 *approximation*. Output frames are discarded and input buffers keep their
 previous content. What a slot transfer reads and writes would be settled
 by decoding the raster registers against the manual's packing tables
-(:src:`007-4317-001 5`, :src:`007-4317-001 6`). The model's field period is that of the timing
-the virtual VBOB was configured with, and 1001/60000 seconds when none has
-been, also an *approximation*.
+(:src:`007-4317-001 5`, :src:`007-4317-001 6`). The field period is taken
+from the timing record the virtual VBOB last received
+(:ref:`sgi-xt-digvid-vbob`), with the property override and the
+1001/60000 s default.
 
 .. _sgi-xt-digvid-ring:
 
@@ -1348,16 +1572,18 @@ copies sees whole entries.
      - slot completed
    * - 12 to 15
      - slot aborted 0 to 3
-     - slot aborted
+     - slot aborted; the board posts it for each armed incomplete slot
+       after an abort write (*inferred*)
    * - 16, 17
      - current-slot 0 and 1
      - named by the driver's dump, never tested
    * - 18
      - link transmit done
-     - VBOB message acknowledge
+     - VBOB message acknowledge; either ring wakes the sender
    * - 19
      - link receive done
-     - VBOB message received
+     - VBOB message received; the library expects genlock notifications
+       on pipe 0's ring and input notifications on pipe 1's (*inferred*)
    * - 20 to 31
      - none
      - not tested
@@ -1422,30 +1648,41 @@ The host writes a 24-byte message as twelve 32-bit stores to window
 offset ``0x803804 + 8*k`` (``k`` from 0 to 11). Word ``k`` holds
 bytes ``2k`` and ``2k+1`` as bits 15:8 and 7:0, zero extended. It then
 stores 1 to the doorbell at ``0x8038ec``,
-:src:`dm2-driver-ip30-1.1.3 0xb530`, *software expectation*. The driver
-holds one lock per pipe and waits up to 250 clock ticks for the ack, then
-resets the pipe's status ring pointer and its page, and returns an error
-that the library retries once.
+:src:`dm2-driver-ip30-1.1.3 0xb530`, *software expectation*. The send
+lock, the "ack outstanding" flag and the sleeping sender belong to the
+board, not to a pipe, so one send is outstanding at a time and a link
+transmit done flag in either pipe's ring wakes the sender,
+:src:`dm2-driver-ip30-1.1.3 0x3617c`, *software expectation*. The driver
+waits up to 250 clock ticks for the ack. On a timeout it resets the
+status ring pointer of the pipe the ioctl named, clears that pipe's
+status page and returns an error that the library retries once.
 
-The device must raise link transmit done (:ref:`sgi-xt-digvid-ring`) after
-the doorbell, within the 250 ticks, in the ring of the pipe the message
-names. Which ring the real board uses, and whether the ack comes from the
-CLINK transmitter or from the VBOB, are *unknown*. A model acks in the
-ring of the pipe in byte 1 of the message at the next opportunity, an
-*approximation*; a capture with the VBOB unplugged would settle it.
+The device must raise link transmit done (:ref:`sgi-xt-digvid-ring`) in
+either ring within the 250 ticks of each doorbell. Whether the real ack
+comes from the CLINK transmitter or from the VBOB is *unknown*. A model
+acks in the ring of the pipe in byte 1 of the message in the same
+operation as the doorbell, an *approximation*; a capture with the VBOB
+unplugged would settle it.
 
 Receive
 -------
 
 A frame from the VBOB is twelve 32-bit words at ``0x803884 + 8*k``, the
-low 16 bits of each holding two message bytes high then low, with
-link receive done set in the ring. The driver reads the words, stores 1 to
-``0x8038f4`` to release the buffer, and posts the frame as an event,
-:src:`dm2-driver-ip30-1.1.3 0x35c00`, *software expectation*. The device
-must not deposit a second frame until the host has stored 1 to
-``0x8038f4`` (*inferred*). Which pipe's ring carries the flag is
-*unknown*; a model uses the ring of the frame's pipe byte, an
-*approximation*.
+low 16 bits of each holding two message bytes high then low, with link
+receive done set in a ring. The driver reads the words, stores 1 to
+``0x8038f4`` to release the buffer, and posts the frame as an event to
+the pipe whose ring held the flag, :src:`dm2-driver-ip30-1.1.3 0x35c00`,
+*software expectation*. A pipe with no open path drops the frame after
+releasing the buffer. The device must not deposit a second frame until
+the host has stored 1 to ``0x8038f4`` (*inferred*).
+
+A library handle for a path listens on its own pipe's node only, so it
+sees only frames the board delivers on that pipe's ring, and a handle
+that opened a bare jack never receives a reply,
+:src:`dm2-library-1.1.3 0x40998c`, *software expectation*. Which ring the
+real board uses for a given frame is *unknown*. A model delivers a
+frame on the ring of the pipe named by byte 1 of the frame, the rule
+the library's threads assume, an *approximation*.
 
 Frame format
 ------------
@@ -1461,19 +1698,45 @@ Every message builder fills a zero-initialised 24-byte frame,
    * - 0
      - count of bytes that follow (the last used index)
    * - 1
-     - pipe: 0 output (cable A), 1 input (cable B)
+     - pipe number: 0 output side, 1 input side
    * - 2
      - register number; bit 7 set means a write
    * - 3 and up
      - data
 
-That byte 1 selects a cable is *inferred*.
+Byte 1 of every request equals the pipe word of the send command, and the
+driver refuses a pipe number above 1, :src:`dm2-library-1.1.3 0x41046c`,
+*software expectation*. That byte 1 selects a cable is *inferred*. The
+library never reads byte 0 or byte 1 of a received frame, so their
+contents in a reply or notification are *unknown*; it reads byte 2 and
+bytes 3 to 9, and tests byte 0 for non-zero in a reply,
+:src:`dm2-library-1.1.3 0x40cad0`, *software expectation*. A model fills
+byte 0 with the count of used bytes, byte 1 with the request's byte 1 and
+byte 2 with the register number, an *approximation*.
+
+Pipe start gates
+----------------
+
+The library, not the board, refuses to start a transfer unless the VBOB
+answers as follows, :src:`dm2-library-1.1.3 0x40c29c`, *software
+expectation*:
+
+- An input path asks the input-signal reply (below) and compares the
+  detected timing of its slot with the path's timing. An absent or
+  different signal abandons the start. The two graphics inputs and a path
+  with the loopback control on skip the check.
+- An output path whose genlock source is not internal, and which is not
+  already marked locked, asks the sync-state reply (below). An unlocked
+  result abandons the start.
+
+Nothing the VBOB says is read again after the start; the driver's
+signal-loss watchdog takes over (:ref:`sgi-xt-digvid-pipes`).
 
 Messages the virtual endpoint accepts
 -------------------------------------
 
-Set messages are acknowledged with link transmit done only. Get messages are
-answered with a frame. Module function addresses refer to
+Set messages are acknowledged with link transmit done only. Get messages
+are answered with a frame. Module function addresses refer to
 :src:`dm2-library-1.1.3`, *software expectation* for every row.
 
 .. list-table::
@@ -1488,39 +1751,41 @@ answered with a frame. Module function addresses refer to
      - W
      - 4
      - byte 3 = 1, byte 4 = 2 if the argument is non-zero else 1
-     - Store the TV standard.
+     - Store the TV standard. Which standard is which is *unknown*.
    * - ``0x21``
      - W
      - 3
-     - byte 3 = ``8 | code`` in the high nibble when the second argument
-       is 0, the low nibble when non-zero. Codes: internal 0, jack A 1,
-       jack B 2, analog 3.
-     - Store the source for each nibble. The second message overwrites the
-       whole byte. Which nibble belongs to which pipe is *unknown*.
+     - byte 3 is one nibble: ``8 | code`` in the high nibble for an HD
+       handle, in the low nibble for an SD handle; the other nibble is 0.
+       Wire codes: internal 0, jack A 1, jack B 2, analog 3.
+     - Store the source of the side the nibble names; a zero nibble leaves
+       the other side as it was (*inferred*).
    * - ``0x22``
      - W
      - 18
-     - timing record: byte 3 = 6 for SD (525 or 625), else 5; bytes 4 to
-       17 are line and sample counts; byte 18 = 4 for a 74.18 MHz pixel
-       clock, 5 for 74.25 MHz, 1 otherwise.
-     - Store the timing and take the field period from it.
-   * - ``0x24``, ``0x25``
+     - timing record, below
+     - Store the record and derive the field period from it.
+   * - ``0x24``
      - W
      - 4
-     - bytes 3 and 4 are routing codes 1 to 10; pipe 1 uses ``0x24``,
-       pipe 0 ``0x25``
+     - byte 3 destination port, byte 4 source port; input paths
+     - Store; no effect.
+   * - ``0x25``
+     - W
+     - 4
+     - as ``0x24``; output paths
      - Store; no effect.
    * - ``0x25``
      - R
      - 3
      - byte 3 = route code
-     - Reply with byte 0 non-zero and byte 4 = the stored routing code
-       for the pipe.
+     - Reply with byte 0 non-zero and byte 4 = the stored route code of the
+       mode.
    * - ``0x26``
      - W
      - 3
      - byte 3 = ``0x80`` if the argument is non-zero else 0
-     - Store the sync-state enable.
+     - Store the sync-change notification enable (*inferred*).
    * - ``0x26``
      - R
      - 2
@@ -1530,11 +1795,11 @@ answered with a frame. Module function addresses refer to
      - W
      - 3
      - byte 1 = 1; byte 3 = ``0x80`` if non-zero else 0
-     - Store the input-signal enable.
+     - Store the input-signal notification enable (*inferred*).
    * - ``0x27``
      - R
      - 2
-     - byte 1 = a context flag
+     - byte 1 = 1 on an input handle, else 0
      - Reply with the input-signal frame below.
    * - ``0x28``
      - W
@@ -1545,40 +1810,298 @@ answered with a frame. Module function addresses refer to
    * - ``0x40``
      - R
      - 2
-     - byte 1 = index
-     - Reply with 24 bytes; no library path parses the reply.
-       The model returns a frame whose byte 0 is 1, byte 1 is the
-       index, byte 2 is ``0x40`` and the rest is zero.
+     - byte 1 = a pipe number
+     - Reply with 24 bytes; no library path parses the reply. A model
+       returns byte 0 = 1, byte 1 = the request's byte 1, byte 2 =
+       ``0x40`` and zeros.
    * - ``0x47``
      - W
      - 7
      - bytes 3 to 7 are the ASCII text ``RESET``
-     - Reset the endpoint's state to power-on (internal genlock, no
-       input signal, default routing).
+     - Reset the endpoint to power-on (internal genlock, no input signal,
+       default routing).
 
-The routing codes, the TV standard values and the info reply's content
-are *unknown*; the board's side of the cables and the VBOB's firmware are
-not described by any source this page uses. The reply frames follow.
+Writes to registers ``0x26`` and ``0x27`` go out with bit 7 of byte 2 set
+(the register ids ``0xa6`` and ``0xa7``), the same ids the VBOB later
+sends back unsolicited,
+:src:`dm2-library-1.1.3 0x4100cc`, *software expectation*. The TV
+standard values, the info reply's content and the meaning of the
+enable writes are *unknown*; the VBOB's firmware is not described by any
+source this page uses.
 
-A reply frame is matched to nothing: any received frame becomes the
-answer to a pending get, the module waits 3 seconds (the unit is
-*inferred*), and a reply whose byte 0 is zero counts as a failure. A
-model answers within the same operation as the doorbell, so a get
-completes promptly and the 3 second wait never fires, an *approximation*.
-Frames the endpoint sends unrequested while a get is pending corrupt the
-get; the model sends none while a get is outstanding, which is a
-*software expectation* of the library's receive path
-(:src:`dm2-library-1.1.3 0x4103a0`).
+Timing record
+~~~~~~~~~~~~~
 
-The sync-state reply (message ``0x26`` read): byte 3 bit 0 is genlock
-LOCKED (1) or UNLOCKED (0) for the module's two defined selectors; byte 4,
-5 or 6 is the detected timing code, depending on the selector; byte 3 bit
-3 or bit 2 means "illegal combination", :src:`dm2-library-1.1.3
-0x414cb8`, *software expectation*. The input-signal reply (message
-``0x27`` read) carries six detected timing codes in bytes 4 to 9, one per
-jack or pipe slot, :src:`dm2-library-1.1.3 0x40ee90`, *software
-expectation*; what each slot means is *unknown*. The detected timing is
-a wire code mapped to an ML timing number:
+Message ``0x22`` is built from the row of the module's timing table for the
+path's timing (30 rows of 88 bytes, :src:`dm2-library-1.1.3 0x41c6d0`) and
+the path's selected video heights, :src:`dm2-library-1.1.3 0x40fbf0`,
+*software expectation*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Byte
+     - Value
+   * - 0, 1, 2
+     - ``0x12``, 0, ``0xa2`` (count 18, pipe 0, register ``0x22`` write)
+   * - 3
+     - 6 for a standard-definition timing (525 or 625), else 5
+   * - 4, 5
+     - samples per line, big endian
+   * - 6, 7
+     - active samples per line (the row's width)
+   * - 8, 9
+     - lines per frame
+   * - 10, 11
+     - the path's video height 1: active lines of field 1
+   * - 12, 13
+     - lines per frame for a progressive row, else the first line of field 2
+   * - 14, 15
+     - 0 for a progressive row, else the path's video height 2
+   * - 16
+     - lines from the start of field 1 to its first active line
+   * - 17
+     - the same for field 2 (0 for a progressive row)
+   * - 18
+     - 4 if the row's pixel clock equals the constant 74.18, 5 if 74.25,
+       else 1
+
+The clock compare is an exact compare against the truncated 74.18, and
+the table carries 74.18 for every 59.94-family HD row. Code 4 therefore
+means a 74.25/1.001 MHz pixel clock, code 5 a 74.25 MHz clock and code 1
+any other (the 27 MHz standard-definition rows and the 148.5 MHz rows),
+:src:`dm2-library-1.1.3 0x4203a8`; the meaning of 4 is *inferred* from the
+rows' frame rates. For a custom format the row is the 1080 59.94i row with
+its members replaced by the format the application defined.
+
+From the record a model takes the periods of its output raster, an
+*approximation* because that the VBOB derives its raster this way is
+*unknown*:
+
+- line period = samples per line (bytes 4 and 5) divided by the luma
+  clock: 74.25 MHz for code 5, 74.25/1.001 MHz for code 4, and 13.5 MHz
+  for byte 3 = 6 (*inferred*: the table's 27 MHz for those rows is the
+  multiplexed Y/C clock);
+- frame period = lines per frame (bytes 8 and 9) times the line period;
+- field period = the frame period for a progressive record (bytes 14 and
+  15 zero), else half of it.
+
+The rows the named timings reach, all *software expectation*, are:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Timing
+     - Bytes 4, 5
+     - Bytes 8, 9
+     - Bytes 12, 13
+     - Byte 16
+     - Byte 17
+     - Byte 18
+     - Field period
+   * - 525
+     - 858
+     - 525
+     - 266
+     - 16
+     - 17
+     - 1
+     - 16.683 ms
+   * - 625
+     - 864
+     - 625
+     - 313
+     - 22
+     - 23
+     - 1
+     - 20.000 ms
+   * - 1080 60i
+     - 2200
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 5
+     - 16.667 ms
+   * - 1080 59.94i
+     - 2200
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 4
+     - 16.683 ms
+   * - 1080 50i
+     - 2640
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 5
+     - 20.000 ms
+   * - 1080 30p
+     - 2200
+     - 1125
+     - 1125
+     - 41
+     - 0
+     - 5
+     - 33.333 ms
+   * - 1080 29.97p
+     - 2200
+     - 1125
+     - 1125
+     - 41
+     - 0
+     - 4
+     - 33.367 ms
+   * - 1080 25p
+     - 2640
+     - 1125
+     - 1125
+     - 41
+     - 0
+     - 5
+     - 40.000 ms
+   * - 1080 24p
+     - 2750
+     - 1125
+     - 1125
+     - 41
+     - 0
+     - 5
+     - 41.667 ms
+   * - 1080 23.98p
+     - 2750
+     - 1125
+     - 1125
+     - 41
+     - 0
+     - 4
+     - 41.708 ms
+   * - 1080 24 PsF
+     - 2750
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 5
+     - 20.833 ms
+   * - 1080 23.98 PsF
+     - 2750
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 4
+     - 20.854 ms
+   * - 1080 25 PsF
+     - 2640
+     - 1125
+     - 564
+     - 20
+     - 20
+     - 5
+     - 20.000 ms
+   * - 1035 59.94i
+     - 2200
+     - 1125
+     - 564
+     - 40
+     - 39
+     - 4
+     - 16.683 ms
+   * - 720 60p
+     - 1650
+     - 750
+     - 750
+     - 25
+     - 0
+     - 5
+     - 16.667 ms
+   * - 720 59.94p
+     - 1650
+     - 750
+     - 750
+     - 25
+     - 0
+     - 4
+     - 16.683 ms
+
+The periods are arithmetic on the record's bytes. The table's own frame rate
+for the 525 row is 30.0 and for the 25 PsF row 24.0, but the record carries
+only the counts and the clock code, so the VBOB sees 29.97 Hz and 25 Hz
+(*inferred*).
+
+A model takes the field period from the latest timing record. A property
+overrides it, and with no record and no override the period is
+1001/60000 s, each an *approximation*. A capture of the VBOB's output
+against a known record would settle it.
+
+Replies and status
+------------------
+
+A reply frame is matched to nothing: any received frame that is not a
+notification becomes the answer to a pending get, the module waits 3 seconds
+for it (the unit is *inferred*), and a reply whose byte 0 is zero counts as
+a failure, :src:`dm2-library-1.1.3 0x4103a0`, *software expectation*. A
+model answers within the same operation as the doorbell, so the wait never
+fires, and sends no unrequested frame while a get is outstanding, an
+*approximation*.
+
+The reply to a read of register ``0x26`` or ``0x27`` is probably framed
+with byte 2 equal to ``0xa6`` or ``0xa7`` and byte 3 bit 7 clear, which is
+what separates it from a notification (*inferred*).
+
+**Sync-state reply** (read of ``0x26``). Byte 3 holds one lock bit and one
+illegal-combination bit per genlock side: bit 0 SD locked, bit 1 HD
+locked, bit 2 SD illegal combination, bit 3 HD illegal combination.
+Byte 4 is the HD detector's timing code and byte 5 the SD detector's,
+:src:`dm2-library-1.1.3 0x40c730`, *software expectation*; the names of
+the bits are *inferred*. The library's lock-state getter tests bit 0 for
+both sides, so an HD handle reads the SD lock bit there while the
+notification handler and the start check test bit 1; that this is a
+defect is *inferred*. A model sets bits 0 and 1 together on a lock and
+clears them together, so both readings agree.
+
+**Error status** derived from the reply, :src:`dm2-library-1.1.3 0x40ce60`,
+*software expectation*: a detected timing of none gives no signal, unknown
+gives unknown signal, otherwise illegal combination if bit 2 (SD) or bit 3
+(HD) is set, else none. Timing mismatch is produced by the notification
+handler and by the start check: when the VBOB reports lock but the
+handle's reference timing is neither autodetect nor equal to the detected
+timing, the status is timing mismatch and the handle counts as unlocked.
+An HD handle that asks for 1080 25 PsF is satisfied by a detected 1080 50i,
+:src:`dm2-library-1.1.3 0x40c7e8`, *software expectation*.
+
+**Input-signal reply** (read of ``0x27``). Six detected timing codes at
+bytes 4 to 9. The library picks the slot by path and reference source,
+:src:`dm2-library-1.1.3 0x40ee90`, *software expectation*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Path
+     - Jack A
+     - Jack B
+     - Analog
+   * - HD output
+     - byte 4
+     - byte 5
+     - byte 8
+   * - SD output
+     - byte 6
+     - byte 7
+     - byte 9
+
+An HD input path reads byte 4 (byte 5 when the module's link-swap
+override is set) and an SD input path byte 6 (byte 7). Any other pair
+returns an error. Reading the slots as per-side detectors (4 and 5 for the
+HD side on digital inputs A and B, 6 and 7 for the SD side, 8 and 9 the
+analog reference of each side) is *inferred*.
+
+**Detected timing codes** map to the ML timing numbers as follows; the
+VBOB-side names are the constants of the module's own protocol enum:
 
 .. list-table::
    :header-rows: 1
@@ -1588,7 +2111,7 @@ a wire code mapped to an ML timing number:
      - Wire
      - Timing
    * - 0
-     - unknown
+     - unknown (the internal reference)
      - 9
      - 1080 29.97p
    * - 1
@@ -1606,11 +2129,11 @@ a wire code mapped to an ML timing number:
    * - 4
      - 625
      - 13
-     - 1080 23.98 PsF
+     - 1080 23.98 PsF (reported as interlaced at twice the rate)
    * - 5
      - 720 59.94p
      - 14
-     - 1080 24 PsF
+     - 1080 24 PsF (reported as interlaced at twice the rate)
    * - 6
      - 720 60p
      - 15
@@ -1625,9 +2148,12 @@ a wire code mapped to an ML timing number:
      - 1035 59.94i
 
 Codes 18 and above map to unknown, and no code maps to 1080 25 PsF, which
-is a selectable source timing, :src:`dm2-library-1.1.3 0x4077c0`,
-*software expectation*. The standard timings the board supports are those
-of the manual's Table 1-1, "Supported Video Timings"
+is a selectable source timing; the library treats a 50i detection as
+satisfying a 25 PsF request,
+:src:`dm2-library-1.1.3 0x4077c0`, *software expectation*. Codes 9 and 10
+are timings the library never offers in its own genlock lists, *inferred*
+reported-only. The standard timings the board supports are those of the
+manual's Table 1-1, "Supported Video Timings"
 (:src:`007-4317-001 4`, *established*); the HD genlock input and output
 pairs are Table 5-3 (:src:`007-4317-001 71`, *established*).
 
@@ -1637,66 +2163,128 @@ Genlock and lock reporting
 Genlock lets the VBOB lock the output timing to an external reference:
 SD output locks to a 525 or 625 reference on the VBOB's SD video or SD
 genlock input; HD output locks to a supported HD reference on the HD
-video input or HD genlock input (:src:`007-4317-001 70`, *established*). The
-genlock source is one of digital jack A, jack B, analog or internal,
-sent to the VBOB with message ``0x21``. The lock detector and the
-generator are in the VBOB, which holds a genlock FPGA; no register on the
-board is named for genlock, :src:`dm2-library-1.1.3 0x40ff20`, *software
-expectation*. The module reports it to applications as an unlocked,
-locked or unknown state and as an error status of none, no signal, unknown
-signal, illegal combination or timing mismatch, derived from the sync-state
-reply: ML timing none gives no signal, unknown gives unknown signal,
-otherwise an illegal-combination bit gives illegal combination, else none;
-timing mismatch is not derived from the reply,
-:src:`dm2-library-1.1.3 0x40ce60`, *software expectation*. Lock change is
-reported as the events sync lost and sync gained, and an input timing
-that differs from the requested one produces the same events or an
-error before a transfer starts (:src:`007-4317-001 70`, :src:`007-4317-001
-82`, *established*).
+video input or HD genlock input (:src:`007-4317-001 70`, *established*).
+The manual also says 525 and 625 can be used only as a reference on the
+HD genlock input, not on the HD video input (:src:`007-4317-001 70`,
+*established*). No shipped binary tests that, and the library's tables
+carry 525 and 625 in the reference list of both output jacks
+(:src:`dm2-library-1.1.3 0x41db38`, *software expectation*), so a model
+does not enforce it.
 
-Unrequested frames carry changes: a frame with byte 2 equal to ``0xa6``
-or ``0xa7`` and byte 3 bit 7 set is consumed by the module's receive
-thread and never answers a get, :src:`dm2-library-1.1.3 0x40cad0`,
-*software expectation*. ``0xa6`` is a sync change: for one selector the
-module reads byte 5 as the timing and byte 3 bit 0 as gained, for another
-byte 4 and bit 1; a gained bit set posts a sync-gained event, a clear
-bit reads the error status and posts a loss. ``0xa7`` is an input signal
-change: the module reads byte 7 or 6, or byte 5 or 4, by selector, and
-posts an input-changed event if the timing differs from its stored one.
-That a set bit means signal good is *inferred*; which selector value
-serves which pipe and format family is *unknown*.
+The module's reference choice is per output jack. The library enum is
+jack A 0, jack B 1, analog 2, internal 3, and the wire code is internal 0,
+jack A 1, jack B 2, analog 3 (:src:`dm2-library-1.1.3 0x40ff58`,
+*software expectation*); an unknown value is sent as internal. The SD
+output jack accepts a reference timing of autodetect, 525 or 625; the HD
+output jack accepts autodetect, 525, 625 and every HD timing of
+Table 5-3. The module sends a message only when the requested source
+differs from the current one. The lock detector and the generator are in
+the VBOB, which holds a genlock FPGA; no register on the board is named
+for genlock, :src:`dm2-library-1.1.3 0x40ff20`, *software expectation*.
 
-The virtual endpoint's behaviour:
+The module reports lock to applications as a state of unlocked, locked or
+unknown and an error status of none, no signal, unknown signal, illegal
+combination or timing mismatch; the events sync lost and sync gained
+carry the detected timing and the status (:src:`007-4317-001 82`,
+*established*).
 
-- It holds a genlock source per nibble and a detected input timing per
-  jack slot, each a property, and a flag for each of four reference
-  signals present, an *approximation*.
+Unrequested frames carry changes. A frame with byte 2 equal to ``0xa6`` or
+``0xa7`` and byte 3 bit 7 set is consumed by the module's receive thread
+and never answers a get, :src:`dm2-library-1.1.3 0x40cad0`, *software
+expectation*.
+
+- ``0xa6`` is a genlock sync change. Only a handle on pipe 0 acts on it,
+  and it is ignored when that handle's source is internal. For the SD
+  output path the module reads byte 5 as the detected timing and byte 3
+  bit 0 as locked; for the HD output path byte 4 and bit 1. A locked
+  frame sets the handle's lock mark and, once, posts sync gained; an
+  unlocked frame clears the mark, picks the error status and, while a
+  transfer runs, posts sync lost.
+- ``0xa7`` is an input signal change. An SD input path reads byte 6 and an
+  HD input path byte 4 (bytes 7 and 5 with the link-swap override),
+  compares the code with the path's timing and posts signal present or
+  signal lost. Only input paths, whose pipe is 1, act on it.
+
+That a set bit means locked or signal present is *inferred*; which ring
+carries each frame is *inferred* from the pipe each handle listens on
+(:ref:`sgi-xt-digvid-vbob`).
+
+The virtual endpoint's behaviour, an *approximation* throughout:
+
+- It holds a genlock source per side, a detected timing per input-signal
+  slot and a present flag per slot, each a property.
 - Internal genlock is always locked, with the detected timing equal to the
-  output timing configured by message ``0x22``.
-- An external source is locked when a reference of a timing compatible
-  with the configured output timing is present on that jack, and
-  unlocked with the no-signal error otherwise. "Compatible" is the
-  manual's list of supported genlock input timings (:src:`007-4317-001
-  70`), with 525 and 625 valid only as a reference on the HD genlock input
-  and never on the HD video input.
-- When the locked state changes it sends an ``0xa6`` frame with byte 3 =
-  ``0x80`` plus both bit 0 and bit 1 set when locked and neither when not,
-  byte 2 = ``0xa6`` and bytes 4 and 5 both holding the detected timing
-  code, so either selector reads the same answer. When an input signal
-  appears or goes it sends an ``0xa7`` frame with byte 3 = ``0x80`` and
-  bytes 4 to 7 all holding the detected timing code.
-- It answers the sync-state reply with byte 3 bit 0 the lock state and
-  bytes 4 to 6 the detected timing, and the input-signal reply with the
-  six slots filled from the properties.
+  output timing of the latest record in message ``0x22``.
+- An external source is locked when its slot holds a timing that Table 5-3
+  (HD output) or the SD list (SD output) pairs with the configured output
+  timing, and unlocked with the no-signal error otherwise.
+- When the locked state of a side changes it sends an ``0xa6`` frame with
+  byte 2 = ``0xa6``, byte 3 = ``0x80`` plus bit 0 for the SD side or bit 1
+  for the HD side when locked, and the side's detected timing code in
+  byte 4 (HD) or byte 5 (SD); it sends it on the ring of pipe 0. When an
+  input signal appears or goes it sends an ``0xa7`` frame with byte 3 =
+  ``0x80`` and the detected timing in bytes 4 and 6 (the HD and SD input
+  slots), and the matching input-change flags in the pipe 1 ring.
+- It answers the sync-state reply with both lock bits equal to the lock
+  state of the side that asked and the detected timing in bytes 4 and 5,
+  and the input-signal reply with the six slots filled from the
+  properties.
 - With the default of no reference signals and no input signal, the
-  output pipe runs from the internal timing and the input pipe produces
-  no field interrupts.
+  output pipe runs from the internal timing, an output path with an
+  external source stays unlocked, and the input pipe produces no field
+  interrupts.
 
-All of it is an *approximation*: the real VBOB's reply layouts beyond the
-bytes the library reads, its lock time and its notification rules are
-*unknown*. The VBOB's own firmware (flashed by SGI's flash tools over the
-same channel) and the manual's cabling table (:src:`007-4317-001 30`)
-would settle them; the flashing protocol is not supported.
+The real VBOB's reply layouts beyond the bytes the library reads, its lock
+time and its notification rules are *unknown*. The VBOB's own firmware (not
+shipped) would settle them; the flashing protocol is not supported.
+
+Ports and routing
+-----------------
+
+Every path owns a path index: 0 HD serial input, 1 HD serial output, 2 HD
+graphics input, 3 SD serial input, 4 SD serial output, 5 SD graphics input
+(:src:`dm2-library-1.1.3 0x41fa18`, *software expectation*). Routing sends
+two messages per call, register ``0x24`` for input paths and ``0x25`` for
+output paths, each setting one crosspoint with the destination port in
+byte 3 and the source port in byte 4,
+:src:`dm2-library-1.1.3 0x40f1f0`, *software expectation*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Path
+     - Messages (source to destination)
+     - Register
+   * - 0 HD input
+     - 1 to 5, 2 to 6
+     - ``0x24``
+   * - 2 HD graphics input
+     - 7 to 5, 8 to 6
+     - ``0x24``
+   * - 3 SD input
+     - 3 to 5, 4 to 6
+     - ``0x24``
+   * - 5 SD graphics input
+     - 7 to 5, 8 to 6
+     - ``0x24``
+   * - 1 HD output
+     - 5 to 1, 6 to 2
+     - ``0x25``
+   * - 4 SD output
+     - 5 to 3, 6 to 4
+     - ``0x25``
+
+Port codes 1 and 2 are the two HD serial jacks, 3 and 4 the two SD serial
+jacks, 5 and 6 the two links to the board, 7 and 8 the graphics-side feeds
+and 9 and 10 internal test sources, *inferred* from the route symmetry and
+from a shipped confidence script, which labels the VBOB's coax jacks
+"HD out 1" and 2, "HD in 1" and 2, "SD out 1" and 2 and "SD in 1" and 2 and
+loops each output to the input with the same number; no shipped code names
+a port's jack. The library's digital jack A and B are the numbers 1 and 2
+of the handle's definition, also *inferred*. Three environment overrides
+change the codes of a route (test sources 9 and 10, swapped links) and are
+not used in normal operation. The endpoint stores each message and acts on
+none.
 
 .. _sgi-xt-digvid-flame:
 
@@ -1766,6 +2354,9 @@ an *approximation*; the last column says what would settle it.
      - the Bridge's one-wire master layout at ``0x9c``, a record named
        ``XT-DIGVID`` and the part ``030-1653-002``
      - the accessor's bit layout, a captured NIC read
+   * - NIC revision letter
+     - ``G``; nothing validates it
+     - more captures of real boards
    * - Unimplemented offsets and non-word accesses
      - read zero, write ignored, logged
      - a capture of a stray access
@@ -1787,6 +2378,24 @@ an *approximation*; the last column says what would settle it.
      - latches that clear on slot completion or abort; a valid bit for an
        armed slot is a no-op
      - a capture of the control word on a running board
+   * - Abort
+     - slot-aborted posted for each armed incomplete slot in arming order,
+       latches cleared, abort bit not retained, bit 16 not gating
+     - control-word captures before and after an abort write
+   * - Invalid map RAM entry
+     - cause bit 13, error interrupt, entry offset in ``0x94``, and
+       slot-aborted for the slot
+     - a capture of the ring and ``0x6c`` after a transfer to an unmapped
+       page
+   * - Widget reset
+     - XG block back to zero, FPGAs stay configured, map RAM invalid
+     - what the reset does to the XG block and the FPGAs
+   * - Stream counter and field parity
+     - word 0 starts at 0 at the pipe reset word and counts field
+       interrupts; the parity flag is 1 on the first field interrupt and
+       alternates
+     - a capture of word 0 across a start; the parity polarity against a
+       known source
    * - Interrupt gating
      - a status entry raises its pipe's video interrupt when the
        vector word's enable bit is set; control bit 16 is stored and
@@ -1800,8 +2409,11 @@ an *approximation*; the last column says what would settle it.
        address's page is checked against the map RAM; no payload bytes
      - decoding the raster registers against the packing tables
    * - Field period
-     - that of the timing the endpoint was given, else 1001/60000 s
-     - the manual's timing tables and a capture
+     - derived from the latest timing record (line period from the
+       samples per line and the luma clock, frame period from the lines per
+       frame, half of it when interlaced), with a property override and
+       1001/60000 s before any record
+     - the VBOB's output against a known record
    * - Status entry body and flags
      - word 0 the 24-bit field counter, flag 1 as 0, field parity the low bit of the
        field-interrupt count, current-slot 0, bytes 8 to 127 zero
@@ -1815,22 +2427,25 @@ an *approximation*; the last column says what would settle it.
    * - Pipe reset words ``0x80006c``, ``0x80007c``
      - restart the completion counter
      - the interrupt service's use of the counter
-   * - Transmit ack
+   * - Transmit ack timing
      - a link transmit done entry in the ring of the message's pipe, in the
-       same operation as the doorbell
+       same operation as the doorbell; either ring wakes the sender
      - a capture with the VBOB unplugged
    * - Receive ring and the frame release
      - the ring of the frame's pipe byte; one frame at a time until the
        host stores 1 to ``0x8038f4``
      - a capture of a frame's ring
-   * - VBOB reply layouts, info reply and routing codes
+   * - VBOB reply bytes 0 and 1, info reply, TV standard values
      - as the message table
      - the VBOB's firmware messages
+   * - Port codes of the routing messages
+     - stored, no effect
+     - the VBOB's firmware or the guide's cabling table
    * - Genlock lock rule and notifications
      - as :ref:`sgi-xt-digvid-vbob`
      - the VBOB firmware messages or a captured lock change
-   * - Error causes raised
-     - bit 13 only
+   * - Other error causes
+     - never raised
      - a hardware reference for when each fires
    * - Colour converter registers
      - the programmable layout; writes stored, no conversion
@@ -1853,7 +2468,7 @@ merely approximate.
   frames.
 - **The VBOB side of the link.** The messages the module sends are
   covered, but the VBOB's replies beyond the bytes the module reads, its
-  lock behaviour and the meaning of the routing codes are in the VBOB's
+  lock behaviour and the meaning of the port codes are in the VBOB's
   firmware, which no source here describes.
 
 .. _sgi-xt-digvid-limits:
