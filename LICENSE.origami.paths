@@ -116,6 +116,7 @@ hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
 hw/input/psitech-rad4-km.c
 hw/input/sgi-ioc3-kbc.c
+hw/input/wacom-iv.c
 hw/mips/origami-model-formats.json
 hw/mips/sgi/baseio-flash.c
 hw/mips/sgi/baseio.c
@@ -1248,6 +1249,7 @@ tests/qtest/sgi-cdrom-test.c
 hw/scsi/sgi-scsi-cd.c
 include/hw/scsi/sgi-scsi-cd.h
 tests/qtest/sgi-scsi-cd-test.h
+tests/qtest/wacom-iv-test.c
 tools/sgi/qemu-sgi-l2-hub.c
 
 scripts/sgi_model/settings.py

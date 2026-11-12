@@ -64,3 +64,9 @@ sgi_ioc3_kbc_activate_keyboard(const char *path, bool active) "%s active %d"
 # psitech-rad4-km.c
 psitech_rad4_km_write(uint64_t addr, uint64_t val, unsigned int size) "addr 0x%"PRIx64" val 0x%"PRIx64" size %u"
 psitech_rad4_km_read(uint64_t addr, uint64_t val) "addr 0x%"PRIx64" -> 0x%"PRIx64
+
+# wacom-iv.c
+wacom_iv_line(int speed, int parity, int data_bits, int stop_bits) "speed %d parity %c data %d stop %d"
+wacom_iv_cmd(const char *cmd) "%s"
+wacom_iv_cmd_ignored(const char *cmd) "%s"
+wacom_iv_packet(int x, int y, int sw, int pressure) "x %d y %d switch %d pressure %d"
