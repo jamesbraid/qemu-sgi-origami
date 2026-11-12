@@ -69,6 +69,11 @@
 #define PI_RT_COMPARE_B     0x000110
 #define PI_RT_PENDING_B     0x000128
 #define PI_RT_ENABLE_B      0x000148
+#define PI_PROF_COMPARE     0x000118
+#define PI_PROF_PENDING_A   0x000130
+#define PI_PROF_PENDING_B   0x000138
+#define PI_PROF_ENABLE_A    0x000150
+#define PI_PROF_ENABLE_B    0x000158
 #define PI_RT_LOCAL_CTRL       0x000160
 #define PI_RT_LOCAL_CTRL_MASK  0x100ffULL
 #define PI_RT_LOCAL_CTRL_RESET 0x10000ULL
@@ -101,6 +106,7 @@
 #define HUB_IRQ_BANK0_LINES "bank0"
 #define HUB_IRQ_BANK1_LINES "bank1"
 #define HUB_IRQ_RT_LINES    "rt"
+#define HUB_IRQ_PROF_LINES  "prof"
 #define HUB_IRQ_SLICE_A     0
 #define HUB_IRQ_SLICE_B     1
 
@@ -914,6 +920,153 @@ static void test_the_second_processors_comparator_raises_its_own_line(
 
     qtest_writeq(qts, HUB_LOCAL + PI_RT_PENDING_B, 0);
     g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+
+    qtest_quit(qts);
+}
+
+/*
+ * One profiling comparator for the node: its match pends both processors,
+ * once, and each acknowledges its own bit. IRIX's fast clock arms it a
+ * millisecond ahead and re-arms it from the interrupt.
+ */
+static void test_the_profiling_comparator_pends_both_processors(
+    const void *data)
+{
+    uint64_t count;
+
+    hub_reset();
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE,
+                 (count + PI_RT_MS) & PI_RT_MASK);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROF_COMPARE), ==,
+                    (count + PI_RT_MS) & PI_RT_MASK);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 0);
+
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 1);
+
+    /* Each processor acknowledges its own bit. */
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_PENDING_A, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_PENDING_B, 0);
+
+    /* Once: nothing pends again until the comparator is written. */
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 0);
+
+    /* The re-arm the fast clock makes from its handler fires again. */
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE,
+                 (count + PI_RT_MS) & PI_RT_MASK);
+    qtest_clock_step(qts, 2 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 1);
+}
+
+/*
+ * IRIX's fast clock re-arms one interval past the counter only when the
+ * comparator is strictly behind, so an equal write must match.
+ */
+static void test_a_profiling_comparator_written_equal_matches(
+    const void *data)
+{
+    uint64_t count;
+
+    hub_reset();
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE, count);
+    qtest_clock_step(qts, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 1);
+}
+
+/* Reset clears the profiling comparator and drops a standing match. */
+static void test_reset_clears_the_profiling_comparator(const void *data)
+{
+    uint64_t count;
+
+    hub_reset();
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_A, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_B, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE, count);
+    qtest_clock_step(qts, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 1);
+
+    /* Armed again a millisecond out, so a surviving timer would show. */
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE,
+                 (count + PI_RT_MS) & PI_RT_MASK);
+    hub_reset();
+
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_PROF_COMPARE), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_ENABLE_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_ENABLE_B), ==, 0);
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+}
+
+/* Behind the counter, the profiling comparator waits for the wrap too. */
+static void test_a_behind_profiling_comparator_does_not_match(
+    const void *data)
+{
+    uint64_t count;
+
+    hub_reset();
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, PI_RT_HZ);
+    count = qtest_readq(qts, HUB_LOCAL + PI_RT_COUNT);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE,
+                 (count - PI_RT_MS) & PI_RT_MASK);
+    qtest_clock_step(qts, 4 * (PI_RT_NS_PER_SEC / 1000));
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 0);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 0);
+}
+
+/*
+ * Each enable gates its own processor's profiling line: both bits pend,
+ * only the enabled processor's line rises, and its acknowledgement drops
+ * it. A machine of its own, for the reason above.
+ */
+static void test_the_profiling_enable_gates_each_line(const void *data)
+{
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_PROF_LINES);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_A, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_ENABLE_A), ==, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE, PI_RT_MS);
+
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_A), ==, 1);
+    g_assert_cmpuint(qtest_readq(qts, HUB_LOCAL + PI_PROF_PENDING_B), ==, 1);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_PENDING_A, 0);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+
+    /* Enabling the second afterwards raises its line on the standing bit. */
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_B, 1);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
 
     qtest_quit(qts);
 }
@@ -4422,6 +4575,54 @@ static void test_pi_pending_reaches_cpu_cause(const void *data)
     qtest_quit(qts);
 }
 
+static uint32_t cpu_cause(QTestState *qts, unsigned int cpu)
+{
+    g_autoptr(QDict) response = qtest_qmp(qts,
+        "{'execute': 'human-monitor-command', 'arguments': {"
+        "'command-line': 'info registers', 'cpu-index': %u}}", cpu);
+    const char *field;
+    uint32_t cause;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    field = strstr(qdict_get_str(response, "return"), "Cause");
+    g_assert_nonnull(field);
+    g_assert_cmpint(sscanf(field, "Cause %" SCNx32, &cause), ==, 1);
+    return cause;
+}
+
+/*
+ * The profiling comparator reaches each processor as hardware interrupt 3,
+ * Cause IP5 (bit 13), the level IRIX's fast clock handler runs at. Only
+ * the enabled processor's Cause changes, and acknowledging drops it.
+ * The CPU wires stay intact: output interception would replace them.
+ */
+static void test_the_profiling_comparator_raises_cause_ip5(const void *data)
+{
+    const uint32_t ip_mask = 0x3f00;
+    const uint32_t ip5 = 0x2000;
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+
+    qtest_writeq(qts, HUB_LOCAL + PI_RT_COUNT, 0);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_A, 1);
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_COMPARE, PI_RT_MS);
+    g_assert_cmphex(cpu_cause(qts, 0) & ip_mask, ==, 0);
+    g_assert_cmphex(cpu_cause(qts, 1) & ip_mask, ==, 0);
+
+    qtest_clock_step(qts, PI_RT_NS_PER_SEC / 1000);
+    g_assert_cmphex(cpu_cause(qts, 0) & ip_mask, ==, ip5);
+    g_assert_cmphex(cpu_cause(qts, 1) & ip_mask, ==, 0);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_PENDING_A, 0);
+    g_assert_cmphex(cpu_cause(qts, 0) & ip_mask, ==, 0);
+
+    /* The second processor's bit stood pending; enabling it raises IP5. */
+    qtest_writeq(qts, HUB_LOCAL + PI_PROF_ENABLE_B, 1);
+    g_assert_cmphex(cpu_cause(qts, 1) & ip_mask, ==, ip5);
+    g_assert_cmphex(cpu_cause(qts, 0) & ip_mask, ==, 0);
+
+    qtest_quit(qts);
+}
+
 static void test_the_xio_link_reports_up(const void *data)
 {
     uint64_t link;
@@ -6957,6 +7158,16 @@ int main(int argc, char **argv)
                         test_the_second_processors_comparator_raises_its_own_line);
     qtest_add_data_func("sn0/hub/rt-comparator-pends-when-off", NULL,
                         test_the_comparator_pends_with_its_interrupt_off);
+    qtest_add_data_func("sn0/hub/prof-comparator-pends-both", NULL,
+                        test_the_profiling_comparator_pends_both_processors);
+    qtest_add_data_func("sn0/hub/prof-behind-comparator-does-not-match", NULL,
+                        test_a_behind_profiling_comparator_does_not_match);
+    qtest_add_data_func("sn0/hub/prof-equal-comparator-matches", NULL,
+                        test_a_profiling_comparator_written_equal_matches);
+    qtest_add_data_func("sn0/hub/prof-reset-clears", NULL,
+                        test_reset_clears_the_profiling_comparator);
+    qtest_add_data_func("sn0/hub/prof-enable-gates-each-line", NULL,
+                        test_the_profiling_enable_gates_each_line);
     qtest_add_data_func("sn0/hub/interrupt-modify", NULL,
                         test_interrupt_modify_sets_and_clears);
     qtest_add_data_func("sn0/hub/interrupt-number-selects-bank", NULL,
@@ -6967,6 +7178,8 @@ int main(int argc, char **argv)
                         test_pending_banks_are_masked_per_processor);
     qtest_add_data_func("sn0/hub/pi-pending-reaches-cpu-cause", NULL,
                         test_pi_pending_reaches_cpu_cause);
+    qtest_add_data_func("sn0/hub/profiling-comparator-raises-cause-ip5", NULL,
+                        test_the_profiling_comparator_raises_cause_ip5);
     qtest_add_data_func("sn0/hub/one-wire-reset-cancels-a-slot", NULL,
                         test_a_reset_cancels_a_running_slot);
     qtest_add_data_func("sn0/hub/one-wire-resets-to-its-timing", NULL,

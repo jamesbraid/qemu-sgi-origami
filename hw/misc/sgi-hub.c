@@ -315,6 +315,12 @@
 #define HUB_PI_RT_PENDING_B     0x000128
 #define HUB_PI_RT_ENABLE_A      0x000140
 #define HUB_PI_RT_ENABLE_B      0x000148
+/* The profiling comparator, shared by both processors (Linux sn0/hubpi.h). */
+#define HUB_PI_PROF_COMPARE     0x000118
+#define HUB_PI_PROF_PENDING_A   0x000130
+#define HUB_PI_PROF_PENDING_B   0x000138
+#define HUB_PI_PROF_ENABLE_A    0x000150
+#define HUB_PI_PROF_ENABLE_B    0x000158
 /*
  * The rate a machine supplies when it connects nothing, which every machine
  * in-tree overrides; the three supported clock rates include this number.
@@ -1118,6 +1124,8 @@ static void sgi_hub_update_irq(SGIHubState *s)
         }
         qemu_set_irq(s->rt_irq[cpu], s->pi_rt_pending[cpu] &&
                                      s->pi_rt_enable[cpu]);
+        qemu_set_irq(s->prof_irq[cpu], s->pi_prof_pending[cpu] &&
+                                       s->pi_prof_enable[cpu]);
     }
 }
 
@@ -2299,6 +2307,28 @@ static void sgi_hub_rt_expire(void *opaque)
     sgi_hub_rt_match(line->hub, line->index);
 }
 
+/*
+ * The profiling comparator matches like the per-processor ones: when the
+ * counter reaches it, once, with the next match a whole revolution away.
+ */
+static void sgi_hub_prof_arm(SGIHubState *s)
+{
+    uint64_t ticks = ((s->pi_prof_compare - sgi_hub_rt_count(s) - 1) &
+                      PI_RT_MASK) + 1;
+
+    timer_mod(s->prof_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+              clock_ticks_to_ns(s->rt_clk, ticks));
+}
+
+static void sgi_hub_prof_expire(void *opaque)
+{
+    SGIHubState *s = opaque;
+
+    s->pi_prof_pending[0] = 1;
+    s->pi_prof_pending[1] = 1;
+    sgi_hub_update_irq(s);
+}
+
 static uint8_t *sgi_hub_route_entry(SGIHubState *s, hwaddr addr)
 {
     if ((addr & (NI_ROUTE_STRIDE - 1)) != 0) {
@@ -2966,6 +2996,7 @@ static void sgi_hub_write_rt_count(SGIHubState *s, hwaddr addr,
     /* Moving the counter moves every deadline standing against it. */
     sgi_hub_rt_arm(s, 0);
     sgi_hub_rt_arm(s, 1);
+    sgi_hub_prof_arm(s);
 }
 
 static uint64_t sgi_hub_peek_rt_count(SGIHubState *s, unsigned arg)
@@ -3018,6 +3049,36 @@ static void sgi_hub_write_rt_enable(SGIHubState *s, hwaddr addr,
                                     unsigned size)
 {
     s->pi_rt_enable[arg] = val & 1;
+    sgi_hub_update_irq(s);
+}
+
+static void sgi_hub_write_prof_compare(SGIHubState *s, hwaddr addr,
+                                       unsigned arg, uint64_t val,
+                                       unsigned size)
+{
+    s->pi_prof_compare = val & PI_RT_MASK;
+    /* Equal to the counter matches at once, as for the comparators above. */
+    if (s->pi_prof_compare == sgi_hub_rt_count(s)) {
+        timer_mod(s->prof_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+        return;
+    }
+    sgi_hub_prof_arm(s);
+}
+
+static void sgi_hub_write_prof_pending(SGIHubState *s, hwaddr addr,
+                                       unsigned arg, uint64_t val,
+                                       unsigned size)
+{
+    /* As for the per-processor comparators, writing zero acknowledges. */
+    s->pi_prof_pending[arg] = val & 1;
+    sgi_hub_update_irq(s);
+}
+
+static void sgi_hub_write_prof_enable(SGIHubState *s, hwaddr addr,
+                                      unsigned arg, uint64_t val,
+                                      unsigned size)
+{
+    s->pi_prof_enable[arg] = val & 1;
     sgi_hub_update_irq(s);
 }
 
@@ -3612,6 +3673,9 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_rt_compare[1]), .width = 8,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
       .read = sgi_hub_read_rt_compare, .write = sgi_hub_write_rt_compare },
+    { .offset = HUB_PI_PROF_COMPARE,
+      .field = offsetof(SGIHubState, pi_prof_compare), .width = 8,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_prof_compare },
     { .offset = HUB_PI_RT_PENDING_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_rt_pending[0]), .width = 1,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
@@ -3620,6 +3684,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_rt_pending[1]), .width = 1,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_READ | HUB_REG_TRACE_WRITE,
       .write = sgi_hub_write_rt_pending },
+    { .offset = HUB_PI_PROF_PENDING_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_prof_pending[0]), .width = 1,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_prof_pending },
+    { .offset = HUB_PI_PROF_PENDING_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_prof_pending[1]), .width = 1,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_prof_pending },
     { .offset = HUB_PI_RT_ENABLE_A, .arg = 0,
       .field = offsetof(SGIHubState, pi_rt_enable[0]), .width = 1,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
@@ -3628,6 +3698,12 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, pi_rt_enable[1]), .width = 1,
       .flags = HUB_REG_DIAG | HUB_REG_TRACE_WRITE,
       .write = sgi_hub_write_rt_enable },
+    { .offset = HUB_PI_PROF_ENABLE_A, .arg = 0,
+      .field = offsetof(SGIHubState, pi_prof_enable[0]), .width = 1,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_prof_enable },
+    { .offset = HUB_PI_PROF_ENABLE_B, .arg = 1,
+      .field = offsetof(SGIHubState, pi_prof_enable[1]), .width = 1,
+      .flags = HUB_REG_DIAG, .write = sgi_hub_write_prof_enable },
     { .offset = HUB_PI_RT_LOCAL_CTRL,
       .field = offsetof(SGIHubState, pi_rt_local_ctrl), .width = 8,
       .flags = HUB_REG_STORE | HUB_REG_DIAG,
@@ -4483,6 +4559,10 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->pi_rt_compare, 0, sizeof(s->pi_rt_compare));
     memset(s->pi_rt_pending, 0, sizeof(s->pi_rt_pending));
     memset(s->pi_rt_enable, 0, sizeof(s->pi_rt_enable));
+    s->pi_prof_compare = 0;
+    memset(s->pi_prof_pending, 0, sizeof(s->pi_prof_pending));
+    memset(s->pi_prof_enable, 0, sizeof(s->pi_prof_enable));
+    timer_del(s->prof_timer);
     s->pi_rt_local_ctrl = PI_RT_LOCAL_CTRL_RESET;
     sgi_pi_gfx_reset(&s->pi_gfx);
     for (n = 0; n < SGI_HUB_PROCESSORS; n++) {
@@ -5390,6 +5470,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
     qdev_init_gpio_out_named(dev, s->bank_irq[1], "bank1",
                              SGI_HUB_PROCESSORS);
     qdev_init_gpio_out_named(dev, s->rt_irq, "rt", SGI_HUB_PROCESSORS);
+    qdev_init_gpio_out_named(dev, s->prof_irq, "prof", SGI_HUB_PROCESSORS);
 
     /*
      * The MicroLAN wire and the PIMM record part hanging off it, hung here
@@ -5425,6 +5506,7 @@ static void sgi_hub_realize(DeviceState *dev, Error **errp)
         s->rt_timer[n] = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_hub_rt_expire,
                                       &s->rt_line[n]);
     }
+    s->prof_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_hub_prof_expire, s);
 
     memory_region_init(&s->bwin, OBJECT(dev), "sgi-hub.bigwin",
                        SGI_HUB_BWIN_TOTAL);
@@ -5576,8 +5658,8 @@ static int sgi_hub_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 31,
-    .minimum_version_id = 31,
+    .version_id = 32,
+    .minimum_version_id = 32,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -5588,6 +5670,10 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT8_ARRAY(pi_rt_pending, SGIHubState, SGI_HUB_PROCESSORS),
         VMSTATE_UINT8_ARRAY(pi_rt_enable, SGIHubState, SGI_HUB_PROCESSORS),
         VMSTATE_TIMER_PTR_ARRAY(rt_timer, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT64(pi_prof_compare, SGIHubState),
+        VMSTATE_UINT8_ARRAY(pi_prof_pending, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_UINT8_ARRAY(pi_prof_enable, SGIHubState, SGI_HUB_PROCESSORS),
+        VMSTATE_TIMER_PTR(prof_timer, SGIHubState),
         VMSTATE_UINT32(pi_calias_size, SGIHubState),
         VMSTATE_UINT64_ARRAY(pi_int_pend, SGIHubState, 2),
         VMSTATE_BOOL(pi_int_pend1_primary_credit, SGIHubState),
