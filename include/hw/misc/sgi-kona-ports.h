@@ -734,6 +734,7 @@ extern const unsigned sgi_kona_gl_num_tokens;
 #define SGI_KONA_VIDEO_GET_BOARD_CONFIG   0x12
 #define SGI_KONA_VIDEO_GET_CHANNEL_CONFIG 0x13
 #define SGI_KONA_VIDEO_GET_RESIZE         0x15
+#define SGI_KONA_VIDEO_LOAD_XILINX        0x52
 #define SGI_KONA_VIDEO_CHANNEL_GAMMA_MAP  0x0f
 #define SGI_KONA_VIDEO_RESIZE             0x14
 #define SGI_KONA_VIDEO_LOAD_FORMAT        0x16

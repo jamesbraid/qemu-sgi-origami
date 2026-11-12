@@ -190,7 +190,8 @@ attach.
      - ``dg5-8`` 030-1087-001, eight channels; ``dg5-2`` 030-1055-001,
        two channels; ``dg5-2-gvo`` 030-1242-001 rev D with a GVO record
      - Default ``dg5-2`` with a Ktown, ``dg5-8`` without. The GVO is an
-       identity only: there is no video output.
+       identity and an option channel with no state beyond its format:
+       there is no video output.
    * - ``channels``
      - 0 or the display board's count
      - Any other count is refused.
@@ -1147,6 +1148,36 @@ on format loads, channel enable and disable, resize, blanking, gamma map
 selection, cursor priority and channel source. Other commands are framed
 and consumed.
 
+The board configuration answer carries a bit for each display channel
+(``0x3`` for the DG5-2, ``0xff`` for the 030-1087-001) and, in its fourth
+word, an option mask: ``0x10`` for the GVO, 0 with no option board, as
+the shipped display firmware builds it (*software expectation*; that a
+pipe with the option answers it so is *inferred* from the identity words
+it gives ``gfxinfo``).
+The X server adds one channel per option bit to its channel list, the
+GVO's with physical id ``0xc6`` (*software expectation*, read from the
+shipped X module), and sends a combination's GVO slot to that id. A pipe
+with the GVO therefore answers the channel commands for id ``0xc6`` as
+for a display channel, keeping the format, rectangle and enable state,
+with no console of its own. The channel configuration reply for ``0xc6``
+mirrors the display channels' pattern (present, enabled and active bits)
+without the bit the firmware sets for the option's id group, which is
+*unknown*: an *approximation*. ``LoadXilinx``, which ``setmon`` sends the
+option board before it loads the channel, answers a status word of 1 for
+a type 0 request of at most 16 bytes on a pipe with an option board
+(*software expectation* for the status word, an *approximation* in that
+the logic image is dropped), and for a count of -1 on any pipe, which the
+firmware handles with no poll of the board. A request of 1 to 16 bytes
+to a pipe without the option fails, which is *inferred*: the firmware
+polls a done bit that nothing answers. A command for ``0xc6`` on a pipe
+without the option is logged as for any channel it does not have. The
+option's channel ids past ``0xc6`` and the other option boards' (TVO,
+HDGVO, DVP, DPLEX, Sirius) are not modelled.
+
+Model observation, not a hardware fact: against a pipe whose option mask
+is 0, a ``setmon`` of a GVO combination sent the GVO format to channel 0
+and cropped that head to 720x486.
+
 The gamma load ``0x12f`` fills three components of 4,096 entries;
 channels select a linear ramp or the loaded table. The cursor is 64x64 at
 two bits per pixel with three colours, up to 64 images loaded with
@@ -1369,8 +1400,9 @@ Model limits
 - Unsupported cursor channels, offsets, positions and modes, and
   unsupported X and GL forms, log ``LOG_UNIMP``. Malformed commands, full
   queues and unregistered pages log ``LOG_GUEST_ERROR``.
-- The GVO option, genlock, stereo, swap groups and multiple pipes are not
-  modelled. ``reality``, ``ir`` and ``ir4`` are refused.
+- The GVO option has a channel and no video output: a format loaded onto
+  it is kept and answered, never shown. Genlock, stereo, swap groups and
+  multiple pipes are not modelled. ``reality``, ``ir`` and ``ir4`` are refused.
 - More than 64 logical contexts stops the virtual machine.
 - The detail combine is the model's reading: its arithmetic widths,
   rounding and coordinate derivation are *unknown*, and only the channel

@@ -905,9 +905,29 @@ static void sgi_kona_channels_default(SGIKonaChannel *channel)
     channel[0].input_height = SGI_KONA_FB_HEIGHT;
 }
 
+/*
+ * An option board's channel starts off with no format, like a display
+ * channel past channel 0. That the firmware's start-up rebuild disables
+ * option channels as it does display channels is inferred. This is the
+ * reset state; the start-up rebuild (sgi_kona_dg_default_state()) then
+ * also names the channel's own id as its source and blanks it, so a
+ * started pipe differs from this state.
+ */
+static void sgi_kona_option_channel_default(SGIKonaChannel *channel)
+{
+    memset(channel, 0, sizeof(*channel));
+    channel->pan[2] = SGI_KONA_FB_WIDTH;
+    channel->pan[3] = SGI_KONA_FB_HEIGHT;
+    channel->placement[0] = channel->placement[1] = 1;
+    channel->placement[2] = channel->placement[3] = 1;
+    channel->placement[4] = SGI_KONA_FB_WIDTH;
+    channel->placement[5] = SGI_KONA_FB_HEIGHT;
+}
+
 static void sgi_kona_channels_reset(SGIKonaState *s)
 {
     sgi_kona_channels_default(s->channel);
+    sgi_kona_option_channel_default(&s->option_channel);
 }
 
 /* Channel 0's rows; its scanout's hooks are handed the pipe itself. */
@@ -2674,6 +2694,8 @@ typedef struct SGIKonaOption {
     const char *id;
     SGIKonaBoardSpec board;
     uint32_t code;
+    uint32_t mask;              /* GetBoardConfig's option mask */
+    uint32_t channel_id;        /* the option channel's physical id */
 } SGIKonaOption;
 
 typedef struct SGIKonaDisplay {
@@ -2752,11 +2774,13 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
 /*
  * The rack capture's GVO option, revision B in the stock
  * configuration tool, and the code gfxinfo
- * prints "GVO option detected" for. The option's identity only: the model
- * has no GVO video output.
+ * prints "GVO option detected" for, the option mask GetBoardConfig
+ * answers (0x10) and the option channel's physical id (0xc6), which the
+ * X server's channel list carries. The option's identity and its channel
+ * state only: the model has no GVO video output.
  */
 static const SGIKonaOption sgi_kona_gvo = {
-    "gvo", { "GVO", "030-1184-002", "B" }, 6,
+    "gvo", { "GVO", "030-1184-002", "B" }, 6, 0x10, 0xc6,
 };
 
 /*
@@ -3884,8 +3908,25 @@ static void sgi_kona_video_open(SGIKonaState *s, uint32_t command)
 }
 
 /*
+ * The state of the channel a video command names by its physical id: a
+ * display channel, whose ids are 0 to the board mask's width - 1, or the
+ * option board's channel when one is fitted. Null for any other id.
+ */
+static SGIKonaChannel *sgi_kona_video_channel_ref(SGIKonaState *s,
+                                                  uint32_t id)
+{
+    if (id < sgi_kona_channel_count(s)) {
+        return &s->channel[id];
+    }
+    if (s->config.option && id == s->config.option->channel_id) {
+        return &s->option_channel;
+    }
+    return NULL;
+}
+
+/*
  * Whether a channel-describing Get names a channel the display generator
- * has: the board mask's bits are its physical channels 0 to n - 1.
+ * has.
  */
 static bool sgi_kona_video_names_channel(uint32_t command)
 {
@@ -3903,15 +3944,52 @@ static bool sgi_kona_video_names_channel(uint32_t command)
 }
 
 /*
+ * LoadXilinx [type, byte count, four words of bytes], the option board's
+ * logic download the X server's GVO set-up sends before it loads the
+ * option channel's format, and waits on: the reply's one word is 1 when
+ * the load succeeded and 0 otherwise (software expectation, read from the
+ * shipped ARM firmware's handler). The firmware accepts type 0 alone. A
+ * count of -1 writes the load-control register, sleeps and succeeds with
+ * no poll of the board, so it succeeds on any pipe. A count of 1 to 16
+ * shifts the bytes into the option board and polls its done bit; other
+ * counts print an error and fail. That nothing answers the poll on a pipe
+ * with no option board, so the load times out, is inferred.
+ *
+ * Approximated: the model has no logic to configure, so a well-formed
+ * request succeeds on a pipe with an option board and its bytes are
+ * dropped.
+ */
+static uint32_t sgi_kona_xilinx_load_status(const SGIKonaState *s)
+{
+    const uint32_t *d = s->video_data;
+    int32_t count = d[1];
+
+    if (d[0] != 0 || count > 16 || (count < 0 && count != -1)) {
+        return 0;
+    }
+    return count == -1 || s->config.option ? 1 : 0;
+}
+
+/*
  * The data words of a Get's reply, from the channels' state; every word not
  * set here is zero. The layouts are those the 6.5.30 X server's video
  * initialiser in the KONA X driver module and its channel routines read; see
  * kona.rst, "Command page and grammars":
  *
  * - GetBoardConfig: version 1, the board mask (bit n: physical channel n
- *   exists), option mask 0, options code 0 (no option board), flag 0.
+ *   exists), 0, the option mask (0x10 for the GVO board, 0 with no option
+ *   board), flag 0. The mask is what makes the X server add the option's
+ *   channel, physical id 0xc6 for the GVO, to its channel list; without
+ *   it a combination's GVO channel has no id of its own and loads onto
+ *   channel 0 (observed with setmon). The mask value is established from
+ *   the firmware's board-configuration builder; that a pipe with the
+ *   option answers it is inferred from the identity words the same pipe
+ *   gives gfxinfo.
  * - GetChannelConfig: word 0 bit 0x1 present, 0x2 the encoder (channel
  *   0), 0x4 and 0x8 together enabled and active; 18 the cursor priority.
+ *   The option channel answers like a display channel without the
+ *   encoder bit; which bit the firmware picks for its id group is
+ *   unknown.
  *   Words 1-16 name the format, which the X server looks up as a .vfo
  *   file itself, and 17 is its datestamp. The model answers the words
  *   2-18 of the channel's last LoadFormat, which carry the name and the
@@ -3947,12 +4025,13 @@ static bool sgi_kona_video_names_channel(uint32_t command)
 static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
                                        uint32_t channel, uint32_t *words)
 {
-    const SGIKonaChannel *ch = &s->channel[channel];
+    const SGIKonaChannel *ch = sgi_kona_video_channel_ref(s, channel);
 
     switch (command) {
     case SGI_KONA_VIDEO_GET_BOARD_CONFIG:
         words[0] = 1;
         words[1] = MAKE_64BIT_MASK(0, sgi_kona_channel_count(s));
+        words[3] = s->config.option ? s->config.option->mask : 0;
         break;
     case SGI_KONA_VIDEO_GET_CHANNEL_CONFIG:
         words[0] = 0x1 | (channel == 0 ? 0x2 : 0) | (ch->enabled ? 0xc : 0);
@@ -3975,6 +4054,9 @@ static void sgi_kona_video_reply_words(SGIKonaState *s, uint32_t command,
         break;
     case SGI_KONA_VIDEO_GET_CHANNEL_ENABLES:
         words[1] = ch->enabled;
+        break;
+    case SGI_KONA_VIDEO_LOAD_XILINX:
+        words[0] = sgi_kona_xilinx_load_status(s);
         break;
     default:
         break;
@@ -4008,7 +4090,7 @@ static void sgi_kona_video_reply(SGIKonaState *s,
                        s->video_first : 0;
 
     assert(v->reply_bytes <= SGI_KONA_VIDEO_MAX_REPLY_BYTES);
-    assert(channel < SGI_KONA_MAX_CHANNELS);
+    assert(sgi_kona_video_channel_ref(s, channel));
     sgi_kona_video_reply_words(s, v->command, channel, data);
     for (uint32_t w = 0; w < words; w++) {
         stl_be_p(reply + 4 + 4 * w, data[w]);
@@ -4152,13 +4234,13 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
     default:
         return;
     }
-    if (channel >= sgi_kona_channel_count(s)) {
+    ch = sgi_kona_video_channel_ref(s, channel);
+    if (!ch) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-kona: unsupported video channel %u for 0x%x\n",
                       channel, command);
         return;
     }
-    ch = &s->channel[channel];
     trace_sgi_kona_video_channel(command, channel, d[1], d[2], d[3], d[4]);
     switch (command) {
     case SGI_KONA_VIDEO_DISABLE_CHANNEL:
@@ -4232,8 +4314,11 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         }
         return;
     }
-    sgi_kona_channel_apply(s, channel);
-    sgi_kona_cursor_update(s);
+    /* The option board's channel has no console of its own. */
+    if (ch != &s->option_channel) {
+        sgi_kona_channel_apply(s, channel);
+        sgi_kona_cursor_update(s);
+    }
 }
 
 static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
@@ -4269,7 +4354,7 @@ static void sgi_kona_video_complete(SGIKonaState *s, uint32_t checksum)
     sgi_kona_video_setter(s, v->command);
     if (v->reply_id != SGI_KONA_VIDEO_NO_REPLY) {
         if (sgi_kona_video_names_channel(v->command) &&
-            s->video_first >= sgi_kona_channel_count(s)) {
+            !sgi_kona_video_channel_ref(s, s->video_first)) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: unsupported video channel %u for 0x%x\n",
                           s->video_first, v->command);
@@ -4423,6 +4508,17 @@ static void sgi_kona_dg_default_state(SGIKonaState *s)
         ch->pan[3] = SGI_KONA_FB_HEIGHT;
         ch->gamma_map = 0;
         /* The display set-up that follows blanks every channel. */
+        ch->blanked = true;
+    }
+    if (s->config.option) {
+        SGIKonaChannel *ch = &s->option_channel;
+
+        ch->enabled = false;
+        ch->loaded = false;
+        ch->source = s->config.option->channel_id;
+        ch->format_name[0] = 0;
+        ch->format_name[SGI_KONA_FORMAT_NAME_WORDS - 1] = 0;
+        ch->gamma_map = 0;
         ch->blanked = true;
     }
 }
@@ -22512,6 +22608,36 @@ static const VMStateDescription vmstate_sgi_kona_channel = {
     },
 };
 
+/*
+ * The option board's channel, on a pipe that has one and once it left
+ * the reset state sgi_kona_option_channel_default() gives, which a
+ * start-up rebuild does (it sets the source and blanks the channel). Its
+ * own subsection so the channels one above keeps its layout.
+ */
+static bool sgi_kona_option_channel_needed(void *opaque)
+{
+    SGIKonaState *s = opaque;
+    SGIKonaChannel reset;
+
+    if (!s->config.option) {
+        return false;
+    }
+    sgi_kona_option_channel_default(&reset);
+    return memcmp(&reset, &s->option_channel, sizeof(reset)) != 0;
+}
+
+static const VMStateDescription vmstate_sgi_kona_option_channel = {
+    .name = TYPE_SGI_KONA "/option-channel",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_kona_option_channel_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_STRUCT(option_channel, SGIKonaState, 1,
+                       vmstate_sgi_kona_channel, SGIKonaChannel),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_sgi_kona_channels = {
     .name = TYPE_SGI_KONA "/channels",
     .version_id = 1,
@@ -25750,6 +25876,7 @@ static const VMStateDescription vmstate_sgi_kona = {
         &vmstate_sgi_kona_gl_level1,
         &vmstate_sgi_kona_managed_area,
         &vmstate_sgi_kona_channels,
+        &vmstate_sgi_kona_option_channel,
         &vmstate_sgi_kona_video_data,
         &vmstate_sgi_kona_accum,
         &vmstate_sgi_kona_pool_swap,
