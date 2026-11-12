@@ -306,6 +306,319 @@ same names, sets ``eight-128m-banks`` from its
 ``interface-revision``
   Accepts only 1.
 
+.. _sgi-crime-address-spaces:
+
+Address windows and aliases
+===========================
+
+CRIME makes the first-level decode of a processor access and forwards it
+to a subsystem. CRIME, GBE, MACE and VICE then each decode further inside
+their own window (:src:`sgi-crime-1.5-spec PDF p. 47`), *established*.
+The windows are in the address table under :ref:`sgi-crime-identity`.
+
+The processor has a 40-bit physical address space. The base I/O
+resources are reached through KSEG1, and the first 32 MB of PCI memory
+and of PCI I/O space are aliased into KSEG1, so a typical configuration
+reaches all its PCI resources there. The full 32-bit PCI spaces need
+translation buffer entries
+(:src:`sgi-crime-1.5-spec PDF p. 47`), *established*. The specification
+describes the memory windows this way, each *established*
+(:src:`sgi-crime-1.5-spec PDF p. 47`):
+
+- The full 1 GB is directly reachable at ``0x40000000``, and the first
+  256 MB is aliased to KSEG0, so the operating system can map its own
+  structures without translation buffer entries. Reaching the full 1 GB
+  takes entries.
+- The high 512 MB is also aliased into the upper 512 MB of the first
+  1 GB of address space (``0x20000000``), an alternative to the
+  1.5 GB to 2 GB range of the full window that gives more compact page
+  tables.
+- The frame buffer and depth buffer windows give linear access to the
+  2K by 2K, 32-bit frame buffer and depth buffer that the rendering
+  engine currently maps.
+
+The no-ECC window at ``0x80000000`` lets the processor read any location
+without ECC checking or correction. The specification gives two uses: reading the
+raw contents of memory in an ECC error fixup routine without disabling
+the ECC logic for other DMA, and reading data the rendering engine wrote
+without raising ECC errors. Only checking and correction are
+suppressed. ECC is still generated for a write through the window, and a
+write of less than a doubleword still makes a read-modify-write memory
+transaction (:src:`sgi-crime-1.5-spec PDF p. 47`), *established*. The
+model keeps no check bits, so it treats the no-ECC window as a data alias
+of the full-memory window, an *approximation*: a value written through
+any of the low, full or no-ECC views reads back through every other view
+that decodes the same bank (``sgi-crime-test.c``, cases
+``ram-aliases-holes`` and ``populated-banks-views``).
+
+.. _sgi-crime-dma-spaces:
+
+DMA address spaces
+==================
+
+VICE, GBE and MACE reach memory through CRIME, and each is restricted to
+system memory (:src:`sgi-crime-1.5-spec PDF p. 49-50`), *established*.
+The specification gives each client its own address table
+(Tables 3-2 to 3-4 on the same pages), each row *established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Client
+     - Start address
+     - Size
+     - Function
+   * - VICE
+     - ``0x00000000``
+     - 1 GB
+     - reserved
+   * - VICE
+     - ``0x40000000``
+     - 1 GB
+     - memory, CRIME
+   * - VICE
+     - ``0x80000000``
+     - 1 GB
+     - memory without ECC checking, CRIME
+   * - VICE
+     - ``0xc0000000``
+     - 61 GB
+     - reserved
+   * - GBE
+     - ``0x00000000``
+     - 1 GB
+     - reserved
+   * - GBE
+     - ``0x40000000``
+     - 1 GB
+     - memory, CRIME
+   * - GBE
+     - ``0x80000000``
+     - 2 GB
+     - reserved
+   * - MACE
+     - ``0x00000000``
+     - 1 GB
+     - reserved
+   * - MACE
+     - ``0x40000000``
+     - 1 GB
+     - memory, CRIME
+   * - MACE
+     - ``0x80000000``
+     - 1 GB
+     - memory without ECC checking, CRIME
+   * - MACE
+     - ``0xc0000000``
+     - 1 GB
+     - reserved
+
+VICE generates only the low 32 bits of a DMA address and zeroes the top
+eight of its 40. It still decodes the full 40-bit address of a processor
+access to its own 16 MB window (:src:`sgi-crime-1.5-spec PDF p. 49`),
+*established*. GBE's table has no no-ECC window, so only VICE and MACE
+reach it (:src:`sgi-crime-1.5-spec PDF p. 49-50`), *established*. The model's GBE
+and MACE views of memory are described on :doc:`gbe` and :doc:`mace`, and
+VICE's on :doc:`vice`.
+
+PCI masters reach memory through MACE with two aliases. Both PCI tables
+place native-endian memory at ``0x40000000`` and reverse-endian memory
+at 0, and send them to CRIME. In the reverse-endian alias a transfer of
+less than 64 bits has its bytes swapped to the opposite of the memory
+system's order (:src:`sgi-crime-1.5-spec PDF p. 51-52`, Tables 3-5 and
+3-6), *established*. The memory-space table (Table 3-6) labels its 2 GB
+local region "Local PCI I/O", as the I/O table does. Its introductory
+text calls the region local PCI memory space, so the label is read as a
+copy of the I/O table's, *inferred*. MACE should cache references to memory
+made through PCI memory space, and there is no hardware coherence between
+that cache and processor accesses, so a driver must flush, invalidate and
+keep processor and device access to a cached DMA buffer apart in time. It
+should not cache references made through PCI I/O space
+(:src:`sgi-crime-1.5-spec PDF p. 51-52`), *established*. Which byte
+placement the model gives each alias is described on :doc:`mace`.
+
+.. _sgi-crime-interconnects:
+
+Links to MACE and GBE
+=====================
+
+CRIME's input/output unit joins the chip to MACE through one link and to
+GBE through another. It turns DMA requests from the two chips into
+requests to the memory controller, performs processor reads and writes
+on the links, and receives interrupts that the chips send as transactions
+(:src:`sgi-crime-1.5-spec PDF p. 55`), *established*. The model takes
+MACE's 16 interrupt causes as input lines that each hold a level
+(``sgi-crime-test.c``, case ``mace-level-routing``), not as interrupt
+packets with write enables, an *approximation*. GBE's memory access and
+four interrupt outputs are described on :doc:`gbe`.
+
+MACE link
+~~~~~~~~~
+
+The MACE link is a half-duplex, synchronous bus 32 bits wide that
+transfers on both edges of the internal clock, and so carries one 64-bit
+logical word each clock. It carries command, address and data on the same signals,
+sub-block transfers of 1 to 8 bytes under a byte mask, block transfers of
+1 to 32 doublewords, split reads and routing tags in transfer headers
+(:src:`sgi-crime-1.5-spec PDF p. 55-56, 66`), *established*. A doubleword
+crosses the 32-bit bus as two words, bytes 0 to 3 first. All data on the
+link is big-endian and the link cannot switch byte order
+(:src:`sgi-crime-1.5-spec PDF p. 66-67`), *established*. Two token
+signals pass bus ownership, and CRIME owns the bus at reset and power-up
+(:src:`sgi-crime-1.5-spec PDF p. 66`), *established*. The specification
+discourages sub-block DMA as very inefficient, since the memory system
+protects 64 bits at a time with ECC
+(:src:`sgi-crime-1.5-spec PDF p. 56`), *established*.
+
+A transfer is a header doubleword with a 4-bit command, a count of
+doublewords in bits 52:48 (one less than the number sent or requested), a byte mask
+in bits 47:40, a 6-bit source tag in bits 37:32 and a 32-bit byte
+address in bits 31:0. Unused fields are zero
+(:src:`sgi-crime-1.5-spec PDF p. 70-78`), *established*. A set mask bit
+marks a byte as not valid, and the least significant bit, header bit 40,
+masks byte 7 in big-endian numbering (:src:`sgi-crime-1.5-spec PDF p. 74`),
+*established*. The transfer types are:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Type
+     - Command
+     - Doublewords
+     - Use
+   * - null
+     - ``0000``
+     - 1
+     - idle fill
+   * - interrupt update
+     - ``0001``
+     - 1
+     - 16 write-enable bits in 31:16 and 16 interrupt bits in 15:0
+   * - write block
+     - ``0010``
+     - 2 to 33
+     - header and 1 to 32 data doublewords
+   * - write sub-block
+     - ``0011``
+     - 2
+     - header and one masked data doubleword
+   * - read block request
+     - ``0100``
+     - 1
+     - asks for 1 to 32 doublewords
+   * - read sub-block request
+     - ``0101``
+     - 1
+     - asks for one masked doubleword
+   * - read data response
+     - ``0110``
+     - 2 to 33
+     - returns the data to the tag's source; an error bit set means the
+       request was invalid, for example a bad address
+
+The rows come from :src:`sgi-crime-1.5-spec PDF p. 70-78`, each
+*established*.
+
+The flow rules, each *established* (:src:`sgi-crime-1.5-spec PDF p. 67-69`):
+
+- Transactions from CRIME to MACE enter each MACE subsystem's queue in
+  the order issued, and those from one subsystem reach CRIME in order.
+  Transactions from different subsystems are ordered by arbitration, and
+  nothing orders a CRIME-initiated transaction against a MACE-initiated
+  one.
+- The initiator keeps the count of its outstanding transactions. A DMA
+  read is acknowledged when its response has arrived in the subsystem.
+- CRIME issues no more than two outstanding PIO writes and one
+  outstanding PIO read, and issues nothing while a read is outstanding.
+  A subsystem stores two PIO writes, or a write and a read. PIO writes to
+  different subsystems may complete out of order, and two to the same
+  subsystem complete in order. The specification states these limits for
+  CRIME as a whole and sizes each subsystem's store to match; it does not
+  say whether CRIME counts them per subsystem.
+- MACE has one interrupt packet outstanding at a time. An interrupt
+  packet bypasses memory writes still pending in CRIME, so software
+  that takes an interrupt as the end of a DMA must first flush those
+  writes. The specification says a single PIO read does this.
+
+GBE link
+~~~~~~~~
+
+The GBE link is a point-to-point, burst link: 64 data lines that toggle
+at 133 MHz and are demultiplexed inside each chip to 128 bits at 66 MHz,
+for a peak of 1 GB/s (:src:`sgi-crime-1.5-spec PDF p. 79-81`),
+*established*. It differs from the MACE link in being 64 bits wide on
+the pins and in having no acknowledge pins: flow control is implicit in
+the data lines (:src:`sgi-crime-1.5-spec PDF p. 79-81`), *established*. Every
+transfer is a 128-bit header, with a command in bits 127:124, a size in
+123:119, 32 bits of data in 63:32 and a 32-bit address in 31:0, followed
+by 128-bit data cycles. Data is big-endian. The sender drives null
+commands whenever it has nothing to send, including during reset. CRIME
+is the sender at reset, and GBE becomes the sender, by driving its token
+output high and waiting for CRIME's to fall, when programming asks it to.
+The current sender sends every pending command before it releases the bus
+(:src:`sgi-crime-1.5-spec PDF p. 81, 84-85`), *established*.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Sender
+     - Command
+     - Meaning
+   * - CRIME
+     - ``0001``
+     - PIO write: 32 bits of data to a word-aligned 24-bit GBE offset,
+       with address bits 31:24 ignored
+   * - CRIME
+     - ``0010``
+     - PIO read request: one 32-bit read at a word-aligned 24-bit offset
+   * - CRIME
+     - ``0011``
+     - DMA read data: a count of 256-bit words follows the header, in
+       the order GBE asked for them
+   * - CRIME
+     - ``0100``
+     - DMA write done: a GBE write has reached memory
+   * - GBE
+     - ``0101``
+     - PIO read data: 32 bits, with the address returned for debugging
+   * - GBE
+     - ``0110``
+     - DMA read request: a 256-bit-aligned address and a count of
+       256-bit words
+   * - GBE
+     - ``0111``
+     - DMA write data: a header and twice the count of data cycles
+   * - GBE
+     - ``1000``
+     - interrupt: the low 4 address bits select the sources
+
+Each row is *established* (:src:`sgi-crime-1.5-spec PDF p. 81-84`). The
+interrupt command is a one-shot event that CRIME must latch. A mask bit of
+1 sets the matching CRIME interrupt, a 0 leaves it alone, and CRIME can
+only clear it, by the software write described under
+:ref:`sgi-crime-interrupts` (:src:`sgi-crime-1.5-spec PDF p. 84`),
+*established*. Only one PIO read is outstanding at a time. PIO writes have no
+flow control, so GBE must accept them at the full 66 MHz rate, except
+colour map writes, which go through a 64-deep FIFO that software must
+throttle (:src:`sgi-crime-1.5-spec PDF p. 81-82, 84`), *established*.
+CRIME queues up to 16 DMA read requests and returns the data in request
+order (:src:`sgi-crime-1.5-spec PDF p. 83`), *established*. A DMA write goes
+to a write buffer in CRIME and its memory request is queued once the
+last data has arrived (:src:`sgi-crime-1.5-spec PDF p. 83, 86`),
+*established*.
+
+The specification disagrees with itself on the limits. One page says CRIME
+has a single DMA write buffer and GBE must wait for the write-done command
+before it issues another write; the next page says there are two write
+buffers and GBE may have two writes pending. The summary on a third
+page allows one outstanding DMA write and eight outstanding reads or
+writes in all, against the 16-entry read queue, and calls all DMA
+512-byte aligned where the text says 256-bit aligned
+(:src:`sgi-crime-1.5-spec PDF p. 82-84`). The right values are *unknown*.
+The same summary lists a rule of no 8K DRAM page crossings
+(:src:`sgi-crime-1.5-spec PDF p. 84`), *established* as a constraint on DMA
+over the link.
+
 .. _sgi-crime-interrupts:
 
 Interrupts
