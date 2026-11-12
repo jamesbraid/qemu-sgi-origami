@@ -146,7 +146,10 @@ static QTestState *ioc4_start_ps2(bool incoming, const char *log)
     return qts;
 }
 
-static void ioc4_send_ps2_key(QTestState *qts, const char *qcode)
+/* One PS/2 character time, the spacing of characters on a port. */
+#define KBC_CHAR_NS 1000000
+
+static void ioc4_queue_ps2_key(QTestState *qts, const char *qcode)
 {
     QDict *response = qtest_qmp(qts,
         "{'execute':'input-send-event','arguments':{'events':["
@@ -158,6 +161,44 @@ static void ioc4_send_ps2_key(QTestState *qts, const char *qcode)
         g_error("IOC4 PS/2 key event failed: %s", text->str);
     }
     qobject_unref(response);
+}
+
+/* Queue a key and let its character reach the holding. */
+static void ioc4_send_ps2_key(QTestState *qts, const char *qcode)
+{
+    ioc4_queue_ps2_key(qts, qcode);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
+}
+
+/*
+ * Characters the host queued together reach the holding a character time
+ * apart, and the one that follows a read lands after the acknowledge of it.
+ */
+static void test_ps2_characters_are_paced(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_ps2(false, log);
+
+    ioc4_queue_ps2_key(qts, "a");
+    ioc4_queue_ps2_key(qts, "b");
+    ioc4_queue_ps2_key(qts, "c");
+
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
+                    0x80000000);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    qtest_clock_step(qts, KBC_CHAR_NS - 1);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
+    qtest_clock_step(qts, 1);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
+                    0x80000000);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    qtest_clock_step(qts, KBC_CHAR_NS);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
+                    0x80000000);
+    qtest_quit(qts);
+    g_free(ioc4_log_file_take(log));
 }
 
 /*
@@ -184,7 +225,7 @@ static void test_ps2_drain_then_acknowledge(void)
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
 
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
                     0xc0000000);
@@ -214,6 +255,7 @@ static void test_ps2_adapter(void)
     reg_write(qts, KBC_KBD_TRANSMIT, 0xff000000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
     reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
     g_assert_cmphex(reg_read(qts, KBC_CONTROL) & KBC_WRITE_PENDING, ==, 0);
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
@@ -250,10 +292,12 @@ static void test_ps2_adapter(void)
     g_assert_false(qtest_get_irq(qts, 0));
 
     reg_write(qts, KBC_AUX_TRANSMIT, 0xff);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0xe0faaa00);
     g_assert_cmphex(reg_read(qts, KBC_CONTROL) & KBC_WRITE_PENDING, ==, 0);
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
     reg_write(qts, KBC_AUX_TRANSMIT, 0xf4);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0x80fa0000);
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
     {
@@ -278,6 +322,7 @@ static void test_ps2_adapter(void)
     g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
     g_assert_cmphex(reg_read(qts, 0x14) & KBC_OTHER_IRQ, ==, 0);
     reg_write(qts, KBC_KBD_TRANSMIT, 0xff);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0xc0faaa00);
 
     qtest_quit(qts);
@@ -330,6 +375,7 @@ static void ioc4_send_ps2_key_state(QTestState *qts, const char *qcode,
 
     g_assert_true(qdict_haskey(response, "return"));
     qobject_unref(response);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
 }
 
 /*
@@ -367,7 +413,7 @@ static void test_ps2_driver_sequence(void)
     g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
     reg_write(qts, 0x1c, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80aa0000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
     g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
@@ -381,9 +427,9 @@ static void test_ps2_driver_sequence(void)
     g_assert_true(qtest_get_irq(qts, 0));
     reg_write(qts, 0x1c, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80f00000);
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
@@ -1098,7 +1144,7 @@ static void test_dma_loopback_tx_mcr(void)
     reg_write(qts, SDMA_TX_PRODUCE(0), 0x3f8);
     ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0x3f8, 0x3f8);
     /* The last character is still on the line when its slot is consumed. */
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     ioc4_run_line_until(qts, SDMA_RX_PRODUCE(0), 0xff8, 0x3f0);
     /* The modem-control entry wrote the UART's own register. */
     g_assert_cmphex(qtest_readb(qts, UART(0) + 4), ==, 0x13);
@@ -1241,7 +1287,7 @@ static void test_dma_loopback_full_ring_recovery(void)
      * FIFO, which holds them without overrunning.
      */
     ioc4_run_line_until(qts, SDMA_TX_CONSUME(0), 0xff8, 8);
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmphex(reg_read(qts, 0x08) & RX_RING_FULL(0), ==,
                     RX_RING_FULL(0));
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0x3f8);
@@ -2192,7 +2238,7 @@ static void test_dma_mode_switch_over_pio_is_reported(void)
                     SSCR_DMA_EN);
 
     qtest_writeb(qts, UART(0), 0xa5);
-    qtest_clock_step(qts, 2000000);
+    qtest_clock_step(qts, 2 * KBC_CHAR_NS);
     g_assert_cmpint(read(sv[0], &got, 1), ==, 1);
     g_assert_cmphex(got, ==, 0xa5);
 
@@ -3699,6 +3745,8 @@ int main(int argc, char **argv)
                    test_ata_readback_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/ps2-adapter", test_ps2_adapter);
+    qtest_add_func("/sgi-ioc4/ps2-characters-are-paced",
+                   test_ps2_characters_are_paced);
     qtest_add_func("/sgi-ioc4/ps2-drain-then-acknowledge",
                    test_ps2_drain_then_acknowledge);
     qtest_add_func("/sgi-ioc4/ps2-ports-present", test_ps2_ports_present);

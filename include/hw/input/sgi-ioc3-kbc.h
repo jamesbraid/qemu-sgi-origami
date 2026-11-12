@@ -115,14 +115,16 @@ struct SGIIOC3KBCBusState {
                                      SGI_IOC3_KBC_CTRL_CLAMP_MASK)
 
 /*
- * How long a clamp that has just been released takes to start the stopped
- * device sending again: one PS/2 character, 11 bits (start, eight data, parity,
- * stop), at a clock of 10 to 16.7 kHz, which is 0.66 to 1.1 ms. The bit
- * timing is Adam Chapweske's "The PS/2 Mouse/Keyboard Protocol" (public); that
- * the chip's own delay equals one character time is an approximation, see
+ * How long a PS/2 device takes to clock one character out: 11 bits (start,
+ * eight data, parity, stop) at a clock of 10 to 16.7 kHz, which is 0.66 to
+ * 1.1 ms. The bit timing is Adam Chapweske's "The PS/2 Mouse/Keyboard
+ * Protocol" (public). A character lands in a port's holding no sooner than
+ * this after the previous one on the same port, and a device a clamp has
+ * stopped needs the same time after the release to send again. That the
+ * chip's own behavior equals one character time is an approximation, see
  * docs/system/mips/sgi/hardware/ioc3.rst.
  */
-#define SGI_IOC3_KBC_RESUME_NS      1000000
+#define SGI_IOC3_KBC_CHAR_NS        1000000
 
 /* The two ports, in the order their GPIO inputs and registers are wired. */
 #define SGI_IOC3_KBC_PORT_KBD       0
@@ -131,13 +133,23 @@ struct SGIIOC3KBCBusState {
 
 /*
  * What one port's controller is holding: the characters it has taken from
- * the device, oldest first, and whether one was lost for want of room.
- * Everything that decides the next interrupt lives here, so it all migrates.
+ * the device, oldest first, and whether one was lost for want of room. The
+ * pacing state says when the device may send its next character. Everything
+ * that decides the next interrupt lives here, so it all migrates.
  */
 typedef struct SGIIOC3KBCPort {
     uint8_t data[SGI_IOC3_KBC_RX_SLOTS];
     uint8_t count;
     bool overflow;
+    /* The clamp has stopped the device with characters still in it. */
+    bool stopped;
+    /* Virtual-clock time before which no further character may land. */
+    int64_t ready_at;
+    /*
+     * Pending while characters wait in the device for ready_at. Only created
+     * on a controller that has ports.
+     */
+    QEMUTimer *timer;
 } SGIIOC3KBCPort;
 
 struct SGIIOC3KBCState {
@@ -156,13 +168,6 @@ struct SGIIOC3KBCState {
 
     uint32_t control;
     SGIIOC3KBCPort port[SGI_IOC3_KBC_PORTS];
-
-    /*
-     * Pending while a read has released a clamp and the stopped device has
-     * not yet sent its next character. Only created on a controller that has
-     * ports.
-     */
-    QEMUTimer *resume_timer;
 
     /*
      * Set while a fill is moving characters in. Popping one re-raises the

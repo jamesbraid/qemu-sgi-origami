@@ -1118,16 +1118,21 @@ Linux acknowledges and then reads; OpenBSD reads until the register comes
 back empty and then acknowledges, *software expectation*
 (``drivers/input/serio/ioc3kbd.c``, ``sys/arch/sgi/dev/iockbc.c``). A
 character whose interrupt arrives between the last read and the
-acknowledge would be lost to a latch, so the release of a clamp is not
-instant: a read that empties a clamped holding starts a timer, and the
-stopped device sends its next character, and raises the line, when it
-fires. The period is one PS/2 character, 11 bits at the 10 to 16.7 kHz
-clock (0.66 to 1.1 ms; Adam Chapweske, *The PS/2 Mouse/Keyboard
-Protocol*), modelled as 1 ms on the virtual clock and migrated while
-pending. Per-character assertion, the timer's period and the release of
-a clamp on a read at all are each an *approximation*; a trace of the
-interval between a receive read and the next interrupt on the physical
-chip would settle the period. A guest that acknowledges and never reads
+acknowledge would be lost to a latch, so characters do not reach a holding
+the instant the host queues them. A real device clocks each one out over
+one PS/2 character, 11 bits at the 10 to 16.7 kHz clock (0.66 to 1.1 ms;
+Adam Chapweske, *The PS/2 Mouse/Keyboard Protocol*), so the model lets a
+character into a port's holding no sooner than one character time after the
+previous one on that port, modelled as 1 ms on the virtual clock. A
+per-port timer carries the rest, and each port is paced separately. A port
+idle for a character time takes its next character at once. A device a
+clamp has stopped restarts one character time after the read that released
+the clamp, not inside it, and the timer state migrates while pending. The
+spacing is an *approximation*: the character time stands in for the chip's
+own interval, as do per-character assertion and the release of a clamp on a
+read at all. A capture of the interval between a receive read and the next
+interrupt, and between back-to-back interrupts, on the physical chip would
+settle the period. A guest that acknowledges and never reads
 sees the source go quiet. Writes setting the emulation or fast-clock bits (12,
 13) log ``LOG_UNIMP``. Reads of the transmit registers and writes to the
 receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the

@@ -17,6 +17,12 @@
  * the holdings are what this controller
  * has actually received.
  *
+ * A real device clocks each character out over about a millisecond, so
+ * characters reach a holding one character time apart, not all at once when
+ * the host queues them (see SGI_IOC3_KBC_CHAR_NS). A per-port timer on the
+ * virtual clock paces the transfers, and a device a clamp has stopped needs a
+ * character time after the release before it sends again.
+ *
  * See docs/system/mips/sgi/hardware/ioc3.rst for the IOC3 register contract.
  */
 
@@ -91,40 +97,66 @@ static void sgi_ioc3_kbc_drained(SGIIOC3KBCState *s)
 }
 
 /*
- * Move what the device has sent into this port's holding, up to whatever the
- * clamp allows. A clamped port stops
- * there with its clock line low and the rest still in the device; an
- * unclamped one loses the surplus and says so
- * through the overflow flag.
+ * Move what the device has sent into this port's holding, at the device's
+ * pace: one character, then nothing more until a character time later, when
+ * the port's timer calls back in. A clamped port that has reached its limit
+ * stops there with its clock line low and the rest still in the device; an
+ * unclamped one loses the surplus (each loss still takes its character time)
+ * and says so through the overflow flag.
+ *
+ * Nothing lands in the call that releases a clamp: the device restarts a
+ * character time after the release, so its interrupt follows the guest's
+ * acknowledge of the read that released it. Landing inside the read would
+ * put the interrupt before that acknowledge, which clears the latch and
+ * strands the character. Model approximation: the spacing is one character
+ * time and not a measured value.
  */
 static void sgi_ioc3_kbc_fill(SGIIOC3KBCState *s, unsigned int port)
 {
     SGIIOC3KBCPort *p = &s->port[port];
     PS2State *ps2;
     unsigned int clamp = sgi_ioc3_kbc_clamp(s, port);
+    int64_t now;
     bool arrived = false;
 
     if (!s->ports_present || s->filling) {
         return;
     }
     ps2 = sgi_ioc3_kbc_ps2(s, port);
+    if (ps2_queue_empty(ps2)) {
+        return;
+    }
     s->filling = true;
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 
-    while (!ps2_queue_empty(ps2)) {
-        uint8_t byte;
-
-        if (clamp && p->count >= clamp) {
-            break;
+    if (clamp && p->count >= clamp) {
+        p->stopped = true;
+        timer_del(p->timer);
+    } else {
+        if (p->stopped) {
+            p->stopped = false;
+            p->ready_at = MAX(p->ready_at, now + SGI_IOC3_KBC_CHAR_NS);
         }
+        if (now >= p->ready_at) {
+            uint8_t byte = ps2_read_data(ps2);
 
-        byte = ps2_read_data(ps2);
-        if (p->count >= SGI_IOC3_KBC_RX_SLOTS) {
-            trace_sgi_ioc3_kbc_overflow(port, byte);
-            p->overflow = true;
-            continue;
+            p->ready_at = now + SGI_IOC3_KBC_CHAR_NS;
+            if (p->count >= SGI_IOC3_KBC_RX_SLOTS) {
+                trace_sgi_ioc3_kbc_overflow(port, byte);
+                p->overflow = true;
+            } else {
+                p->data[p->count++] = byte;
+                arrived = true;
+            }
         }
-        p->data[p->count++] = byte;
-        arrived = true;
+        if (ps2_queue_empty(ps2)) {
+            timer_del(p->timer);
+        } else if (clamp && p->count >= clamp) {
+            p->stopped = true;
+            timer_del(p->timer);
+        } else {
+            timer_mod(p->timer, p->ready_at);
+        }
     }
 
     s->filling = false;
@@ -133,13 +165,15 @@ static void sgi_ioc3_kbc_fill(SGIIOC3KBCState *s, unsigned int port)
     }
 }
 
-/* The stopped devices have had a character time: let them send again. */
-static void sgi_ioc3_kbc_resume(void *opaque)
+/* The device has had its character time: let the next one land. */
+static void sgi_ioc3_kbc_kbd_tick(void *opaque)
 {
-    SGIIOC3KBCState *s = opaque;
+    sgi_ioc3_kbc_fill(opaque, SGI_IOC3_KBC_PORT_KBD);
+}
 
-    sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_KBD);
-    sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_AUX);
+static void sgi_ioc3_kbc_aux_tick(void *opaque)
+{
+    sgi_ioc3_kbc_fill(opaque, SGI_IOC3_KBC_PORT_AUX);
 }
 
 /* A ps2 device raises its line when it has something to send. */
@@ -163,7 +197,6 @@ static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, unsigned int port)
     SGIIOC3KBCPort *p = &s->port[port];
     uint32_t val = 0;
     unsigned int i;
-    bool had = p->count != 0;
 
     for (i = 0; i < p->count; i++) {
         unsigned int slot = (SGI_IOC3_KBC_RX_SLOTS - 1) - i;
@@ -189,21 +222,10 @@ static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, unsigned int port)
     sgi_ioc3_kbc_drained(s);
 
     /*
-     * The clamp releases with the holding, but the stopped device needs a
-     * character time to clock its next byte out. Resuming inside the read
-     * would land that character's interrupt before the guest's acknowledge
-     * (IRIX reads until empty, then acknowledges) and the latch would swallow
-     * it, leaving the character held with nothing to signal it. The timer puts
-     * the arrival after the acknowledge. Model approximation: the period is one
-     * PS/2 character time (SGI_IOC3_KBC_RESUME_NS), not a measured value.
+     * The clamp releases with the holding. The fill restarts the stopped
+     * device a character time from now, never inside this read.
      */
-    if (had && s->resume_timer && !timer_pending(s->resume_timer) &&
-        (!ps2_queue_empty(sgi_ioc3_kbc_ps2(s, SGI_IOC3_KBC_PORT_KBD)) ||
-         !ps2_queue_empty(sgi_ioc3_kbc_ps2(s, SGI_IOC3_KBC_PORT_AUX)))) {
-        timer_mod(s->resume_timer,
-                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                  SGI_IOC3_KBC_RESUME_NS);
-    }
+    sgi_ioc3_kbc_fill(s, port);
     return val;
 }
 
@@ -317,7 +339,10 @@ static void sgi_ioc3_kbc_realize(DeviceState *dev, Error **errp)
         return;
     }
 
-    s->resume_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_ioc3_kbc_resume, s);
+    s->port[SGI_IOC3_KBC_PORT_KBD].timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_ioc3_kbc_kbd_tick, s);
+    s->port[SGI_IOC3_KBC_PORT_AUX].timer =
+        timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_ioc3_kbc_aux_tick, s);
 
     /* Each port's data-available line feeds the one shared interrupt. */
     qdev_connect_gpio_out(DEVICE(&s->kbd), PS2_DEVICE_IRQ,
@@ -331,8 +356,12 @@ static void sgi_ioc3_kbc_unrealize(DeviceState *dev)
     SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
 
     if (s->ports_present) {
-        timer_free(s->resume_timer);
-        s->resume_timer = NULL;
+        unsigned int port;
+
+        for (port = 0; port < SGI_IOC3_KBC_PORTS; port++) {
+            timer_free(s->port[port].timer);
+            s->port[port].timer = NULL;
+        }
         qdev_unrealize(DEVICE(&s->kbd));
         qdev_unrealize(DEVICE(&s->mouse));
     }
@@ -357,11 +386,20 @@ static void sgi_ioc3_kbc_init(Object *obj)
 static void sgi_ioc3_kbc_reset_hold(Object *obj, ResetType type)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(obj);
+    unsigned int port;
 
     s->control = 0;
-    memset(s->port, 0, sizeof(s->port));
-    if (s->resume_timer) {
-        timer_del(s->resume_timer);
+    for (port = 0; port < SGI_IOC3_KBC_PORTS; port++) {
+        SGIIOC3KBCPort *p = &s->port[port];
+
+        memset(p->data, 0, sizeof(p->data));
+        p->count = 0;
+        p->overflow = false;
+        p->stopped = false;
+        p->ready_at = 0;
+        if (p->timer) {
+            timer_del(p->timer);
+        }
     }
     qemu_set_irq(s->irq, 0);
 }
@@ -384,42 +422,48 @@ static int sgi_ioc3_kbc_post_load(void *opaque, int version_id)
     return 0;
 }
 
+static bool sgi_ioc3_kbc_timer_needed(void *opaque)
+{
+    SGIIOC3KBCPort *p = opaque;
+
+    return p->timer && timer_pending(p->timer);
+}
+
+static const VMStateDescription vmstate_sgi_ioc3_kbc_port_timer = {
+    .name = "sgi-ioc3-kbc/port/timer",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc3_kbc_timer_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(timer, SGIIOC3KBCPort),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_ioc3_kbc_port = {
     .name = "sgi-ioc3-kbc/port",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8_ARRAY(data, SGIIOC3KBCPort, SGI_IOC3_KBC_RX_SLOTS),
         VMSTATE_UINT8(count, SGIIOC3KBCPort),
         VMSTATE_BOOL(overflow, SGIIOC3KBCPort),
+        VMSTATE_BOOL_V(stopped, SGIIOC3KBCPort, 2),
+        VMSTATE_INT64_V(ready_at, SGIIOC3KBCPort, 2),
         VMSTATE_END_OF_LIST()
-    }
-};
-
-static bool sgi_ioc3_kbc_resume_needed(void *opaque)
-{
-    SGIIOC3KBCState *s = opaque;
-
-    return s->resume_timer && timer_pending(s->resume_timer);
-}
-
-static const VMStateDescription vmstate_sgi_ioc3_kbc_resume = {
-    .name = "sgi-ioc3-kbc/resume",
-    .version_id = 1,
-    .minimum_version_id = 1,
-    .needed = sgi_ioc3_kbc_resume_needed,
-    .fields = (const VMStateField[]) {
-        VMSTATE_TIMER_PTR(resume_timer, SGIIOC3KBCState),
-        VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_ioc3_kbc_port_timer,
+        NULL
     }
 };
 
 /*
- * The holdings and the pending clamp release carry everything that decides
- * the next arrival: the latched source bit travels in the chip's own state,
- * the characters still in the devices travel in theirs, and the release timer
- * travels in a subsection when one is pending, so nothing is re-derived after
- * a load.
+ * The holdings and the pacing state carry everything that decides the next
+ * arrival: the latched source bit travels in the chip's own state, the
+ * characters still in the devices travel in theirs, and each port's timer
+ * travels in a subsection while one is pending, so nothing is re-derived
+ * after a load.
  */
 static const VMStateDescription vmstate_sgi_ioc3_kbc = {
     .name = "sgi-ioc3-kbc",
@@ -431,10 +475,6 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc = {
         VMSTATE_STRUCT_ARRAY(port, SGIIOC3KBCState, SGI_IOC3_KBC_PORTS, 1,
                              vmstate_sgi_ioc3_kbc_port, SGIIOC3KBCPort),
         VMSTATE_END_OF_LIST()
-    },
-    .subsections = (const VMStateDescription * const []) {
-        &vmstate_sgi_ioc3_kbc_resume,
-        NULL
     }
 };
 

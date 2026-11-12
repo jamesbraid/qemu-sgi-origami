@@ -895,6 +895,8 @@ static void test_fuel_ps2(const void *data)
     const char *prom = data;
     QTestState *qts = fuel_start(prom);
 
+    /* Timers on the virtual clock only run while the machine does. */
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     fuel_map_ioc3(qts);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
                     ==, 0);
@@ -909,6 +911,8 @@ static void test_fuel_ps2(const void *data)
                  IOC3_INT_KEYBOARD);
     qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 0xff);
     qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_AUX_TRANSMIT, 0xff);
+    /* The reply characters come a PS/2 character time apart. */
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
                     IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
@@ -956,7 +960,10 @@ static void test_fuel_ps2_keyboard_host_input(const void *data)
     qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 0xf0);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
                     ==, 0x80fa0000);
+    /* The next reply character comes a PS/2 character time later. */
+    qtest_clock_step(qts, NS_PER_SEC / 1000);
     qtest_writel(qts, IOC3_WINDOW + IOC3_KBC_KBD_TRANSMIT, 2);
+    qtest_clock_step(qts, NS_PER_SEC / 1000);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
                     ==, 0x80fa0000);
     qtest_writel(qts, IOC3_WINDOW + IOC3_INT_STATUS, IOC3_INT_KEYBOARD);
@@ -966,6 +973,8 @@ static void test_fuel_ps2_keyboard_host_input(const void *data)
     for (unsigned int i = 0; i < ARRAY_SIZE(keys); i++) {
         fuel_ps2_key_down(qts, keys[i]);
     }
+    /* Characters reach the holding a character time apart: three of them. */
+    qtest_clock_step(qts, 2 * (NS_PER_SEC / 1000));
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
                     IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
     fuel_expect_irq(qts, pin, pending_bit);
@@ -975,6 +984,8 @@ static void test_fuel_ps2_keyboard_host_input(const void *data)
     fuel_ack_irq(qts, pending_bit);
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_KBC_KBD_RECEIVE),
                     ==, 0xe01c3221);
+    /* The clamp released with the read; the other two follow. */
+    qtest_clock_step(qts, 2 * (NS_PER_SEC / 1000));
     g_assert_cmphex(qtest_readl(qts, IOC3_WINDOW + IOC3_INT_STATUS) &
                     IOC3_INT_KEYBOARD, ==, IOC3_INT_KEYBOARD);
     qtest_writeq(qts, BEDROCK_LOCAL + PI_MASK_0_A, 0);
