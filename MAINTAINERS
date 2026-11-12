@@ -1498,6 +1498,9 @@ F: include/hw/mips/sgi/
 F: hw/1wire/
 F: hw/audio/sgi-rad1-audio.c
 F: hw/display/sgi/
+F: hw/coproc/dsp56300/
+F: include/hw/coproc/dsp56300/
+F: tests/unit/test-dsp56300.c
 F: tests/qtest/sgi-gbe-test.c
 F: hw/i2c/pcf8584.c
 F: hw/i2c/i2c-wire.c
