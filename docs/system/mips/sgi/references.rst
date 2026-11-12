@@ -483,6 +483,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``ics1890-rev-g``
    *ICS1890 10Base-T/100Base-TX Integrated PHYceiver, revision G, 1997-10-21*. Integrated Circuit Systems. Part datasheet, cited by page. `<https://www.datasheetarchive.com/datasheet/ICS1890/Integrated-Circuit-Systems?term=ics1890&version=1>`__ SHA-256 ``382e7b14076bec05bb9a7f7b118738903c1f7278071159bee73a1d580e812653``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-intel-i960rx-272736-002:
+
+``intel-i960rx-272736-002``
+   *i960 Rx I/O Microprocessor Developer's Manual, order number 272736-002, April 1997*. Intel. Manual, cited by page. `<https://datasheets.chipdb.org/Intel/80960/manuals/27273602.PDF>`__ SHA-256 ``441fca4d850ab8fd8a9d2fcade3926724f702c89e3c5129f721f0ee28a334ed9``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ip35-patch-sg0007149:
 
 ``ip35-patch-sg0007149``
@@ -793,6 +798,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``ntc-tech-origin-200-cmn-a019``
    *Silicon Graphics Origin 200 Server CMN A018 Master and Slave, CMN A019 Expansion (retailer photographs)*. NTC Tech. Photo, cited by region. `<https://www.ntc-tech.com/products/silicon-graphics-origin-200-server-cmn-a018-master-and-slave-cmn-a019-expansion>`__ Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-nxp-dsp56300fm-5:
+
+``nxp-dsp56300fm-5``
+   *DSP56300 Family Manual, DSP56300FM, Rev. 5, April 2005*. Freescale Semiconductor (now NXP). Manual, cited by page. `<https://www.nxp.com/docs/en/reference-manual/DSP56300FM.pdf>`__ SHA-256 ``b2e8e346fe55b05d20ad0e6bc03d45fd1e080d46d9a9cd9540271c0c37f5a31e``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-nxp-dsp56301um-4:
+
+``nxp-dsp56301um-4``
+   *DSP56301 24-Bit Digital Signal Processor User's Manual, DSP56301UM, Rev. 4, November 2005*. Freescale Semiconductor (now NXP). Manual, cited by page. `<https://www.nxp.com/docs/en/reference-manual/DSP56301UM.pdf>`__ SHA-256 ``b7c7c50adf64538e3db6ce1bc7532a9eb41d0cadf91b9748765cd5c829427305``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-nxp-mcf5206eum-1:
 
 ``nxp-mcf5206eum-1``
@@ -957,6 +972,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``sharp-lh28f800su``
    *LH28F800SU 8M Flash Memory datasheet*. Sharp. Part datasheet, cited by page. `<https://rcl-radio.ru/wp-content/uploads/2014/11/LH28F800SU.pdf>`__ SHA-256 ``589461cd0f1cd4f2ad861f558e4f1fe982274baa08fed0e6d013aa9548862384``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonicstudio-hd-1-8-configuration-guide:
+
+``sonicstudio-hd-1.8-configuration-guide``
+   *SonicStudio HD 1.8 Configuration Guide, 23 pages*. Sonic Solutions. Manual, cited by page. `<https://web.archive.org/web/20041105022741id_/http://www.sonicstudio.com/pdf/SSHD_Config._Guide_1.8.pdf>`__ SHA-256 ``8b7117338ea5bd51f7b38de602abc377b41189020efb95b3edc4d355c9b07550``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonicstudio-hd-1-8-installation-guide:
+
+``sonicstudio-hd-1.8-installation-guide``
+   *SonicStudio HD 1.8 Installation Guide, 58 pages*. Sonic Solutions. Manual, cited by page. `<https://web.archive.org/web/20041105022741id_/http://www.sonicstudio.com/pdf/SSHD_Install_Guide_1.8.pdf>`__ SHA-256 ``36400f726731227bba8078a4d44ed68092ffe21e941b367e4b9103d22d2c8d9e``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-st-m48t35-rev-10:
 
@@ -1283,6 +1308,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``ip35-prom-6.210``
    *IP35 PROM*. Silicon Graphics. Firmware, cited by address. For Origin 300, Origin 350, Onyx 350, Fuel and Tezro IP35-family node boards. Version 6.210. Banner ``SGI Version 6.210  built 02:33:51 PM Aug 26, 2004``. Found on IRIX 6.5.30 installation media, /usr/cpu/firmware/ip35prom.img. Hashed as the payload image. SHA-256 ``554924380189a03a512156af2faa38344902f251b49fd5c80c253c23ecaff27b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-irix-pcibr-6-5-30:
+
+``irix-pcibr-6.5.30``
+   *IRIX Bridge driver object for IP30*. Silicon Graphics. Firmware, cited by address. For IRIX 6.5.30 PCI bridge driver on IP30. Version 6.5.30. Found on IRIX 6.5.30 installation media, the IP30 kernel's bridge driver object; addresses are offsets into the object's text section. Hashed as the container image. SHA-256 ``57403fc7d367dca6e0e4d4524e6b58ceea068433a84d3313fc2208fbc248ffb3``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-irix-wacom-6-5-30:
 
 ``irix-wacom-6.5.30``
@@ -1292,3 +1322,33 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 
 ``l1-firmware-1.44.0``
    *L1 system controller firmware, Fuel/PE/O300 1MB image*. Silicon Graphics. Firmware, cited by address. For Origin 300, Fuel and PCI expansion module L1 controllers. Version 1.44. Banner ``1.44.0, built 2006-07-17 18:20:38, label Fuel/PE/O300 1MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (982,412-byte Origin 300 range). Hashed as the payload image. SHA-256 ``0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-dsp-programs-5-0:
+
+``sonic-dsp-programs-5.0``
+   *Sonic HDSP DSP program resource file*. Sonic Solutions. Firmware, cited by address. For Monitor, effects and codec programs for the four DSP56301 processors of the Sonic HDSP card. Version 5.0. Found on the Discreet Sonic Solutions library set installed with Smoke 5.0, a Macintosh resource fork; addresses are DSP memory addresses within the named image. The facts cited from it were read from the Macintosh product's copy of the resource file (sha256 fb20b7c78239c2ff9f1901830b7f701f4b50694e16a09ba12fa2363c81174866), which was not compared with this one. Hashed as the container image. SHA-256 ``2d3a7cf12493e29e8ba896fd0b6c6d8e038cdb07515ae7a30680f8467fd4d552``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-hdsp-driver-9-2-5:
+
+``sonic-hdsp-driver-9.2.5``
+   *Sonic HDSP kernel driver object for IP30*. Sonic Solutions. Firmware, cited by address. For Discreet Audio 4 (Sonic HDSP) PCI driver for IRIX 6.5 on IP30. Version 9.2.5. Found on the Discreet Sonic Solutions driver subsystem installed with Flame 9.2.5 for IRIX 6.5; addresses are offsets into the object's text section. Hashed as the container image. SHA-256 ``7001479ed9aa36c5ce99666f48fa668d0e1872d98e36004095d2f9b0b30a6ea8``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-hdsp-library-5-0:
+
+``sonic-hdsp-library-5.0``
+   *Sonic HDSP user-space audio library*. Sonic Solutions. Firmware, cited by address. For Discreet Smoke 5.0 and Flame 7.6 audio library for the Sonic HDSP, IRIX 6.5 o32 build. Version 5.0. Found on the Discreet Sonic Solutions library set installed with Smoke 5.0; addresses are virtual addresses in the shared object, which is prelinked at 0x5e410000. Hashed as the container image. SHA-256 ``b6b7406ab711475a77bc0b23f4c2e4e51d7b978a9eaf9bd1c76ce000e00326a9``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-hdsp-module-1-0:
+
+``sonic-hdsp-module-1.0``
+   *Sonic HDSP board application module*. Sonic Solutions. Firmware, cited by address. For i960 board application that the host library downloads to the Sonic HDSP card. Version 1.0. Banner ``module header version 1.00``. Found on the Discreet Sonic Solutions library set installed with Smoke 5.0; addresses are offsets into the i960 object's text section, which is loaded at 0. Hashed as the container image. SHA-256 ``076fb0fdea5e4200a87511219ba1a0f24e2f1e61bb9a88b8109cd9845cbe5601``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-iop-flash-1-0-0:
+
+``sonic-iop-flash-1.0.0``
+   *Sonic HDSP I/O processor flash image, IxWorks 1.0.0*. Sonic Solutions. Firmware, cited by address. For Flash image of the i960 I/O processor on the Sonic HDSP card. Version 1.0.0. Banner ``IxWorks 1.0.0``. Found on the SonicStudio HD installers for Macintosh (versions 1.7.1, 1.8.2 and 1.9 were examined; which one yielded this copy is not recorded); the image is 512 KiB and addresses are offsets into it, mapped at 0xfef80000. Hashed as the container image. SHA-256 ``33f4f173947fd9fb23bb13c74bfb19bba4e66f0dc2b5b895e0612934e087e1e9``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-sonic-iop-flash-1-1:
+
+``sonic-iop-flash-1.1``
+   *Sonic HDSP I/O processor flash image, IxWorks 1.1*. Sonic Solutions. Firmware, cited by address. For Flash image of the i960 I/O processor on the Sonic HDSP card. Version 1.1. Banner ``IxWorks 1.1``. Found on the SonicStudio HD installers for Macintosh (versions 1.7.1, 1.8.2 and 1.9 were examined; which one yielded this copy is not recorded); the image is 512 KiB and addresses are offsets into it, mapped at 0xfef80000. Hashed as the container image. SHA-256 ``af8fd7211c45673536c072679427f51bdafd3c3893b9aaea0491721ff2e94c44``. Public, without a redistribution grant: cited and linked, never copied into this tree.

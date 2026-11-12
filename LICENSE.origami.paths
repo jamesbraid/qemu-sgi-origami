@@ -30,6 +30,7 @@ docs/system/mips/sgi/hardware/heart.rst
 docs/system/mips/sgi/hardware/pbay.rst
 docs/system/mips/sgi/hardware/r10000.rst
 docs/system/mips/sgi/hardware/rad1-audio.rst
+docs/system/mips/sgi/hardware/sonic-hdsp.rst
 docs/system/mips/sgi/measured-machines.rst
 docs/system/mips/sgi/hardware/xframe.rst
 docs/system/mips/sgi/hardware/tsb12lv22.rst

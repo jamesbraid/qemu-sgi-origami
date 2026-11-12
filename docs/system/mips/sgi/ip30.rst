@@ -869,7 +869,9 @@ PCI card cage. Each is a Bridge on a port of its own with its own PCI bus
 sgi-octane-pci-cage,slot=widget-13``, or ``--board
 pci-shoehorn@widget-10`` and ``--board pci-cage@widget-13`` through the
 catalogue). Their identity, slots, interrupt wiring and what is
-*unknown* about them are on :ref:`sgi-pci-expansion-octane`.
+*unknown* about them are on :ref:`sgi-pci-expansion-octane`. The Sonic
+HDSP audio card, a PCI card that Discreet used with these boards, is on
+:doc:`hardware/sonic-hdsp`.
 
 .. _sgi-ip30-video-io:
 

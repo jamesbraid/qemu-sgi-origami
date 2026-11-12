@@ -2082,6 +2082,51 @@ web:
     obtain:
       url: https://media.digikey.com/pdf/Data%20Sheets/Atmel%20PDFs/AT29C040A.pdf
       sha256: 7ab4ab1a1f0ab72b9b868464a53df8dea64dbeadda2d56a676d6beef7e7c92a7
+  intel-i960rx-272736-002:
+    title: "i960 Rx I/O Microprocessor Developer's Manual, order number 272736-002, April 1997"
+    publisher: "Intel"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://datasheets.chipdb.org/Intel/80960/manuals/27273602.PDF
+      sha256: 441fca4d850ab8fd8a9d2fcade3926724f702c89e3c5129f721f0ee28a334ed9
+  nxp-dsp56300fm-5:
+    title: "DSP56300 Family Manual, DSP56300FM, Rev. 5, April 2005"
+    publisher: "Freescale Semiconductor (now NXP)"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/reference-manual/DSP56300FM.pdf
+      sha256: b2e8e346fe55b05d20ad0e6bc03d45fd1e080d46d9a9cd9540271c0c37f5a31e
+  nxp-dsp56301um-4:
+    title: "DSP56301 24-Bit Digital Signal Processor User's Manual, DSP56301UM, Rev. 4, November 2005"
+    publisher: "Freescale Semiconductor (now NXP)"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://www.nxp.com/docs/en/reference-manual/DSP56301UM.pdf
+      sha256: b7c7c50adf64538e3db6ce1bc7532a9eb41d0cadf91b9748765cd5c829427305
+  sonicstudio-hd-1.8-installation-guide:
+    title: "SonicStudio HD 1.8 Installation Guide, 58 pages"
+    publisher: "Sonic Solutions"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://web.archive.org/web/20041105022741id_/http://www.sonicstudio.com/pdf/SSHD_Install_Guide_1.8.pdf
+      sha256: 36400f726731227bba8078a4d44ed68092ffe21e941b367e4b9103d22d2c8d9e
+  sonicstudio-hd-1.8-configuration-guide:
+    title: "SonicStudio HD 1.8 Configuration Guide, 23 pages"
+    publisher: "Sonic Solutions"
+    kind: manual
+    locator: page
+    rights: obtain-only
+    obtain:
+      url: https://web.archive.org/web/20041105022741id_/http://www.sonicstudio.com/pdf/SSHD_Config._Guide_1.8.pdf
+      sha256: 8b7117338ea5bd51f7b38de602abc377b41189020efb95b3edc4d355c9b07550
 
 firmware:
   ip27-prom-6.156:
@@ -2286,3 +2331,90 @@ firmware:
       distribution: "IRIX 6.5.30 installation media, Overlays 2, subsystem ip32prom.sw.prom, ip32prom.image (431,872 bytes)"
       image: payload
       sha256: 11230c353cb14fcc50ede286df228e169e32fc9e5a2206276ae29c259fafb23c
+  sonic-hdsp-driver-9.2.5:
+    title: "Sonic HDSP kernel driver object for IP30"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "Discreet Audio 4 (Sonic HDSP) PCI driver for IRIX 6.5 on IP30"
+    version: "9.2.5"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the Discreet Sonic Solutions driver subsystem installed with Flame 9.2.5 for IRIX 6.5; addresses are offsets into the object's text section"
+      image: container
+      sha256: 7001479ed9aa36c5ce99666f48fa668d0e1872d98e36004095d2f9b0b30a6ea8
+  sonic-hdsp-library-5.0:
+    title: "Sonic HDSP user-space audio library"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "Discreet Smoke 5.0 and Flame 7.6 audio library for the Sonic HDSP, IRIX 6.5 o32 build"
+    version: "5.0"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the Discreet Sonic Solutions library set installed with Smoke 5.0; addresses are virtual addresses in the shared object, which is prelinked at 0x5e410000"
+      image: container
+      sha256: b6b7406ab711475a77bc0b23f4c2e4e51d7b978a9eaf9bd1c76ce000e00326a9
+  sonic-hdsp-module-1.0:
+    title: "Sonic HDSP board application module"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "i960 board application that the host library downloads to the Sonic HDSP card"
+    version: "1.0"
+    banner: "module header version 1.00"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the Discreet Sonic Solutions library set installed with Smoke 5.0; addresses are offsets into the i960 object's text section, which is loaded at 0"
+      image: container
+      sha256: 076fb0fdea5e4200a87511219ba1a0f24e2f1e61bb9a88b8109cd9845cbe5601
+  sonic-iop-flash-1.0.0:
+    title: "Sonic HDSP I/O processor flash image, IxWorks 1.0.0"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "Flash image of the i960 I/O processor on the Sonic HDSP card"
+    version: "1.0.0"
+    banner: "IxWorks 1.0.0"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the SonicStudio HD installers for Macintosh (versions 1.7.1, 1.8.2 and 1.9 were examined; which one yielded this copy is not recorded); the image is 512 KiB and addresses are offsets into it, mapped at 0xfef80000"
+      image: container
+      sha256: 33f4f173947fd9fb23bb13c74bfb19bba4e66f0dc2b5b895e0612934e087e1e9
+  sonic-iop-flash-1.1:
+    title: "Sonic HDSP I/O processor flash image, IxWorks 1.1"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "Flash image of the i960 I/O processor on the Sonic HDSP card"
+    version: "1.1"
+    banner: "IxWorks 1.1"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the SonicStudio HD installers for Macintosh (versions 1.7.1, 1.8.2 and 1.9 were examined; which one yielded this copy is not recorded); the image is 512 KiB and addresses are offsets into it, mapped at 0xfef80000"
+      image: container
+      sha256: af8fd7211c45673536c072679427f51bdafd3c3893b9aaea0491721ff2e94c44
+  sonic-dsp-programs-5.0:
+    title: "Sonic HDSP DSP program resource file"
+    publisher: Sonic Solutions
+    kind: firmware
+    product: "Monitor, effects and codec programs for the four DSP56301 processors of the Sonic HDSP card"
+    version: "5.0"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the Discreet Sonic Solutions library set installed with Smoke 5.0, a Macintosh resource fork; addresses are DSP memory addresses within the named image. The facts cited from it were read from the Macintosh product's copy of the resource file (sha256 fb20b7c78239c2ff9f1901830b7f701f4b50694e16a09ba12fa2363c81174866), which was not compared with this one"
+      image: container
+      sha256: 2d3a7cf12493e29e8ba896fd0b6c6d8e038cdb07515ae7a30680f8467fd4d552
+  irix-pcibr-6.5.30:
+    title: "IRIX Bridge driver object for IP30"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "IRIX 6.5.30 PCI bridge driver on IP30"
+    version: "6.5.30"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, the IP30 kernel's bridge driver object; addresses are offsets into the object's text section"
+      image: container
+      sha256: 57403fc7d367dca6e0e4d4524e6b58ceea068433a84d3313fc2208fbc248ffb3
