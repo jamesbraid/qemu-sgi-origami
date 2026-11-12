@@ -28,9 +28,10 @@ disk of its own.
 
 QEMU models the card as one PCI device, ``sgi-sonic-hdsp``, with a second
 device, ``sonic-ada8824``, for the converter box. The device runs the
-card's own flash image on an embedded i960 interpreter and runs the four
-DSP programs the host downloads on four embedded DSP56300-family
-interpreters, so the guest sees what the firmware makes it see. The model
+card's own flash image on an embedded i960 interpreter, so the guest sees
+what the firmware makes it see. It also carries four DSP56300-family
+cores, but in the current model they do not execute code, and the
+converter box and audio path described later are not modelled. The model
 carries no firmware: the flash image is the user's, named by a property
 (:ref:`sgi-sonic-hdsp-firmware`).
 
@@ -298,16 +299,21 @@ so the contents below are what the stock boot code leaves behind.
 
 The model implements the bridge unit and the ATU as two functions of one
 PCI device, as the Rx does, with every identity register read back from
-what the firmware wrote. A configuration cycle to either function while the configuration cycle
-retry bit of the bridge unit's extended control register (EBCR bit 2) is
-set is retried, as the chip does
+what the firmware wrote. While the configuration cycle retry bit of the
+bridge unit's extended control register (EBCR bit 2) is set, the chip
+answers every configuration cycle to either function with Retry
 (:src:`intel-i960rx-272736-002 p. 11-3, 11-4, 15-64`, *established*). The
 boot ROM sets the bit and the resident operating system clears it when its
 PCI setup is finished (:ref:`sgi-sonic-hdsp-hiding`). The reset state of
 the bit is a strap on the chip and the card's strap is *unknown*; the model
-drives the strap so the bit is set from reset, an *approximation* that
-makes the host's early scan wait for the firmware. What would settle it is
-the board's strap wiring. The function numbers
+drives the strap so the bit is set from reset, an *approximation*.
+QEMU's PCI core cannot express PCI Retry, so while the bit is set the model
+answers configuration reads with all ones and drops configuration writes,
+which a host sees as an empty slot, not as a wait: a host that scans before
+the operating system has finished sees no card, and will not see one
+later unless it scans again. The count of cycles answered this way is the
+``config-retries`` property, which tests read. This is an *approximation*;
+what would settle it is Retry support in the PCI core. The function numbers
 are 0 and 1 as the chip defines them.
 
 .. _sgi-sonic-hdsp-hiding:
@@ -385,8 +391,9 @@ DSPs' lines (*inferred* from the loop shape, 1.1 ``0x32f0`` and 1.0.0
 What a host type 1 scan sees (the model's behaviour, following the Rx
 rules above):
 
-#. From reset to the end of the operating system's PCI setup: Retry on
-   every configuration cycle, so nothing is readable.
+#. From reset to the end of the operating system's PCI setup: the chip
+   answers Retry to every configuration cycle, so nothing is readable. The
+   model answers all ones, an empty slot (see above).
 #. After that, the bridge unit (``1263:060e``), the ATU (``1263:05dc``) and
    whatever SISR leaves exposed. With the default ``nv-word`` the DSPs are
    hidden, so a type 1 scan behind function 0 finds no device. With a blank
@@ -699,8 +706,14 @@ three odd sizes giving a 4 MiB half window (the halving is at 1.1
 ``0x59d0``, 1.0.0 ``0x4130``). The model keeps the boot-time view until the
 operating system writes the I2O class, and the window then follows
 ``dram-size``, so a different ``dram-size`` moves the translate, the library's
-bias and the glue logic's base with it. The BAR the host sizes is 128 MiB in
-both states, which is the size the driver needs.
+bias and the glue logic's base with it. The mapped region stays 128 MiB. The
+size a host reads back when sizing BAR0 follows the inbound limit register
+while the firmware has it narrowed (32 MiB at 0xfe000000, for example). The
+firmware narrows the limit inside its PCI setup, clears the configuration
+Retry inside the same routine, and restores 0xf8000000 only afterwards, so a
+host that sized BAR0 in that short window would read 32 MiB. IRIX sizes the
+BAR during its boot-time slot scan; that it never sizes it again is
+*unverified*.
 
 The flash is reachable from the host only if the translation reaches
 ``0xfef80000``, which neither translate value does. No host window onto
@@ -1190,6 +1203,121 @@ configuration cycles in retry from reset until the resident operating
 system clears it at the end of its PCI setup; the boot ROM sets it
 (:ref:`sgi-sonic-hdsp-hiding`, :src:`intel-i960rx-272736-002 p. 15-64`,
 *established* for the bit, *software expectation* for the sequence).
+
+.. _sgi-sonic-hdsp-unit-model:
+
+On-chip unit behaviours the model fixes
+---------------------------------------
+
+The manual leaves some of the units' behaviour to the implementation, and
+the model has to choose. Chip facts are from the Rx manual; each model
+choice is an *approximation* with what would settle it.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 46 12 42
+
+   * - Fact
+     - Rating
+     - Source
+   * - The primary outbound memory window is local ``0x80000000`` to
+       ``0x83ffffff``, a fixed 64 MiB, and the primary outbound memory
+       window value register (POMWVR, ``0x1254``) supplies the PCI address
+       it translates to. A local access in it becomes a cycle on the primary
+       PCI bus, which the model issues as the function's PCI DMA, so the
+       Bridge's byte swap applies. The secondary outbound memory window
+       starts at ``0x88000000`` and its register (SOMWVR) is ``0x1268``.
+     - *established* for the windows and registers, *inferred* for the DMA
+       and swap consequence
+     - :src:`intel-i960rx-272736-002 pp. 16-12, 16-51, 16-55`.
+   * - The APIC register select register (``0x1300``) and window register
+       (``0x1308``) are stored. A host write to messaging-unit offset ``0x00``
+       or ``0x08`` sets IISR bit 7 or 8. The model has no APIC bus.
+     - *established* for the interrupt bits, *approximation* for the
+       missing bus
+     - :src:`intel-i960rx-272736-002 pp. 17-15, 17-16, 17-19`. A
+       firmware use of the APIC bus would settle it.
+   * - A host write to a messaging-unit index register (offset ``0x50`` and
+       up, to ``0xffc``) sets IISR bit 6. The model does not store the
+       value: the chip keeps index registers in local memory.
+     - *established* for the bit, *approximation* for the value
+     - :src:`intel-i960rx-272736-002 pp. 17-19, 17-36`. A firmware read of
+       those locations would settle it.
+   * - NISR (``0x1700``), X7ISR (``0x1704``) and X6ISR (``0x1708``) are
+       computed from unit state, not stored: NISR bit 8 from the messaging
+       unit's NMI sources, X7ISR bit 2 from its XINT7 sources and X6ISR
+       bits 0 to 2 set when DMA channel 0 to 2 completes with its interrupt
+       enabled (the manual's "DMA channel n interrupt pending"). The other
+       bits (the external pins, BIST, I2C and APIC) read 0, an
+       *approximation*.
+     - *established* for the bit meanings
+     - :src:`intel-i960rx-272736-002 pp. 8-39, 8-41, 8-43`.
+   * - The outbound free queue overflowing sets IISR bit 5 and raises NMI,
+       and so does IDR bit 31 (the NMI doorbell bit).
+     - *established*
+     - :src:`intel-i960rx-272736-002 pp. 17-18, 17-19`.
+   * - PDIDR (``0x1710``) reads ``0x13``: the manufacturer field for Intel
+       and the constant bit. On the RD, bit 27 (VCC, 1 for 3.3 V) is set,
+       since the RD is the 3.3 V part, so the model's value differs from
+       hardware there. The version, product, generation and model fields are
+       unknown here, and the model's zeros in them are unverified.
+     - *established* for the bit meanings, *approximation* for the value
+     - :src:`intel-i960rx-272736-002 p. 11-23` (VCC bit, Table 11-9),
+       :src:`intel-i960rx-272736-002 p. 1-9` (3.3 V part). The RD's value
+       from the Specification Update (order number 272918) or a read of the
+       chip would settle it.
+   * - The core memory-control registers at ``0xff008600`` to ``0xff0086ff``
+       and the logical memory registers DLMCON, LMADR and LMMR at
+       ``0xff008100`` to ``0xff00813f`` are stored and have no effect on
+       bus behaviour.
+     - *established* for the addresses, *approximation* for the effect
+     - :src:`intel-i960rx-272736-002 pp. 12-4 to 12-9, C-2, C-3`. A
+       firmware dependence on their effect would settle it.
+   * - The EEPROM's word address wraps within each 256-byte page.
+     - *approximation*
+     - A real 24C08's counter behaviour at a page end is not in a held
+       source; the part's data sheet would settle it.
+   * - The I2C unit completes every transfer at once, with no SCL timing.
+       ICR bit 14 resets the unit, and ISR bits 4 to 10 clear when a 1 is
+       written to them.
+     - *approximation* for the timing, *established* for the bits
+     - :src:`intel-i960rx-272736-002 pp. 21-19, 21-22, 21-23`.
+   * - The ATU's expansion ROM window is not decoded and the expansion ROM
+       base register reads 0, though the boot code programs its limit and
+       translate value.
+     - *approximation*
+     - :src:`intel-i960rx-272736-002 p. 16-41`. A host read of the ROM
+       BAR would settle it.
+   * - Configuration space past the ATU header is writable from the local
+       bus only (the host can still read those bytes), and the bridge unit's
+       registers at ``0x40`` to ``0x5f`` are read-only to the host.
+     - *approximation*
+     - The manual's per-register PCI access rows, which settle it register
+       by register (:src:`intel-i960rx-272736-002 pp. 15-38 to 15-73`).
+   * - Registers that clear on write clear per written byte. Sub-word writes
+       to the two outbound configuration data ports (``0x12ac``, ``0x12b0``),
+       non-word writes to messaging unit offsets below ``0x50``, and non-word
+       reads of the two queue ports (``0x40``, ``0x44``) are ignored and
+       logged. Other sub-word reads of the messaging unit return the register
+       shifted by the byte offset.
+     - *approximation*
+     - The registers are 32 bits wide in the manual
+       (:src:`intel-i960rx-272736-002 p. C-8`); the byte-granular clear and
+       the ignored accesses are the model's choice. The manual
+       (:src:`intel-i960rx-272736-002 pp. 17-5, 17-8`) only requires one word
+       per queue access.
+   * - The DSP host registers are 32-bit only. The data port at ``0x1c``
+       and above aliases the host FIFO. HCVR bit 0 (HC) is cleared by the DSP
+       core taking the command, so with no DSP core running the vector it
+       stays set.
+     - *established* for the layout and HC, *approximation* for the
+       missing core
+     - :src:`nxp-dsp56301um-4 pp. 6-46, 6-59`.
+   * - A DSP's PCI mode (DCTR HM = 1) is set on release from reset, which
+       stands in for the bootstrap ROM's own write.
+     - *approximation*
+     - Running the bootstrap ROM on the DSP core would settle it
+       (:src:`nxp-dsp56301um-4 pp. 4-4, 6-69`).
 
 .. _sgi-sonic-hdsp-memory:
 
@@ -2081,6 +2209,18 @@ Model limits
   not modelled (:ref:`sgi-sonic-hdsp-dsp-limits`).
 - The flash reprogramming path is modelled at the part's command
   interface; the upgrade module's other effects are the firmware's.
+- DMA to the secondary bus (channel 2, and 64-bit transfers) is not
+  modelled: it is logged and refused.
+- If the firmware narrows the inbound limit, the mapped region stays 128 MiB,
+  and the size a host reads back when sizing BAR0 follows the inbound limit
+  register while it is narrowed (32 MiB at 0xfe000000, for example). The
+  narrowing is logged. The firmware restores 0xf8000000 shortly after it
+  clears the configuration Retry, so a host sizing BAR0 between the two
+  would read 32 MiB. IRIX sizes the BAR during its boot-time slot scan;
+  that it never sizes it again is *unverified*.
+- The DSP cores are instantiated and their host ports answer, but nothing
+  runs DSP code, so the bootstrap, the serial ports, the converter box and
+  the audio output described above are absent from the model.
 
 .. _sgi-sonic-hdsp-approximations:
 
@@ -2119,8 +2259,12 @@ with what would settle it:
      - Bit *n* resets DSP *n* only
      - The glue's real reset and its duration
    * - Configuration retry strap
-     - Retries until the boot code releases it
+     - Set from reset until the operating system clears it
      - The board's strap wiring
+   * - PCI Retry
+     - Configuration reads return all ones and writes are dropped while the
+       bit is set, an empty slot to the host; ``config-retries`` counts them
+     - Retry support in QEMU's PCI core
    * - PCI function layout
      - Functions 0 and 1 of one device
      - A real card's configuration dump
@@ -2198,6 +2342,9 @@ with what would settle it:
      - ESSI0 transmit words in order, wrapping at the channel count; two
        channels by default; silence in
      - The ESSI0 transmit sequence against the box's channel numbering
+   * - Unit behaviours the manual leaves open
+     - The choices in :ref:`sgi-sonic-hdsp-unit-model`
+     - The routes listed there
    * - Flash backing file in migration
      - Not in the stream; the destination names the same image
      - Nothing on the card's side
@@ -2210,13 +2357,12 @@ themselves from an i960 boot record and a few instructions, so the tests
 need no vendor firmware and the page stays the only source of the
 expected values. They check that:
 
-- a configuration cycle to the card is retried until the test image
-  clears the bridge unit's retry bit, then reads back the identity the
-  test image programmed;
+- a configuration read of the card returns all ones, and ``config-retries``
+  counts it, until the test image clears the bridge unit's retry bit, then
+  reads back the identity the test image programmed;
 - BAR0 sizes from the ATU limit register and decodes the 128 MiB
   window;
-- function 0 reads header type ``0x81``; a configuration cycle gets Retry
-  until the test image clears EBCR bit 2; a host type 1 scan of devices 0
+- function 0 reads header type ``0x81``; a host type 1 scan of devices 0
   to 31 behind function 0 after the operating system's PCI setup, with the
   default ``nv-word``, finds no devices, and with ``nv-word`` set to
   ``0x98760000`` finds the DSPs the test image has released from reset;
