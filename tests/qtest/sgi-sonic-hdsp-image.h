@@ -182,7 +182,20 @@ enum {
     FW_SISR_FROM_EEPROM = 16, /* load SISR from the I2C EEPROM's word */
     FW_DMA_LOOP = 32,       /* a DMA chain whose descriptor is its own next */
     FW_DMA_BIG = 64,        /* the same, 16 MiB long, started by MSG_DMA */
+    FW_PROXY = 128,         /* run a host-built list of local bus accesses */
 };
+
+/*
+ * The proxy stands in for the card's resident system reaching the DSPs: the
+ * host builds a list of three-word entries in DRAM (an operation, a local
+ * address and a value), then sets PROXY_GO. Operation 1 stores the value at
+ * the address, 2 loads the address into the value word, 0 ends the list.
+ * The image clears PROXY_GO when it has run the list.
+ */
+#define PROXY_GO        0xa0002f00u
+#define PROXY_LIST      0xa0003000u
+#define PROXY_MAX       1024
+enum { PX_END = 0, PX_WRITE = 1, PX_READ = 2 };
 
 /* The boot code's SISR: S_AD16 and S_AD22 to S_AD25 hidden (0x03c1). */
 #define SISR_BOOT_ROM   0x03c1
@@ -490,6 +503,31 @@ static inline void build_image(uint8_t *flash, const Image *img)
     ldc(&a, G(7), 0x10);
     st_abs(&a, M_ST, G(7), 0x1324);
     patch_cobr(&a, skip_post, a.pc);
+
+    if (flags & FW_PROXY) {
+        uint32_t skip_px, next, end_px, skip_w, skip_r;
+
+        ld_abs(&a, M_LD, G(1), PROXY_GO);
+        skip_px = cobr_here(&a, C_CMPOBE, 0, true, G(1));
+        ldc(&a, G(2), PROXY_LIST);
+        next = a.pc;
+        emit(&a, mema(M_LD, G(3), G(2), 0));            /* operation */
+        end_px = cobr_here(&a, C_CMPOBE, 0, true, G(3));
+        emit(&a, mema(M_LD, G(4), G(2), 4));            /* address */
+        emit(&a, mema(M_LD, G(5), G(2), 8));            /* value */
+        skip_w = cobr_here(&a, C_CMPOBNE, PX_WRITE, true, G(3));
+        emit(&a, mema(M_ST, G(5), G(4), 0));
+        patch_cobr(&a, skip_w, a.pc);
+        skip_r = cobr_here(&a, C_CMPOBNE, PX_READ, true, G(3));
+        emit(&a, mema(M_LD, G(6), G(4), 0));
+        emit(&a, mema(M_ST, G(6), G(2), 8));
+        patch_cobr(&a, skip_r, a.pc);
+        emit(&a, reg3(OP_ADDO, 12, true, G(2), G(2)));
+        branch_to(&a, next);
+        patch_cobr(&a, end_px, a.pc);
+        st32(&a, PROXY_GO, 0);
+        patch_cobr(&a, skip_px, a.pc);
+    }
     branch_to(&a, loop);
     g_assert_cmpuint(a.pc, <, 0xe80);
 }

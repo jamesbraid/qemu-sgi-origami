@@ -6,15 +6,13 @@
  * the host's type 1 cycles reach the private secondary bus through the PCI
  * core) and owns the whole board. Function 1 is the primary ATU, whose BAR0
  * is the messaging unit and the window onto the i960's local bus. The four
- * DSP56301 host-port functions sit on the secondary bus (sgi-sonic-hdsp-dsp.c).
- * The processor and its units are in sgi-sonic-hdsp-iop.c.
+ * DSP56301 host-port functions sit on the secondary bus. The processor and
+ * its units are in sgi-sonic-hdsp-iop.c.
  *
  * Hardware reference: docs/system/mips/sgi/hardware/sonic-hdsp.rst.
  *
- * Stage 1 stubs the DSP side: the four DSP56300 cores are instantiated,
- * reset and given their memories, but nothing runs them (no bootstrap ROM,
- * no ESSI, SCI, timers or DMA), the interrupt-out lines stay low, and there
- * is no converter box or audio output.
+ * The DSP56301 functions, their peripherals, the converter-box link and the
+ * sample clock are in sgi-sonic-hdsp-dsp.c.
  */
 
 #include "qemu/osdep.h"
@@ -26,6 +24,7 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_host.h"
 #include "hw/misc/sgi-sonic-hdsp.h"
+#include "hw/misc/sgi-sonic-ada8824.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 
@@ -247,6 +246,10 @@ static void hdsp_realize(PCIDevice *d, Error **errp)
     if (*errp) {
         return;
     }
+    if (!sonic_hdsp_dsp_realize(h, errp)) {
+        sonic_hdsp_iop_unrealize(h);
+        return;
+    }
     pci_bridge_initfn(d, TYPE_PCI_BUS);
     d->config[PCI_HEADER_TYPE] |= PCI_HEADER_TYPE_MULTI_FUNCTION;
     /* The bridge's own configuration beyond the header is the chip's. */
@@ -288,12 +291,14 @@ static void hdsp_realize(PCIDevice *d, Error **errp)
 
 fail:
     pci_bridge_exitfn(d);
+    sonic_hdsp_dsp_unrealize(h);
     sonic_hdsp_iop_unrealize(h);
 }
 
 static void hdsp_exit(PCIDevice *d)
 {
     pci_bridge_exitfn(d);
+    sonic_hdsp_dsp_unrealize(SGI_SONIC_HDSP(d));
     sonic_hdsp_iop_unrealize(SGI_SONIC_HDSP(d));
 }
 
@@ -301,6 +306,7 @@ static void hdsp_reset(DeviceState *qdev)
 {
     pci_bridge_reset(qdev);
     sonic_hdsp_iop_reset(SGI_SONIC_HDSP(qdev));
+    sonic_hdsp_dsp_board_reset(SGI_SONIC_HDSP(qdev));
 }
 
 static void hdsp_instance_init(Object *obj)
@@ -315,6 +321,7 @@ static void hdsp_instance_init(Object *obj)
 static int hdsp_pre_save(void *opaque)
 {
     sonic_hdsp_iop_pre_save(opaque);
+    sonic_hdsp_dsp_pre_save(opaque);
     return 0;
 }
 
@@ -324,6 +331,7 @@ static int hdsp_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     sonic_hdsp_iop_post_load(opaque);
+    sonic_hdsp_dsp_post_load(opaque);
     return 0;
 }
 
@@ -426,6 +434,11 @@ static const VMStateDescription vmstate_sonic_hdsp = {
         VMSTATE_INT64(mig_deadline_left, SonicHDSPState),
         VMSTATE_INT64(mig_busy_left, SonicHDSPState),
         VMSTATE_BOOL(irq_level, SonicHDSPState),
+        VMSTATE_UINT32_ARRAY(sync, SonicHDSPState, SONIC_HDSP_SYNC_WORDS),
+        VMSTATE_UINT64(frame_count, SonicHDSPState),
+        VMSTATE_INT64(mig_dsp_age, SonicHDSPState),
+        VMSTATE_INT64(mig_frame_epoch_age, SonicHDSPState),
+        VMSTATE_UINT64(dsp_ns_rem, SonicHDSPState),
         VMSTATE_END_OF_LIST()
     }
 };
@@ -440,6 +453,10 @@ static const Property hdsp_properties[] = {
                        SONIC_HDSP_NV_WORD_DEFAULT),
     DEFINE_PROP_UINT32("iop-clock", SonicHDSPState, iop_clock, 66000000),
     DEFINE_PROP_UINT32("dsp-clock", SonicHDSPState, dsp_clock, 100000000),
+    DEFINE_PROP_UINT32("sample-rate", SonicHDSPState, sample_rate, 48000),
+    DEFINE_PROP_BOOL("x-essi1-chain", SonicHDSPState, essi1_chain, false),
+    DEFINE_PROP_LINK("box", SonicHDSPState, box, TYPE_SGI_SONIC_ADA8824,
+                     SonicAda8824State *),
 };
 
 static void hdsp_class_init(ObjectClass *klass, const void *data)

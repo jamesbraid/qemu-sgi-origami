@@ -1,8 +1,9 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * Sonic Solutions HDSP PCI audio card: the Intel i960 Rx I/O processor,
- * its flash, DRAM and board glue, and the four DSP56301 host-port
- * functions on its private secondary bus.
+ * its flash, DRAM and board glue, and the four DSP56301 processors on its
+ * private secondary bus, with their serial ports, DMA and timers, the link
+ * to the converter box and the sample clock.
  *
  * The hardware reference is docs/system/mips/sgi/hardware/sonic-hdsp.rst.
  */
@@ -17,6 +18,7 @@
 #include "hw/coproc/dsp56300/dsp56300.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
+#include "hw/misc/sgi-sonic-ada8824.h"
 
 #define TYPE_SGI_SONIC_HDSP "sgi-sonic-hdsp"
 OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPState, SGI_SONIC_HDSP)
@@ -38,6 +40,42 @@ OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPDSPState, SGI_SONIC_HDSP_DSP)
 #define SONIC_DSP_EXT_BASE      0x400000
 #define SONIC_DSP_EXT_WORDS     0x20000
 #define SONIC_DSP_FIFO_DEPTH    6
+#define SONIC_DSP_NDMA          6
+#define SONIC_DSP_NESSI         2
+#define SONIC_DSP_NTIMER        3
+#define SONIC_DSP_PERIPH_WORDS  128     /* X:$FFFF80 to X:$FFFFFF */
+#define SONIC_HDSP_SYNC_WORDS   9       /* Y:$FFFFF7 to Y:$FFFFFF */
+
+/* One ESSI: registers as the DSP56301 manual lists them, plus the slot. */
+typedef struct SonicDspEssi {
+    uint32_t cra, crb, tsma, tsmb, rsma, rsmb;
+    uint32_t ssisr;
+    uint32_t tx[3];
+    uint32_t rx;
+    uint32_t tx_written;        /* bit n: TXn written since the last slot */
+    uint32_t tsr_skip;
+    uint32_t sr_read;           /* SSISR read since ROE or TUE was set */
+    uint32_t pcr, prr, pdr;
+    uint32_t in_word;           /* chained peer's word, when in_valid */
+    uint32_t in_valid;
+} SonicDspEssi;
+
+typedef struct SonicDspDma {
+    uint32_t dsr, ddr, dco, dco_init, dcr;
+    uint32_t blk_active;        /* a block transfer was triggered */
+} SonicDspDma;
+
+typedef struct SonicDspTimer {
+    uint32_t tcsr, tlr, tcpr, tcr;
+    uint32_t irq_out;           /* bit 0 compare, bit 1 overflow: raised */
+} SonicDspTimer;
+
+typedef enum SonicDspBoot {
+    SONIC_DSP_BOOT_RUN = 0,     /* the program is running */
+    SONIC_DSP_BOOT_COUNT,       /* the bootstrap wants a word count */
+    SONIC_DSP_BOOT_ADDR,        /* then a start address */
+    SONIC_DSP_BOOT_DATA,        /* then that many program words */
+} SonicDspBoot;
 
 /* A DSP's host-port function on the secondary bus. */
 struct SonicHDSPDSPState {
@@ -64,6 +102,20 @@ struct SonicHDSPDSPState {
     uint32_t rx_count;
     bool in_reset;
     bool pci_mode;      /* HI32 in PCI target mode: answers config cycles */
+
+    /* DSP-side peripherals (sgi-sonic-hdsp-dsp.c). */
+    uint32_t ipr_c, ipr_p, dctr;
+    uint32_t dor[4];
+    uint32_t dtd;
+    uint32_t boot;              /* a SonicDspBoot */
+    uint32_t boot_count, boot_next, boot_start;
+    uint32_t hc_raised;
+    uint32_t dma_busy;          /* inside the DMA loop; not migrated */
+    uint32_t cyc_rem;           /* core cycles not yet a timer count */
+    SonicDspDma dma[SONIC_DSP_NDMA];
+    SonicDspEssi essi[SONIC_DSP_NESSI];
+    SonicDspTimer timer[SONIC_DSP_NTIMER];
+    uint32_t periph[SONIC_DSP_PERIPH_WORDS];    /* stored-only registers */
 };
 
 /* Function 1: the primary ATU and its messaging unit. */
@@ -103,6 +155,18 @@ struct SonicHDSPState {
     uint32_t nv_word;
     uint32_t iop_clock;
     uint32_t dsp_clock;
+    uint32_t sample_rate;
+    bool essi1_chain;
+    SonicAda8824State *box;
+
+    /* DSP scheduling: one timer runs the four cores and the sample clock. */
+    QEMUTimer *dsp_timer;
+    int64_t dsp_last_ns;
+    int64_t frame_epoch_ns;
+    uint64_t frame_count;
+    uint64_t dsp_ns_rem;
+    int64_t mig_dsp_age, mig_frame_epoch_age;
+    uint32_t sync[SONIC_HDSP_SYNC_WORDS];       /* Y:$FFFFF7 and up */
 
     /* The processor. */
     I960State cpu;
@@ -194,8 +258,15 @@ void sonic_hdsp_mu_host_write(SonicHDSPState *h, hwaddr off, uint32_t val,
 void sonic_hdsp_update_irq(SonicHDSPState *h);
 bool sonic_hdsp_dsp_visible(SonicHDSPState *h, unsigned slot);
 
-/* sgi-sonic-hdsp.c */
+/* sgi-sonic-hdsp-dsp.c */
+bool sonic_hdsp_dsp_realize(SonicHDSPState *h, Error **errp);
+void sonic_hdsp_dsp_unrealize(SonicHDSPState *h);
+void sonic_hdsp_dsp_board_reset(SonicHDSPState *h);
+void sonic_hdsp_dsp_pre_save(SonicHDSPState *h);
+void sonic_hdsp_dsp_post_load(SonicHDSPState *h);
 void sonic_hdsp_dsp_reset_line(SonicHDSPState *h, unsigned n, bool held);
+
+/* sgi-sonic-hdsp.c */
 bool sonic_hdsp_retry(SonicHDSPState *h);
 uint32_t sonic_hdsp_secondary_config_read(SonicHDSPState *h, uint32_t addr);
 void sonic_hdsp_secondary_config_write(SonicHDSPState *h, uint32_t addr,

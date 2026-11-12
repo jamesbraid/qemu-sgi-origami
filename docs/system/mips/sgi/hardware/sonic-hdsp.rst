@@ -30,9 +30,10 @@ QEMU models the card as one PCI device, ``sgi-sonic-hdsp``, with a second
 device, ``sonic-ada8824``, for the converter box. The device runs the
 card's own flash image on an embedded i960 interpreter, so the guest sees
 what the firmware makes it see. It also carries four DSP56300-family
-cores, but in the current model they do not execute code, and the
-converter box and audio path described later are not modelled. The model
-carries no firmware: the flash image is the user's, named by a property
+cores that run the programs the host downloads over their host ports,
+with the serial ports, DMA controller and timers those programs use; the
+converter box is a device of its own whose output goes to a QEMU
+``audiodev``. The model carries no firmware: the flash image is the user's, named by a property
 (:ref:`sgi-sonic-hdsp-firmware`).
 
 This page is the hardware reference for that device. Much of the card is
@@ -1558,17 +1559,28 @@ and, in host bootstrap mode C, loads a program through the HI32 as a
 PCI target: it expects a word count, then a start address, then one 24-bit
 word per program word, stored contiguously from that address, and starts
 the program at the address where it began loading
-(*established*, :src:`nxp-dsp56301um-4 pp. 4-2, 4-4, 4-5, A-3`). That the
+(*established*, :src:`nxp-dsp56301um-4 pp. 4-2, 4-4, 4-5, A-3`; the listing
+for the PCI case is at :src:`nxp-dsp56301um-4 p. A-12`). That the
 board selects mode C is *inferred*: nothing records the mode pins, but the
 module pushes a block over the host port after reset, which only a host
 bootstrap accepts, and a PCI target is what the module's configuration
 cycles set up (*software expectation*,
 :src:`sonic-hdsp-module-1.0` (the DSP boot routine)). The model implements
 this sequence as the manual lists it, so the first program arrives as the
-bootstrap would load it. The mode pins are the *approximation* and the
-bootstrap ROM's code is the model's own, behaving as the listing does; a
-read of the board's mode strap or a scan of the module's first block
-against the listing would settle it.
+bootstrap would load it. On release from reset the HI32 goes to PCI target
+mode (DCTR[HM] = 1, as the listing's first instruction does) and the DSP
+waits for the count; each word the host writes to the data port is taken
+as the listing's loop would take it, at once rather than at the ROM loop's
+pace, which is faster than the host can write. A count of zero starts the
+program at the address without loading anything (the listing's loop count
+of zero is not defined by the manual, so this is an *approximation*). HF0
+set by the host with the FIFO empty ends a load early, as the listing's
+loop does, and the program starts at the load address. The core then
+starts from reset values at that address. The ROM region reads as zero
+words: a program that reads or runs it finds no code, because the ROM's
+code is the model's own and not instructions the interpreter runs. The mode
+pins are the *approximation*; a read of the board's mode strap or a scan of
+the module's first block against the listing would settle it.
 
 DSP memory and wiring
 ---------------------
@@ -1631,19 +1643,31 @@ revisions and 192 words on early ones
 carries is *unknown*; the model uses the 3 K ROM, an *approximation*. The
 external memory the board fits is not in any source. The model gives each
 DSP 128K words (``0x20000``) of external P and Y memory at address
-``0x400000``, which covers every address the images use, an
-*approximation*; the external bus and wait states are not modelled. The
+``0x400000``, which covers the external addresses the images use that are
+in that range (*software expectation* for the addresses,
+:src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000`), an
+*approximation* for the size; the external bus and wait states are not modelled. The
 32768 words the start-up code clears at Y:0x400000 may be storage the
 four DSPs share, and may be four separate banks: no source says, so the
 model gives each DSP its own copy, an *approximation*; a trace of one
 DSP's writes being read by another would settle it. The nine locations at
 Y:0xfffff7 to Y:0xffffff are shared storage across the four DSPs,
-readable and writable, that read zero after reset, an *approximation*.
-The ports at Y:0xfffffb and Y:0xfffffc are the only addresses in that
-block the model treats separately: it records each access in the device
-trace and returns the last value written. What feeds Y:0xfffffb is
-*unknown*. What would settle it is a trace of which DSP accesses it at
-which frame of a running monitor image.
+readable and writable, that read zero after a board reset (*software
+expectation* for the addresses and for their use as synchronisation flags,
+:src:`sonic-dsp-programs-5.0 the sync-wait loops and port accesses of the
+monitor images`; that they are storage the DSPs share is an
+*approximation*). The ports at Y:0xfffffb and Y:0xfffffc are plain words in
+that storage too, returning the last value any DSP wrote; nothing is
+traced. What feeds Y:0xfffffb is *unknown*. What would settle it is a trace
+of which DSP accesses it at which frame of a running monitor image. Y
+addresses the images use that are neither in the 128K words at
+``0x400000`` nor in this block (the data at Y:0xfff000 and the buffers at
+Y:0xfff050 and Y:0xfff258 the start-up code sets up, *software
+expectation*, :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000
+and frame loop`) are not backed: an
+access logs ``LOG_UNIMP`` and reads zero. That the page's addresses there
+are 24-bit external addresses, and not an artefact of how the images were
+read, is *unknown*, and so is where that memory sits.
 
 The DSP core is the interpreter in ``hw/coproc/dsp56300`` (DSP56300
 family, written from the family manual).
@@ -1717,6 +1741,85 @@ between two buffer sets, Y:0xfff050 and Y:0xfff258, by rewriting the source
 registers (*software expectation*, :src:`sonic-dsp-programs-5.0 the
 start-up code and frame loop`).
 
+The model carries the DMA controller's six channels as the Family Manual
+lists them: the source, destination, counter and control registers at
+X:0xffffef down to X:0xffffd8, the offset registers and the status register
+(only the transfer-done bits). A channel moves one word, in the source and
+destination spaces its control register names, per request from the
+source its request field names: ESSI0 and ESSI1 receive and transmit
+(request while RDF or TDE is set), the three timers' compare flags (served
+by clearing the flag), and the host port's slave receive and slave transmit
+requests. The transfer modes are block (a request starts the whole block),
+word and line (one word per request, the line mode treated as word), and the
+DE-triggered block; the address modes are no update and postincrement by 1.
+Multi-dimensional addressing, the reserved address modes (6 and 7, which
+hold the address), the transfer-done request sources and the IRQA to IRQD
+pins log ``LOG_UNIMP``. DIE also raises the channel's interrupt when
+software clears DE during a transfer. Channel priorities and the core's
+bus arbitration are not modelled: transfers are instantaneous and run in
+channel order. The block end sets the status bit, clears DE for the modes
+that do, and raises the channel's interrupt when DIE is set and its
+priority field in IPRC is nonzero.
+
+The ESSIs work on words, not bits. Each frame sync of the board's sample
+clock (:ref:`sgi-sonic-hdsp-audio`) is one frame: a port in normal mode has
+one slot a frame and in network mode ``DC + 1`` slots (TSMA, TSMB, RSMA
+and RSMB select which slots are active). In each slot a transmitter takes
+the word in TX0 (its top ``WL`` bits, 8, 12, 16 or 24 bits; 32-bit words
+log ``LOG_UNIMP``) if the DSP wrote it since the last slot, sets TDE, and
+otherwise sets TUE and sends the old word again; a receiver takes the
+word the link delivers into RX, left aligned, and sets RDF, or sets ROE
+if RDF was still set. TFS and RFS mark slot 0. The status register clears
+ROE and TUE by the read-then-access sequence the manual gives. Interrupts
+follow RIE, TIE, REIE and TEIE at the ESSI's priority in IPRP. Last-slot
+interrupts, transmitters 1 and 2, the shift direction, the alignment
+control (CRA ALC), the SSC1 and prescaler fields, the clock and
+frame-sync polarity and direction fields, the serial control pins and the
+flag bits are stored and not acted on, an *approximation*: the model has
+no bit clock, so one word moves per slot regardless of ``CKP``, ``FSL`` or
+``SCKD``. The timing of a word within its slot is not modelled either.
+What the pins connect to is the link: DSP 2's ESSI0 to the converter box
+(:ref:`sgi-sonic-hdsp-box`). Every other ESSI transmits into nothing and
+receives nothing (RDF never sets): the wiring is *unknown*. For tests and
+exploration an ``x-essi1-chain`` property (default off) wires DSP *n*'s ESSI1
+transmitter to DSP *n* + 1's ESSI1 receiver; it states no hardware fact.
+
+With an exception pending (ROE with REIE, TUE with TEIE) only the exception
+vector is raised, not the plain data vector as well
+(:src:`nxp-dsp56301um-4 p. 7-7` (section 7.3.3), *established*). A write to TSR clears TUE
+after an SSISR read, as a write to the data registers does.
+
+The triple timer counts core clock divided by two (``TCSR[PCE]`` = 0) in
+modes 0 to 2: with TE set the counter loads TLR, TCF sets after
+``TCPR - TLR + 1`` events and TOF on overflow, TRM reloads TLR at the
+compare. The prescaler clock, the event-counter and measurement modes and
+the watchdog modes are not modelled and log ``LOG_UNIMP``. Modes 1 and 2
+count and set their flags, but the TIO pulse and toggle outputs are not
+driven, and DI (the pin's input value) is not modelled. TCF and TOF clear
+when the core takes their interrupt (:src:`nxp-dsp56301um-4 pp. 9-4, 9-27`,
+*established*); the model notices that after the core has run, so the flag
+may stay set until the end of the slice, an *approximation*. The counters
+advance once a slice, and every compare event inside it is served, so a
+period shorter than the slice is delivered but timestamped to the slice. IPRC
+and IPRP are modelled as the manual gives them; a field of zero disables its
+source.
+
+The HI32's DSP side follows the manual's DCTR, DSR, DRXR and DTXS: DRXR reads
+the host's words from the FIFO, DTXS writes the words the host reads, DSR
+shows HF2 to HF0 (set by the host in HCTR), SRRQ, STRQ, HCP and HACT, and
+DCTR's HINT and HF5 to HF3 show in HSTR. SRIE, STIE and HCIE enable their
+interrupts at the HI32 priority in IPRP. A host command raises the vector
+HV gives (twice its value, from VBA); HNMI makes it non-maskable and
+independent of HCIE and the priority. HC clears when the core takes the
+interrupt, so a masked command stays pending and the host sees it. A DSP read of an empty DRXR returns zero and logs; the manual also sets
+SRRQ then (:src:`nxp-dsp56301um-4 p. 6-37`), which the model does not, an
+*approximation*. A host write with six words already queued is dropped and
+logged, and so is a host read of an empty data port. DPCR,
+DPMC, DPAR, DPSR and the host port's GPIO registers store and read back;
+the PCI master mode is not modelled, so DTXM logs ``LOG_UNIMP``. The SCI,
+the port control registers, the bus control, address attribute and PLL
+registers also only store.
+
 The monitor programs do not write the PLL control register
 (*software expectation*, :src:`sonic-dsp-programs-5.0 the start-up
 code`), so the DSP clock is whatever the board's external clock input and
@@ -1746,10 +1849,15 @@ mirrored in bit 6 of HSTR, and the host-command vector ``0xfc`` clears it
 :src:`sonic-dsp-programs-5.0 the host-interrupt routine`). Which of the two
 reaches the i960 and the interrupt-request byte is *inferred* to be the
 timer pin from the monitors' use, and could be the HI32 pin. The model
-drives DSP *n*'s interrupt-out line from the timer's data output and
-presents it to the i960's external interrupt input and to the
-interrupt-request byte (:ref:`sgi-sonic-hdsp-pld`), an
-*approximation*. A DSP-side trace of the two against the i960's interrupt
+drives DSP *n*'s interrupt-out line from the timer's data output (*software
+expectation* for the monitors' use of timer 0's bit 13,
+:src:`sonic-dsp-programs-5.0 the interrupt routines`) and
+presents it in the interrupt-request byte (:ref:`sgi-sonic-hdsp-pld`), where
+it reaches the host through the glue's enables as stage one defined it, an
+*approximation*. Timer 0 in GPIO mode (all TC bits zero) with DIR set drives
+the line from DO, inverted by INV; resetting the DSP releases it. The line is
+not wired to the i960's external interrupt input: how the board wires it
+is *unknown*. A DSP-side trace of the two against the i960's interrupt
 controller would settle it.
 
 .. _sgi-sonic-hdsp-dsp-limits:
@@ -1767,13 +1875,24 @@ chooses, is:
 - the board's wiring of both ESSI pins, the SCI pins and the timer pins.
 
 The DSP model executes the 56300 instruction set from
-:src:`nxp-dsp56300fm-5` and implements the HI32 target mode, ESSI,
-SCI, timer, DMA and interrupt registers of the DSP56301 as the manual
-documents them, at least as far as the monitors and the module exercise
-them. Features the card does not use (the HI32's master and universal-bus
-modes, the SCI's other modes) are not modelled and an access that needs one
-logs ``LOG_UNIMP``. An unclaimed X or Y peripheral access logs
-``LOG_UNIMP`` and reads zero.
+:src:`nxp-dsp56300fm-5` and implements the HI32 target mode, ESSI, timer,
+DMA and interrupt registers of the DSP56301 as the manual documents them
+and as described above, as far as the monitors and the module exercise
+them. The SCI only stores its registers. Features the card does not use
+(the HI32's master and universal-bus modes, the SCI's modes) are not
+modelled and an access that needs one logs ``LOG_UNIMP``. An unclaimed X
+or Y peripheral access logs ``LOG_UNIMP`` and reads zero.
+
+The cores run in guest time. One slice timer on the virtual clock runs all
+four cores every 100 us (a core that is idle, parked in a poll loop or
+``WAIT``, lets its time pass), at ``dsp-clock``, in step with the sample
+clock's frame syncs: the cores run up to each frame sync, then the ports
+take their slots. A core released from reset runs from the next slice. No
+instruction counting (``icount``) is involved. The interpreter's cycle
+counts are the best case with no wait states, so a program that depends on
+exact cycle counts against the sample clock is not modelled to that
+accuracy. Interrupts and DMA are taken when their request appears, with
+no latency beyond the core's instruction boundary.
 
 The converter box
 =================
@@ -1854,18 +1973,25 @@ the ``box`` link property and ``sonic-ada8824``'s own properties.
      - :src:`sonicstudio-hd-1.8-installation-guide printed pp. 1-13 to
        1-14`.
 
+.. _sgi-sonic-hdsp-box:
+
 What the virtual box answers
 ----------------------------
 
-The box device answers the 16-bit words DSP 2 sends on ESSI0:
+The box device (``sonic-ada8824``) is created before the card, named, and
+attached with the card's ``box`` property
+(``-device sonic-ada8824,id=box -device sgi-sonic-hdsp,box=box``). It
+answers the 16-bit words DSP 2 sends on ESSI0:
 
 - It latches each word and decodes address (bits 4:0), load-settings
   (bit 8) and command (bits 15:11).
 - A word whose address is not the box's address is ignored and the
   box drives no reply.
-- Command 1 at the box's address returns 288, an *approximation*: the
-  library accepts 288 or 289, and no source says which bit 0 means.
-- Command 2 returns a nonzero value, ``cmd2-reply``, defaulting to 0x0100, an
+- Command 1 at the box's address returns 288, an *approximation* of the
+  value the library accepts (288 or 289, *software expectation*,
+  :src:`sonic-hdsp-library-5.0 0x5ec67f50`): no source says which bit 0
+  means. A test that checks 288 checks the model's own choice.
+- Command 2 returns a nonzero value, ``x-cmd2-reply``, defaulting to 0x0100, an
   *approximation*: the library uses the field for a version or rate test
   whose rule is *unknown*. The property exists so a run can try other
   values.
@@ -1873,7 +1999,13 @@ The box device answers the 16-bit words DSP 2 sends on ESSI0:
 - Every other command is logged ``LOG_UNIMP`` and answered with zero.
 - A box with no device attached drives no reply, so the scan finds no box
   and the library reports "no I/O box", as the library does with real
-  hardware.
+  hardware. In the model a link that drives nothing delivers no word to
+  the receiver, so RDF never sets: what a real receiver does on an idle
+  link is not recorded, and the DSP's wait loop is described only as a
+  residual count, so this is an *approximation*.
+- The reply word's bits, as the receiver gets them, are the reply left
+  aligned in the 24-bit register, so a reply of 288 reads ``0x012000`` (*inferred*, from the
+  receive register's 24-bit width and the library's decode of 288).
 
 During a command the DSP is the clock master, so the model's box
 samples the DSP's bit clock and frame sync for the command word and
@@ -1899,10 +2031,14 @@ clock of its own to lose.
 Audio output
 ============
 
-The box's output goes to a QEMU ``audiodev``. The model opens one output
-stream at the board's sample rate, 48 kHz by default
-(``sample-rate``, 44.1 kHz selectable), 32-bit signed samples carrying 24
-significant bits. The shipped guides give 44.1, 48, 88.2, 96, 176.4 and
+The box's output goes to a QEMU ``audiodev`` named by the box's
+``audiodev`` property (without one the box carries the audio to nowhere
+and still counts the frames). The model opens one output stream at the
+board's sample rate, 48 kHz by default (the card's ``sample-rate``: 44.1,
+48, 88.2, 96, 176.4 or 192 kHz), 32-bit signed samples carrying 24
+significant bits. A backend that cannot take 32-bit samples converts
+them: the ``wav`` backend holds 16 bits at most, so a capture in a wav file
+holds each sample's top 16 bits. The shipped guides give 44.1, 48, 88.2, 96, 176.4 and
 192 kHz as rates the Sonic converters handle
 (:src:`sonicstudio-hd-1.8-configuration-guide PDF pp. 18-20`,
 *established*). How the library selects the board's rate is not recorded
@@ -1919,7 +2055,7 @@ the 24-bit words ESSI0 transmits to the ``audiodev``: each transmitted
 word is one channel sample, assigned to channels in transmit order and
 wrapping at the configured channel count. The stream carries the first two
 channels by default and up to eight when the ``audio-channels`` property
-is raised and the backend takes them, an *approximation*: the number of
+is raised (1 to 8) and the backend takes them, an *approximation*: the number of
 time slots per frame and the channel order are not recorded (control A's
 frame rate divider reads 0, which is one slot per frame, so the card's
 eight channels may arrive on more than one frame sync), and QEMU's
@@ -1929,9 +2065,11 @@ sequence against the box's channel numbering would settle both.
 The sample clock is virtual-time: one frame every period at the selected
 rate, driving the ESSI frame syncs and the ``audiodev`` stream, so the DSP
 programs' click counter and periodic interrupt come from the programs
-counting frames and not from the model. The box's input side delivers
-silence: the model has no capture from the host's input device, an
-*approximation*.
+counting frames and not from the model. The words queue in a ring of 4096
+frames (counted in the box's read-only ``frames-out`` and
+``frames-dropped`` properties) that the backend drains as it asks for data.
+The box's input side delivers silence in audio mode: the model has no
+capture from the host's input device, an *approximation*.
 
 .. _sgi-sonic-hdsp-host:
 
@@ -2218,9 +2356,13 @@ Model limits
   clears the configuration Retry, so a host sizing BAR0 between the two
   would read 32 MiB. IRIX sizes the BAR during its boot-time slot scan;
   that it never sizes it again is *unverified*.
-- The DSP cores are instantiated and their host ports answer, but nothing
-  runs DSP code, so the bootstrap, the serial ports, the converter box and
-  the audio output described above are absent from the model.
+- No reference run of the shipped DSP programs against the model has been
+  made: the stage tests run programs written from the manuals, and whether
+  the monitor images reach the point where the host library's audio device
+  works is *unverified*. The unknowns that stand between the model and that
+  run are the Y memory the images use beyond the 128K words, the board's
+  clocks and ESSI wiring, and what the box's receive path does on an idle
+  link; each is listed in :ref:`sgi-sonic-hdsp-approximations`.
 
 .. _sgi-sonic-hdsp-approximations:
 
@@ -2317,6 +2459,9 @@ with what would settle it:
        step, so the board may not use mode C
        (:src:`nxp-dsp56301um-4 pp. 6-16, 6-69`)
      - The board's mode strap
+   * - DSP bootstrap implementation
+     - Native: the listing's behaviour at the host port, no ROM code
+     - A ROM dump of the DSP revision on the card
    * - DSP bootstrap ROM size
      - 3 K words
      - The DSP revision on the card
@@ -2329,13 +2474,33 @@ with what would settle it:
        written
      - A trace of a running monitor image
    * - Interrupt-out line
-     - Timer 0's data output drives the DSP's line
+     - Timer 0's data output drives the DSP's bit of the interrupt-request
+       byte; not wired to the i960's external input
      - A DSP-line trace against the i960's interrupt controller
+   * - ESSI timing and pins
+     - One word per slot per frame sync of the sample clock; no bit clock;
+       clock, frame-sync and pin fields stored only; ports with no link
+       receive nothing
+     - A capture of the ports' pins against a running monitor
+   * - DMA timing
+     - Instantaneous, channels in index order, no bus arbitration
+     - A trace of channel activity against a running monitor
+   * - Timer resolution
+     - Events counted per 100 us slice, each compare served
+     - A trace of a timer's pin
+   * - ``x-essi1-chain``
+     - Off by default; when on, DSP *n*'s ESSI1 transmit feeds DSP
+       *n* + 1's ESSI1 receive; no hardware fact
+     - The board's wiring of ESSI1
+   * - Y memory beyond the external words
+     - Y addresses the images use outside ``0x400000`` and the sync block
+       log ``LOG_UNIMP`` and read zero
+     - A board photograph, and the address width the images use
    * - Box reply timing and clocks
      - Reply in the same frame; the card supplies the audio-mode bit clock
      - A capture of a real exchange and of the audio-mode clock
    * - Box answers
-     - Command 1 returns 288, command 2 returns ``cmd2-reply``, command 7
+     - Command 1 returns 288, command 2 returns ``x-cmd2-reply``, command 7
        returns zero
      - Running the library against the box and reading its checks
    * - Audio channels and input
@@ -2355,7 +2520,11 @@ Tests
 The register-contract tests start the device with a flash image they build
 themselves from an i960 boot record and a few instructions, so the tests
 need no vendor firmware and the page stays the only source of the
-expected values. They check that:
+expected values. The DSP tests reach the DSPs the way the module does,
+through the i960: the test image runs a list of local bus accesses the host
+builds in DRAM (secondary configuration cycles, then the host-port registers
+through the secondary outbound window). The DSP programs in them are
+hand-assembled from the Family Manual's instruction formats. They check that:
 
 - a configuration read of the card returns all ones, and ``config-retries``
   counts it, until the test image clears the bridge unit's retry bit, then
@@ -2385,8 +2554,25 @@ expected values. They check that:
   of the word, the i960 sees the same byte at the bank 1 base plus
   ``0xa0003``, and reset byte writes hold DSP *n* in reset;
 - a DSP's host port accepts a word count, a start address and program
-  words and starts the program at that address, and an HCVR write of
-  ``0xf5`` runs the handler at vector ``0xf4``;
+  words and starts the program at that address, HF0 ends a load early, a
+  downloaded program announces itself and echoes the words the host sends
+  through the host port, and the host flags and DCTR's HINT and flags read
+  across the HI32;
+- an HCVR write of ``0xf5`` runs the handler at vector ``0xf4`` and clears
+  HC, ``0x80fd`` runs the non-maskable handler at ``0xfc``, and a masked core
+  leaves a maskable command pending;
+- with ``x-essi1-chain``, four words DMA'd out of one DSP's ESSI1 arrive in
+  another's through its own DMA channel, in order, and without the chain
+  nothing arrives;
+- a timer's compare flag triggers DMA words one period apart, and timer 0's
+  data output sets and clears the DSP's bit of the interrupt-request byte,
+  and holding the DSP in reset clears it;
+- DSP 2's command word on ESSI0 gets the box's reply (288, ``x-cmd2-reply``,
+  zero) at the box's address, no reply at another address or with no
+  box;
+- the words DSP 2 transmits on ESSI0 reach a ``wav`` capture backend in
+  transmit order as two-channel frames;
+- a card migrated with a running DSP goes on running its program;
 - the debug UART's transmit data reaches the ``iop-console`` character
   device and its status register reads transmit ready;
 - an access outside every unit logs and returns all ones;
@@ -2402,7 +2588,8 @@ expected values. They check that:
   :ref:`sgi-sonic-hdsp-large-bar`;
 - ``sonic-ada8824`` answers command 1 with 288 at its address and does not
   answer at any other address, and a device with no box attached drives no
-  reply;
+  reply (these three through DSP 2, which is the only way the model
+  reaches the box);
 - a missing or wrongly sized ``flash-image`` is refused at realize.
 
 The tests that run the real firmware and the host library need vendor
