@@ -89,6 +89,7 @@ config SGI_OCTANE
     select SGI_RAD1_AUDIO
     select SGI_MGRAS
     select SGI_ODYSSEY
+    select SGI_XT_DIGVID
     select SGI_BRIDGE
     select SGI_IOC3
     select SGI_XBOW
