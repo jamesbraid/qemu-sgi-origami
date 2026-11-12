@@ -947,7 +947,9 @@ GBE's four one-shot outputs to the CRIME external inputs 0 to 3, which
 CRIME maps to bits 16 to 19. The route to a processor line belongs to
 CRIME (:doc:`../ip32`).
 
-GBE only reads system memory. Its address space is the 32 bits of its CRIME
+The model's GBE only reads system memory. The specification also has GBE
+write memory, for screen capture (:src:`sgi-crime-1.5-spec PDF p. 79`),
+*established*. Its address space is the 32 bits of its CRIME
 link: 1 GB of memory at ``0x40000000`` that CRIME answers, 2 GB reserved at
 ``0x80000000`` and 1 GB reserved at 0 (:src:`sgi-crime-1.5-spec PDF p. 49-50`
 Table 3-3), *established*. The tile pointers and list pointers hold

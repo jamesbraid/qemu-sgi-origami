@@ -130,8 +130,11 @@ Ethernet MAC at ``0x280000`` and the PCI bridge at ``0x080000``
 Interrupt routing
 =================
 
-MACE sends sixteen level signals to CRIME, one per CRIME interrupt slot
-:src:`sgi-mace-2.0-spec p. 179`, *established*:
+MACE reports sixteen interrupt causes to CRIME, one per CRIME interrupt
+slot :src:`sgi-mace-2.0-spec p. 179`, *established*. The link carries them
+as interrupt update packets with 16 data bits and 16 write-enable bits
+(:src:`sgi-crime-1.5-spec PDF p. 72, 110`), *established*; the model
+drives one level signal for each slot instead, an *approximation*:
 
 .. list-table::
    :header-rows: 1
