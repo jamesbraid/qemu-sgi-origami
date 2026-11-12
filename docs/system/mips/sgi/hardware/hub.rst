@@ -232,14 +232,32 @@ that clears, W1C writing ones clears.
      - 0
      - RW
      -
+   * - ``0x00_0118``
+     - ``PI_PROFILE_COMPARE``
+     - 52
+     - 0
+     - RW
+     - Shared by both processors; see `Profiling comparator`_.
    * - ``0x00_0120``, ``0x00_0128``
      - ``PI_RT_PEND_A``, ``_B``
      - 1
      - 0
      - RW
      - Writing zero acknowledges.
+   * - ``0x00_0130``, ``0x00_0138``
+     - ``PI_PROF_PEND_A``, ``_B``
+     - 1
+     - 0
+     - RW
+     - Writing zero acknowledges.
    * - ``0x00_0140``, ``0x00_0148``
      - ``PI_RT_EN_A``, ``_B``
+     - 1
+     - 0
+     - RW
+     -
+   * - ``0x00_0150``, ``0x00_0158``
+     - ``PI_PROF_EN_A``, ``_B``
      - 1
      - 0
      - RW
@@ -639,8 +657,7 @@ leaves ``0x50`` out; PI_CPU_ENABLE_B, which no processor backs, reads 0.
 
 Every other offset reads zero and logs ``LOG_UNIMP`` on a read or a
 write, as does a read of a write-only register above. The unimplemented
-set includes the profiling compare and its pending and enable bits, the
-cross-call registers, the processor-bus checking and
+set includes the cross-call registers, the processor-bus checking and
 negative-acknowledge registers, the refresh and page-migration
 registers, the other five performance counters and their selector, the
 processor and memory protection registers, the global link parameters,
@@ -720,6 +737,39 @@ the other side. A match fires once; nothing re-arms the comparator until
 software writes it again. Moving the counter does not make a comparator
 pend. A socket with no processor never arms a timer.
 
+Profiling comparator
+--------------------
+
+``PI_PROFILE_COMPARE`` is one comparator for the whole node. When the
+counter reaches it, both processors' profiling pending bits set
+(``PI_PROF_PEND_A`` and ``_B``), and each processor's enable bit gates its
+own pending bit onto its profiling line (Linux ``sn0/hubpi.h``: "L5 int to
+both cpus when == RTC"), a *software expectation*. Writing zero to a
+pending bit acknowledges it, as for the per-processor comparators.
+
+The IRIX 6.5.21f IP27 kernel runs its fast clock from this comparator.
+It enables one processor's profiling interrupt, writes the comparator 1250
+counts (1 ms) ahead of the counter, and on each interrupt acknowledges
+the pending bit and writes the comparator 1250 counts on again, or 1250
+counts past the counter if it has fallen behind (``startkgclock``,
+``prof_intr`` and ``ackkgclock`` in the shipped kernel), a *software
+expectation*. The kernel starts that clock from its audio clock, its
+profiling clock and its clock start-up, and the interrupt handler runs the
+fast timeout list (``fastick_maint``), so a guest whose fast clock never
+interrupts never sees those timeouts expire.
+
+The model matches the comparator like the per-processor ones: at
+equality with the counter, once, with no re-arm until software writes the
+comparator or the counter again. A value written equal to the counter
+matches at once, and one behind it waits for the counter to wrap. Like
+the per-processor comparators, it re-arms against a written counter even
+if software never wrote it, so an unwritten comparator pends both bits
+when the counter next reaches zero. The enables still gate the lines.
+The header gives no width. The model keeps
+the counter's 52 bits and compares all of them, an *approximation*: the
+kernel writes the full counter value plus the interval, so a narrower
+comparison would match at the same moment.
+
 .. _sgi-hub-interrupts:
 
 Interrupts
@@ -737,7 +787,7 @@ register (:ref:`sgi-hub-inbound`).
 Each processor has one mask per bank. A processor's line for a bank is
 raised while any bit is set in both the bank and its mask. The lines are
 levels, recomputed on every change to a pending bit, a mask, a counter
-pending bit or an enable. The model wires three lines into each
+pending bit or an enable. The model wires four lines into each
 processor's Cause register:
 
 .. list-table::
@@ -751,12 +801,17 @@ processor's Cause register:
      - Bank 1 under the processor's mask 1.
    * - 2
      - The processor's counter comparator, when enabled.
+   * - 3
+     - The processor's profiling pending bit, when enabled.
 
-That assignment is Linux's (``ip27-irq.c``) and OpenBSD's, a *software
-expectation*. The profiling interrupt (line 3) and the Hub error
-interrupt (line 4) are not modelled. Bank 0 bits 1 and 2 carry the
-graphics flow-control interrupts (Linux ``intr.h``); bank 1 bit 62
-would be the network-interface error and never sets.
+Lines 0 to 2 are Linux's assignment (``ip27-irq.c``) and OpenBSD's, a
+*software expectation*. Line 3 (Cause IP5) is the level the header gives
+the profiling comparator ("L5 int", Linux ``sn0/hubpi.h``), and the IRIX
+6.5.21f kernel's fast clock runs when it is wired there, a *software
+expectation*. The Hub error interrupt (line 4) is not modelled. Bank 0
+bits 1 and 2 carry the graphics flow-control interrupts (Linux
+``intr.h``); bank 1 bit 62 would be the network-interface error and never
+sets.
 
 .. _sgi-hub-processor-control:
 
@@ -1450,13 +1505,14 @@ Reset and migration
 ===================
 
 Reset sets every register to the values above, stops every comparator
-timer, ends every rendezvous hold, cancels a one-wire slot in progress
-and clears both processor enables in the hold phase. The error stack
+timer, including the profiling comparator's, ends every rendezvous hold,
+cancels a one-wire slot in progress and clears both processor enables in
+the hold phase. The error stack
 addresses, memory and the one-wire part's contents survive. The node
 numbers, claim aliases and cached-alias windows re-derive in the exit
 phase, once every Hub's enter phase has run.
 
-The device's state saves as ``sgi-hub`` version 31. The big windows,
+The device's state saves as ``sgi-hub`` version 32. The big windows,
 claim aliases and cached-alias windows re-derive from the restored
 registers, and the interrupt lines are re-driven from the restored
 state, which is sound because each drives a level input on a processor
@@ -1486,9 +1542,8 @@ Model limits
 - Protection, access and error-mask registers are stored, never
   enforced. No refusal path exists.
 - No error latch other than the processor status 0 record and the
-  engines' error bit is modelled. The Hub error interrupt, the profiling
-  interrupt, cross-calls and the network-interface error interrupt never
-  fire.
+  engines' error bit is modelled. The Hub error interrupt, cross-calls
+  and the network-interface error interrupt never fire.
 - Only the first doubleword of each processor error record is kept;
   its type, request, supplemental and command fields stay zero.
 - Bit 0 of ``NI_PORT_RESET`` restarts the whole machine, not one node;
@@ -1522,7 +1577,8 @@ Tests
 
 ``tests/qtest/sn0-hub-test.c`` (``/sn0/hub/*``) covers reset values, the 32-bit
 halves, processor number, presence and enable, the error stack address mask,
-the counter's rate, width and writes, comparator matching and wrap, pending
+the counter's rate, width and writes, comparator matching and wrap, the
+profiling comparator and its lines, pending
 banks, masks and lines, the rendezvous holds and their migration, the
 indicators, the bring-up UART, the slot identity on every machine. It also
 covers widget identity and control, the access and protection registers, the

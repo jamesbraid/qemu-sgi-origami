@@ -58,10 +58,11 @@
 /* MIPS CPU input 0 is IP0. Hardware interrupt inputs begin at IP2. */
 #define SN0_MIPS_HARDWARE_IRQ_OFFSET 2
 
-/* The Hub's three CPU interrupt inputs: hardwired, not configuration. */
+/* The Hub's four CPU interrupt inputs: hardwired, not configuration. */
 #define SN0_HUB_CPU_IRQ_BANK0 0
 #define SN0_HUB_CPU_IRQ_BANK1 1
 #define SN0_HUB_CPU_IRQ_RT    2
+#define SN0_HUB_CPU_IRQ_PROF  3
 
 /* Every node carries two processor-interface slots. */
 #define SN0_HUB_CPU_SLOTS_PER_NODE 2
@@ -1335,6 +1336,10 @@ static void sn0_node_create_hub(SN0NodeState *node)
         qdev_connect_gpio_out_named(
             DEVICE(&node->hub), "rt", slice,
             cpu->env.irq[SN0_HUB_CPU_IRQ_RT +
+                         SN0_MIPS_HARDWARE_IRQ_OFFSET]);
+        qdev_connect_gpio_out_named(
+            DEVICE(&node->hub), "prof", slice,
+            cpu->env.irq[SN0_HUB_CPU_IRQ_PROF +
                          SN0_MIPS_HARDWARE_IRQ_OFFSET]);
         /*
          * Every uncached I/O-space request this processor makes goes

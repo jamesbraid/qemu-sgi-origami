@@ -155,6 +155,12 @@ static const RtStep sn0_hub[] = {
     W64(HUB(0x608000), 0x2a5a),                 /* NI port parms */
     W64(HUB(0x638100), 0x1b),                   /* NI local route 0 */
     W64(HUB(0x6380f8), 0x16),                   /* NI meta route 31 */
+    /* Far from the counter, so no match fires before the save. */
+    W64(HUB(0x000118), 0x0000123456789abcULL),  /* PI profiling compare */
+    W64(HUB(0x000130), 1),                      /* PI profiling pending A */
+    W64(HUB(0x000138), 1),                      /* PI profiling pending B */
+    W64(HUB(0x000150), 1),                      /* PI profiling enable A */
+    W64(HUB(0x000158), 1),                      /* PI profiling enable B */
     M64(HUB(0x4003c0)),
     M64(HUB(0x4003b8)),
     M64(HUB(0x400150)),
@@ -167,6 +173,11 @@ static const RtStep sn0_hub[] = {
     M64(HUB(0x608000)),
     M64(HUB(0x638100)),
     M64(HUB(0x6380f8)),
+    M64(HUB(0x000118)),
+    M64(HUB(0x000130)),
+    M64(HUB(0x000138)),
+    M64(HUB(0x000150)),
+    M64(HUB(0x000158)),
     RT_DONE
 };
 

@@ -274,6 +274,12 @@ struct SGIHubState {
     qemu_irq rt_irq[SGI_HUB_PROCESSORS];
 
     /*
+     * Per-processor profiling line, hardware interrupt 3, level-triggered;
+     * the named GPIO output "prof", indexed by processor.
+     */
+    qemu_irq prof_irq[SGI_HUB_PROCESSORS];
+
+    /*
      * One edge per processor for the Hub's non-maskable interrupt and soft
      * reset triggers (the named GPIO outputs "nmi" and "soft-reset"), and
      * one for a write of the port reset register with bit 0 set (the output
@@ -374,6 +380,14 @@ struct SGIHubState {
     uint8_t pi_rt_enable[SGI_HUB_PROCESSORS];
 
     /*
+     * The profiling comparator: one compare for the node, and a pending and
+     * an enable bit per processor. A match pends both processors.
+     */
+    uint64_t pi_prof_compare;
+    uint8_t pi_prof_pending[SGI_HUB_PROCESSORS];
+    uint8_t pi_prof_enable[SGI_HUB_PROCESSORS];
+
+    /*
      * The multi-threaded comparator hold, host-only and discarded across
      * reset and migration. Per processor: whether the other has read its
      * comparator since the value changed; how often its comparator has been
@@ -416,6 +430,7 @@ struct SGIHubState {
     SGIPIGfx pi_gfx;
 
     QEMUTimer *rt_timer[SGI_HUB_PROCESSORS];
+    QEMUTimer *prof_timer;
     SGIHubCounterLine rt_line[SGI_HUB_PROCESSORS];
     uint8_t ni_revision;
     uint64_t ni_status;
