@@ -7022,7 +7022,21 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     if (!sgi_soft_setup_ops(&r)) {
         return;
     }
-    for (uint32_t i = 0; i < b->count && row_bytes; i++) {
+    for (uint32_t i = 0; i < b->npoints; i++) {
+        const SGIRasterPoint *pt = &b->points[i];
+
+        if (pt->x < r.win.x0 - r.win.ox || pt->x > r.win.x1 - r.win.ox ||
+            pt->y < r.win.y0 - r.win.oy || pt->y > r.win.y1 - r.win.oy) {
+            continue;
+        }
+        frag.rgba[0] = pt->rgba[0];
+        frag.rgba[1] = pt->rgba[1];
+        frag.rgba[2] = pt->rgba[2];
+        frag.rgba[3] = pt->rgba[3];
+        frag.index = pt->index;
+        sgi_soft_fragment_at(&r, pt->x, pt->y, b->z, &frag, 1, false);
+    }
+    for (uint32_t i = 0; i < b->count && row_bytes && !b->npoints; i++) {
         uint32_t byte = b->first + i;
         int64_t row = byte / row_bytes, col0 = (byte % row_bytes) * 8;
 

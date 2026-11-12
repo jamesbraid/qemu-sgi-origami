@@ -59,6 +59,16 @@ typedef uint32_t SGIColourTarget;
 struct SGIGLDrawState;
 
 /*
+ * One fragment of a point list: the window pixel and its own colour and
+ * colour index.
+ */
+typedef struct SGIRasterPoint {
+    int32_t x, y;
+    float rgba[4];
+    float index;
+} SGIRasterPoint;
+
+/*
  * BITMAP: a run of glBitmap's image (OpenGL 1.2.1, 3.7), drawn as
  * fragments under a context's draw state. The image is height rows of
  * (width + 7) / 8 bytes, the bottom row first, and within a byte the most
@@ -83,6 +93,16 @@ typedef struct SGIRasterBitmap {
     float index;
     float distance;
     float texcoord[4];
+    /*
+     * With npoints nonzero the op is not an image: it is npoints
+     * fragments, each what a one-pixel bitmap with its bit set would
+     * draw, in order, at the window pixels the points name and in their
+     * own colours. width, height, first, count, bytes, x, y, rgba and
+     * index are then ignored: a list and an image are exclusive. The
+     * list shares one setup, where a bitmap per fragment repeats it.
+     */
+    const SGIRasterPoint *points;
+    uint32_t npoints;
 } SGIRasterBitmap;
 
 /* Initial RGBA pixel-transfer scale and bias (OpenGL 1.2.1, 3.6.5). */

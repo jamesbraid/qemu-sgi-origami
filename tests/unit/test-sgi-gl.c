@@ -1483,6 +1483,65 @@ static void test_bitmap_bounds_and_depth(void)
 }
 
 /*
+ * A point list draws what one-pixel bitmaps in the same order would, one
+ * setup for all of them: each point takes its own colour, a point off the
+ * window is dropped, and two points on a pixel meet the logic op in order.
+ * The image fields of an op that carries a list are ignored.
+ */
+static void test_bitmap_point_list(void)
+{
+    static const uint8_t set = 0x80, ones[2] = { 0xff, 0xff };
+    static const SGIRasterPoint points[] = {
+        { 3, 4, { 1, 0, 0, 1 }, 0 }, { 4, 4, { 0, 1, 0, 1 }, 0 },
+        { 3, 4, { 0, 0, 1, 1 }, 0 }, { -1, 4, { 1, 1, 1, 1 }, 0 },
+        { W + 2, 4, { 1, 1, 1, 1 }, 0 }, { 5, H + 2, { 1, 1, 1, 1 }, 0 },
+        { 6, 7, { 1, 1, 0, 1 }, 0 },
+    };
+    static Planes list, single;
+    SGIRasterTarget tl = planes_target(&list), ts = planes_target(&single);
+    SGIGLContext c;
+    SGIRasterOp op;
+
+    context_init(&c);
+    c.cur.color_logic_op = 1;
+    c.cur.logic_op_mode = 0x1506;
+    memset(&list, 0, sizeof(list));
+    memset(&single, 0, sizeof(single));
+    /* A known background for the XOR to act on. */
+    for (int i = 0; i < W * H; i++) {
+        list.colour[0][i] = single.colour[0][i] = 0x123456;
+    }
+    op = (SGIRasterOp) {
+        .kind = SGI_RASTER_BITMAP,
+        .bitmap = { .state = &c.cur, .points = points,
+                    .npoints = ARRAY_SIZE(points),
+                    /* Ignored: the list and an image are exclusive. */
+                    .width = 8, .height = 2, .count = 2, .bytes = ones,
+                    .x = 20, .y = 20 },
+    };
+    op.ntargets = sgi_gl_draw_targets(&c.cur, op.targets);
+    op.clip = c.cur.drawable.clip;
+    sgi_soft_raster(&rules_supported, &tl, &op);
+
+    for (unsigned i = 0; i < ARRAY_SIZE(points); i++) {
+        SGIRasterOp one = {
+            .kind = SGI_RASTER_BITMAP,
+            .bitmap = { .state = &c.cur, .x = points[i].x, .y = points[i].y,
+                        .width = 1, .height = 1, .count = 1, .bytes = &set },
+        };
+
+        memcpy(one.bitmap.rgba, points[i].rgba, sizeof(one.bitmap.rgba));
+        one.ntargets = op.ntargets;
+        memcpy(one.targets, op.targets, sizeof(one.targets));
+        one.clip = op.clip;
+        sgi_soft_raster(&rules_supported, &ts, &one);
+    }
+    g_assert_cmpmem(&list, sizeof(list), &single, sizeof(single));
+    g_assert_cmphex(list.colour[0][planes_index(3, 4)], !=, 0x123456);
+    g_assert_cmphex(list.colour[0][planes_index(20, 20)], ==, 0x123456);
+}
+
+/*
  * The raster position's z is already a window depth, through the depth
  * range when glRasterPos set it (2.12), and a bitmap's fragments take it
  * as it is (3.7). With glDepthRange(0.5, 1) a raster position at
@@ -15852,6 +15911,7 @@ int main(int argc, char **argv)
                     test_draw_pixels_window_and_scissor);
     g_test_add_func("/sgi-gl/bitmap-bounds-and-depth",
                     test_bitmap_bounds_and_depth);
+    g_test_add_func("/sgi-gl/bitmap-point-list", test_bitmap_point_list);
     g_test_add_func("/sgi-gl/bitmap-depth-is-the-raster-depth",
                     test_bitmap_depth_is_the_raster_depth);
     g_test_add_func("/sgi-gl/depth-range", test_depth_range);
