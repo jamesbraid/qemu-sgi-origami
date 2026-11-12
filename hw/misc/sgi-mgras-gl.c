@@ -5166,40 +5166,67 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 }
 
 /*
- * One fragment at window pixel (x, y) in a colour or index, drawn as a
- * one-pixel glBitmap so that it meets the window's clip, the depth test
- * and the index mask on the path every bitmap takes. This costs one
- * raster op a pixel: a DMA transfer of the largest draw, 4096 by 4096,
- * makes 16.7 million of them inside the single port write that kicks
- * it. A raster op for a run of pixels in shared code (hw/display/sgi)
- * would take a row at once.
+ * The fragments of one run of image bytes, drawn together. A pixel draw
+ * is one fragment for each window pixel its image covers, and the client
+ * sends the image a row or a word at a time. A raster op for every
+ * fragment repeated the op's setup (about half of a fragment's cost), and
+ * a 4096 by 4096 DMA transfer makes 16.7 million of them inside the single
+ * port write that kicks it.
  */
-static void mgras_gl_pixels_put(SGIMgrasState *s,
-                                const SGIMgrasGLPixels *px, int32_t x,
-                                int32_t y, const float rgba[4], float index)
+#define MGRAS_GL_PIXELS_RUN 512
+
+typedef struct MgrasGLPixelRun {
+    uint32_t n;
+    SGIRasterPoint point[MGRAS_GL_PIXELS_RUN];
+} MgrasGLPixelRun;
+
+/*
+ * Draw the run as one list of fragments in the order they were queued:
+ * the same fragments as one-pixel glBitmaps would draw, so each meets the
+ * window's clip, the depth test and the index mask on the path every
+ * bitmap takes, and overlapping zoomed footprints blend as they did.
+ */
+static void mgras_gl_pixels_flush(SGIMgrasState *s, MgrasGLPixelRun *run)
 {
-    static const uint8_t set = 0x80;
     SGIGLContext *c = mgras_gl(s);
     SGIGLSink sink = mgras_gl_sink(s);
     SGIRasterOp op = {
         .kind = SGI_RASTER_BITMAP,
         .bitmap = {
             .state = &c->cur,
-            .x = x,
-            .y = y,
-            .width = 1,
-            .height = 1,
-            .count = 1,
-            .bytes = &set,
             .z = c->raster_pos[2],
-            .index = index,
+            .points = run->point,
+            .npoints = run->n,
         },
     };
 
-    memcpy(op.bitmap.rgba, rgba, sizeof(op.bitmap.rgba));
+    if (!run->n) {
+        return;
+    }
     op.ntargets = sgi_gl_draw_targets(&c->cur, op.targets);
     op.clip = c->cur.drawable.clip;
     sink.raster(sink.opaque, &op);
+    run->n = 0;
+}
+
+/*
+ * One fragment at window pixel (x, y) in a colour or index, queued on the
+ * run.
+ */
+static void mgras_gl_pixels_put(SGIMgrasState *s, MgrasGLPixelRun *run,
+                                int32_t x, int32_t y, const float rgba[4],
+                                float index)
+{
+    SGIRasterPoint *pt;
+
+    if (run->n == MGRAS_GL_PIXELS_RUN) {
+        mgras_gl_pixels_flush(s, run);
+    }
+    pt = &run->point[run->n++];
+    pt->x = x;
+    pt->y = y;
+    memcpy(pt->rgba, rgba, sizeof(pt->rgba));
+    pt->index = index;
 }
 
 /*
@@ -5228,13 +5255,14 @@ static void mgras_gl_pixels_span(uint32_t n, float z, uint32_t limit,
  * pixel of its zoomed footprint inside the box.
  */
 static void mgras_gl_pixels_emit(SGIMgrasState *s, const SGIMgrasGLPixels *px,
-                                 const float rgba[4], float index)
+                                 MgrasGLPixelRun *run, const float rgba[4],
+                                 float index)
 {
     uint32_t m = px->pass + px->row * MAX(px->row_step, 1u);
     uint32_t x0, x1, y0, y1;
 
     if (!px->zoom_x) {
-        mgras_gl_pixels_put(s, px, px->x + px->col, mgras_gl_pixels_y(px),
+        mgras_gl_pixels_put(s, run, px->x + px->col, mgras_gl_pixels_y(px),
                             rgba, index);
         return;
     }
@@ -5248,13 +5276,13 @@ static void mgras_gl_pixels_emit(SGIMgrasState *s, const SGIMgrasGLPixels *px,
             int32_t x = px->flip & 1 ? px->x - (int32_t)i :
                                        px->x + (int32_t)i;
 
-            mgras_gl_pixels_put(s, px, x, y, rgba, index);
+            mgras_gl_pixels_put(s, run, x, y, rgba, index);
         }
     }
 }
 
 static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
-                                  uint32_t v)
+                                  MgrasGLPixelRun *run, uint32_t v)
 {
     float rgba[4] = { 0, 0, 0, 1.0f };
     uint8_t b[4];
@@ -5284,12 +5312,13 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_emit(s, px, rgba, v);
+    mgras_gl_pixels_emit(s, px, run, rgba, v);
 }
 
 /* Take n image bytes of the current row; bytes past its last pixel drop. */
 static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
                                             SGIMgrasGLPixels *px,
+                                            MgrasGLPixelRun *run,
                                             uint32_t bits)
 {
     union {
@@ -5319,7 +5348,7 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     if (sgi_mgras_texture_pixel(s, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
-    mgras_gl_pixels_emit(s, px, rgba, 0);
+    mgras_gl_pixels_emit(s, px, run, rgba, 0);
     px->ncomponent = 0;
     px->col++;
     return true;
@@ -5329,7 +5358,9 @@ static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
                                   uint32_t n)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
+    MgrasGLPixelRun run;
 
+    run.n = 0;
     for (uint32_t i = 0; i < n && px->col < px->w; i++) {
         px->carry = px->carry << 8 | bytes[i];
         if (px->format == MGRAS_GL_PIXELS_FLOAT_RGB ||
@@ -5338,16 +5369,17 @@ static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
                 uint32_t bits = px->carry;
 
                 px->carry = px->ncarry = 0;
-                if (!mgras_gl_pixels_float_component(s, px, bits)) {
-                    return;
+                if (!mgras_gl_pixels_float_component(s, px, &run, bits)) {
+                    break;
                 }
             }
         } else if (++px->ncarry == px->bpp) {
-            mgras_gl_pixels_pixel(s, px, px->carry);
+            mgras_gl_pixels_pixel(s, px, &run, px->carry);
             px->col++;
             px->carry = px->ncarry = 0;
         }
     }
+    mgras_gl_pixels_flush(s, &run);
 }
 
 static void mgras_gl_pixels_row_end(SGIMgrasState *s)

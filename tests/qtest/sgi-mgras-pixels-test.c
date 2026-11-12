@@ -3559,6 +3559,326 @@ static void test_gl_pixels_zoom(void)
 }
 
 /*
+ * A pixel draw puts one fragment for each window pixel through the same
+ * clip, mask, logic op and depth test every bitmap meets, whatever the
+ * model does to batch them. A background image is drawn first, then a
+ * second image over it under each state; each pixel is checked against
+ * the result the state gives for that pair, by DMA and inline, so the
+ * pixels a draw puts together come out as they would one at a time.
+ */
+enum {
+    PIXRUN_COPY,
+    PIXRUN_MASK_RED,
+    PIXRUN_XOR,
+    PIXRUN_SCISSOR,
+    PIXRUN_DEPTH_NEVER,
+    PIXRUN_DEPTH_ALWAYS,
+    PIXRUN_BLEND,
+    PIXRUN_STENCIL_FAIL,
+    PIXRUN_STATES,
+};
+
+#define PIXRUN_W 20
+#define PIXRUN_H 4
+#define PIXRUN_X 10
+#define PIXRUN_Y 10
+
+static uint32_t pixrun_pixel(uint32_t seed, uint32_t x, uint32_t y)
+{
+    return ((0x10 + seed * 0x31 + x * 7 + y * 3) & 0xff) << 24 |
+           ((0x80 + seed * 0x57 + x * 5 + y * 11) & 0xff) << 16 |
+           ((0x33 + seed * 0x1d + x * 13 + y * 5) & 0xff) << 8 |
+           /* Seed 9 alternates opaque and transparent columns. */
+           (seed == 9 && !(x & 1) ? 0x00 : 0xff);
+}
+
+static void pixrun_image(QTestState *qts, uint32_t seed, uint32_t w,
+                         uint32_t h, uint32_t x0, uint32_t y0, bool dma)
+{
+    g_autofree uint8_t *image = g_malloc(4 * w * h);
+    g_autofree uint32_t *words = g_malloc(4 * w * h);
+
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            words[w * y + x] = pixrun_pixel(seed, x, y);
+            stl_be_p(&image[4 * (w * y + x)], words[w * y + x]);
+        }
+    }
+    gl_pixels_program(qts, GL_PIX_4UB, 4 * w, x0, y0, x0 + w - 1, y0 + h - 1,
+                      1);
+    if (dma) {
+        gl_pixels_draw_as(qts, w, GL_PIXELS_BY_DMA);
+        gl_pixels_dma(qts, image, 4 * w * h, 4 * w, h, 4 * w, 0xa7);
+        g_assert_cmphex(qtest_readl(qts, REG_HQ_FLAGS) & MGRAS_HQ_FLAG_FENCE,
+                        ==, MGRAS_HQ_FLAG_FENCE);
+        return;
+    }
+    /* An inline RGBA draw counts the whole image's words. */
+    gl_pixels_draw(qts, w * h);
+    for (uint32_t y = 0; y < h; y++) {
+        gl_pixels_row(qts, 0, &words[w * y], w);
+    }
+    gl_pixels_fence(qts);
+}
+
+static uint32_t pixrun_want(int state, uint32_t src, uint32_t dst, bool in)
+{
+    switch (state) {
+    case PIXRUN_MASK_RED:
+        return (dst & 0xff0000) | (src & 0x00ffff);
+    case PIXRUN_XOR:
+        return src ^ dst;
+    case PIXRUN_SCISSOR:
+    case PIXRUN_BLEND:
+        return in ? src : dst;
+    case PIXRUN_STENCIL_FAIL:
+    case PIXRUN_DEPTH_NEVER:
+        return dst;
+    default:
+        return src;
+    }
+}
+
+static void pixrun_state(QTestState *qts, int state)
+{
+    switch (state) {
+    case PIXRUN_MASK_RED:
+        gl_one(qts, GL_COLOR_MASK_HDR, 0xe);
+        break;
+    case PIXRUN_XOR:
+        gl_one(qts, GL_LOGIC_OP_HDR, GL_LOGIC_XOR);
+        gl_one(qts, GL_LOGIC_OP_ENABLE_HDR, 1);
+        break;
+    case PIXRUN_SCISSOR:
+        gl_scissor(qts, PIXRUN_X + 4, PIXRUN_Y + 1, 6, 2);
+        gl_one(qts, GL_SCISSOR_TEST_HDR, 1);
+        break;
+    case PIXRUN_DEPTH_NEVER:
+    case PIXRUN_DEPTH_ALWAYS:
+        gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+        gl_one(qts, GL_DEPTH_FUNC_HDR, state == PIXRUN_DEPTH_NEVER ?
+               GL_DEPTH_NEVER : GL_DEPTH_ALWAYS);
+        break;
+    case PIXRUN_BLEND:
+        gl_blend(qts, GL_SRC_ALPHA, 0x303, GL_FUNC_ADD);
+        gl_one(qts, GL_BLEND_HDR, 1);
+        break;
+    case PIXRUN_STENCIL_FAIL:
+        gl_stencil(qts, GL_STENCIL_EQUAL, 1, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+                   GL_OP_KEEP);
+        gl_one(qts, GL_STENCIL_TEST_HDR, 1);
+        break;
+    default:
+        break;
+    }
+}
+
+static void test_gl_pixels_states(gconstpointer data)
+{
+    int state = GPOINTER_TO_INT(data) >> 1;
+    bool dma = GPOINTER_TO_INT(data) & 1;
+    uint32_t top;
+
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, dma);
+    pixrun_state(qts, state);
+    top = state == PIXRUN_BLEND ? 9 : 2;
+    pixrun_image(qts, top, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, dma);
+    for (uint32_t y = 0; y < PIXRUN_H; y++) {
+        for (uint32_t x = 0; x < PIXRUN_W; x++) {
+            uint32_t src = pixrun_pixel(top, x, y) >> 8;
+            uint32_t dst = pixrun_pixel(1, x, y) >> 8;
+            bool in = state == PIXRUN_BLEND ? x & 1 :
+                      x >= 4 && x < 10 && y >= 1 && y < 3;
+
+            g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y + y),
+                            ==, pixrun_want(state, src, dst, in));
+        }
+    }
+    g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X - 1, PIXRUN_Y), ==, 0);
+    g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + PIXRUN_W, PIXRUN_Y), ==,
+                    0);
+    g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X, PIXRUN_Y + PIXRUN_H), ==,
+                    0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A row wider than the window and than any batch the model keeps: the
+ * pixels past the window's edge are clipped one at a time and those
+ * inside it are not lost to a batch boundary, under XOR so that a pixel
+ * drawn twice or out of order shows.
+ */
+static void test_gl_pixels_wide_row_clipped(gconstpointer data)
+{
+    const uint32_t w = 700, h = 3;
+    bool dma = GPOINTER_TO_INT(data);
+
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, 128, 3, 0, 40, true);
+    gl_one(qts, GL_LOGIC_OP_HDR, GL_LOGIC_XOR);
+    gl_one(qts, GL_LOGIC_OP_ENABLE_HDR, 1);
+    /*
+     * The row starts 500 pixels left of the window, so the window shows
+     * columns 500 to 627: the batch boundary at column 512 falls in view.
+     */
+    pixrun_image(qts, 2, w, h, (uint32_t)-500, 40, dma);
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < 128; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, 40 + y), ==,
+                            (pixrun_pixel(2, x + 500, y) ^
+                             pixrun_pixel(1, x, y)) >> 8);
+        }
+    }
+    g_assert_cmphex(gl_window_pixel(qts, 0, 43), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A source row whose zoomed footprints run past a batch: 200 pixels at
+ * zoom 2 make 400 columns by two rows, 800 points a row. Placed 200
+ * columns left of the window, the window shows the middle of the row,
+ * across the point where the model's batch fills.
+ */
+static void test_gl_pixels_zoom_across_batch(void)
+{
+    static const uint32_t box[6] = { -200, 0, 199, 5, 6 << 16 | 200, 1 };
+    const uint32_t w = 200, h = 3;
+    g_autofree uint8_t *image = g_malloc(4 * w * h);
+
+    for (uint32_t y = 0; y < h; y++) {
+        for (uint32_t x = 0; x < w; x++) {
+            stl_be_p(&image[4 * (w * y + x)], pixrun_pixel(2, x, y));
+        }
+    }
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, 128, 6, 0, 8, true);
+    pixrun_state(qts, PIXRUN_XOR);
+    gl_raster_pos2f(qts, 0, 8);
+    gl_pixels_zoom_program(qts, 0x3663, 0.5f, box);
+    gl_pixels_draw(qts, w);
+    gl_pixels_dma(qts, image, 4 * w * h, 4 * w * h, 1, 4 * w * h, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 6; y++) {
+        for (uint32_t x = 0; x < 128; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, x, 8 + y), ==,
+                            (pixrun_pixel(2, (200 + x) / 2, y / 2) ^
+                             pixrun_pixel(1, x, y)) >> 8);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/* A zoom that runs leftward flips the draw; the logic op still combines. */
+static void test_gl_pixels_flip_xor(void)
+{
+    static const uint32_t boxm1[6] = { -1, 0, -4, 2, 3 << 16 | 4, 1 };
+    uint32_t words[3][4];
+
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, 4, 3, 56, 30, true);
+    pixrun_state(qts, PIXRUN_XOR);
+    gl_raster_pos2f(qts, 60, 30);
+    gl_pixels_zoom_program(qts, 0x352d, 1.0f, boxm1);
+    gl_pixels_draw(qts, 12);
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            words[y][x] = gl_zoom_pixel(x, y);
+        }
+        gl_pixels_row(qts, 0, words[y], 4);
+    }
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, 59 - x, 30 + y), ==,
+                            (words[y][x] ^ pixrun_pixel(1, 3 - x, y)) >> 8);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The draw buffer picks the target: a draw to the back buffer leaves the
+ * front one alone, and one to both changes it.
+ */
+static void test_gl_pixels_draw_buffer(void)
+{
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    gl_draw_buffer(qts, 2);
+    pixrun_image(qts, 2, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    for (uint32_t x = 0; x < PIXRUN_W; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y), ==,
+                        pixrun_pixel(1, x, 0) >> 8);
+    }
+    gl_draw_buffer(qts, 3);
+    pixrun_image(qts, 2, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    for (uint32_t x = 0; x < PIXRUN_W; x++) {
+        g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y), ==,
+                        pixrun_pixel(2, x, 0) >> 8);
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The stencil buffer is updated as the fragments arrive: with EQUAL 0 and
+ * INCR on pass, the first image passes and raises the stencil, and a
+ * second over the same pixels fails it.
+ */
+static void test_gl_pixels_stencil_updates(void)
+{
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    gl_stencil(qts, GL_STENCIL_EQUAL, 0, 0xff, GL_OP_KEEP, GL_OP_KEEP,
+               GL_OP_INCR);
+    gl_one(qts, GL_STENCIL_TEST_HDR, 1);
+    pixrun_image(qts, 2, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    pixrun_image(qts, 3, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, true);
+    for (uint32_t y = 0; y < PIXRUN_H; y++) {
+        for (uint32_t x = 0; x < PIXRUN_W; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y + y),
+                            ==, pixrun_pixel(2, x, y) >> 8);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * A zoomed draw puts each source pixel's footprint, and the logic op and
+ * the colour mask act on each of its pixels.
+ */
+static void test_gl_pixels_zoom_states(gconstpointer data)
+{
+    static const uint32_t box22[6] = { 0, 0, 7, 5, 6 << 16 | 4, 1 };
+    int state = GPOINTER_TO_INT(data);
+    uint8_t image[48];
+
+    for (uint32_t y = 0; y < 3; y++) {
+        for (uint32_t x = 0; x < 4; x++) {
+            stl_be_p(&image[16 * y + 4 * x], gl_zoom_pixel(x, y));
+        }
+    }
+    gl_pixels_context(qts, 0);
+    pixrun_image(qts, 1, 8, 6, 8, 8, true);
+    pixrun_state(qts, state);
+    gl_raster_pos2f(qts, 8, 8);
+    gl_pixels_zoom_program(qts, 0x3663, 0.5f, box22);
+    gl_pixels_draw(qts, 4);
+    gl_pixels_dma(qts, image, sizeof(image), 48, 1, 48, 0xa7);
+    gl_pixels_fence(qts);
+    for (uint32_t y = 0; y < 6; y++) {
+        for (uint32_t x = 0; x < 8; x++) {
+            uint32_t src = gl_zoom_pixel(x / 2, y / 2) >> 8;
+            uint32_t dst = pixrun_pixel(1, x, y) >> 8;
+
+            g_assert_cmphex(gl_window_pixel(qts, 8 + x, 8 + y), ==,
+                            pixrun_want(state, src, dst, false));
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * The rectangle is the image's own; the draw lands at the raster
  * position. At (10.75, 20.25) pixel 0 of the bottom row covers x 10.75 to
  * 11.75 and y 20.25 to 21.25, whose centres are (11.5, 20.5): window pixel
@@ -6934,6 +7254,48 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-zoom",
         test_gl_pixels_zoom, true);
+    {
+        static const char *const names[] = {
+            "copy", "mask-red", "xor", "scissor", "depth-never",
+            "depth-always", "blend", "stencil-fail",
+        };
+
+        for (int i = 0; i < PIXRUN_STATES; i++) {
+            for (int dma = 0; dma < 2; dma++) {
+                g_autofree char *path = g_strdup_printf(
+                    "sn0/origin2000/mgras/gl-pixels-state-%s-%s", names[i],
+                    dma ? "dma" : "inline");
+
+                mgras_qtest_add_data_func(path, GINT_TO_POINTER(i << 1 | dma),
+                                          test_gl_pixels_states, true);
+            }
+        }
+        for (int i = PIXRUN_MASK_RED; i <= PIXRUN_XOR; i++) {
+            g_autofree char *path = g_strdup_printf(
+                "sn0/origin2000/mgras/gl-pixels-zoom-state-%s", names[i]);
+
+            mgras_qtest_add_data_func(path, GINT_TO_POINTER(i),
+                                      test_gl_pixels_zoom_states, true);
+        }
+    }
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-wide-row-clipped-inline",
+        GINT_TO_POINTER(0), test_gl_pixels_wide_row_clipped, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-wide-row-clipped-dma",
+        GINT_TO_POINTER(1), test_gl_pixels_wide_row_clipped, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-zoom-across-batch",
+        test_gl_pixels_zoom_across_batch, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-flip-xor",
+        test_gl_pixels_flip_xor, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-draw-buffer",
+        test_gl_pixels_draw_buffer, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-pixels-stencil-updates",
+        test_gl_pixels_stencil_updates, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-pixels-long-load",
         test_gl_pixels_long_load, true);
