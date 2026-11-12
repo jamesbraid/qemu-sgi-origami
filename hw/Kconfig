@@ -6,6 +6,7 @@ source adc/Kconfig
 source audio/Kconfig
 source block/Kconfig
 source char/Kconfig
+source coproc/Kconfig
 source core/Kconfig
 source display/Kconfig
 source dma/Kconfig
