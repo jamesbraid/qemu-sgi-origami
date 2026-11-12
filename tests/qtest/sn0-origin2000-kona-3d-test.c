@@ -8416,6 +8416,20 @@ static void test_draw_repaint(gconstpointer opaque)
     qtest_quit(s);
 }
 
+/* The glPixelStore names the model keeps no state for. */
+static const uint32_t pixel_store_names[] = {
+    0xd03,  /* GL_PACK_SKIP_ROWS */
+    0xd04,  /* GL_PACK_SKIP_PIXELS */
+    0x806b, /* GL_PACK_SKIP_IMAGES */
+    0x806c, /* GL_PACK_IMAGE_HEIGHT */
+    0x806d, /* GL_UNPACK_SKIP_IMAGES */
+    0x806e, /* GL_UNPACK_IMAGE_HEIGHT */
+    0x8130, /* GL_PACK_SKIP_VOLUMES_SGIS */
+    0x8131, /* GL_PACK_IMAGE_DEPTH_SGIS */
+    0x8132, /* GL_UNPACK_SKIP_VOLUMES_SGIS */
+    0x8133, /* GL_UNPACK_IMAGE_DEPTH_SGIS */
+};
+
 static void test_draw_pixels(gconstpointer opaque)
 {
     unsigned mode = GPOINTER_TO_UINT(opaque);
@@ -8423,7 +8437,8 @@ static void test_draw_pixels(gconstpointer opaque)
     bool padded = mode == 1 || mode == 3;
     bool migrate = mode == 4 || mode == 12 || mode == 13 || mode == 24;
     bool refused = (mode >= 5 && mode < 18 && mode != 8 && mode != 12 &&
-                    mode != 15 && mode != 16) || mode == 26;
+                    mode != 15 && mode != 16) || mode == 26 ||
+                   (mode >= 28 && mode < 38);
     uint32_t h[] = { 2, 2, 5, 1, padded ? 3 : 0, dma, padded, 0 };
     static const uint32_t plain[] = {
         0xff0000ff, 0x00ff00ff, 0x0000ffff, 0xffffffff,
@@ -8487,21 +8502,30 @@ static void test_draw_pixels(gconstpointer opaque)
         }
         kona_command(s, 0x3a, malformed, ARRAY_SIZE(malformed));
     }
-    if (mode == 25 || mode == 26) {
+    if (mode >= 25) {
         /*
-         * The library's pack state at its initial zero changes nothing a
-         * DrawPixels does: the 3D and 4D forms, and the pack skip rows
-         * and pixels that an image-drawing wrapper sends around its
-         * DrawPixels (Discreet Inferno's lrectwrite; with the zero
-         * refused every DrawPixels after it drew nothing). Another value
-         * stays unsupported.
+         * The library's pixel storage the model keeps no state for, at
+         * its initial zero, changes nothing a DrawPixels does: the pack
+         * skip rows and pixels that an image-drawing wrapper sends
+         * around its DrawPixels (Discreet Inferno's lrectwrite), and the
+         * 3D and 4D image skip, height, volume skip and depth. Another
+         * value stays unsupported (mode 26 for all, 28 on for one name)
+         * until the name is stored at zero again (mode 27 for all, 38 on
+         * for one name).
          */
-        static const uint32_t pack[] = {
-            0x806d, 0x806e, 0x8132, 0x8133, 0xd03, 0xd04,
-        };
+        unsigned names = ARRAY_SIZE(pixel_store_names);
+        unsigned first = mode >= 28 ? (mode - 28) % names : 0;
+        unsigned last = mode >= 28 ? first + 1 : names;
+        bool nonzero = mode == 26 || (mode >= 28 && mode < 38);
+        bool restore = mode == 27 || mode >= 38;
 
-        for (unsigned k = 0; k < ARRAY_SIZE(pack); k++) {
-            kona_command(s, 0x33, (uint32_t[]) { pack[k], mode == 26 }, 2);
+        for (unsigned k = first; k < last; k++) {
+            if (restore) {
+                kona_command(s, 0x33,
+                             (uint32_t[]) { pixel_store_names[k], 1 }, 2);
+            }
+            kona_command(s, 0x33,
+                         (uint32_t[]) { pixel_store_names[k], nonzero }, 2);
         }
     }
     if (mode == 18 || mode == 24) {
@@ -21994,7 +22018,7 @@ int main(int argc, char **argv)
         "dma-strided-rowlength", "malformed-dimensions",
         "unknown-format", "malformed-source-pad", "malformed-layout",
         "contiguous-partial-migrates", "pack-3d-default",
-        "pack-3d-refused",
+        "pack-3d-refused", "pack-restore-default",
     };
     add_case("sn0/origin2000/kona-3d/one-bit-stencil-visual",
              test_one_bit_stencil_visual);
@@ -22010,6 +22034,15 @@ int main(int argc, char **argv)
             "sn0/origin2000/kona-3d/draw-pixels/%s", draw_pixels_cases[mode]);
 
         add_data_case(path, GUINT_TO_POINTER(mode), test_draw_pixels);
+    }
+    for (unsigned k = 0; k < 2 * ARRAY_SIZE(pixel_store_names); k++) {
+        g_autofree char *path = g_strdup_printf(
+            "sn0/origin2000/kona-3d/draw-pixels/pack-%s-0x%x",
+            k < ARRAY_SIZE(pixel_store_names) ? "nonzero-refused" :
+            "restored-draws",
+            pixel_store_names[k % ARRAY_SIZE(pixel_store_names)]);
+
+        add_data_case(path, GUINT_TO_POINTER(28 + k), test_draw_pixels);
     }
     add_data_case("sn0/origin2000/kona-3d/colour-matrix/native",
                   GINT_TO_POINTER(0), test_native_colour_matrix);
