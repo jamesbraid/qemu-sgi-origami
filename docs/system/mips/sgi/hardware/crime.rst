@@ -246,8 +246,8 @@ model's registers are big-endian.
 
 The offsets, widths and spec resets come from
 :src:`sgi-crime-1.5-spec PDF p. 113-120, 150-155`, *established*. The
-reset ``0x120`` of the control register is the spec's reset of the juice
-field in bits 7:5 (001) plus the endianness bit 8, which the spec lists
+reset ``0x120`` of the control register is the spec's reset of the coherent
+read limit field in bits 7:5 (001) plus the endianness bit 8, which the spec lists
 as read-only with no reset value; setting it to big-endian is
 *inferred* from the O2 running big-endian.
 
@@ -359,7 +359,9 @@ DMA address spaces
 VICE, GBE and MACE reach memory through CRIME, and each is restricted to
 system memory (:src:`sgi-crime-1.5-spec PDF p. 49-50`), *established*.
 The specification gives each client its own address table
-(Tables 3-2 to 3-4 on the same pages), each row *established*:
+(Tables 3-2 to 3-4 on the same pages), each row *established*. The
+VICE table also has a first row, 960 GB reserved from
+``0x10_0000_0000``, which the table below leaves out:
 
 .. list-table::
    :header-rows: 1
@@ -456,7 +458,7 @@ MACE link
 ~~~~~~~~~
 
 The MACE link is a half-duplex, synchronous bus 32 bits wide that
-transfers on both edges of the internal clock, and so carries one 64-bit
+transfers at twice the internal clock rate, and so carries one 64-bit
 logical word each clock. It carries command, address and data on the same signals,
 sub-block transfers of 1 to 8 bytes under a byte mask, block transfers of
 1 to 32 doublewords, split reads and routing tags in transfer headers
@@ -601,8 +603,9 @@ only clear it, by the software write described under
 flow control, so GBE must accept them at the full 66 MHz rate, except
 colour map writes, which go through a 64-deep FIFO that software must
 throttle (:src:`sgi-crime-1.5-spec PDF p. 81-82, 84`), *established*.
-CRIME queues up to 16 DMA read requests and returns the data in request
-order (:src:`sgi-crime-1.5-spec PDF p. 83`), *established*. A DMA write goes
+CRIME's memory transaction queue holds up to 16 requests, reads and
+writes together, and it returns read data in the order GBE asked for it
+(:src:`sgi-crime-1.5-spec PDF p. 83`), *established*. A DMA write goes
 to a write buffer in CRIME and its memory request is queued once the
 last data has arrived (:src:`sgi-crime-1.5-spec PDF p. 83, 86`),
 *established*.
@@ -618,6 +621,116 @@ writes in all, against the 16-entry read queue, and calls all DMA
 The same summary lists a rule of no 8K DRAM page crossings
 (:src:`sgi-crime-1.5-spec PDF p. 84`), *established* as a constraint on DMA
 over the link.
+
+.. _sgi-crime-cpu-interface:
+
+Processor interface
+===================
+
+CRIME supports one R10000 or R12000 processor, with VICE on the same
+system bus. CRIME 1.5 supports no coherent I/O and carries no ECC
+protection on the processor data bus
+(:src:`sgi-crime-1.5-spec PDF p. 91, 97`), *established*. The only
+external request CRIME starts is an interrupt request
+(:src:`sgi-crime-1.5-spec PDF p. 93`), *established*.
+
+The specification gives CRIME's response to each processor request, each
+*established* (:src:`sgi-crime-1.5-spec PDF p. 93`):
+
+- A noncoherent block read and any doubleword, word or partial-word read
+  are acknowledged with data.
+- Block writes and doubleword, word or partial-word writes are accepted.
+- An upgrade is treated as an ordinary read and acknowledged with data.
+- An eliminate request is not supported. CRIME gives no response, and
+  whether it drops or queues the request is left to the implementation,
+  with no adverse effect. The processor is meant to have eliminate
+  requests disabled at initialisation.
+- A coherent block read, shared or exclusive, is answered with data
+  below an address limit and with an error completion response above it.
+
+The limit is a workaround for speculative loads by the R10000. A coherent
+read above the limit gets the error response: CRIME does not read memory
+and returns no data. A noncoherent block read is served from any address.
+CRIME decodes address bits 39:23 for this, so any bit set in 39:26 puts
+the address above every limit
+(:src:`sgi-crime-1.5-spec PDF p. 93, 95-96`), *established*. Bits 7:5 of
+the control register set the limit in 4 MB steps from 8 MB to 32 MB
+(:src:`sgi-crime-1.5-spec PDF p. 115`), *established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bits 7:5
+     - Coherent reads above this address get the error response
+   * - 000
+     - none are served: every coherent read gets it
+   * - 001
+     - 8 MB (the value the specification gives as current)
+   * - 010
+     - 12 MB
+   * - 011
+     - 16 MB
+   * - 100
+     - 20 MB
+   * - 101
+     - 24 MB
+   * - 110
+     - 28 MB
+   * - 111
+     - 32 MB
+
+The control register's other fields, each *established*
+(:src:`sgi-crime-1.5-spec PDF p. 114-115`):
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bits
+     - Field
+     - Access
+     - Reset
+   * - 13
+     - R5000 processor-bus check control, not used in CRIME 1.5
+     - read/write
+     - 0
+   * - 12
+     - CRIME check control for the same, not used in CRIME 1.5
+     - read/write
+     - 0
+   * - 11
+     - cold reset: 1 resets the system with a power-on reset; set by
+       software or the watchdog, cleared by hardware
+     - read/write
+     - 0
+   * - 10
+     - soft reset of the processor, set by software or the watchdog and
+       cleared by hardware; not used in CRIME 1.5
+     - read/write
+     - 0
+   * - 9
+     - watchdog timer enable
+     - read/write
+     - 0
+   * - 8
+     - endianness, 1 for big
+     - read
+     - not applicable
+   * - 7:5
+     - coherent read limit, above
+     - read/write
+     - 001
+   * - 4:0
+     - reserved
+     - read
+     - 0
+
+The model reads this register as ``0x120`` in the 1.5 profile, the reset
+of bits 7:5 and the endianness bit set (see :ref:`sgi-crime-registers`),
+*inferred*, and as ``0x100`` in the legacy profile, so bits 7:5 read 000,
+an *approximation*. The 1.5 profile refuses a write of bit 9 or bit 11 (``sgi-crime-test.c``, case
+``reset-access``). The legacy profile accepts a write of 0 or ``0x100``,
+which changes nothing, and refuses a write of any other single bit
+(``sgi-crime-legacy-test.c``, case ``controls``).
 
 .. _sgi-crime-interrupts:
 
@@ -692,7 +805,8 @@ Linux acknowledges them that way. The model latches the same set
 (``0x41cf0000``). The legacy profile latches bit 31 in place of bit 30
 (``0x81cf0000``) and treats bit 30 as a software bit, so a hardware
 input on bit 30 is ignored. The legacy latch on bit 31 is an
-*approximation*; the spec lists bit 31 as a read-only level.
+*approximation*; the spec lists bit 31 as read-only, a registered copy of
+the VICE interrupt pin (:src:`sgi-crime-1.5-spec PDF p. 109, 116`).
 
 The software register can emulate any hardware interrupt, with
 read/write bits 31:30, 29:28 and 24:0 (:src:`sgi-crime-1.5-spec PDF
@@ -709,6 +823,87 @@ and GBE drives bits 19:16. Nothing in the model sets bits 20 to 27, 30
 or 31, except an external input line, and the renderer produces no
 interrupt. The enable register rejects a write with any of bits 63:32
 set; the legacy profile ignores them and logs ``LOG_UNIMP``.
+
+Delivery and acknowledgement
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+When one of the grouped interrupts changes, CRIME writes the
+processor's interrupt cause register over the system bus. The write
+carries the new level of one line in the low data bits and a write-enable
+mask in bits 20:16, so it changes that line and leaves the others
+(:src:`sgi-crime-1.5-spec PDF p. 106, 109`), *established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Line
+     - Cause register bit
+     - Data bit
+     - Write-enable bit
+   * - IP2
+     - 10
+     - 0
+     - 16
+   * - IP3
+     - 11
+     - 1
+     - 17
+   * - IP4
+     - 12
+     - 2
+     - 18
+   * - IP5
+     - 13
+     - 3
+     - 19
+   * - IP6
+     - 14
+     - 4
+     - 20
+
+The rows come from :src:`sgi-crime-1.5-spec PDF p. 109`, each
+*established*. CRIME cannot disable a line as a group; the processor's own
+masks do that. The specification names the lines IP3 to IP7 in saying so,
+which reads as a slip for the five lines of its own table, *inferred*
+(:src:`sgi-crime-1.5-spec PDF p. 110`).
+
+MACE sets bits 15:0 by sending CRIME a 16-bit value with a 16-bit mask.
+Software cannot write those bits, and clears the cause by the procedure in
+MACE's own registers. GBE sets bits 19:16 with four set strobes, each
+asserted for one clock in CRIME, and software clears a GBE bit by writing
+zero to it in the hardware register. VICE's interrupt is bit 31, a
+registered copy of its interrupt pin. Software cannot write it, and clears
+the cause inside VICE. The rendering engine sets bits 27:22
+(:src:`sgi-crime-1.5-spec PDF p. 109-110`), *established*.
+
+An edge cause stays in the hardware register after its source goes away
+until software writes zero to its bit. If no other cause is on that line,
+CRIME then writes the processor to drop the line, and if the source is
+still asserted CRIME interrupts the processor again at once. A level cause
+is not latched: CRIME raises the line when the source asserts and drops
+it when the source de-asserts
+(:src:`sgi-crime-1.5-spec PDF p. 111-112`), *established*. The model
+latches again at once when an input is still high after a clear, and a
+write of ones to the hardware register clears nothing. A zero written to
+a level cause's bit does not clear it while its input stays high. This
+holds for every hardware cause in both profiles (``sgi-crime-legacy-test.c``, cases
+``source-routing`` and ``functional-source-routing``). A level cause falls
+with its input (``sgi-crime-test.c``, case ``mace-level-routing``).
+
+In the hardware register the specification marks bits 30, 29:28, 24:22
+and 19:16 read/write and every other bit read-only. The status register
+is read-only, and the enable and software registers are read/write. All
+four reset to 0 (:src:`sgi-crime-1.5-spec PDF p. 116-118`),
+*established*. The model refuses a write to the hardware register with
+any of bits 63:32 set in the 1.5 profile (``sgi-crime-test.c``, case
+``reset-access``). The specification's prose says the rendering engine's
+bits 27:22 clear when software removes the cause, while its table lists
+bits 24:22 as writable. The two are consistent if only the edge bits are
+latched, *inferred* (:src:`sgi-crime-1.5-spec PDF p. 109, 117-118`).
+The table notes that bit 30 was formerly a third software interrupt that
+CRIME 1.1 did not use, and adds "we think"
+(:src:`sgi-crime-1.5-spec PDF p. 106`). Whether CRIME 1.1 used it is
+*unknown*; the legacy profile's software bit 30 is consistent with the note.
 
 .. _sgi-crime-timer:
 
@@ -732,6 +927,14 @@ value and NetBSD says 33 bits are valid. The model does not implement
 the watchdog: reads give 0, the 1.5 profile rejects writes and the
 legacy profile accepts a zero write.
 
+Control register bit 9 enables the watchdog. Control bit 11 requests a
+power-on reset, is set by software or by the watchdog, and is cleared by
+hardware (:src:`sgi-crime-1.5-spec PDF p. 114-115`), *established*. In
+CRIME 1.1 the first expiry, at 0.5 s, started a soft reset and the second,
+0.5 s later, a hard reset. CRIME 1.5 sets only the flag at the
+first expiry and always cold-resets at the second, as it has no warm
+reset (:src:`sgi-crime-1.5-spec PDF p. 118-119`), *established*.
+
 .. _sgi-crime-cpu-error:
 
 CPU error registers
@@ -746,7 +949,18 @@ move from an earlier draft position of ``0x14001048``), and says it was
 at ``0x048`` in CRIME 1.1 (:src:`sgi-crime-1.5-spec PDF p. 113`). Linux and
 NetBSD read it at ``0x048``, the 1.1 position, *software expectation*.
 A Linux kernel at the pinned commit therefore does not find the status
-register of the 1.5 profile.
+register of the 1.5 profile. Linux's handler prints the error address and
+status and then writes zero to the status register (``crime.c`` at
+``db2ddb871435``), *software expectation*.
+
+In the status register bit 2 is the CPU illegal address flag. Bits 1 and
+0 were the VICE and CPU write parity flags, which the specification says
+are no longer supported now that the processor bus carries no check
+bits. Bits 8:3 hold address bits 39:34, new in CRIME 1.5 "if it can be
+implemented", with no reset value given. Hardware sets the flags and
+software clears them, and each reads and writes with reset 0. The address
+register records the address of a processor data parity error or an
+invalid address (:src:`sgi-crime-1.5-spec PDF p. 120`), *established*.
 
 The model has no detector. The registers hold zero unless a test fixture
 seeds them. NetBSD also names ``0x050`` as a CPU error enable. The spec
@@ -775,8 +989,20 @@ a read-modify-write) and the faulting address in the memory error address regist
 (``0x258``, bits 29:0, PDF p. 154), and the memory
 operation does not happen (:src:`sgi-crime-1.5-spec PDF p. 137,
 152-154`), *established*. The spec asks software to place 64 Mbit
-banks first. The spec's prose on PDF p. 137 says a 64 Mbit bank compares
-request bits 24:22; this page follows the table's 29:27.
+banks first. Its prose on PDF p. 137 says a 64 Mbit bank compares
+request bits 24:22 and the table says 29:27. They are the same bits:
+a client's request address is 25 bits (*inferred* from the figure), the
+processor address shifted
+down by five, and the figure on PDF p. 138 puts the external bank select at
+processor bits 29:27 and internal request bits 24:22 for a 64 Mbit bank,
+and at 29:25 and 24:20 for a 16 Mbit bank
+(:src:`sgi-crime-1.5-spec PDF p. 125, 138`), *established*. The same figure
+puts the internal bank select, the SDRAM chip's own bank bit, at processor
+bit 26 for 64 Mbit and bit 24 for 16 Mbit.
+In 64 Mbit mode selector bits 1:0 read and write but take no part in the
+match (:src:`sgi-crime-1.5-spec PDF p. 152`), *established*. The model
+stores them and places a bank by bits 4:2 alone (``sgi-crime-test.c``, case
+``populated-priority-and-remap``).
 
 Drivers differ from the spec:
 
@@ -803,11 +1029,171 @@ The model's behaviour depends on the profile:
   records the invalid-address bit and the address in the error registers
   and fails with a bus error. It does not raise interrupt bit 21. With
   ``functional-memory-transfer`` or the legacy profile, a write of zero
-  to ``0x250`` is accepted and does not clear the status; otherwise it
-  is rejected.
+  to ``0x250`` is accepted; otherwise it is rejected. See
+  :ref:`sgi-crime-memory-errors` for what the write does.
   Bit 27 is never set.
   The decoded view also appears at ``0x20000000`` (high 512 MiB), at
   ``0x40000000`` and at ``0x80000000``.
+
+.. _sgi-crime-memory-layout:
+
+Memory arrangement and timing
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+A front-only DIMM carries eight 16-bit data chips, 128 bits, and one
+16-bit ECC chip. Two make an external bank of 256 data bits and 32 ECC
+bits. Each SDRAM chip has two internal banks, so a system has at most
+8 external and 16 internal banks, and the controller keeps four pages
+open at a time (:src:`sgi-crime-1.5-spec PDF p. 136`), *established*.
+The specification recommends that external bank 0 is always filled and that
+the banks go in decreasing density
+(:src:`sgi-crime-1.5-spec PDF p. 137-138`), *established*.
+
+A request whose address matches no bank still passes through the pipeline,
+but the controller drops every bank select so the memory operation does
+not happen, and it captures the error and interrupts if enabled. The
+rendering engine can also mark a request as made through an invalid
+translation buffer entry, which drops the selects the same way
+(:src:`sgi-crime-1.5-spec PDF p. 137`), *established*. The model's handling
+of an invalid entry is under :ref:`sgi-crime-renderer`.
+
+The memory clients are GBE, MACE, VICE, the rendering engine, the
+processor and refresh. The arbiter hands out the slots of a 64-slot round
+in these shares, and the specification works out each client's worst-case
+slot interval from them (:src:`sgi-crime-1.5-spec PDF p. 133-135`),
+*established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Client
+     - Share of slots
+     - Longest request in a slot
+     - Worst-case slot interval
+   * - GBE
+     - 1/2
+     - 16 words, no page crossing
+     - 0.50 us
+   * - MACE
+     - 1/4
+     - 8 words, no page crossing
+     - 1.00 us
+   * - VICE
+     - 1/8
+     - 8 words, one page crossing
+     - 2.00 us
+   * - rendering engine
+     - 1/16
+     - 8 words, no page crossing
+     - 4.00 us
+   * - processor
+     - 1/32
+     - 8 words, no page crossing
+     - 8.00 us
+   * - refresh
+     - 1/64
+     - 2 rows
+     - 16.00 us
+
+Each row is *established* (:src:`sgi-crime-1.5-spec PDF p. 133-135`). A
+slot may also hold one read-modify-write from MACE, the rendering engine,
+the processor or VICE. A memory word is 256 bits, *inferred* from the 256-bit external bank and
+the slot bandwidths (:src:`sgi-crime-1.5-spec PDF p. 134-136`).
+
+After reset the controller runs the SDRAM initialisation, a precharge of all
+banks and a mode set of CAS latency 2, burst length 1 and sequential
+order, and software must leave memory alone for at least 120 us so
+that 8 refresh cycles happen. The SDRAM needs 4096 refresh cycles every 64 ms.
+A timer asks for a refresh every 27 us, and each refresh precharges all
+banks and refreshes two rows
+(:src:`sgi-crime-1.5-spec PDF p. 141-142`), *established*. The refresh
+counter register at ``0x248`` holds an 11-bit read/write count with no
+reset value given (:src:`sgi-crime-1.5-spec PDF p. 152`), *established*;
+the count's units and its relation to the 27 us timer are *unknown*.
+
+.. _sgi-crime-memory-errors:
+
+Memory error registers
+~~~~~~~~~~~~~~~~~~~~~~
+
+The memory error status register has these bits, all set by hardware and
+cleared by software, read/write and reset 0
+(:src:`sgi-crime-1.5-spec PDF p. 152-153`), *established*:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Bits
+     - Meaning
+   * - 27
+     - invalid address during a read-modify-write
+   * - 26
+     - invalid address during a write
+   * - 25
+     - invalid address during a read
+   * - 24
+     - ECC read error during a read-modify-write
+   * - 23
+     - ECC read error
+   * - 22
+     - multiple hard errors
+   * - 21
+     - hard error
+   * - 20
+     - soft error
+   * - 19
+     - reserved
+   * - 18, 17, 16, 15
+     - access by the processor, VICE, GBE, the rendering engine
+   * - 14:8
+     - rendering engine source ID
+   * - 7
+     - MACE access
+   * - 6:0
+     - MACE source ID
+
+Each row is *established* (:src:`sgi-crime-1.5-spec PDF p. 153`). The
+specification does not define a hard or a soft error. Reading a soft
+error as a corrected single-bit error and a hard error as an uncorrected one
+fits the ECC text, *inferred* (:src:`sgi-crime-1.5-spec PDF p. 130, 144`).
+Linux's header defines the same fields (``crime.h`` at ``db2ddb871435``).
+Its handler treats a hard or multiple error as fatal and a soft error as
+non-fatal, and writes zero to the status register after printing it
+(``arch/mips/sgi-ip32/crime.c`` at ``db2ddb871435``), each a *software
+expectation*. A
+memory error sets the memory error bit in the hardware interrupt register.
+The address register holds address bits 29:0 of the error, read-only,
+reset 0 (:src:`sgi-crime-1.5-spec PDF p. 152, 154`), *established*.
+
+The registers update as follows, each *established*
+(:src:`sgi-crime-1.5-spec PDF p. 145-146`). The first hard error updates the
+status and address registers. A second hard error only sets the multiple
+hard errors bit. A first soft error with no hard error updates both, and
+so does an invalid address with no ECC error. An ECC error also captures
+its syndrome. The status identifies the client that made the request and,
+for the rendering engine and MACE, the message it sent.
+
+The model sets only bit 25 for a failed processor read and bit 26 for a
+failed write, and no other bit, and records the failed address (case
+``memory-error-status-write`` in ``sgi-crime-test.c``, in the 1.5 and
+legacy profiles). It sets none of the client bits, the multiple-error bit
+or the ECC bits, an *approximation*.
+A write of zero to the status register depends on the profile, each an
+*approximation* of the specification's software clear:
+
+- The 1.5 profile without ``functional-memory-transfer`` refuses it.
+- The 1.5 profile with ``functional-memory-transfer`` accepts it and
+  changes nothing, so a set bit stays set.
+- The legacy profile, with or without ``functional-memory-transfer``,
+  accepts it and clears the status, and keeps the address.
+
+Case ``memory-error-status-write`` in ``sgi-crime-test.c`` asserts the
+first, second and third of these (the legacy profile without the
+engine), and ``sgi-crime-error-test.c`` case ``clear-isolation`` and
+``sgi-crime-mte-test.c`` case ``healthy-memory`` assert the legacy
+profile with the engine. A nonzero write to the status register and any
+write to the address register are refused in all three configurations of
+``memory-error-status-write``.
 
 .. _sgi-crime-ecc:
 
@@ -825,6 +1211,33 @@ accepted and the first enable logs a ``LOG_UNIMP`` "healthy-memory"
 notice. A write with bit 1 set is rejected. The replacement byte is
 stored and read back, and a value above ``0xff`` is rejected. Nothing
 uses it.
+
+The code is single-error-correcting and double-error-detecting. Eight
+check bits cover each 64 data bits, so a 256-bit memory word has four
+identical generate, correct and detect units. The controller generates ECC on
+every write and, on a read, forms a syndrome from the data and the stored check
+bits. A single-bit error is corrected. A multiple-bit error interrupts the
+processor if the memory interrupt is enabled, and the client receives the
+incorrect data with an error indication. An ECC error needs ECC enabled
+(:src:`sgi-crime-1.5-spec PDF p. 130, 144-145`), *established*. A client can
+turn detection and correction off for one read, which forces the syndrome to
+zero. Generation on writes is unaffected
+(:src:`sgi-crime-1.5-spec PDF p. 144`), *established*.
+
+The syndrome register (``0x260``) and the check-bit register (``0x268``)
+each hold four byte lanes, bits 7:0 for memory word bits 63:0 up to bits
+31:24 for bits 255:192, read-only with reset 0
+(:src:`sgi-crime-1.5-spec PDF p. 154`), *established*. The specification's
+text says the check-bit register holds the bits read from memory after any
+read, and its tables call the register the generated check bits
+(:src:`sgi-crime-1.5-spec PDF p. 144, 150, 154`). Which it holds is *unknown*.
+
+A client that writes less than 64 bits makes the controller read the
+word, merge the new bytes under the client's mask, generate ECC for the
+result and write both back. The mask goes to memory unaltered, so the
+merged data does not rewrite the bytes the client did not write. A
+read-modify-write cannot scrub memory
+(:src:`sgi-crime-1.5-spec PDF p. 145`), *established*.
 
 .. _sgi-crime-renderer:
 
@@ -964,7 +1377,7 @@ Model limits
   and the VICE interrupt are not modelled. Memory error bit 27 is never
   set.
 - The control register ignores or rejects every write, so the watchdog
-  enable, the reset bits and the juice field cannot be set.
+  enable, the reset bits and the coherent read limit field cannot be set.
 - Registers reject widths other than eight bytes, except in the legacy
   profile, which answers 4-byte reads of the timer low word and the bank
   controls, and with ``prom-id-word``, which answers a 4-byte ID read.
@@ -988,8 +1401,8 @@ Tests
 - ``tests/qtest/sgi-crime-test.c``: ID and control reset values and
   access rules, the ``prom-id-word`` option, timer count, invalid
   access and migration, interrupt routing from MACE, software
-  interrupts, reset and migration of pending interrupts, the RAM aliases
-  and their holes, populated-bank reset values, views, priority, remap,
+  interrupts, reset and migration of pending interrupts, the memory error
+  status write rule, the RAM aliases and their holes, populated-bank reset values, views, priority, remap,
   unmatched writes and the reset low-RAM approximation.
 - ``tests/qtest/sgi-crime-error-test.c``: seeded error latch clearing,
   validation and migration. It needs the test fixture device.
