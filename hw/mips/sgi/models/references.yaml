@@ -380,6 +380,15 @@ documents:
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4222-002/pdf/007-4222-002.pdf
       sha256: 0b2d500c17d3d2a02034ab8723cc8d263567fbf28a0bfe5751e7668b30c8d86d
+  007-4317-001:
+    title: "SGI DMediaPro DM2/DM3 Board Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/4000/007-4317-001/pdf/007-4317-001.pdf
+      sha256: b9896a3f003bfa72447c058d52398700321707aa206aeba81c149f876e551bac
   007-4669-003:
     title: "SGI 10-Gigabit Ethernet Network Adapter User's Guide"
     publisher: Silicon Graphics
@@ -2088,6 +2097,54 @@ firmware:
       distribution: "IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img"
       image: payload
       sha256: c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd
+  dm2-driver-ip30-1.1.3:
+    title: "DMediaPro DM2 kernel driver object for IP30"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "DMediaPro DM2 and DM3 software, Octane and Octane2 IP30 kernel object"
+    version: "1.1.3"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed as the IP30 kernel object of the video option; addresses are offsets into the object's text section"
+      image: container
+      sha256: 952c3d9ecca0864360619236b807e38c58f5025a90e85745b956ee7a275d772b
+  dm2-library-1.1.3:
+    title: "DMediaPro DM2 OpenML module"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "DMediaPro DM2 and DM3 software, user-space media module"
+    version: "1.1.3"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed in the OpenML module directory; addresses are virtual addresses in the linked library"
+      image: container
+      sha256: aacf8d4a64dcd34b523c4b2b7bc66153104b710171d42f7e65a588bcb95bc2ca
+  dm2-diagnostic-1.1.3:
+    title: "DMediaPro DM2 diagnostic program"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "DMediaPro DM2 and DM3 software, board register diagnostic"
+    version: "1.1.3"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed with the video option's diagnostics; addresses are virtual addresses in the program"
+      image: container
+      sha256: 7c96c9a69f7d2378c5a0fcbbaf55fe4bfcb8b10f429ce1900a7a09f558b01234
+  dm2-library-flame-7.6:
+    title: "DMediaPro DM2 module shipped with Discreet Flame"
+    publisher: Discreet Logic
+    kind: firmware
+    product: "Discreet Flame 7.6 OCT2 for IRIX 6.5 on IP30, DM2 media module"
+    version: "7.6"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "the Flame 7.6 OCT2 media's video board product, installed in the dmSDK module directory; addresses are virtual addresses in the linked library"
+      image: container
+      sha256: 5c8422f3937ae98f19da52408ec2ef85a5da815948bec02d0a1c5efe296c0480
   dlwacom-3.03:
     title: "Discreet dlwacom tablet driver object"
     publisher: Discreet Logic

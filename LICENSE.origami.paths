@@ -88,6 +88,7 @@ docs/system/mips/sgi/sn.rst
 docs/system/mips/sgi/vocabulary.rst
 docs/system/mips/sgi/hardware/xbow.rst
 docs/system/mips/sgi/hardware/xbridge.rst
+docs/system/mips/sgi/hardware/xt-digvid.rst
 hw/1wire/Kconfig
 hw/1wire/core.c
 hw/1wire/crc.c

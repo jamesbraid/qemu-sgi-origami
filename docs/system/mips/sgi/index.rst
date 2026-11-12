@@ -166,6 +166,7 @@ Graphics
    hardware/kona
    hardware/gbe
    hardware/vice
+   hardware/xt-digvid
    hardware/psitech-rad1
    hardware/psitech-rad4
 
