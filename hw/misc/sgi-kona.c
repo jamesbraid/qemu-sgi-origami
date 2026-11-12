@@ -2120,7 +2120,8 @@ static bool sgi_kona_gl_imaging_active(const SGIKonaGLState *st);
 static bool sgi_kona_gl_transfer_refused(const SGIKonaState *s, int i)
 {
     return i != SGI_KONA_CONTEXT_NONE &&
-           s->state[i]->pipe.pixel_transfer_unsupported;
+           (s->state[i]->pipe.pixel_transfer_unsupported ||
+            s->state[i]->pipe.pixel_store_unmodelled);
 }
 static int sgi_kona_gl_filter_2d(const SGIKonaGLImaging *im);
 static bool sgi_kona_gl_post_conv_default(const SGIKonaGLPixelTransfer *t);
@@ -12802,6 +12803,32 @@ static uint32_t sgi_kona_gl_tex_load_words(SGIKonaState *s, int i,
 }
 
 /*
+ * The pixel-storage names glPixelStore keeps no state for, one bit each in
+ * SGIKonaGLPipe.pixel_store_unmodelled while the name holds a nonzero value.
+ */
+static const uint16_t sgi_kona_pixel_store_names[] = {
+    0x0d03, 0x0d04, 0x806b, 0x806c, 0x806d, 0x806e,
+    0x8130, 0x8131, 0x8132, 0x8133,
+};
+
+static void sgi_kona_gl_pixel_store_unmodelled(SGIKonaGLPipe *p,
+                                               uint32_t pname,
+                                               uint32_t value)
+{
+    for (unsigned k = 0; k < ARRAY_SIZE(sgi_kona_pixel_store_names); k++) {
+        if (sgi_kona_pixel_store_names[k] == pname) {
+            if (value) {
+                p->pixel_store_unmodelled |= 1u << k;
+            } else {
+                p->pixel_store_unmodelled &= ~(1u << k);
+            }
+            return;
+        }
+    }
+    g_assert_not_reached();
+}
+
+/*
  * 0x33 pname value, glPixelStorei: the unpack and pack state the pipe
  * uses for images (GL_UNPACK_SWAP_BYTES, GL_UNPACK_ROW_LENGTH,
  * GL_UNPACK_ALIGNMENT and the row-length/alignment pack forms). The library
@@ -12849,25 +12876,32 @@ static void sgi_kona_gl_pixel_store(SGIKonaState *s, int i, uint32_t pname,
         p->pack_alignment = value;
         break;
     /*
-     * Packing the model keeps no state for: the skip rows and pixels of
-     * a ReadPixels or GetTexImage, and for GetTexImage of 3D and 4D
-     * textures alone (OpenGL 1.2.1, table 4.5 and section 6.1.4;
-     * SGIS_texture4D) the image skip and height. Zero is their initial
-     * value, so storing it changes nothing; the library sends it, as
-     * the pixel-mode wrapper an application draws images through does
-     * around each DrawPixels. Another value is not modelled, and refuses
-     * the image transfers that follow.
+     * Pixel storage the model keeps no state for: the pack skip rows and
+     * pixels of a ReadPixels or GetTexImage, and the 3D and 4D image
+     * skip, height, volume skip and depth of both directions (OpenGL
+     * 1.2.1, table 4.5; SGIS_texture4D). Zero is the initial value of each
+     * (the spec's state tables), so storing it changes nothing and the
+     * library may send it, as an image-drawing wrapper does around each
+     * DrawPixels. A nonzero value is not modelled and refuses the image
+     * transfers until the name is stored at zero again, which is what its
+     * bit in pixel_store_unmodelled tracks.
      */
     case 0x0d03:                /* GL_PACK_SKIP_ROWS */
     case 0x0d04:                /* GL_PACK_SKIP_PIXELS */
-    case 0x806d:                /* GL_PACK_SKIP_IMAGES */
-    case 0x806e:                /* GL_PACK_IMAGE_HEIGHT */
-    case 0x8132:                /* GL_PACK_SKIP_VOLUMES_SGIS */
-    case 0x8133:                /* GL_PACK_IMAGE_DEPTH_SGIS */
-        if (!value) {
-            break;
+    case 0x806b:                /* GL_PACK_SKIP_IMAGES */
+    case 0x806c:                /* GL_PACK_IMAGE_HEIGHT */
+    case 0x806d:                /* GL_UNPACK_SKIP_IMAGES */
+    case 0x806e:                /* GL_UNPACK_IMAGE_HEIGHT */
+    case 0x8130:                /* GL_PACK_SKIP_VOLUMES_SGIS */
+    case 0x8131:                /* GL_PACK_IMAGE_DEPTH_SGIS */
+    case 0x8132:                /* GL_UNPACK_SKIP_VOLUMES_SGIS */
+    case 0x8133:                /* GL_UNPACK_IMAGE_DEPTH_SGIS */
+        sgi_kona_gl_pixel_store_unmodelled(p, pname, value);
+        if (value) {
+            qemu_log_mask(LOG_UNIMP, "sgi-kona: glPixelStore of 0x%" PRIx32
+                          " to %" PRIu32 " is not modelled\n", pname, value);
         }
-        /* fall through */
+        break;
     default:
         p->pixel_transfer_unsupported = true;
         qemu_log_mask(LOG_UNIMP, "sgi-kona: glPixelStore of 0x%" PRIx32
@@ -23675,11 +23709,12 @@ static const VMStateDescription vmstate_sgi_kona_gl_error = {
 
 static const VMStateDescription vmstate_sgi_kona_gl_pixels = {
     .name = TYPE_SGI_KONA "/gl-pixels",
-    .version_id = 1,
+    .version_id = 2,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
         VMSTATE_BOOL(pixel_zoom_unsupported, SGIKonaGLPipe),
         VMSTATE_BOOL(pixel_transfer_unsupported, SGIKonaGLPipe),
+        VMSTATE_UINT32_V(pixel_store_unmodelled, SGIKonaGLPipe, 2),
         VMSTATE_END_OF_LIST()
     },
 };

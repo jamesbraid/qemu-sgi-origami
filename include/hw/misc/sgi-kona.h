@@ -434,6 +434,7 @@ typedef struct SGIKonaGLPipe {
     bool pixel_zoom_unsupported;
     uint32_t pixel_zoom[2];
     bool pixel_transfer_unsupported;
+    uint32_t pixel_store_unmodelled; /* nonzero unmodelled glPixelStore names */
     SGIKonaGLPixelTransfer pixel_transfer;
     bool unpack_swap_bytes;
     bool pack_swap_bytes;
