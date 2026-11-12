@@ -321,7 +321,11 @@ The model's choices for these bits are each an *approximation*:
   disables it. Writing one to any of them has no effect. The rules are
   those of the shared engine in :ref:`sgi-ioc3-serial-dma`.
 - The PS/2 bit latches on each rising edge of the controller's interrupt
-  and stays until acknowledged.
+  and stays until acknowledged. The controller is the IOC3's, so a clamp
+  released by a read resumes the stopped device 1 ms later (an
+  *approximation*, see :ref:`sgi-ioc3-ps2`), which keeps a character's
+  interrupt from landing before the acknowledge that follows the guest's
+  last read.
 - DCD and CTS change bits and both ATA bits are never set.
 
 How the IOC4 interrupt reaches the processor through PIC and :term:`Bedrock` is

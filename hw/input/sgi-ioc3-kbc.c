@@ -69,22 +69,13 @@ static bool sgi_ioc3_kbc_holding(SGIIOC3KBCState *s)
 
 /*
  * The controller's output is the data-available line, and the IOC3 latches it
- * into interrupt-status bit 22, which
- * then holds across a drain of the receive registers until the guest writes a
- * one to it.
- *
- * The line is asserted for every character the controller moves into a
- * holding, not only for the first, and falls
- * once a read leaves both holdings empty. Model approximation: the documented
- * behavior does not establish whether
- * the real signal is a pulse per character or a level over the holding, and
- * nothing in either public driver
- * distinguishes them. Per character is the safe reading. An assertion
- * always means a character the guest has not
- * read yet, and no arrival can go unsignalled because the line happened to be
- * up already. A level over the holding
- * would strand whatever arrives while an earlier character is still unread
- * after the guest has acknowledged.
+ * into interrupt-status bit 22, which holds across a drain of the receive
+ * registers until the guest writes a one to it. The line is asserted for
+ * every character the controller moves into a holding, and falls once a read
+ * leaves both holdings empty. Model approximation: the silicon may pulse per
+ * character or hold a level over the holding, and neither public driver tells
+ * them apart. Per character means an assertion always stands for a character
+ * the guest has not read.
  */
 static void sgi_ioc3_kbc_arrived(SGIIOC3KBCState *s)
 {
@@ -142,6 +133,15 @@ static void sgi_ioc3_kbc_fill(SGIIOC3KBCState *s, unsigned int port)
     }
 }
 
+/* The stopped devices have had a character time: let them send again. */
+static void sgi_ioc3_kbc_resume(void *opaque)
+{
+    SGIIOC3KBCState *s = opaque;
+
+    sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_KBD);
+    sgi_ioc3_kbc_fill(s, SGI_IOC3_KBC_PORT_AUX);
+}
+
 /* A ps2 device raises its line when it has something to send. */
 static void sgi_ioc3_kbc_set_irq(void *opaque, int n, int level)
 {
@@ -155,16 +155,15 @@ static void sgi_ioc3_kbc_set_irq(void *opaque, int n, int level)
 
 /*
  * Report what this port is holding, oldest character in the highest slot, and
- * empty the holding: the register packs
- * "characters since the last read", so the read is what clears the
- * characters, their flags and the overflow flag
- * together.
+ * empty the holding: the register packs characters since the last read, so
+ * the read clears the characters, their flags and the overflow flag together.
  */
 static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, unsigned int port)
 {
     SGIIOC3KBCPort *p = &s->port[port];
     uint32_t val = 0;
     unsigned int i;
+    bool had = p->count != 0;
 
     for (i = 0; i < p->count; i++) {
         unsigned int slot = (SGI_IOC3_KBC_RX_SLOTS - 1) - i;
@@ -190,22 +189,21 @@ static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, unsigned int port)
     sgi_ioc3_kbc_drained(s);
 
     /*
-     * The clamp releases with the holding, so a device that was stopped with
-     * its clock line low starts sending
-     * again. Model approximation: it resumes inside this read, where the real
-     * one takes a character time to clock
-     * its next byte out. A guest that reads and only then acknowledges can
-     * therefore clear the assertion those
-     * resumed characters just made, and waits for the next character to be
-     * told about them; both public drivers
-     * avoid that, Linux by acknowledging before it reads and OpenBSD by
-     * reading until the register comes back
-     * empty. Driving the resume off a character-time timer would remove the
-     * approximation, and the discriminating
-     * test is the pair sn0/ioc3/ps2-backlog-survives-an-early-acknowledge and
-     * sn0/ioc3/ps2-drain-then-acknowledge-takes-one.
+     * The clamp releases with the holding, but the stopped device needs a
+     * character time to clock its next byte out. Resuming inside the read
+     * would land that character's interrupt before the guest's acknowledge
+     * (IRIX reads until empty, then acknowledges) and the latch would swallow
+     * it, leaving the character held with nothing to signal it. The timer puts
+     * the arrival after the acknowledge. Model approximation: the period is one
+     * PS/2 character time (SGI_IOC3_KBC_RESUME_NS), not a measured value.
      */
-    sgi_ioc3_kbc_fill(s, port);
+    if (had && s->resume_timer && !timer_pending(s->resume_timer) &&
+        (!ps2_queue_empty(sgi_ioc3_kbc_ps2(s, SGI_IOC3_KBC_PORT_KBD)) ||
+         !ps2_queue_empty(sgi_ioc3_kbc_ps2(s, SGI_IOC3_KBC_PORT_AUX)))) {
+        timer_mod(s->resume_timer,
+                  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                  SGI_IOC3_KBC_RESUME_NS);
+    }
     return val;
 }
 
@@ -319,6 +317,8 @@ static void sgi_ioc3_kbc_realize(DeviceState *dev, Error **errp)
         return;
     }
 
+    s->resume_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_ioc3_kbc_resume, s);
+
     /* Each port's data-available line feeds the one shared interrupt. */
     qdev_connect_gpio_out(DEVICE(&s->kbd), PS2_DEVICE_IRQ,
                           qdev_get_gpio_in_named(dev, "ps2-input", 0));
@@ -331,6 +331,8 @@ static void sgi_ioc3_kbc_unrealize(DeviceState *dev)
     SGIIOC3KBCState *s = SGI_IOC3_KBC(dev);
 
     if (s->ports_present) {
+        timer_free(s->resume_timer);
+        s->resume_timer = NULL;
         qdev_unrealize(DEVICE(&s->kbd));
         qdev_unrealize(DEVICE(&s->mouse));
     }
@@ -358,6 +360,9 @@ static void sgi_ioc3_kbc_reset_hold(Object *obj, ResetType type)
 
     s->control = 0;
     memset(s->port, 0, sizeof(s->port));
+    if (s->resume_timer) {
+        timer_del(s->resume_timer);
+    }
     qemu_set_irq(s->irq, 0);
 }
 
@@ -391,12 +396,30 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc_port = {
     }
 };
 
+static bool sgi_ioc3_kbc_resume_needed(void *opaque)
+{
+    SGIIOC3KBCState *s = opaque;
+
+    return s->resume_timer && timer_pending(s->resume_timer);
+}
+
+static const VMStateDescription vmstate_sgi_ioc3_kbc_resume = {
+    .name = "sgi-ioc3-kbc/resume",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc3_kbc_resume_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_TIMER_PTR(resume_timer, SGIIOC3KBCState),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 /*
- * The holdings carry everything that decides the next interrupt, so nothing
- * has to be re-derived after a load: the
- * latched source bit travels in the chip's own state, the characters still in
- * the devices travel in theirs, and the
- * next read or arrival drives the line from what arrives here.
+ * The holdings and the pending clamp release carry everything that decides
+ * the next arrival: the latched source bit travels in the chip's own state,
+ * the characters still in the devices travel in theirs, and the release timer
+ * travels in a subsection when one is pending, so nothing is re-derived after
+ * a load.
  */
 static const VMStateDescription vmstate_sgi_ioc3_kbc = {
     .name = "sgi-ioc3-kbc",
@@ -408,6 +431,10 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc = {
         VMSTATE_STRUCT_ARRAY(port, SGIIOC3KBCState, SGI_IOC3_KBC_PORTS, 1,
                              vmstate_sgi_ioc3_kbc_port, SGIIOC3KBCPort),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_sgi_ioc3_kbc_resume,
+        NULL
     }
 };
 

@@ -160,6 +160,40 @@ static void ioc4_send_ps2_key(QTestState *qts, const char *qcode)
     qobject_unref(response);
 }
 
+/*
+ * IRIX order on the IOC4: read to empty, then acknowledge. A clamped
+ * keyboard's next characters arrive a character time after the read, so they
+ * signal after the acknowledge instead of being swallowed by it.
+ */
+static void test_ps2_drain_then_acknowledge(void)
+{
+    static const char *keys[] = { "a", "b", "c", "d", "e" };
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_ps2(false, log);
+    unsigned int i;
+
+    reg_write(qts, KBC_CONTROL, 0x00400000 | 0x00800000);
+    for (i = 0; i < ARRAY_SIZE(keys); i++) {
+        ioc4_send_ps2_key(qts, keys[i]);
+    }
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
+                    0xe0000000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
+
+    qtest_clock_step(qts, 2000000);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE) & 0xe0000000, ==,
+                    0xc0000000);
+    g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
+    reg_write(qts, 0x0c, KBC_OTHER_IRQ);
+    g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, 0);
+    qtest_quit(qts);
+}
+
 static void test_ps2_adapter(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -333,6 +367,7 @@ static void test_ps2_driver_sequence(void)
     g_assert_cmphex(reg_read(qts, 0x0c) & KBC_OTHER_IRQ, ==, KBC_OTHER_IRQ);
     reg_write(qts, 0x1c, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80aa0000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
     g_assert_cmphex(reg_read(qts, KBC_AUX_RECEIVE), ==, 0);
@@ -346,7 +381,9 @@ static void test_ps2_driver_sequence(void)
     g_assert_true(qtest_get_irq(qts, 0));
     reg_write(qts, 0x1c, KBC_OTHER_IRQ);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x80f00000);
+    qtest_clock_step(qts, 2000000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0x801c0000);
     g_assert_cmphex(reg_read(qts, KBC_KBD_RECEIVE), ==, 0);
     reg_write(qts, 0x0c, KBC_OTHER_IRQ);
@@ -3662,6 +3699,8 @@ int main(int argc, char **argv)
                    test_ata_readback_migration_mode_mismatch);
     qtest_add_func("/sgi-ioc4/uart-clock", test_uart_and_clock);
     qtest_add_func("/sgi-ioc4/ps2-adapter", test_ps2_adapter);
+    qtest_add_func("/sgi-ioc4/ps2-drain-then-acknowledge",
+                   test_ps2_drain_then_acknowledge);
     qtest_add_func("/sgi-ioc4/ps2-ports-present", test_ps2_ports_present);
     qtest_add_func("/sgi-ioc4/ps2-driver-sequence", test_ps2_driver_sequence);
     qtest_add_func("/sgi-ioc4/ps2-migration", test_ps2_migration);

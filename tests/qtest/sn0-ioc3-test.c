@@ -1176,6 +1176,9 @@ static void test_non_ip30_gpio_defaults(const void *data)
 #define KBC_RX_VALID_ALL  (KBC_RX_VALID(0) | KBC_RX_VALID(1) | KBC_RX_VALID(2))
 #define KBC_RX_FLAGS      (KBC_RX_OVERFLOW | KBC_RX_VALID_ALL)
 
+/* Longer than the one PS/2 character time a released clamp takes to resume. */
+#define KBC_RESUME_NS     2000000
+
 /* One key down puts one raw scan byte on the keyboard's wire. */
 static void ps2_key_down(QTestState *qts, const char *key)
 {
@@ -1397,11 +1400,13 @@ static void test_the_ps2_receive_holds_three_behind_the_clamp(const void *data)
     g_assert_cmphex(first & KBC_RX_FLAGS, ==, KBC_RX_VALID_ALL);
 
     /*
-     * That read emptied the holding and released the clamp, so the stopped
-     * keyboard resumed and its next characters moved in. Their arrival is a
-     * fresh assertion of the data-available line, so the source is latched
-     * again with no other event to help it.
+     * That read emptied the holding and released the clamp. The stopped
+     * keyboard sends its next characters one character time later, and
+     * their arrival is a fresh assertion of the data-available line, so the
+     * source is latched again with no other event to help it.
      */
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    qtest_clock_step(qts, KBC_RESUME_NS);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
@@ -1455,6 +1460,7 @@ static void test_the_ps2_backlog_survives_an_early_acknowledge(const void *data)
                     KBC_RX_VALID_ALL);
 
     /* And the backlog behind the clamp raises the source a second time. */
+    qtest_clock_step(qts, KBC_RESUME_NS);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
@@ -1468,15 +1474,16 @@ static void test_the_ps2_backlog_survives_an_early_acknowledge(const void *data)
 /*
  * OpenBSD takes the other order: iockbcintr_internal reads the receive
  * register until it comes back with no valid character, and ioc_intr_superio
- * acknowledges the source afterwards. A whole backlog drains inside one
- * handler pass, so one acknowledge ends it and the guest is not called again.
+ * acknowledges the source afterwards. The read that empties a clamped holding
+ * releases the clamp, but the stopped keyboard needs a character time to send
+ * the next byte, so the read that checks for empty still finds nothing and the
+ * acknowledge lands first. The characters that follow then raise the source
+ * afresh, and a latch that cleared on that acknowledge has nothing left to
+ * lose. Were the keyboard to resume inside the read, its interrupt would
+ * land before the acknowledge and be swallowed with the characters held.
  */
 static void test_the_ps2_drain_then_acknowledge_takes_one(const void *data)
 {
-    unsigned int reads = 0;
-    unsigned int valid = 0;
-    uint32_t val;
-
     ioc3_reset();
 
     sn0_ioc3_attach(qts);
@@ -1486,30 +1493,51 @@ static void test_the_ps2_drain_then_acknowledge_takes_one(const void *data)
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
 
-    /* Read until the register reports nothing, counting what came back. */
-    do {
-        unsigned int slot;
+    /* Three characters, then the read that finds the port empty. */
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID_ALL);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
 
-        val = qtest_readl(qts, KBC_KBD_RECEIVE);
-        for (slot = 0; slot < 3; slot++) {
-            valid += (val & KBC_RX_VALID(slot)) ? 1 : 0;
-        }
-        reads++;
-        g_assert_cmpuint(reads, <=, 4);
+    /* The acknowledge ends the pass, and nothing has raised it again. */
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
 
-        /* The source stays pending: the guest has not answered it yet. */
-        g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
-                        INT_KEYBOARD);
-    } while (val != 0);
-
-    /* Every character the keyboard sent, in three reads: 3, 2, then empty. */
-    g_assert_cmpuint(valid, ==, 5);
-    g_assert_cmpuint(reads, ==, 3);
-
-    /* One acknowledge ends it, and nothing raises it again. */
+    /* The keyboard's next two characters arrive after it: they signal. */
+    qtest_clock_step(qts, KBC_RESUME_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2) | KBC_RX_VALID(1));
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
     qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
+}
+
+/*
+ * Linux's order with the resumed backlog: read three, let the keyboard send
+ * its next two, then acknowledge. The acknowledge clears the latch, the two
+ * held characters stay readable, and reading them leaves nothing pending.
+ */
+static void test_the_ps2_resumed_backlog_survives_an_acknowledge(
+    const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+    qtest_writel(qts, KBC_CONTROL, KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
+
+    ps2_type_five_keys(qts);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID_ALL);
+    qtest_clock_step(qts, KBC_RESUME_NS);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2) | KBC_RX_VALID(1));
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
 }
 
@@ -1559,6 +1587,7 @@ static void test_the_ps2_clamp_after_one_splits_a_reply(const void *data)
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x80fa0000);
 
     /* The clamp released with the read, so the self-test byte follows. */
+    qtest_clock_step(qts, KBC_RESUME_NS);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0x80aa0000);
@@ -1606,11 +1635,88 @@ static void test_the_ps2_backlog_survives_a_migration(const void *data)
     qtest_writel(to, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID_ALL);
+    qtest_clock_step(to, KBC_RESUME_NS);
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
                     INT_KEYBOARD);
     qtest_writel(to, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID(2) | KBC_RX_VALID(1));
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
+
+    qtest_quit(to);
+    g_rmdir(dir);
+}
+
+/*
+ * A migration with the clamp release still pending: the timer crosses with
+ * the holding, and the destination raises the source when it fires.
+ */
+static void test_the_ps2_pending_resume_survives_a_migration(const void *data)
+{
+    g_autofree char *uri = NULL;
+    g_autofree char *dir = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init("-M origin200");
+    sn0_ioc3_attach(from);
+    qtest_writel(from, KBC_CONTROL, KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
+    ps2_type_five_keys(from);
+    g_assert_cmphex(qtest_readl(from, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID_ALL);
+    qtest_writel(from, INT_STATUS, INT_KEYBOARD);
+
+    to = qtest_initf("-M origin200 -incoming %s", uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    sn0_ioc3_attach(to);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    qtest_clock_step(to, KBC_RESUME_NS);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
+    g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2) | KBC_RX_VALID(1));
+
+    qtest_quit(to);
+    g_rmdir(dir);
+}
+
+/*
+ * A migration with a character held and its latch already acknowledged (the
+ * guest has taken the interrupt but not yet read): the character is still
+ * there, and the source stays quiet.
+ */
+static void test_the_ps2_held_character_survives_an_acknowledged_migration(
+    const void *data)
+{
+    g_autofree char *uri = NULL;
+    g_autofree char *dir = NULL;
+    QTestState *from, *to;
+
+    dir = g_dir_make_tmp("sn0-ioc3-ps2-XXXXXX", NULL);
+    g_assert_nonnull(dir);
+    uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+
+    from = qtest_init("-M origin200");
+    sn0_ioc3_attach(from);
+    qtest_writel(from, KBC_CONTROL, KBC_K_CLAMP_3 | KBC_M_CLAMP_3);
+    ps2_key_down(from, "a");
+    qtest_writel(from, INT_STATUS, INT_KEYBOARD);
+
+    to = qtest_initf("-M origin200 -incoming %s", uri);
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+
+    sn0_ioc3_attach(to);
+    g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
+                    KBC_RX_VALID(2));
+    g_assert_cmphex(qtest_readl(to, KBC_KBD_RECEIVE), ==, 0);
+    qtest_clock_step(to, KBC_RESUME_NS);
     g_assert_cmphex(qtest_readl(to, INT_STATUS) & INT_KEYBOARD, ==, 0);
 
     qtest_quit(to);
@@ -6855,6 +6961,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ps2-drain-then-acknowledge-takes-one",
                         NULL,
                         test_the_ps2_drain_then_acknowledge_takes_one);
+    qtest_add_data_func("sn0/ioc3/ps2-resumed-backlog-survives-an-acknowledge",
+                        NULL,
+                        test_the_ps2_resumed_backlog_survives_an_acknowledge);
     qtest_add_data_func("sn0/ioc3/ps2-receive-overflows-without-a-clamp", NULL,
                         test_the_ps2_receive_overflows_without_a_clamp);
     qtest_add_data_func("sn0/ioc3/ps2-clamp-after-one-splits-a-reply", NULL,
@@ -6865,6 +6974,12 @@ int main(int argc, char **argv)
                         test_empty_ps2_core_migration);
     qtest_add_data_func("sn0/ioc3/ps2-backlog-survives-a-migration", NULL,
                         test_the_ps2_backlog_survives_a_migration);
+    qtest_add_data_func("sn0/ioc3/ps2-pending-resume-survives-a-migration",
+                        NULL,
+                        test_the_ps2_pending_resume_survives_a_migration);
+    qtest_add_data_func(
+        "sn0/ioc3/ps2-held-character-survives-an-acknowledged-migration",
+        NULL, test_the_ps2_held_character_survives_an_acknowledged_migration);
     qtest_add_data_func("sn0/ioc3/serial-dma-indices-take-a-write", NULL,
                         test_the_serial_dma_indices_take_a_write);
     qtest_add_data_func("sn0/ioc3/serial-dma-ports-are-distinct", NULL,
