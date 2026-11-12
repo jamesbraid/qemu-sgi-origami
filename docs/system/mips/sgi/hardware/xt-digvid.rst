@@ -16,7 +16,9 @@ Video Breakout Box (VBOB) over two LVDS cables
 one widget part (:ref:`sgi-xt-digvid-identity`). Its sibling, the DM3, is
 the same product for the Onyx 3000 and Origin 3000
 (:src:`007-4317-001 xiii`, *established*); this page covers the DM2 and says
-where the DM3 is not covered. No machine in this tree carries the board.
+where the DM3 is not covered. The ``octane`` and ``octane2`` machines take
+the board in an option port (:ref:`sgi-xt-digvid-model`); no catalogue
+entry or default fits it.
 
 .. seealso::
 
@@ -2211,8 +2213,11 @@ carries each frame is *inferred* from the pipe each handle listens on
 
 The virtual endpoint's behaviour, an *approximation* throughout:
 
-- It holds a genlock source per side, a detected timing per input-signal
-  slot and a present flag per slot, each a property.
+- It holds a genlock source per side, set by message ``0x21``, and a
+  timing record per side, set by message ``0x22``. A detected timing and a
+  present flag per input-signal slot, and an output-timing override, are
+  properties (``x-vbob-input-timings``, ``x-vbob-present``,
+  ``x-vbob-output-timing``).
 - Internal genlock is always locked, with the detected timing equal to the
   output timing of the latest record in message ``0x22``.
 - An external source is locked when its slot holds a timing that Table 5-3
@@ -2226,7 +2231,8 @@ The virtual endpoint's behaviour, an *approximation* throughout:
   ``0x80`` and the detected timing in bytes 4 and 6 (the HD and SD input
   slots), and the matching input-change flags in the pipe 1 ring.
 - It answers the sync-state reply with both lock bits equal to the lock
-  state of the side that asked and the detected timing in bytes 4 and 5,
+  state of the side of the latest timing record (the message cannot name the
+  side that asked), each detector's own timing in its byte (4 HD, 5 SD),
   and the input-signal reply with the six slots filled from the
   properties.
 - With the default of no reference signals and no input signal, the
@@ -2470,6 +2476,125 @@ merely approximate.
   covered, but the VBOB's replies beyond the bytes the module reads, its
   lock behaviour and the meaning of the port codes are in the VBOB's
   firmware, which no source here describes.
+
+.. _sgi-xt-digvid-model:
+
+The model
+=========
+
+``-device sgi-xt-digvid,slot=widget-10`` fits the board in an option port
+of :ref:`sgi-ip30`, widget 9 to 12 (the Octane's graphics and expansion
+ports; widget 13 holds the PCI module alone). The model is
+``hw/misc/sgi-xt-digvid.c`` and its register-contract tests are
+``tests/qtest/octane-xt-digvid-test.c``, each check citing the section
+above that it follows. The virtual VBOB's world is three properties,
+settable on the command line and at run time, which send the unrequested
+frames and status flags a change calls for:
+
+- ``x-vbob-output-timing``: a wire code (3 to 17) that overrides the output
+  timing the endpoint takes from the host's timing record (field period,
+  internal detected timing); 0, the default, takes it from the record.
+- ``x-vbob-input-timings``: the detected timing wire code of each of the
+  six input-signal slots, slot 0 (the HD input) in the low byte; 1 for none.
+- ``x-vbob-present``: bit ``n`` says a signal is present in slot ``n``.
+  Slots 0 and 2 are the HD and SD inputs of the input pipe.
+
+``x-test-gif-loaded`` is host-only: it reports the GIF configured without
+the 1.4 million clock pairs of its load, so tests of the register file do
+not pay for them. It works only through a run-time ``qom-set``, not on the
+command line.
+
+Choices the model makes where the page leaves a value open
+----------------------------------------------------------
+
+Each is an *approximation*, settled by the capture the page names for the
+register concerned.
+
+- Only 32-bit accesses are accepted. A 64-bit, halfword or byte access
+  from a processor faults, as "Window map" says the board refuses other
+  widths. A bus master that goes through the physical-memory path (and
+  qtest's plain accesses) is split into words by the memory API before the
+  board sees it, so such an access is not refused.
+- A widget reset is the Crossbow's link reset to the board's port. It zeroes
+  the XG block and the map RAM and leaves the FPGAs configured and the GIF
+  register file as it was. The driver's reset command has no register of its
+  own; it reaches the board only through the stores the page lists.
+- The error interrupt is sent when a cause is raised with control bit 17
+  set. Setting bit 17 later does not send one for a cause already held.
+- A pipe runs its fields while its video enable (``0x80180c`` or
+  ``0x80200c``, bit 0) is set or a slot is armed, and the input pipe only
+  with an input signal. The output pipe's lock gate is the library's, not
+  the board's. One status entry carries the field interrupt, its parity and
+  the completed or aborted slot. The stream counter in word 0 counts fields
+  from one; the pipe reset word restarts it and the parity.
+- Status entries and VBOB notifications are written only once the GIF is
+  configured and the pipe's ring page has a valid map RAM entry; before
+  that they are dropped without an error, so changing the endpoint's
+  properties early does not raise cause bit 13.
+- Message ``0x47`` RESET clears what the host set over the channel (sources,
+  records, routing, enables). It keeps the three properties, which are the
+  physical world: the signals present at the box and the override.
+- Message byte 1 is the pipe. A message naming a pipe above 1 is logged
+  and not acknowledged, as the driver never sends one.
+- The timing record is matched against the rows of the module's timing table
+  by its samples per line, lines per frame, first active line, clock code
+  and progressive flag to give the wire code. 1080 25 PsF has the bytes of
+  1080 50i and reports as 50i. A record no row matches has no code, and its
+  field period still follows the arithmetic.
+- The latest record of each side (byte 3 of the record: 6 for SD, else HD)
+  is that side's output timing. The genlock source of each side is its own
+  nibble of message ``0x21``. An external source locks when its input slot
+  (HD jack A 0, jack B 1, analog 4; SD 2, 3, 5) is present and holds a
+  timing Table 5-3 pairs with the side's output timing, or for SD the same
+  standard; an unlocked side reports detected timing 1 (none).
+- The sync-state reply cannot tell which side asked, so its lock bits are
+  both the lock state of the side of the latest timing record; byte 4 is the
+  HD detector's own timing and byte 5 the SD detector's. Replies to ``0x26``
+  and ``0x27`` are framed with byte 2 ``0xa6`` and ``0xa7`` and byte 3 bit 7
+  clear.
+- A frame whose status ring cannot take its link-receive entry (the GIF
+  unconfigured, the ring page unmapped, or a failed ring access) is dropped
+  and does not hold the receive buffer; the frames queued behind it are
+  tried in turn.
+- An ``0xa6`` frame is sent when a side's lock state changes, with byte 1
+  0 and the side's lock bit and detected timing; an ``0xa7`` frame when the
+  HD or SD input slot's presence or timing changes, with byte 1 1. The
+  notification enables of messages ``0x26`` and ``0x27`` are stored and do
+  not gate them.
+- The output timings that lock to each reference timing are those of the
+  owner's guide, Table 5-3, :src:`007-4317-001 71` and :src:`007-4317-001
+  72`, *established*, by wire code:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - Reference
+       - Output timings it locks
+     * - 525 (3)
+       - 1080 59.94i (7), 720 59.94p (5), 1080 23.98p (11), 1080 23.98 PsF
+         (13), 1035 59.94i (17)
+     * - 625 (4)
+       - 1080 50i (16), 1080 25p (15)
+     * - 720 59.94p (5), 1080 59.94i (7), 1035 59.94i (17)
+       - 720 59.94p, 1035 59.94i, 1080 59.94i, 1080 23.98p, 1080 23.98 PsF
+     * - 720 60p (6)
+       - 720 60p (6), 1080 24p (12), 1080 24 PsF (14), 1080 60i (8)
+     * - 1080 60i (8)
+       - 1080 60i, 720 60p, 1080 24p, 1080 24 PsF
+     * - 1080 23.98p (11), 1080 23.98 PsF (13)
+       - 1080 23.98p, 1080 23.98 PsF
+     * - 1080 24p (12), 1080 24 PsF (14)
+       - 1080 24p, 1080 24 PsF
+     * - 1080 25p (15), 1080 50i (16)
+       - 1080 25p, 1080 50i (the table's 25 PsF output has no wire code)
+
+  1080 29.97p and 30p have no row, so they never lock. An SD output locks
+  to a reference of its own standard (525 to 525, 625 to 625).
+- Routing messages store the source port by destination port, one table per
+  register (``0x24`` and ``0x25``); a destination port of 16 or more is
+  logged and ignored; a read of
+  ``0x25`` returns the source stored for the destination in byte 3.
+- The one-wire record's revision text is ``G``, as the page chooses.
 
 .. _sgi-xt-digvid-limits:
 
