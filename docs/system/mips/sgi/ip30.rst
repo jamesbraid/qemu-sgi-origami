@@ -871,6 +871,18 @@ pci-shoehorn@widget-10`` and ``--board pci-cage@widget-13`` through the
 catalogue). Their identity, slots, interrupt wiring and what is
 *unknown* about them are on :ref:`sgi-pci-expansion-octane`.
 
+.. _sgi-ip30-video-io:
+
+Video input and output
+======================
+
+The DMediaPro DM2 (XT-DIGVID) digital video board is an XIO option board
+for the Octane2, one widget on a Crossbow option port beside the graphics
+board, with two cables to an external breakout box
+(:src:`007-4317-001 13`, *established*). No machine here carries it. Its
+widget, register and DMA contract, and the virtual breakout box a model of
+it stops at, are on :ref:`sgi-xt-digvid`.
+
 .. _sgi-ip30-unknowns:
 
 Open questions

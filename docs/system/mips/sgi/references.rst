@@ -173,6 +173,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-4311-002``
    *SGI Origin 3000 Series Technical Configuration Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4311-002/pdf/007-4311-002.pdf>`__ Published; may be quoted.
 
+.. _sgi-ref-007-4317-001:
+
+``007-4317-001``
+   *SGI DMediaPro DM2/DM3 Board Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/4000/007-4317-001/pdf/007-4317-001.pdf>`__ SHA-256 ``b9896a3f003bfa72447c058d52398700321707aa206aeba81c149f876e551bac``. Published; may be quoted.
+
 .. _sgi-ref-007-4365-001:
 
 ``007-4365-001``
@@ -1212,6 +1217,26 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 
 ``dlwacom-3.03``
    *Discreet dlwacom tablet driver object*. Discreet Logic. Firmware, cited by address. For Discreet Inferno, Flame and Flint tablet driver for IRIX 6.5 on IP27. Version 3.03. Banner ``dlwacom version 3.03``. Found on the DLWacom product installed with Inferno 4.7.2IR2 for IRIX 6.5; addresses are offsets into the object's text section. Hashed as the container image. SHA-256 ``c63d02f8cf34ade4cb174ed5f5590c387735f26e55e516e1b3ff2ff2e11ec356``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-dm2-diagnostic-1-1-3:
+
+``dm2-diagnostic-1.1.3``
+   *DMediaPro DM2 diagnostic program*. Silicon Graphics. Firmware, cited by address. For DMediaPro DM2 and DM3 software, board register diagnostic. Version 1.1.3. Found on DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed with the video option's diagnostics; addresses are virtual addresses in the program. Hashed as the container image. SHA-256 ``7c96c9a69f7d2378c5a0fcbbaf55fe4bfcb8b10f429ce1900a7a09f558b01234``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-dm2-driver-ip30-1-1-3:
+
+``dm2-driver-ip30-1.1.3``
+   *DMediaPro DM2 kernel driver object for IP30*. Silicon Graphics. Firmware, cited by address. For DMediaPro DM2 and DM3 software, Octane and Octane2 IP30 kernel object. Version 1.1.3. Found on DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed as the IP30 kernel object of the video option; addresses are offsets into the object's text section. Hashed as the container image. SHA-256 ``952c3d9ecca0864360619236b807e38c58f5025a90e85745b956ee7a275d772b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-dm2-library-1-1-3:
+
+``dm2-library-1.1.3``
+   *DMediaPro DM2 OpenML module*. Silicon Graphics. Firmware, cited by address. For DMediaPro DM2 and DM3 software, user-space media module. Version 1.1.3. Found on DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed in the OpenML module directory; addresses are virtual addresses in the linked library. Hashed as the container image. SHA-256 ``aacf8d4a64dcd34b523c4b2b7bc66153104b710171d42f7e65a588bcb95bc2ca``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-dm2-library-flame-7-6:
+
+``dm2-library-flame-7.6``
+   *DMediaPro DM2 module shipped with Discreet Flame*. Discreet Logic. Firmware, cited by address. For Discreet Flame 7.6 OCT2 for IRIX 6.5 on IP30, DM2 media module. Version 7.6. Found on the Flame 7.6 OCT2 media's video board product, installed in the dmSDK module directory; addresses are virtual addresses in the linked library. Hashed as the container image. SHA-256 ``5c8422f3937ae98f19da52408ec2ef85a5da815948bec02d0a1c5efe296c0480``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-io6-prom-6-156:
 
