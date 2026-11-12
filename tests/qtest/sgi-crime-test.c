@@ -942,6 +942,52 @@ static void test_populated_unmatched_write(void)
     qtest_quit(s);
 }
 
+static void test_memory_error_status_write(void)
+{
+    /*
+     * A read miss sets bit 25 alone and a write miss adds bit 26. A zero
+     * write to the status is refused in the 1.5 profile by default, accepted
+     * but not applied with the transfer engine, and accepted and applied in
+     * the legacy profile. A nonzero write is refused and so is any write to
+     * the address register.
+     */
+    const char *options[] = {
+        "",
+        "-global sgi-crime.functional-memory-transfer=on",
+        "-global sgi-crime.crime-profile=legacy-software",
+    };
+
+    for (unsigned config = 0; config < ARRAY_SIZE(options); config++) {
+        QTestState *s = crime_start_populated_options(false, options[config]);
+        uint64_t value;
+
+        qtest_writeq(s, CRIME_BANK(0), 0x100);
+        for (unsigned bank = 0; bank < 8; bank++) {
+            qtest_writeq(s, CRIME_BANK(bank), 0x104);
+        }
+        g_assert_cmpuint(memtx_readq(s, CRIME_FULL_RAM + 0x00800000, &value),
+                         !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS), ==,
+                        BIT64(25));
+        memtx_writeq(s, CRIME_FULL_RAM + 0x01000000, 0x123456789abcdef0ULL);
+        g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS), ==,
+                        BIT64(25) | BIT64(26));
+        g_assert_cmpint(memtx_writeq(s, CRIME_MEMORY_ERROR_STATUS, 0) ==
+                        MEMTX_OK, ==, config != 0);
+        g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_STATUS), ==,
+                        config == 2 ? 0 : BIT64(25) | BIT64(26));
+        g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_ADDRESS), ==,
+                        0x01000000);
+        g_assert_cmpuint(memtx_writeq(s, CRIME_MEMORY_ERROR_STATUS, 1),
+                         !=, MEMTX_OK);
+        g_assert_cmpuint(memtx_writeq(s, CRIME_MEMORY_ERROR_ADDRESS, 0),
+                         !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readq(s, CRIME_MEMORY_ERROR_ADDRESS), ==,
+                        0x01000000);
+        qtest_quit(s);
+    }
+}
+
 static void test_populated_reset_geometry_and_migration(void)
 {
     QTestState *s = crime_start_populated();
@@ -1339,6 +1385,8 @@ int main(int argc, char **argv)
                    test_populated_all_controls_at_zero);
     qtest_add_func("/sgi/crime/populated-unmatched-write",
                    test_populated_unmatched_write);
+    qtest_add_func("/sgi/crime/memory-error-status-write",
+                   test_memory_error_status_write);
     qtest_add_func("/sgi/crime/populated-reset-geometry-migration",
                    test_populated_reset_geometry_and_migration);
     qtest_add_func("/sgi/crime/populated-reset-low-ram-approx",
