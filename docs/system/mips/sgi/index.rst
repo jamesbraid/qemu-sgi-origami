@@ -178,6 +178,7 @@ Audio
 
    hardware/rad1-audio
    hardware/ad1843
+   hardware/sonic-hdsp
 
 References
 ----------

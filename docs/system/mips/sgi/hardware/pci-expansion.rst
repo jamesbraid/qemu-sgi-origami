@@ -478,6 +478,18 @@ How the model places the boards:
   with the pre-reset health restore of the system board's Bridge link, so
   the stock PROM finds the board.
 
+.. _sgi-pci-expansion-sonic-hdsp:
+
+Sonic HDSP audio card
+=====================
+
+The Sonic HDSP is a PCI audio processor card that Discreet used in
+workstations of this family. It needs a memory BAR of at least 128 MiB and
+runs behind either board: the module's devices 1 to 3 or the adapter's
+device 1. Its identity, BAR map, interrupt pin and firmware are on
+:doc:`sonic-hdsp`, and what a 128 MiB BAR needs of the Bridge is on
+:ref:`sgi-sonic-hdsp-host-driver`.
+
 .. _sgi-pci-expansion-cad-duo:
 
 Cad Duo PCI card
