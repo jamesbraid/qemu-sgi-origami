@@ -26,7 +26,7 @@ disk of its own.
    model the card's flash resembles) and :doc:`rad1-audio` (the Octane's
    onboard audio, a different device).
 
-QEMU models the card as one PCI device, ``sonic-hdsp``, with a second
+QEMU models the card as one PCI device, ``sgi-sonic-hdsp``, with a second
 device, ``sonic-ada8824``, for the converter box. The device runs the
 card's own flash image on an embedded i960 interpreter and runs the four
 DSP programs the host downloads on four embedded DSP56300-family
@@ -166,8 +166,8 @@ The model has the same three parts as one device: the processors, memories
 and glue behind one PCI face, with the box as a separate device attached by
 a link property. The two interpreter cores are written from the Intel and
 NXP manuals, with the i960 core derived from MAME's BSD-3-Clause i960
-core, and are held in separate pull requests (``hw/coproc/i960`` and
-``hw/dsp``); this page does not depend on their state. The processors
+core, and are libraries with no PCI or board knowledge
+(``hw/coproc/i960`` and ``hw/coproc/dsp56300``). The processors
 advance from a virtual-clock timer under the main loop lock in slices of
 guest time and stop early when idle (:ref:`sgi-sonic-hdsp-timing`). The
 model has no host thread of its own.
@@ -354,15 +354,29 @@ share, and the 1.1 offsets below, with the 1.0.0 offsets in brackets):
   ``0x3df`` under either, which fits the mask.
 - It only reads the bridge's other bus-number and window registers.
 
-Where the operating system reads that word from, the card's EEPROM on the
-I2C unit or the flash, is *unknown*, and so is its shipped value: the
-held images contain neither the EEPROM nor the stored word. The model
-presents the word as the ``nv-word`` property, default ``0x987603df``, an
-*approximation*: its SISR value ``0x03df`` is the boot ROM's ``0x03c1``
-plus bits 1 to 4, so the firmware itself hides all four DSPs. The model
-implements SISR and the retry bit as the Rx manual describes and the
-firmware writes them. A real board's EEPROM dump would settle the word
-and where it lives. The operating system's secondary-bus scan builds its
+The word is the first four bytes, little-endian, of a 1 KiB serial EEPROM
+on the Rx's I2C unit: the operating system reads it through its
+non-volatile-storage read routine (1.1 ``0x5260``, body ``0x5370``;
+1.0.0 ``0x2a60``), which is bounded to offset plus length of ``0x400`` and
+sends a START with ``0xa0`` or'd with ``(offset & 0x300) >> 7``, the
+offset's low byte, a repeated START with ``0xa1`` or'd with the same page
+bits, and then reads with an acknowledge on every byte but the last, which
+gets a not-acknowledge and STOP. That is the 24C08-class sequence: 7-bit
+device address ``0x50`` and four 256-byte pages selected by address bits 1
+and 2 (*software expectation*, :src:`sonic-iop-flash-1.1 0x5260 0x5370
+0x5660`; the device class is *inferred*). A blank part, with no ``0x9876``
+magic, gets ``0x98760000`` written back by the write routine (1.1
+``0x5470``), which must be acknowledged or the operating system reports an
+error, and SISR = 0. If nothing answers the first address byte the read
+fails with status -1 and SISR also takes the default 0. The model has that
+EEPROM at address ``0x50`` on the I2C unit (:ref:`sgi-sonic-hdsp-units`) and
+its contents are the ``nv-word`` property, default ``0x987603df``, an
+*approximation*: the rest of the part reads ``0xff``, and its SISR value
+``0x03df`` is the boot ROM's ``0x03c1`` plus bits 1 to 4, so the firmware
+itself hides all four DSPs. The model implements SISR and the retry bit as
+the Rx manual describes and the firmware writes them. The shipped content
+is not in the held images (*unknown*); a real board's EEPROM dump would
+settle it. The operating system's secondary-bus scan builds its
 candidate private lines from SISR shifted left five places with the five
 reserved lines always set, which suggests the stored value hides the
 DSPs' lines (*inferred* from the loop shape, 1.1 ``0x32f0`` and 1.0.0
@@ -379,16 +393,27 @@ rules above):
    word (SISR = 0) all four DSPs are exposed. If a DSP is held in reset it
    does not answer a configuration cycle (the DSP reset lines' default
    state is *unknown*; the model holds them in reset after a board
-   reset, an *approximation*).
+   reset, an *approximation*). A DSP out of reset but not yet in PCI mode
+   (DCTR HM = 1) answers every memory and configuration cycle with Retry,
+   not as an empty slot (*established*, :src:`nxp-dsp56301um-4 pp. 6-13,
+   6-69`).
 #. After the module attaches, the module has set each DSP's command
    register to ``0xf8000006`` (memory space and bus master) and its base
-   address register. An exposed DSP then answers with an identity
-   the module's adapter handler matches: vendor ``0x1263`` and device
-   ``0x0618``, ``0x0622``, ``0x062c`` or ``0x0636`` for DSPs 0 to 3,
-   falling back to the DSP56301 default ``1057:1801``
-   (*software expectation*, :src:`sonic-hdsp-module-1.0 0x4c0-0x65c`).
-   Where the module's handler gets those identities, and how a DSP
-   comes to answer with them, is *unknown*.
+   address register. An exposed DSP answers with the DSP56301's hardwired
+   vendor and device, ``1057:1801`` (*established*,
+   :src:`nxp-dsp56301um-4 pp. 6-63`). The module's adapter handler does
+   not read those. It reads the subsystem register (CSID) at configuration
+   offset ``0x2c`` and accepts a DSP whose subsystem vendor is ``0x1263``
+   and subsystem ID is ``0x0618``, ``0x0622``, ``0x062c`` or ``0x0636``,
+   and it also accepts an all-zero CSID, which is the HI32's default, by
+   falling back to ``1057:1801`` (*software expectation*,
+   :src:`sonic-hdsp-module-1.0 0x4c0-0x65c`). Only the DSP core can write
+   CSID, in self-configuration mode before it enters PCI mode
+   (*established*, :src:`nxp-dsp56301um-4 pp. 6-5, 6-69`). The monitor
+   programs and the module do not write it, so the writer, a board-side
+   bootstrap program the held files do not contain, is *inferred*, and the
+   mapping of the four IDs to DSP indices was not recovered. The model
+   leaves CSID at 0, an *approximation*.
 
 Multiple masters. Each DSP is set up as a secondary-bus master: the module
 writes ``0xf8000006`` to its command register, and the monitor
@@ -403,6 +428,8 @@ firmware code bears on IRIX's multiple-master policy, so hiding the DSPs is
 the only mechanism the card has that keeps IRIX from counting them; the
 policy itself is IRIX's (:ref:`sgi-sonic-hdsp-secondary`).
 
+.. _sgi-sonic-hdsp-large-bar:
+
 Placement
 ---------
 
@@ -413,7 +440,7 @@ The card is a normal PCI function on the Bridge of the Octane PCI module
 .. code-block:: text
 
    -device sgi-octane-pci-cage,slot=widget-13
-   -device sonic-hdsp,bus=widget-13.0,addr=1,flash-image=<path>,box=ada0
+   -device sgi-sonic-hdsp,bus=widget-13.0,addr=1,flash-image=<path>,box=ada0
    -device sonic-ada8824,id=ada0,audiodev=snd0
 
 .. list-table::
@@ -429,11 +456,13 @@ The card is a normal PCI function on the Bridge of the Octane PCI module
      - *software expectation*
      - :src:`irix-pcibr-6.5.30 0x14a8-0x14b4`, :src:`sonic-hdsp-driver-9.2.5
        0x17c-0x290`.
-   * - IRIX reaches a BAR too large for a Bridge device window through the
-       Bridge's ``0x40000000`` memory range, which covers PCI addresses
-       below ``0x40000000``, so a 128 MiB BAR is reached there.
+   * - A 128 MiB BAR is reached through the Bridge's 32-bit memory PIO
+       window: a BAR too large for a Bridge device window is mapped at widget
+       offset ``0x40000000`` plus the PCI address, for PCI addresses below
+       ``0x40000000``, so the 128 MiB BAR must lie below 1 GiB.
      - *software expectation*
-     - :src:`irix-pcibr-6.5.30 0xf6c`; :doc:`bridge`.
+     - :src:`irix-pcibr-6.5.30 0xf6c`; :doc:`bridge`
+       (:ref:`sgi-bridge-pio`).
    * - The IRIX driver is the same code for IP27, IP30 and IP35, so the
        card works in any Bridge-backed slot.
      - *inferred*
@@ -443,6 +472,14 @@ The card is a normal PCI function on the Bridge of the Octane PCI module
    * - The card's slot and device number in a real PCI module.
      - *unknown*
      - No listing of an Octane with this card is held.
+
+The Octane PCI module's Bridge (revision 3) and the PCI-XTALK adapter's
+(revision 4) are expected to decode a 128 MiB BAR in that window and to
+place it, since :doc:`bridge` describes the ``0x40000000`` range as reaching
+PCI memory from address zero without a device window. Whether the existing
+board models do so for a BAR of that size is a test item, not a claim: a
+qtest places a 128 MiB BAR0 behind each board and reads and writes its first
+and last words.
 
 BAR0 map
 ========
@@ -716,6 +753,21 @@ copy the library keeps (*software expectation*,
        disable.
      - *software expectation*
      - :src:`sonic-hdsp-library-5.0 0x5ec167c0`.
+   * - ``0x018003``
+     - A byte the boot ROM reads after its banner (at ``0x6f0``) and tests
+       bit 7 of. With bit 7 set the boot ROM starts the operating system
+       (the "starting" path, ``0x7f8``); with it clear it prints a message
+       and waits for bit 0 of the local word at ``0x14``, an interactive
+       debug monitor on the console. The model returns a value with bit 7
+       set, an *approximation* (the byte is a boot-mode switch or jumper,
+       *inferred*).
+     - *software expectation*
+     - :src:`sonic-iop-flash-1.1 0x6f0 0x7f8`.
+   * - ``0x000003``
+     - The boot ROM writes progress codes 1, 2, 3 and 5 here (at ``0x21c``,
+       ``0x480``, ``0x5cc``, ``0x6c4``). The model accepts and logs them.
+     - *software expectation*
+     - :src:`sonic-iop-flash-1.1 0x21c 0x480 0x5cc 0x6c4`.
    * - ``0x080000``, ``0x038000``
      - The library stores these two addresses. Their use is not recorded.
      - *unknown*
@@ -886,8 +938,7 @@ The processor core is an i960 Rx and Jx instruction-set interpreter that
 the device embeds. It is written from the Intel Rx and Jx developer's
 manuals, derived from MAME's BSD-3-Clause i960 core for the register set,
 the local register cache and the interrupt-table walk, and is a library
-with no PCI or board knowledge (``hw/coproc/i960``, a separate pull
-request). It implements the instruction formats the boot ROM and operating
+with no PCI or board knowledge (``hw/coproc/i960``). It implements the instruction formats the boot ROM and operating
 system use, the call and fault machinery, the system procedure table and
 the interrupt table walk, and the supervisor and atomic instructions. It
 models no caches, no pipeline timing, no breakpoints and no parallel
@@ -950,19 +1001,30 @@ Local address map
      - *software expectation*
      - :src:`sonic-iop-flash-1.0.0 0x3c24 0x2bb0 0x39d0`,
        :src:`sonic-iop-flash-1.1 0x5ea0`.
-   * - ``0xf0000000`` area
-     - The process control block names the fault table at ``0xf0040000``
-       and the system procedure table at ``0xf00c0000`` there. Neither the
-       boot ROM nor the operating system reads or writes them: the
-       processor reads one word of the system procedure table during
-       reset, and the operating system reinitialises the processor with
-       tables in its own RAM within the first few thousand instructions.
-     - *software expectation*
+   * - ``0xf0000000``-``0xf00fffff``
+     - Nothing backs it. The process control block names the fault table at
+       ``0xf0040000`` (word 0) and the system procedure table at
+       ``0xf00c0000`` (word 5) there, but neither image holds such tables:
+       the operating system builds its own in RAM and installs them with
+       the reinitialising ``sysctl`` long after the boot ROM. The reset
+       flow reads the system procedure table's word at +0xc
+       (``0xf00c000c``) for the supervisor stack pointer and trace bit,
+       which nothing uses before that reinitialisation.
+     - *software expectation* for the pointers and the images' content;
+       *inferred* for the bus behaviour
      - :src:`sonic-iop-flash-1.1 0x0-0x27 0x15a0`, :src:`sonic-iop-flash-1.0.0
-       0x14d0`. The reinitialising ``sysctl`` is that one; the other
-       ``sysctl`` instructions (1.1 ``0x7c68``, ``0x7c8c``, ``0x7dec``;
-       1.0.0 ``0x60a8``, ``0x60cc``, ``0x622c``) are type-1, pass-through
-       and type-5 messages.
+       0x14d0`, :src:`intel-i960rx-272736-002 pp. 7-16, 7-17, 11-12`. The reinitialising
+       ``sysctl`` is that one; the other ``sysctl`` instructions (1.1
+       ``0x7c68``, ``0x7c8c``, ``0x7dec``; 1.0.0 ``0x60a8``, ``0x60cc``,
+       ``0x622c``) are type-1, pass-through and type-5 messages.
+   * - ``0xfe000000``-``0xfeffffff``
+     - Memory controller bank 0, enabled at reset as a 16 MiB bank with the
+       512 KiB flash repeating inside it: flash offset is the address modulo
+       ``0x80000``, so ``0xfeffff30`` is image offset ``0x7ff30``.
+     - *established* for the bank, *inferred* for the flash repeating
+       inside it
+     - :src:`intel-i960rx-272736-002 p. 14-10`,
+       :src:`sonic-iop-flash-1.1 0x7ff30`.
    * - ``0xfef80000``-``0xffffffff``
      - Flash, then the boot record, then the core's memory-mapped
        registers from ``0xff000000``: timers at ``0xff000300``, the
@@ -970,17 +1032,36 @@ Local address map
      - *established* for the layout, *software expectation* for the flash
      - :src:`intel-i960rx-272736-002 p. 3-6, C-2 to C-4`.
 
-The model gives an access to a local address no unit claims the same
-treatment in both directions: a read returns all ones, a write is dropped,
-and each is logged ``LOG_UNIMP`` with the address and the program counter, an
-*approximation*. What the real board's data bus returns there is *unknown*.
-The model maps the ``0xf0000000`` tables to reads of zero, an
-*approximation* that suffices because nothing uses them after the operating
-system reinitialises the processor; a RAM block there is optional. What the
-real board decodes at ``0xf0000000`` is *unknown*: an alias of flash or of
-DRAM would fit every observation. The model returns a constant with upper
-nibble 1 from ``0xe0040000`` and ignores writes, an *approximation*: the
-board-identification value of a real board is *unknown*.
+Addresses from ``0xf0000000`` to ``0xfdffffff`` are outside every memory
+bank: bank 1 and the DRAM bank are disabled at reset and the boot ROM
+programs them later. The Rx treats an unclaimed local-bus access as a bus
+monitor event; the boot ROM leaves the bus monitor disabled (it writes the
+bus monitor enable register, ``0x1534``, to 0) and clears bits 5 and 6 of
+the local processor interrupt status register (``0x153c``, written ``0x60``
+at ``0x7c`` and ``0x86c``) early in start-up, so an unclaimed cycle
+completes with undriven data and no fault, and the local-bus-fault status
+bit (bit 5) may latch (*inferred*, from the manual and the boot ROM's own
+clearing: :src:`intel-i960rx-272736-002 p. 14-36, 14-38`,
+:src:`sonic-iop-flash-1.1 0x7c 0x86c`).
+
+The model gives a read of an unclaimed local address a fixed value, all
+ones, and never faults; it may set bit 5 of the status register. A write
+is dropped. Each access is logged ``LOG_UNIMP`` with the address and the
+program counter. Each is an *approximation*; what the real board's data
+bus returns is *unknown*. A read of the fault table on a normal boot
+means the model's core took a fault the hardware does not: the table has 8
+bytes per fault type, so a read of ``0xf0040050`` is type ``0xa`` (type
+mismatch, such as a supervisor-only instruction in user mode) and
+``0xf0040010`` is type 2 (operation). With the table reading as zeros a
+type-0 entry is a local call to address 0, which re-faults, which is the
+repeated read. Check first the core's reset state (supervisor mode, reset
+PC ``0x001f2002``) and the ``modpc`` operand order of the one privileged
+instruction between the first bank 1 write and the first console
+character (``0x4b8``) (*inferred*, :src:`sonic-iop-flash-1.1 0x4b8`). The
+model returns a constant with upper nibble 1 from ``0xe0040000`` for
+1.0.0, which is the only image that reads it (``0x10``), and ignores
+writes, an *approximation*: the board-identification value of a real board
+is *unknown*.
 
 .. _sgi-sonic-hdsp-units:
 
@@ -1082,13 +1163,27 @@ it; the contract below is what the firmware needs to run.
      - Two 32-bit timers as the manual describes, counting at the core
        clock, interrupt on reload.
      - *inferred*
-   * - I2C ``0x1680``-``0x1690``
-     - The operating system carries an EEPROM and I2C driver set, and the
-       upgrade module carries an I2C master. Their purpose here is not
-       recorded.
-     - The register set as the manual describes, on a bus with no device:
-       every address phase is not acknowledged.
-     - *approximation*
+   * - I2C ``0x1680``-``0x1690``: ICR, ISR, ISAR, IDBR, ICCR
+     - The operating system's driver table points at these five registers.
+       It writes ICR ``0x4000`` (unit reset), ISR ``0x7f0`` (clear the
+       status bits), ICR 0 and then ``0x60`` (unit enable and SCL enable),
+       and ICCR ``0xff``. Each byte goes through IDBR, then ICR bit 3
+       (transfer byte) with START, STOP and not-acknowledge bits as needed,
+       and the driver waits for ISR bit 7 (IDBR receive full) or for ICR bit
+       3 to clear. The reads and writes are the 1 KiB EEPROM's
+       (:ref:`sgi-sonic-hdsp-hiding`).
+     - The register set as the manual lays it out: ICR bit 0 START, 1 STOP,
+       2 acknowledge control, 3 transfer byte, 4 master abort, 5 SCL
+       enable, 6 unit enable and 14 unit reset; ISR bit 7 IDBR receive
+       full, 6 IDBR transmit empty, 3 bus busy, 2 unit busy, 1 not-ack
+       received. Master mode only, at one slave, a 24C08-class EEPROM at
+       7-bit address ``0x50`` holding 1 KiB, initial content from
+       ``nv-word`` and ``0xff`` elsewhere. Every other address phase is not
+       acknowledged. The EEPROM acknowledges its write sequence.
+     - *established* for the register layout
+       (:src:`intel-i960rx-272736-002 pp. 21-19 to 21-27`), *software
+       expectation* for the use (:src:`sonic-iop-flash-1.1 0x57d0`), and
+       *approximation* for the EEPROM's presence and content
 
 The bridge unit's configuration-cycle retry bit holds the host's
 configuration cycles in retry from reset until the resident operating
@@ -1107,8 +1202,12 @@ messages for 16, 32 and 64 MB (*software expectation*,
 *unknown*. The model's ``dram-size`` property defaults to 64 MiB, the
 largest size the boot ROM tests, an *approximation* that cannot starve the
 operating system (the disk-channel setup allocates several hundred
-kilobytes per channel, :src:`sonic-hdsp-module-1.0 0x9b90`). A photograph
-of a real board's memory chips would settle the size.
+kilobytes per channel, :src:`sonic-hdsp-module-1.0 0x9b90`). The sizing
+tests read back what they write, so DRAM must be real RAM at
+``0xa0000000``, and the boot ROM probes ``0x4000000``, ``0x2000000`` and
+``0x1000000`` above the base: a model that returns the same data for
+aliased addresses reports a smaller size. A photograph of a real board's
+memory chips would settle the size.
 
 The flash is 512 KiB at ``0xfef80000``. The board application's upgrade
 module reprograms it with the byte-program command sequence at offsets
@@ -1129,7 +1228,11 @@ Board glue the boot ROM assumes
 -------------------------------
 
 The boot ROM and the operating system touch a block of byte-wide
-registers at ``0xd0000000`` plus *n* x ``0x10000`` plus 3. The boot ROM
+registers at ``0xd0000000`` plus *n* x ``0x10000`` plus 3. They behave as
+a dual UART in the MC68681 family (*inferred* from the register behaviour,
+not from a part number): channel A at *n* = 0 to 3 and channel B at *n* =
+8 to 11 (mode, status and clock select, command, data), *n* = 4 auxiliary
+control and *n* = 5 interrupt status and mask. The boot ROM
 touches *n* = 4, 5, 8, 9, 10 and 11 at the shared offsets ``0x4e4`` to
 ``0xdb8``, and the operating system touches 0 to 15 in 17 references
 (*software expectation*, :src:`sonic-iop-flash-1.1 0x28-0x10df
@@ -1159,26 +1262,35 @@ looks like a UART's divisor, mode and control registers, but the part is
      - *software expectation*
      - same. The baud rate is the boot ROM's message, not a register
        reading.
-   * - Start-up writes: *n* = 10 gets ``0x3a``, ``0x2a``, ``0x1a`` and then
-       ``5``; *n* = 8 gets ``0x13`` and then ``0x0f``; *n* = 4 gets 0;
-       *n* = 9 gets ``0xcc``; *n* = 5 gets ``0x20``.
-     - *software expectation*
+   * - Start-up writes: *n* = 10 (command B) gets ``0x3a``, ``0x2a``,
+       ``0x1a`` (reset transmitter, receiver and mode pointer) and then
+       ``5`` (enable both); *n* = 8 (mode B) gets ``0x13`` and then
+       ``0x0f``; *n* = 4 gets 0; *n* = 9 (clock select B) gets ``0xcc``,
+       38400 baud; *n* = 5 gets ``0x20``.
+     - *software expectation* for the writes, *inferred* for the meanings
      - same.
+   * - The boot ROM reads only status B (*n* = 9), polling bit 2
+       (transmitter ready) before every character until ``(status & 4) ==
+       4``. Nothing else in the block is read before or during the banner.
+       The operating system's console driver also reads status and the
+       receive data.
+     - *software expectation*
+     - :src:`sonic-iop-flash-1.1 0xc4c 0xc78 0xccc 0xd18`.
    * - The glue logic's base and its LED register are set by the boot path
        or the operating system, and the LED register's use was not traced.
      - *unknown*
      - :src:`sonic-hdsp-module-1.0`.
 
 The model implements the block as a bank of 16 byte registers. Register
-9 reads with bit 2 set and the others clear and register ``0xb`` forwards
-each byte written to the ``iop-console`` character device, which the
-user connects to a chardev or leaves unconnected, an *approximation* that
-makes the boot ROM's transmit-ready poll always succeed. The receive side
-reads no data: the register that would carry a received byte is not
-identified, so the boot ROM's command poll sees none and falls through to
-start the operating system, the behaviour the boot ROM has with no
-console command (*inferred*). The other registers hold what is written and
-log ``LOG_UNIMP``. What would settle the register meanings is the board's
+9 reads ``0x04`` or ``0x0c`` (transmitter ready always) and register
+``0xb`` forwards each byte written to the ``iop-console`` character
+device, which the user connects to a chardev or leaves unconnected, an
+*approximation* that makes the boot ROM's transmit-ready poll always
+succeed. It reports receiver ready only when the character device has
+input, so with none the boot ROM's command poll sees nothing and falls
+through to start the operating system, the behaviour the boot ROM has with
+no console command (*inferred*). The other registers hold what is written
+and log ``LOG_UNIMP``. What would settle the register meanings is the board's
 schematic or a longer boot ROM and operating-system trace.
 
 .. _sgi-sonic-hdsp-timing:
@@ -1223,9 +1335,12 @@ Secondary PCI bus and the host port
 
 The DSPs sit on the i960's secondary PCI bus, which the host cannot see.
 The module reaches them through the ATU's secondary outbound window and
-configuration ports. The model does not build a QEMU PCI bus for it: the
-bus is a private address space inside the device, with a configuration
-cycle decoder, an *approximation* because the host never addresses it.
+configuration ports. The model builds a real QEMU PCI bus for it, hung
+off the secondary side of the bridge unit and invisible to the host's
+bus; the DSPs' host ports sit on it as PCI functions, so the secondary
+ATU's configuration and memory cycles reach them as they do on the card.
+That the model's DSP functions are PCI devices on the bus is the model's
+own structure, not a measured fact.
 
 .. list-table::
    :header-rows: 1
@@ -1402,8 +1517,8 @@ trace and returns the last value written. What feeds Y:0xfffffb is
 *unknown*. What would settle it is a trace of which DSP accesses it at
 which frame of a running monitor image.
 
-The DSP core is the interpreter in ``hw/dsp`` (DSP56300 family, written
-from the family manual; a separate pull request).
+The DSP core is the interpreter in ``hw/coproc/dsp56300`` (DSP56300
+family, written from the family manual).
 
 .. _sgi-sonic-hdsp-dsp-int:
 
@@ -1887,8 +2002,9 @@ two held.
    * - ``iop-console``
      - Character device for the debug UART's transmit side. Optional.
    * - ``nv-word``
-     - The 32-bit word the resident operating system loads SISR from. Default
-       ``0x987603df``. Valid only with ``0x9876`` in the upper half.
+     - The first four bytes, little-endian, of the I2C EEPROM the resident
+       operating system loads SISR from. Default ``0x987603df``. Valid only
+       with ``0x9876`` in the upper half.
    * - ``iop-clock``, ``dsp-clock``
      - Core clocks in Hz, defaults 66 MHz and 100 MHz.
    * - ``box``
@@ -1929,10 +2045,13 @@ byte write is described under the glue logic. The flash keeps its contents.
 Migration
 =========
 
-The device holds its processor and unit state in one device but does not
-migrate: it carries a migration blocker, an *approximation*, because the
-interpreters' register files and the on-chip units' state have no
-migration description. Savevm refuses with the blocker's message.
+The device holds its processor and unit state in one device and migrates
+it as a unit. The i960 and DSP56300 cores have their own migration
+descriptions, embedded in the device's (``VMSTATE_I960`` and
+``VMSTATE_DSP56300``), and the on-chip units, glue, EEPROM and flash
+contents are in the stream. The flash backing file is not: a destination
+must give the same ``flash-image``. That the virtual clock slice timer
+restarts at the same guest time is the model's own design.
 
 .. _sgi-sonic-hdsp-limits:
 
@@ -2014,8 +2133,9 @@ with what would settle it:
      - Held in reset until the reset byte releases them
      - The glue's reset default
    * - Local bus behaviour for unclaimed addresses
-     - Reads all ones, writes dropped, each logged
-     - The boot ROM's own accesses
+     - Reads all ones, no fault, may set LPISR bit 5; writes dropped; each
+       logged
+     - A real board's data bus, or the boot ROM's own accesses
    * - ``0xf0000000`` and ``0xe0040000``
      - Tables read as zero; the board-identification byte is a constant with
        upper nibble 1
@@ -2023,9 +2143,16 @@ with what would settle it:
    * - Debug UART block at ``0xd0000000``
      - Transmit ready always set, transmit forwarded, receive never ready
      - The schematic, or a longer operating system trace
-   * - I2C bus
-     - No device; every address not acknowledged
-     - Whether the operating system needs an EEPROM to finish booting
+   * - NV word and the I2C EEPROM
+     - A 1 KiB 24C08-class EEPROM at ``0x50``; first four bytes are
+       ``nv-word``, default ``0x987603df``; the rest ``0xff``
+     - A real board's EEPROM dump
+   * - DSP subsystem ID
+     - CSID left at 0
+     - The board-side bootstrap program that writes it
+   * - Boot-mode byte at glue ``0x18003``
+     - Bit 7 set, so the boot ROM starts the operating system
+     - The board's switch or jumper
    * - DRAM size
      - 64 MiB
      - A board photograph
@@ -2036,10 +2163,15 @@ with what would settle it:
      - 66 MHz i960, 100 MHz DSPs
      - A board photograph, or PLL control read from a running board
    * - Secondary bus
-     - A private address space with a configuration cycle decoder
+     - A real QEMU PCI bus behind the bridge unit, not visible to the host;
+       the DSP host ports are PCI functions on it
      - Nothing the host can see depends on it
    * - DSP bootstrap mode
-     - Mode C, the PCI target host bootstrap, with the ROM's listed protocol
+     - Mode C, the PCI target host bootstrap, with the ROM's listed protocol.
+       The manual has a boot program (from an EPROM or the SCI) write CSID
+       in self-configuration mode before PCI mode, and mode C has no such
+       step, so the board may not use mode C
+       (:src:`nxp-dsp56301um-4 pp. 6-16, 6-69`)
      - The board's mode strap
    * - DSP bootstrap ROM size
      - 3 K words
@@ -2066,9 +2198,9 @@ with what would settle it:
      - ESSI0 transmit words in order, wrapping at the channel count; two
        channels by default; silence in
      - The ESSI0 transmit sequence against the box's channel numbering
-   * - Migration
-     - Blocked
-     - Describing the interpreters and units to the migration stream
+   * - Flash backing file in migration
+     - Not in the stream; the destination names the same image
+     - Nothing on the card's side
 
 Tests
 =====
@@ -2112,6 +2244,16 @@ expected values. They check that:
 - the debug UART's transmit data reaches the ``iop-console`` character
   device and its status register reads transmit ready;
 - an access outside every unit logs and returns all ones;
+- an unclaimed local read returns all ones without a fault and may set
+  bit 5 of LPISR;
+- the boot-mode byte at glue ``0x18003`` has bit 7 set and writes to glue
+  ``0x3`` are logged;
+- the I2C unit reads the first four bytes of the EEPROM at ``0x50`` as
+  ``nv-word`` little-endian, acknowledges the write-back of a blank part and
+  not-acknowledges any other address;
+- a BAR0 of 128 MiB is placed and reached through the Bridge's 32-bit
+  memory PIO window (the cage and the adapter both); see
+  :ref:`sgi-sonic-hdsp-large-bar`;
 - ``sonic-ada8824`` answers command 1 with 288 at its address and does not
   answer at any other address, and a device with no box attached drives no
   reply;
