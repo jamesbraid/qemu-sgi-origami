@@ -347,6 +347,12 @@ config SGI_MGRAS
     select SGI_DISPLAY
     select SGI_PI_GFX
 
+config SGI_XT_DIGVID
+    bool
+    select ONEWIRE
+    select SGI_BRIDGE
+    select SGI_XIO_BOARD
+
 config SGI_KONA
     bool
     select SGI_DISPLAY

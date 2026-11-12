@@ -339,6 +339,7 @@ hw/misc/sgi-pio-forward.c
 hw/misc/sgi-router.c
 hw/misc/sgi-xbow.c
 hw/misc/sgi-xbridge-xbow.c
+hw/misc/sgi-xt-digvid.c
 hw/net/bcm570x.c
 hw/net/bcm570x_phy.c
 hw/net/dp83840.c
@@ -856,6 +857,7 @@ tests/qtest/octane-mgras-test.c
 tests/qtest/octane-pci-boards-test.c
 tests/qtest/octane-test.c
 tests/qtest/octane-vpro-test.c
+tests/qtest/octane-xt-digvid-test.c
 tests/qtest/prereq.h
 tests/qtest/psitech-rad1-test.c
 tests/qtest/psitech-rad4-mode0-fixture.h

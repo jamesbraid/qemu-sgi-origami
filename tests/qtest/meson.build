@@ -23,6 +23,11 @@ slow_qtests = {
   # times inside the 60s default have no entry.
   'bcm570x-test': 180,
   'octane-mgras-test': 440,
+  # The fpga-load case sends the page's whole load sequence for all eight
+  # FPGAs: about 4.5 million register accesses, one qtest round trip each,
+  # of which the GIF's 1.4 million clock pairs are 2.9 million stores. 32 s
+  # alone.
+  'octane-xt-digvid-test': 180,
   'octane-test': 500,
   # psitech-rad4-test's 92 cases, with the RAD4 DMA engine's, took 94.5s
   # under debug_tcg at load 145 on 32 threads, 2026-10-05; three times that.
@@ -647,7 +652,8 @@ sgi_qtests = \
      'octane-timer-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
-    ['octane-test', 'octane-mgras-test', 'octane-pci-boards-test'] : []) + \
+    ['octane-test', 'octane-mgras-test', 'octane-pci-boards-test',
+     'octane-xt-digvid-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['octane-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and

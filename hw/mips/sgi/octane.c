@@ -69,6 +69,7 @@
 #define TYPE_SGI_PCI_SHOEHORN "sgi-pci-shoehorn"
 #define TYPE_SGI_OCTANE_PCI_CAGE "sgi-octane-pci-cage"
 #define TYPE_SGI_FC_BOARD "sgi-fc-board"
+#define TYPE_SGI_XT_DIGVID "sgi-xt-digvid"
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 #define OCTANE_FLASH_SECTOR (64 * KiB)
@@ -873,11 +874,11 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 /*
  * The machine's side of a board fitted by slot name (TYPE_SGI_XIO_SLOTS,
  * xio-board.h): widget-9 to widget-12, the Crossbow ports the Octane gives
- * graphics boards and PCI shoehorns, and widget-13, which holds only the
- * PCI module. The board takes its fabric from the link to the port and
- * attaches to the realized Crossbow live; its long window, the 64 GiB of
- * physical space the processor reaches the widget through by way of HEART's
- * port, maps once a board is there.
+ * graphics boards, PCI shoehorns and the DM2 video board, and widget-13,
+ * which holds only the PCI module. The board takes its fabric from the link
+ * to the port and attaches to the realized Crossbow live; its long window,
+ * the 64 GiB of physical space the processor reaches the widget through by
+ * way of HEART's port, maps once a board is there.
  */
 static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
                                          const char *name,
@@ -1337,6 +1338,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_PCI_SHOEHORN);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_OCTANE_PCI_CAGE);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_FC_BOARD);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XT_DIGVID);
 }
 
 static const TypeInfo octane_machine_types[] = {
