@@ -103,8 +103,7 @@ mips_ss.add(when: 'CONFIG_SGI_PCI_SHOEHORN',
             if_true: files('sgi/board-pci-shoehorn.c'))
 # Likewise for the board fixture: see the comment above.
 mips_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
-            if_true: files('../../tests/qtest/tcg-io-recompile-fixture.c',
-                           '../../tests/qtest/board-test-fixture.c',
+            if_true: files('../../tests/qtest/board-test-fixture.c',
                            '../../tests/qtest/mips-cpu-exception-fixture.c',
                            '../../tests/qtest/ioc3-release-fixture.c'))
 subdir('sgi')
