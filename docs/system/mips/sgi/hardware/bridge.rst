@@ -482,7 +482,20 @@ treats a 32-bit access to an undefined slot, to the upper (even) half of a
 defined slot, or to any offset from ``0x300`` to ``0xffff`` this way. The
 access completes, a read returns ``0xffffffff``, bit 24 latches and, if
 its enable bit is set, the error interrupt is sent
-(:ref:`sgi-bridge-errors`). It logs ``LOG_UNIMP``.
+(:ref:`sgi-bridge-errors`). It logs ``LOG_UNIMP``, naming the Bridge by its
+PCI bus name and giving the access width.
+
+The IRIX 6.5.13f kernel's error path reads interrupt status and the PCI
+error address upper and lower words only as 32-bit loads at the slot's
+offset plus four (:src:`ip30-kernel-6.5.13f 0xa80000002008330c`,
+:src:`ip30-kernel-6.5.13f 0xa800000020081648`,
+:src:`ip30-kernel-6.5.13f 0xa80000002008164c`), a *software expectation*.
+Those reads return the register and flag nothing. A debugger read is not
+that access: the monitor's ``xp`` splits an 8-byte read into two 32-bit
+ones, which reaches the even half of the slot and latches bit 24, and IRIX
+takes that error as fatal once the Bridge's enable bit is set. Read a
+register with ``xp /wx`` at the slot's offset plus four; ``xp /wx`` at the
+slot's own offset reads the even half and latches the error itself.
 
 One reserved address is an exception. A 32-bit store of zero to
 ``0x19c``, the data half of undefined slot ``0x198``, completes with no

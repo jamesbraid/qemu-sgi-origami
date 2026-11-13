@@ -968,12 +968,13 @@ static void sgi_bridge_raise_host_error(SGIBridgeState *s);
 static void sgi_bridge_send_interrupt(SGIBridgeState *s, int pin, bool set);
 
 static void sgi_bridge_invalid_address(SGIBridgeState *s, hwaddr addr,
-                                       bool is_write)
+                                       unsigned size, bool is_write)
 {
     qemu_log_mask(LOG_UNIMP,
-                  "sgi-bridge: %s of undefined register 0x%" HWADDR_PRIx
-                  "; posting it and flagging an invalid-address error\n",
-                  is_write ? "write" : "read", addr);
+                  "sgi-bridge %s: %u-byte %s of undefined register 0x%"
+                  HWADDR_PRIx "; posting it and flagging an invalid-address "
+                  "error\n", s->pci_bus_name ? s->pci_bus_name : "pci",
+                  size, is_write ? "write" : "read", addr);
     s->int_error |= INT_INVALID_ADDR;
 
     /* The bit always latches; the interrupt goes only when enabled. */
@@ -1002,7 +1003,7 @@ static uint64_t sgi_bridge_read(void *opaque, hwaddr addr, unsigned size)
      * An undefined address in the block posts and flags rather than faulting.
      */
     if (!reg) {
-        sgi_bridge_invalid_address(s, addr, false);
+        sgi_bridge_invalid_address(s, addr, size, false);
         return ~(uint64_t)0;
     }
 
@@ -1245,7 +1246,7 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
      * An undefined address in the block posts and flags rather than faulting.
      */
     if (!reg) {
-        sgi_bridge_invalid_address(s, addr, true);
+        sgi_bridge_invalid_address(s, addr, size, true);
         return;
     }
 

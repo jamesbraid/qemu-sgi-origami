@@ -47,6 +47,13 @@
 #define BRIDGE_DEVICE(w, dev) (WIDGET_BASE(w) + 0x200 + 8 * (dev) + REG_DATA)
 #define FLASH_SELECT0 (0xc00000)
 #define FLASH_SELECT1 (0xe00000)
+/* Bridge registers the IRIX PIO error path reads (slot offsets). */
+#define BRIDGE_PCI_ERR_UPPER 0x0d0
+#define BRIDGE_PCI_ERR_LOWER 0x0d8
+#define BRIDGE_INT_STATUS 0x100
+#define BRIDGE_INT_ENABLE 0x108
+#define INT_PCI_MASTER_TIMEOUT (1u << 11)
+#define INT_INVALID_ADDRESS (1u << 24)
 
 /* A Bridge device's 2 MB windows for devices 0 and 1, 1 MB from device 2. */
 #define DEVIO(w, dev) (WIDGET_BASE(w) + ((dev) < 2 ? \
@@ -674,6 +681,83 @@ static void test_sonic_hdsp(bool octane2, const PciBoard *b)
     unlink(firmware);
 }
 
+/*
+ * A 32-bit load at a register slot's offset plus four, as the IRIX 6.5.13f
+ * kernel's PIO error path issues them (interrupt status, PCI error address
+ * upper and lower), returns the register and flags no address error. A
+ * configuration read nobody claims leaves a PCI master time-out and the
+ * failing address in the registers, so each read has a nonzero answer that
+ * an undefined slot (all ones) or an unread register (zero) cannot give.
+ */
+static void test_bridge_error_reads(bool octane2, const PciBoard *b)
+{
+    QTestState *qts = start_board(octane2, b, "");
+    unsigned int w = b->widget;
+    uint64_t at[] = { WIDGET_BASE(w), WIDGET_LONG(w) };
+    uint32_t value, upper, lower, status;
+
+    /* An error the chip has not enabled leaves no trace. */
+    qtest_writel(qts, BRIDGE_REG(w, BRIDGE_INT_ENABLE), INT_PCI_MASTER_TIMEOUT);
+    /* The device above the slots the board has: nothing answers. */
+    g_assert_cmpuint(read32(qts, CFG(w, 7), &value), !=, MEMTX_OK);
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(at); i++) {
+        g_assert_cmpuint(read32(qts, at[i] + BRIDGE_PCI_ERR_UPPER + REG_DATA,
+                                &upper), ==, MEMTX_OK);
+        g_assert_cmpuint(read32(qts, at[i] + BRIDGE_PCI_ERR_LOWER + REG_DATA,
+                                &lower), ==, MEMTX_OK);
+        g_assert_cmpuint(read32(qts, at[i] + BRIDGE_INT_STATUS + REG_DATA,
+                                &status), ==, MEMTX_OK);
+        /* The device number sits in bits 18:16 of the upper word. */
+        g_assert_cmphex(upper, ==, 7u << 16);
+        g_assert_cmphex(lower, !=, 0);
+        g_assert_cmphex(status & INT_PCI_MASTER_TIMEOUT, ==,
+                        INT_PCI_MASTER_TIMEOUT);
+        g_assert_cmphex(status & INT_INVALID_ADDRESS, ==, 0);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * The specification allows a register only on data bits 31:0 of its
+ * doubleword (Table 6), so a 32-bit load at the slot's own offset reaches
+ * the unused half: it reads all ones and latches the invalid-address error,
+ * which IRIX treats as fatal once its enable is set. An 8-byte load is
+ * refused whole and latches nothing. Each register in the IRIX error path
+ * behaves the same way.
+ */
+static void test_bridge_even_half(bool octane2, const PciBoard *b)
+{
+    unsigned int w = b->widget;
+    static const unsigned int slots[] = {
+        BRIDGE_PCI_ERR_UPPER, BRIDGE_PCI_ERR_LOWER, BRIDGE_INT_STATUS,
+    };
+    uint32_t value;
+    uint64_t wide;
+
+    for (unsigned int i = 0; i < G_N_ELEMENTS(slots); i++) {
+        QTestState *qts = start_board(octane2, b, "");
+
+        g_assert_cmpuint(read32(qts, BRIDGE_REG(w, BRIDGE_INT_STATUS), &value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value & INT_INVALID_ADDRESS, ==, 0);
+        /* The scalar load keeps its width, as a processor ld does. */
+        g_assert_cmpuint(memtx_load(qts, WIDGET_BASE(w) + slots[i], &wide, 8),
+                         !=, MEMTX_OK);
+        g_assert_cmpuint(read32(qts, BRIDGE_REG(w, BRIDGE_INT_STATUS), &value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value & INT_INVALID_ADDRESS, ==, 0);
+
+        g_assert_cmpuint(read32(qts, WIDGET_BASE(w) + slots[i], &value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value, ==, 0xffffffff);
+        g_assert_cmpuint(read32(qts, BRIDGE_REG(w, BRIDGE_INT_STATUS), &value),
+                         ==, MEMTX_OK);
+        g_assert_cmphex(value & INT_INVALID_ADDRESS, ==, INT_INVALID_ADDRESS);
+        qtest_quit(qts);
+    }
+}
+
 /* Slots the topology lacks, and a card where the board has no slot. */
 static void test_refusals(void)
 {
@@ -824,6 +908,8 @@ int main(int argc, char **argv)
     for (unsigned int m = 0; m < 2; m++) {
         add_board_test("superio-interrupt-pin", test_superio_interrupt_pin, m,
                        &cage);
+        add_board_test("bridge-error-reads", test_bridge_error_reads, m, &cage);
+        add_board_test("bridge-even-half", test_bridge_even_half, m, &cage);
     }
     qtest_add_func("/octane-pci/refusals", test_refusals);
     qtest_add_func("/octane-pci/shoehorn-slots", test_shoehorn_slots);
