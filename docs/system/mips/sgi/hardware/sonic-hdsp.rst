@@ -484,7 +484,13 @@ The card is a normal PCI function on the Bridge of the Octane PCI module
 The Octane PCI module's Bridge (revision 3) and the PCI-XTALK adapter's
 (revision 4) are expected to decode a 128 MiB BAR in that window and to
 place it, since :doc:`bridge` describes the ``0x40000000`` range as reaching
-PCI memory from address zero without a device window. Whether the existing
+PCI memory from address zero without a device window. The processor reaches
+that range at ``2^35 + 13 * 2^31 + 0x40000000`` plus the PCI address through
+the 2 GiB window of the module's widget (:ref:`sgi-ip30-address-map`), which
+is the address the IRIX 6.5.13f kernel forms for the card's BAR0 (*software
+expectation*, :src:`ip30-kernel-6.5.13f 0xa800000020077be4`): physical
+``0xec8000040`` for a register at BAR0 offset ``0x40`` with BAR0 at PCI
+``0x08000000``. Whether the existing
 board models do so for a BAR of that size is a test item, not a claim: a
 qtest places a 128 MiB BAR0 behind each board and reads and writes its first
 and last words.

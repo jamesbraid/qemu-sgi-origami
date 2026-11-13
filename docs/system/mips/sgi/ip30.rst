@@ -384,6 +384,10 @@ widget windows and the memory offset:
      - Contents
    * - ``0x10000000 + (widget << 24)``
      - 16 MiB small window for each widget
+   * - ``2^35 + (widget << 31)``
+     - 2 GiB window for each widget: bit 35 set, the widget in bits 34:31
+       and the widget offset in bits 30:0. Present for the onboard Bridge
+       (widget 15) and for each fitted board; see below
    * - ``widget << 36``
      - 64 GiB large window for each widget
    * - ``0x1fc00000``
@@ -397,6 +401,31 @@ widget windows and the memory offset:
        ``0x20000000`` to ``0x20003fff``, fail with a bus error and log
        ``LOG_UNIMP``, above every bank view and ECC overlay, an
        *approximation*: what a real HEART answers there is *unknown*
+
+The IRIX 6.5.13f kernel chooses among the three windows by the end of the
+range it maps, so a mapping that ends within 16 MiB of a widget's offsets
+uses the small window, one that ends past that and within 2 GiB uses the
+2 GiB window, and one that ends within 64 GiB uses the large window. It
+takes the widget
+number from its widget registry, not from a HEART or Crossbow register, and
+its inverse for an error address reads all three windows back to a widget
+and offset (:src:`ip30-kernel-6.5.13f 0xa800000020077be4`,
+:src:`ip30-kernel-6.5.13f 0xa8000000200785f8`). That is a *software
+expectation*; the 6.5.22 and 6.5.30 kernels form the same addresses
+(*inferred* from matching routines). Every PCI memory mapping through a Bridge
+(widget offsets from ``0x40000000``) ends past 16 MiB and within 2 GiB, so
+IRIX reaches PCI memory behind the PCI module's Bridge at ``2^35 +
+13 * 2^31 + 0x40000000 + <PCI address>``. A BAR at PCI address
+``0x08000000`` and a 4-byte register at its offset ``0x40`` is then at
+physical ``0xec8000040``. No manual describes HEART's decode of this
+window. That a real Octane decodes it follows from IRIX relying on it for
+every Bridge PCI memory mapping, and is *inferred*; nothing measured it.
+The model maps it for the same widgets as their large window, onto the
+same XIO offsets, so it carries the widget offset with no bit 47, the same
+*inferred* detail as the large window, and the uncached processor
+attribute reaches it as it reaches every address. Widget 0 and the
+widgets with no board answer neither the 64 GiB nor the 2 GiB window, an
+*approximation*: what a real HEART does with them is *unknown*.
 
 .. _sgi-ip30-space-selection:
 
@@ -848,10 +877,11 @@ not meet.
 A port starts empty, its presence clear, as it is with no board. A board
 claims its port when it realizes: it takes its fabric from the port's
 link, attaches to the realized Crossbow, and maps its 64 GiB long window
-at widget times 64 GiB of physical space, through HEART's port with the
-widget number in address bits 51:48. The window carries the 36-bit
-offset to the widget with no bit 47, *inferred*: the Bridge specification
-puts the Bridge's registers at large-window offset 0
+at widget times 64 GiB of physical space and its 2 GiB window at 2^35 plus
+widget times 2 GiB, through HEART's port with the widget number in address
+bits 51:48. The windows carry the widget offset (36 bits for the long
+window, 31 for the 2 GiB one) with no bit 47, *inferred*: the Bridge
+specification puts the Bridge's registers at large-window offset 0
 (:src:`bridge-asic-spec-4.0` Appendix B, Table 98) and these pages do not
 state the address HEART sends on the link. Fitted Bridge boards, graphics
 boards and the onboard Bridge are all reached the same way. The machine's

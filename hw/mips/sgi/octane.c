@@ -72,6 +72,12 @@
 #define TYPE_SGI_XT_DIGVID "sgi-xt-digvid"
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
+/*
+ * The 2 GiB window per widget at 2^35 + (widget << 31): physical bit 35
+ * marks it, the widget is bits 34:31 and the offset bits 30:0.
+ */
+#define OCTANE_MID_BASE (1ULL << 35)
+#define OCTANE_MID_SPAN (1ULL << 31)
 #define OCTANE_FLASH_SECTOR (64 * KiB)
 #define OCTANE_HEART_REGS 0x0ff00000ULL
 #define OCTANE_HEART_WIDGET 0x18000000ULL
@@ -107,6 +113,7 @@ typedef struct OctaneMachineState {
     SGIXioLink xio_links[OCTANE_XIO_WIDGETS];
     bool xio_claimed[OCTANE_XIO_WIDGETS];
     MemoryRegion xio_long[OCTANE_XIO_WIDGETS];
+    MemoryRegion xio_mid[OCTANE_XIO_WIDGETS];
     bool uncatalogued_graphics;
     SGIGraphicsPipes pipes;
     Notifier machine_done;
@@ -574,6 +581,24 @@ static bool octane_storage_backing(OctaneMachineState *s, const char *product,
     return true;
 }
 
+/*
+ * The 2 GiB window the IRIX kernel maps a widget's offsets through when a
+ * mapping ends past 16 MiB and within 2 GiB, which every Bridge PCI memory
+ * mapping does: physical 2^35 + (widget << 31) + offset reaches that offset
+ * of the widget, as the same packet the 64 GiB window sends. That HEART
+ * decodes it is *inferred*: IRIX relies on it and no manual describes the
+ * decode (docs/system/mips/sgi/ip30.rst).
+ */
+static void octane_map_mid_window(MemoryRegion *mr, Object *owner,
+                                  const char *name, MemoryRegion *physical,
+                                  MemoryRegion *ingress, unsigned int widget)
+{
+    memory_region_init_alias(mr, owner, name, ingress,
+                             (uint64_t)widget << 48, OCTANE_MID_SPAN);
+    memory_region_add_subregion(physical, OCTANE_MID_BASE +
+                                ((uint64_t)widget << 31), mr);
+}
+
 /* Build the machine; every refusal is returned through @errp. */
 static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 {
@@ -592,6 +617,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
     MemoryRegion *short_view = g_new0(MemoryRegion, 1);
     MemoryRegion *heart_local = g_new0(MemoryRegion, 1);
     MemoryRegion *long_view = g_new0(MemoryRegion, 1);
+    MemoryRegion *mid_view = g_new0(MemoryRegion, 1);
     MIPSCPU *cpu;
     Clock *cpuclk;
     const SGIModelProcessor *processor;
@@ -866,6 +892,8 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
                              15ULL << 48,
                              SGI_BRIDGE_WIDGET_SIZE);
     memory_region_add_subregion(physical, OCTANE_LONG_BRIDGE, long_view);
+    octane_map_mid_window(mid_view, OBJECT(machine), "octane.bridge-mid",
+                          physical, sgi_xbow_packet_ingress(crossbow, 8), 15);
 
     return octane_fit_pci(machine, SGI_BRIDGE(bridge), nvram, nvram_clock,
                           errp);
@@ -889,6 +917,7 @@ static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
     unsigned int widget, index;
     g_autofree char *link_name = NULL;
     g_autofree char *long_name = NULL;
+    g_autofree char *mid_name = NULL;
 
     bool pci_board = object_dynamic_cast(board, TYPE_SGI_PCI_SHOEHORN) ||
                      object_dynamic_cast(board, TYPE_SGI_OCTANE_PCI_CAGE);
@@ -934,6 +963,9 @@ static SGIXioLink *octane_claim_xio_slot(Object *obj, Object *board,
                              (uint64_t)widget << 48, OCTANE_LONG_SPAN);
     memory_region_add_subregion(s->physical, widget * OCTANE_LONG_SPAN,
                                 &s->xio_long[index]);
+    mid_name = g_strdup_printf("octane.%s-mid", name);
+    octane_map_mid_window(&s->xio_mid[index], obj, mid_name, s->physical,
+                          sgi_xbow_packet_ingress(s->crossbow, 8), widget);
     place->module = 0;
     place->widget = widget;
     place->position = index;

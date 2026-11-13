@@ -32,6 +32,15 @@
 #define WIDGET_BASE(w) (XBOW + ((uint64_t)(w) << 24))
 /* The processor's large window to a widget: 64 GiB at widget << 36. */
 #define WIDGET_LONG(w) ((uint64_t)(w) << 36)
+/*
+ * The 2 GiB window the IRIX kernel's PIO mapping uses past 16 MiB and within
+ * 2 GiB: bit 35, the widget in bits 34:31, the offset in bits 30:0.
+ */
+#define WIDGET_MID(w) ((1ULL << 35) + ((uint64_t)(w) << 31))
+/* Physical bit 40 selects the uncached processor attribute. */
+#define ATTR_UNCACHED (1ULL << 40)
+/* PCI memory behind the Bridge's 32-bit memory range. */
+#define BRIDGE_PCI_MEM 0x40000000ULL
 #define REG_DATA 4
 #define BRIDGE_REG(w, offset) (WIDGET_BASE(w) + (offset) + REG_DATA)
 #define CFG(w, dev) (WIDGET_BASE(w) + 0x020000 + (dev) * 0x1000)
@@ -407,6 +416,53 @@ static void test_large_window(bool octane2, const PciBoard *b)
     qtest_quit(qts);
 }
 
+/*
+ * IRIX maps a PCI memory BAR through physical 2^35 + (widget << 31) plus the
+ * Bridge's 0x40000000 memory range plus the PCI address. The access reaches
+ * the same Bridge and card as the 64 GiB window, with and without the
+ * uncached attribute, and a widget nothing is fitted in does not answer.
+ */
+static void test_mid_window(bool octane2, const PciBoard *b)
+{
+    g_autofree char *cards = isp_cards(b, "qlogic-isp1040");
+    QTestState *qts = start_board(octane2, b, cards);
+    unsigned int w = b->widget, dev = b->first_slot;
+    uint32_t pci_base = 0x10000000u + dev * 0x01000000u;
+    uint64_t reg = (0x70 + 2 * 5) ^ 2;
+    uint64_t mid = WIDGET_MID(w) + BRIDGE_PCI_MEM + pci_base + reg;
+    uint64_t large = WIDGET_LONG(w) + BRIDGE_PCI_MEM + pci_base + reg;
+    uint32_t id, small;
+    uint16_t half;
+
+    g_assert_cmpuint(read32(qts, WIDGET_MID(w) + REG_DATA, &id), ==, MEMTX_OK);
+    g_assert_cmpuint(read32(qts, BRIDGE_REG(w, 0), &small), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, small);
+    g_assert_cmphex(id, ==, WIDGET_ID_BRIDGE_REVISION(b->bridge_revision));
+    g_assert_cmpuint(read32(qts, ATTR_UNCACHED + WIDGET_MID(w) + REG_DATA,
+                            &id), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, small);
+    /* The onboard Bridge answers in its own 2 GiB window. */
+    g_assert_cmpuint(read32(qts, WIDGET_MID(15) + REG_DATA, &id), ==,
+                     MEMTX_OK);
+    g_assert_cmpuint(read32(qts, BRIDGE_REG(15, 0), &small), ==, MEMTX_OK);
+    g_assert_cmphex(id, ==, small);
+
+    bar_and_enable(qts, b, dev, pci_base);
+    g_assert_cmpuint(memtx_writew(qts, mid, 0x5a5a), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readw(qts, large, &half), ==, MEMTX_OK);
+    g_assert_cmphex(half, ==, 0x5a5a);
+    g_assert_cmphex(qtest_readw(qts, ISP_MAILBOX(w, dev, 5)), ==, 0x5a5a);
+    g_assert_cmpuint(memtx_writew(qts, large, 0xa5a5), ==, MEMTX_OK);
+    g_assert_cmpuint(memtx_readw(qts, ATTR_UNCACHED + mid, &half), ==,
+                     MEMTX_OK);
+    g_assert_cmphex(half, ==, 0xa5a5);
+
+    /* Widget 14 holds nothing and no other fitted widget is aliased in. */
+    g_assert_cmpuint(read32(qts, WIDGET_MID(14) + REG_DATA, &id), !=,
+                     MEMTX_OK);
+    qtest_quit(qts);
+}
+
 static void test_isp2200_identity(bool octane2, const PciBoard *b)
 {
     g_autofree char *cards = isp_cards(b, "qlogic-isp2200");
@@ -762,6 +818,7 @@ int main(int argc, char **argv)
     for (unsigned int m = 0; m < 2; m++) {
         for (unsigned int i = 0; i < G_N_ELEMENTS(slots); i++) {
             add_board_test("large-window", test_large_window, m, slots[i]);
+            add_board_test("mid-window", test_mid_window, m, slots[i]);
         }
     }
     for (unsigned int m = 0; m < 2; m++) {
