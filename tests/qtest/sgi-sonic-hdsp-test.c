@@ -1610,13 +1610,30 @@ static void test_migration_dsp(void)
     g_autofree char *dir = g_dir_make_tmp("sonic-hdsp-dspmig-XXXXXX", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
     Card from = card_start(FW_PROXY, ""), to = { 0 };
-    uint32_t out[4];
+    uint32_t out[8];
+    /*
+     * State that must cross: a word in the shared I/O RAM and a DMA
+     * channel's registers and the offset.
+     */
     const uint32_t prog[] = {
         /* 0x100 */ MOVEP_IPP(X_DTXS), 0xc0ffee,
-        /* 0x102 */ JCLR_PP(2, X_DSR), 0x102,
-        /* 0x104 */ MOVEP_RD(REG_A1, X_DRXR),
-        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
-        /* 0x106 */ JMP(0x102),
+        /* 0x102 */ 0x54f400, 0x5a5a5a,
+        /* 0x104 */ 0x5c7000, 0xfff7f0,             /* move a1,y:$fff7f0 */
+        /* 0x106 */ MOVEP_IPP(X_DOR0), 2,
+        /* 0x108 */ MOVEP_IPP(X_DSR_CH(2)), 0x123456,
+        /* 0x10a */ MOVEP_IPP(X_DCO_CH(2)), 0x001001,
+        /* 0x10c */ JCLR_PP(2, X_DSR), 0x10c,
+        /* 0x10e */ MOVEP_RD(REG_A1, X_DRXR),
+        /* 0x10f */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x110 */ 0x5cf000, 0xfff7f0,             /* move y:$fff7f0,a1 */
+        /* 0x112 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x113 */ MOVEP_RD(REG_A1, X_DSR_CH(2)),
+        /* 0x114 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x115 */ MOVEP_RD(REG_A1, X_DCO_CH(2)),
+        /* 0x116 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x117 */ MOVEP_RD(REG_A1, X_DOR0),
+        /* 0x118 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x119 */ JMP(0x10c),
     };
 
     card_boot(&from);
@@ -1643,8 +1660,12 @@ static void test_migration_dsp(void)
     g_assert_cmphex(out[0], ==, 0xc0ffee);
     hp_write(&to, 0, HP_DATA, 0x424242);
     qtest_clock_step(to.qts, 1000 * 1000);
-    g_assert_cmpuint(dsp_words(&to, 0, out, 4), ==, 1);
+    g_assert_cmpuint(dsp_words(&to, 0, out, 8), ==, 5);
     g_assert_cmphex(out[0], ==, 0x424242);
+    g_assert_cmphex(out[1], ==, 0x5a5a5a);      /* the shared I/O RAM */
+    g_assert_cmphex(out[2], ==, 0x123456);      /* a DMA channel's DSR */
+    g_assert_cmphex(out[3], ==, 0x001001);      /* its counter */
+    g_assert_cmphex(out[4], ==, 2);             /* and the offset register */
 
     g_free(from.fn0);
     g_free(from.fn1);

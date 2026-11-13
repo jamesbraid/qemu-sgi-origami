@@ -82,6 +82,9 @@ slow_qtests = {
   # 45.6 s alone at load average 118, 2026-10-24 (30 s on a quiet host);
   # three times the loaded figure, rounded up.
   'sgi-machine-storage-test': 150,
+  # 22.6 s on a quiet host, 46 s under load: about fifty cases, each starting
+  # its own emulator; three times the loaded figure, rounded up.
+  'sgi-sonic-hdsp-test': 150,
   'sgi-mgras-board-test': 670,
   'sgi-mgras-fifo-test': 190,
   'sgi-mgras-gl-draw-test': 760,
