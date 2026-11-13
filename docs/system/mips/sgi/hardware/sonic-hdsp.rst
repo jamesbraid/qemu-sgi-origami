@@ -964,6 +964,20 @@ the interrupt table walk, and the supervisor and atomic instructions. It
 models no caches, no pipeline timing, no breakpoints and no parallel
 faults; the on-chip units are the device's.
 
+Bits 6:5 of a two-word (MEMB) memory instruction are a reserved field,
+drawn as ``00`` (:src:`intel-i960rx-272736-002 p. A-1, B-9`). The manual
+names no fault for setting them; an OPERATION.INVALID_OPCODE fault is
+documented only for an undefined opcode or addressing mode (:src:`intel-i960rx-272736-002 p. 9-26`),
+and MEMB mode ``0110`` is the one undefined mode (:src:`intel-i960rx-272736-002 p. A-5`).
+The same table's note 2 says a reserved encoding "may cause" an
+OPERATION.INVALID_OPCODE fault (:src:`intel-i960rx-272736-002 p. A-5`, and
+section 1.4.3 for reserved encodings), which is why a fault on real
+hardware for the reserved bits is not ruled out.
+The core ignores the reserved bits in every MEMB mode. That is *inferred*
+from one observation: the card's own firmware runs an absolute-displacement
+``lda`` with bit 6 set. Whether real hardware also ignores them in the other
+modes is *unknown*.
+
 .. _sgi-sonic-hdsp-local-map:
 
 Local address map
