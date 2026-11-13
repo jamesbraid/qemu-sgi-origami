@@ -2155,6 +2155,57 @@ static void test_dsp_hinta_to_xint4(void)
 }
 
 /*
+ * Timer 1 (0xff000310): a stopped TRR write and an enable at count zero load
+ * the count, so 0xffffffff at bus clock over 8 does not terminate.
+ */
+static void test_timer1_terminal_count(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    unsigned ipnd, tcr;
+
+    card_boot(&c);
+    px_write(p, 0xff000310, 0xffffffff);
+    px_write(p, 0xff000318, 0x32);          /* enable, bus clock over 8 */
+    px_run(&c, p);
+    qtest_clock_step(c.qts, 2 * 1000 * 1000);
+    ipnd = px_read(p, MMR_IPND);
+    tcr = px_read(p, 0xff000314);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[ipnd] & (1u << 13), ==, 0);
+    g_assert_cmphex(p->val[tcr], >, 0xfff00000);    /* counting down */
+
+    px_write(p, 0xff000310, 0x40000000);    /* running: TRR leaves TCR */
+    tcr = px_read(p, 0xff000314);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[tcr], >, 0xff000000);
+    px_write(p, 0xff000318, 0);             /* stop it */
+    px_write(p, 0xff000310, 0x7fffffff);    /* stopped: TRR loads TCR */
+    tcr = px_read(p, 0xff000314);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[tcr], ==, 0x7fffffff);
+    px_write(p, 0xff000314, 0);             /* only the enable can load */
+    px_write(p, 0xff000318, 0x32);
+    px_run(&c, p);
+    qtest_clock_step(c.qts, 2 * 1000 * 1000);
+    ipnd = px_read(p, MMR_IPND);
+    tcr = px_read(p, 0xff000314);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[ipnd] & (1u << 13), ==, 0);
+    g_assert_cmphex(p->val[tcr], >, 0x7ff00000);
+    px_write(p, 0xff000318, 0);
+    px_write(p, 0xff000310, 20);
+    px_write(p, 0xff000318, 0x02);          /* enable, bus clock */
+    px_run(&c, p);
+    qtest_clock_step(c.qts, 2 * 1000 * 1000);
+    ipnd = px_read(p, MMR_IPND);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[ipnd] & (1u << 13), ==, 1u << 13);
+    g_free(p);
+    card_quit(&c);
+}
+
+/*
  * SSISR: an enabled transmitter with nothing written sets TUE and TDE; a
  * write to the data register, or to TSR, after reading SSISR clears TUE.
  */
@@ -2646,6 +2697,8 @@ int main(int argc, char **argv)
                    test_dsp_dma_mode101_interrupt);
     qtest_add_func("/sgi-sonic-hdsp/dsp/hinta-to-xint4",
                    test_dsp_hinta_to_xint4);
+    qtest_add_func("/sgi-sonic-hdsp/timer1-terminal-count",
+                   test_timer1_terminal_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-tfs-slot0",
                    test_dsp_essi0_tfs_slot0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue", test_ssisr_tue);

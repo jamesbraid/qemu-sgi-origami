@@ -1199,7 +1199,15 @@ it; the contract below is what the firmware needs to run.
        the module's microsecond delay and timeouts read an elapsed-time
        service.
      - Two 32-bit timers as the manual describes, counting at the core
-       clock, interrupt on reload.
+       clock, interrupt on reload. The count register reloads from the
+       reload register at terminal count with reload set (*established*,
+       :src:`intel-i960rx-272736-002 p. 19-9`). The operating system writes
+       the reload register and then enables the timer without writing the
+       count, so a reload write to a stopped timer, and an enable with the
+       count at zero, also load the count (*software expectation*, the
+       boot-time timer set-up; the manual does not say so). A timer set to
+       the largest reload at bus clock over 8 therefore does not interrupt
+       for minutes.
      - *inferred*
    * - I2C ``0x1680``-``0x1690``: ICR, ISR, ISAR, IDBR, ICCR
      - The operating system's driver table points at these five registers.
