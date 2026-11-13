@@ -227,6 +227,14 @@ follow Linux ``heart.h``. Every reset value is the model's choice
      - ``0x118``; ``0x8118`` on revision F
      - read-only
      - Constant (:ref:`sgi-heart-identity`).
+   * - ``0x88``, ``0x90``, ``0xa8``
+     - Bus error address, bus error miscellaneous, processor-interface
+       access error
+     - 64
+     - ``0``
+     - read-only
+     - Read as zero: nothing records an error in them, an *approximation*
+       (:ref:`sgi-heart-widget-errors`).
    * - ``0x98``, ``0xa0``
      - Memory error address and data
      - 64
@@ -514,10 +522,18 @@ prompt. Linux names
 processor-interface words as bus-error address and miscellaneous,
 memory-error address and data, and processor-interface access error,
 with no field layout (``arch/mips/include/asm/sgi/heart.h`` lines 40-43
-and 97-102). The model answers every one of
-these reads with zero unless a request the Crossbow dropped set them,
-which the kernel treats as no recorded error, an *approximation*: what
-HEART records after a Bridge timeout is *unknown*.
+and 97-102). The IRIX 6.5.13f kernel reads the bus error address (``0x88``),
+the miscellaneous word (``0x90``, processor number in bits 22:21) and the
+access error word (``0xa8``, processor in bits 21:20 and register offset in
+bits 19:3) as 64-bit loads in its bus error handler, and the cause word
+(``0x10040``) there and in its guarded probe, a *software expectation*
+(:src:`ip30-kernel-6.5.13f 0xa800000020017884`,
+:src:`ip30-kernel-6.5.13f 0xa80000002000f020`); the field layouts are
+*inferred* from how the kernel uses them. The model answers the widget
+words among these reads with zero unless a request the Crossbow dropped
+set them, and the three processor-interface words always with zero. The
+kernel treats that as no recorded error, an *approximation*: what HEART
+records after a Bridge timeout is *unknown*.
 At the reference Octane2's PROM menu, with no error pending, the widget
 words ``0x1c``, ``0x44``, ``0x60``, ``0x70``, ``0x78`` and
 ``0x90`` read zero, matching the model. The processor-interface words do
