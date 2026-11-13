@@ -963,6 +963,17 @@ static void test_invalid_map_entry(void)
     qtest_clock_step(qts, FIELD_NS);
     g_assert_cmphex(rd(XG_ERROR), ==, 1u << 13);
     g_assert_cmphex(irq_seen(), ==, 0);
+    /*
+     * Valid is bit 29 set and bit 28 clear: an entry with both set, which
+     * names a real page, is still invalid.
+     */
+    wr(XG_ERROR, 1u << 13);
+    g_assert_cmphex(rd(XG_ERROR), ==, 0);
+    wr(MAP(0x1400), MAP_VALID_ENTRY(SLOT0_HOST) | 0x10000000);
+    arm_out(1, 0x1000);
+    qtest_clock_step(qts, FIELD_NS);
+    g_assert_cmphex(rd(XG_ERROR), ==, 1u << 13);
+    g_assert_cmphex(rd(XG_MAP_ERR), ==, 0x1400 * 4);
     qtest_quit(qts);
 }
 
