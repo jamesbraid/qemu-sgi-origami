@@ -1238,9 +1238,14 @@ static uint32_t mem_ea(I960State *s, uint32_t insn)
         unsigned index = insn & 0x1f;
         uint32_t disp;
 
-        if (insn & 0x60) {
-            op_fault(s, I960_FS_OP_INVALID_OPCODE);
-        }
+        /*
+         * Bits 6:5 are a reserved field in every MEMB mode.  The manual
+         * (272736-002 Figure A-1, Table B-9) draws them as 00 but names no
+         * fault for setting them: the OPERATION.INVALID_OPCODE fault is for
+         * an undefined opcode or addressing mode.  The Sonic HDSP card's
+         * own firmware runs `lda` with bit 6 set in absolute-displacement
+         * mode, so they are ignored.
+         */
         if (scale > 4 && (mode == 7 || mode == 14 || mode == 15)) {
             op_fault(s, I960_FS_OP_INVALID_OPCODE);
         }

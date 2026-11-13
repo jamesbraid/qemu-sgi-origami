@@ -865,6 +865,73 @@ static void test_mem_sizes_and_modes(void)
     g_free(m);
 }
 
+/*
+ * MEMB bits 6:5 are a reserved field (272736-002 Figure A-1 and Table B-9
+ * draw them as 00).  The manual names no fault for setting them, and the
+ * Sonic HDSP card's firmware executes an absolute-displacement lda with
+ * bit 6 set, so every defined mode must ignore them.  Only the undefined
+ * mode (0110) faults.
+ */
+static void test_mem_memb_reserved_bits_ignored(void)
+{
+    Mach *m = mach_new();
+    Asm a = { m, CODE };
+    uint32_t ipref;
+
+    mach_setup(m, CODE);
+    wr32(m, DATA, 0x8091a2b3);
+    ldc(&a, G(0), DATA);
+    ldc(&a, G(1), 3);
+    /* The word seen on the card: lda, absolute displacement, bit 6 set. */
+    emit(&a, memb(M_LDA, 28, 0, 0xc, 0, 0) | 0x40);
+    emit(&a, 0xa011aa00);
+    emit(&a, memb(M_LD, R(3), G(0), 4, 0, 0) | 0x20);          /* (g0) */
+    emit(&a, memb(M_LD, R(4), G(0), 7, 2, G(1)) | 0x60);       /* (g0)[g1*4] */
+    emit(&a, memb(M_LDA, R(5), G(0), 0xd, 0, 0) | 0x40);       /* disp(g0) */
+    emit(&a, 0x10);
+    emit(&a, memb(M_LDA, R(6), 0, 0xe, 3, G(1)) | 0x60);       /* disp[g1*8] */
+    emit(&a, 0x100);
+    emit(&a, memb(M_LDA, R(7), G(0), 0xf, 1, G(1)) | 0x20);
+    emit(&a, 0x1000);
+    ipref = a.pc;
+    emit(&a, memb(M_LD, R(8), 0, 5, 0, 0) | 0x40);             /* disp(ip) */
+    emit(&a, 0x20);
+    wr32(m, ipref + 8 + 0x20, 0xcafef00d);
+    HALT2(&a);
+    mach_boot(m);
+    mach_run(m);
+    g_assert_cmphex(m->cpu.r[28], ==, 0xa011aa00);
+    g_assert_cmphex(m->cpu.r[3], ==, 0x8091a2b3);
+    g_assert_cmphex(m->cpu.r[4], ==, rd32(m, DATA + 12));
+    g_assert_cmphex(m->cpu.r[5], ==, DATA + 0x10);
+    g_assert_cmphex(m->cpu.r[6], ==, 0x100 + 24);
+    g_assert_cmphex(m->cpu.r[7], ==, DATA + 0x1000 + 6);
+    g_assert_cmphex(m->cpu.r[8], ==, 0xcafef00d);
+    g_free(m);
+}
+
+static void test_mem_memb_reserved_mode_faults(void)
+{
+    Mach *m = mach_new();
+    Asm a = { m, CODE };
+
+    mach_setup(m, CODE);
+    gen_fault_handler(m, HANDLERS, false);
+    gen_fault_handler(m, HANDLERS + 0x100, true);
+    all_faults_to(m, HANDLERS);
+    set_fault_entry(m, I960_FT_OPERATION, HANDLERS + 0x100);
+    ldc(&a, G(0), DATA);
+    /* Mode 0110 is reserved, with or without the reserved bits set. */
+    emit(&a, memb(M_LD, R(3), G(0), 6, 0, 0) | 0x40);
+    HALT2(&a);
+    mach_boot(m);
+    mach_run(m);
+    g_assert_cmpuint(m->cpu.r[G(7)], ==, 1);
+    g_assert_cmphex(m->cpu.r[G(8)], ==, (I960_FT_OPERATION << 16) |
+                                        I960_FS_OP_INVALID_OPCODE);
+    g_free(m);
+}
+
 static void test_mem_groups_and_bursts(void)
 {
     Mach *m = mach_new();
@@ -2428,6 +2495,10 @@ int main(int argc, char **argv)
     g_test_add_func("/i960/cobr/misc", test_cobr_misc);
     g_test_add_func("/i960/ctrl/branches", test_ctrl_branches);
     g_test_add_func("/i960/mem/sizes-modes", test_mem_sizes_and_modes);
+    g_test_add_func("/i960/mem/memb-reserved-bits",
+                    test_mem_memb_reserved_bits_ignored);
+    g_test_add_func("/i960/mem/memb-reserved-mode",
+                    test_mem_memb_reserved_mode_faults);
     g_test_add_func("/i960/mem/groups-bursts", test_mem_groups_and_bursts);
     g_test_add_func("/i960/mem/unaligned", test_mem_unaligned);
     g_test_add_func("/i960/call/frames", test_call_ret_frames);
