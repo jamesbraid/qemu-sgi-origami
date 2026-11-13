@@ -2178,6 +2178,18 @@ firmware:
       distribution: "DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed with the video option's diagnostics; addresses are virtual addresses in the program"
       image: container
       sha256: 7c96c9a69f7d2378c5a0fcbbaf55fe4bfcb8b10f429ce1900a7a09f558b01234
+  dm2-ust-test-1.1.3:
+    title: "DMediaPro DM2 UST and MSC check program"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "DMediaPro DM2 and DM3 software, video confidence test's timestamp checker"
+    version: "1.1.3"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed with the video option's diagnostics; addresses are virtual addresses in the program"
+      image: container
+      sha256: 4526fcdfee9c0b8fc5c2938a03f9cd86b4bff1ce1a149830849dc31a0539abbb
   dm2-library-flame-7.6:
     title: "DMediaPro DM2 module shipped with Discreet Flame"
     publisher: Discreet Logic

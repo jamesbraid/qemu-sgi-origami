@@ -59,6 +59,7 @@
 #define F_VALID         0x1u
 #define F_INPUT_OFF     0x4u
 #define F_INPUT_CHANGE  0x20u
+#define F_ONE           0x2u
 #define F_PARITY        0x40u
 #define F_FIELD         0x80u
 #define F_DONE(k)       (0x100u << (k))
@@ -79,6 +80,10 @@
 #define MAP_VALID_ENTRY(host)   (0x20000000u | (uint32_t)(((host) >> 14) << 2))
 
 #define FIELD_NS        16683333    /* 1001/60000 s */
+/* "Timestamps and buffer completion": a word 0 tick is 12 host ticks. */
+#define UST_TICK_NS     960
+/* A 525 frame: 858 * 525 samples at 13.5 MHz. */
+#define FRAME_525_NS    33366667
 
 static QTestState *qts;
 static char *flash_path;
@@ -198,6 +203,12 @@ static uint32_t ring_flags(unsigned pipe, unsigned index)
 static uint32_t ring_word0(unsigned pipe, unsigned index)
 {
     return ram_l((pipe ? RING1_HOST : RING0_HOST) + index * 0x80);
+}
+
+/* The board counter's tick count from word 0 of one entry to the next. */
+static uint32_t ust_ticks(uint32_t from, uint32_t to)
+{
+    return (to - from) & 0xffffff;
 }
 
 /* Read the next entry and clear VALID, as the driver's consumer does. */
@@ -758,7 +769,8 @@ static void test_dma_output_field(void)
     g_assert_cmphex(irq_seen(), ==, 0);
     qtest_clock_step(qts, 1);
     g_assert_cmphex(ring_flags(0, 0), ==, F_FIRST_DONE(1));
-    g_assert_cmphex(ring_word0(0, 0), ==, 1);
+    /* Word 0 is the board counter, zero at reset, a field's ticks on. */
+    g_assert_cmpuint(ring_word0(0, 0), ==, FIELD_NS / UST_TICK_NS);
     /* Video 1 belongs to the output pipe; the packet is vector | 0x100. */
     g_assert_cmphex(irq_seen(), ==, 0x142);
     /* The latch cleared on completion. */
@@ -838,12 +850,17 @@ static void test_dma_order_and_wrap(void)
         qtest_clock_step(qts, FIELD_NS);
         g_assert_cmphex(ring_pop(0) & ~F_PARITY, ==, F_VALID | F_FIELD);
     }
-    /* 23 fields in all, so the counter on the 23rd wrote entry 6. */
-    g_assert_cmphex(ring_word0(0, 6), ==, 23);
-    /* A pipe reset word restarts the counter. */
+    /* The 23rd field wrote entry 6: its word 0 is 23 field periods on. */
+    g_assert_cmpuint(ust_ticks(ring_word0(0, 5), ring_word0(0, 6)), >=,
+                     FIELD_NS / UST_TICK_NS);
+    g_assert_cmpuint(ust_ticks(ring_word0(0, 5), ring_word0(0, 6)), <=,
+                     FIELD_NS / UST_TICK_NS + 1);
+    /* A pipe reset word restarts the parity and leaves the counter alone. */
     wr(GIF(0x7c), 0);
     qtest_clock_step(qts, FIELD_NS);
-    g_assert_cmphex(ring_word0(0, ring_idx[0]), ==, 1);
+    g_assert_cmpuint(ust_ticks(ring_word0(0, (ring_idx[0] + 15) % 16),
+                               ring_word0(0, ring_idx[0])), <=,
+                     FIELD_NS / UST_TICK_NS + 1);
     /*
      * ... and the parity: 23 fields leave the count odd, which would not
      * carry it, so the flag here is the reset's.
@@ -906,7 +923,8 @@ static void test_ring_overrun_holds(void)
     ram_set_l(RING0_HOST + 4, 0);
     qtest_clock_step(qts, 1000 * 1000);
     g_assert_cmphex(ring_flags(0, 0), ==, F_FIRST_DONE(1));
-    g_assert_cmphex(ring_word0(0, 0), ==, 1);
+    /* The entry carries the counter of the field it reports, not its write. */
+    g_assert_cmpuint(ring_word0(0, 0), ==, FIELD_NS / UST_TICK_NS);
     g_assert_cmphex(irq_seen(), ==, 0x142);
     qtest_quit(qts);
 }
@@ -1230,6 +1248,91 @@ static void test_vbob_timing_record(void)
 }
 
 /*
+ * "Timestamps and buffer completion": the register at 0x80008c counts from the
+ * value last stored, one tick per 960 ns, and a store of 0 is what zeroes
+ * word 0 of the next entry's sample.
+ */
+static void test_ust_counter(void)
+{
+    start("");
+    set_gif_loaded();
+    map_pages();
+    program_interrupts(0x20100);
+    qtest_clock_step(qts, 5 * UST_TICK_NS);
+    wr(GIF(0x8c), 0);
+    g_assert_cmpuint(rd(GIF(0x8c)), ==, 0);
+    qtest_clock_step(qts, 1000 * UST_TICK_NS);
+    g_assert_cmpuint(rd(GIF(0x8c)), ==, 1000);
+    /* A field entry samples it: zeroed 1000 ticks before this field. */
+    arm_out(1, 0x1000);
+    qtest_clock_step(qts, FIELD_NS);
+    g_assert_cmpuint(ring_word0(0, 0), ==, 1000 + FIELD_NS / UST_TICK_NS);
+    /* Word 0 keeps 24 bits; the register keeps the rest. */
+    wr(GIF(0x8c), 0x1fffff0);
+    qtest_clock_step(qts, 100 * UST_TICK_NS);
+    g_assert_cmpuint(rd(GIF(0x8c)), ==, 0x1fffff0 + 100);
+    qtest_quit(qts);
+}
+
+/*
+ * "The data transfer" and "Timestamps and buffer completion": an interleaved
+ * 525 frame is one buffer, one slot, so a slot completes on every second
+ * field interrupt, each field posts an entry with its parity, and word 0
+ * advances by the frame period (33,366,667 ns) between completions, to
+ * within a counter tick.
+ */
+static void test_dma_525_frames(void)
+{
+    enum { FRAMES = 6 };
+    uint32_t done_w0[FRAMES], field_w0[2 * FRAMES];
+
+    start("-global sgi-xt-digvid.x-vbob-output-timing=3");
+    set_gif_loaded();
+    map_pages();
+    program_interrupts(0x20100);
+    arm_out(1, 0x1000);
+    for (unsigned f = 0; f < FRAMES; f++) {
+        for (unsigned half = 0; half < 2; half++) {
+            unsigned n = 2 * f + half;
+            uint32_t w0, flags;
+
+            qtest_clock_step(qts, FIELD_NS);
+            w0 = ring_word0(0, ring_idx[0]);
+            flags = ring_pop(0);
+            field_w0[n] = w0;
+            /* The first field of a stream carries parity 1; they alternate. */
+            if (half == 0) {
+                g_assert_cmphex(flags, ==, F_VALID | F_FIELD | F_PARITY);
+            } else {
+                /* One slot per frame: done on the second field only. */
+                g_assert_cmphex(flags, ==,
+                                F_VALID | F_FIELD | F_ONE | F_DONE(1));
+                done_w0[f] = w0;
+                /* The next buffer, armed as the driver does. */
+                wr(CTL_OUT, 0x2 | 0xea040 | 0x10000);
+            }
+        }
+    }
+    for (unsigned f = 1; f < FRAMES; f++) {
+        uint64_t ns = (uint64_t)ust_ticks(done_w0[f - 1], done_w0[f]) *
+                      UST_TICK_NS;
+
+        g_assert_cmpuint(ns, >, FRAME_525_NS - UST_TICK_NS);
+        g_assert_cmpuint(ns, <, FRAME_525_NS + UST_TICK_NS);
+    }
+    for (unsigned n = 1; n < 2 * FRAMES; n++) {
+        uint64_t ns = (uint64_t)ust_ticks(field_w0[n - 1], field_w0[n]) *
+                      UST_TICK_NS;
+
+        g_assert_cmpuint(ns, >, FIELD_NS - UST_TICK_NS);
+        g_assert_cmpuint(ns, <, FIELD_NS + UST_TICK_NS);
+    }
+    /* Armed once more than completed: one slot left, nothing stacked. */
+    g_assert_cmphex(rd(CTL_OUT) & 0xf, ==, 0x2);
+    qtest_quit(qts);
+}
+
+/*
  * "Abort": a control write with bit 4 posts slot-aborted for each armed
  * incomplete slot of the pipe in arming order, one entry each.
  */
@@ -1505,7 +1608,15 @@ static void test_vbob_timing_rows(void)
         qtest_clock_step(qts, c->field_ns - 1);
         g_assert_cmphex(ring_pop(0), ==, 0);
         qtest_clock_step(qts, 1);
-        g_assert_cmphex(ring_pop(0), ==, F_FIRST_DONE(1));
+        if (c->body[11] | c->body[12]) {
+            /* Interlaced: a buffer is a frame, done on the second field. */
+            g_assert_cmphex(ring_pop(0), ==, F_VALID | F_FIELD | F_PARITY);
+            qtest_clock_step(qts, c->field_ns);
+            g_assert_cmphex(ring_pop(0), ==,
+                            F_VALID | F_FIELD | F_ONE | F_DONE(1));
+        } else {
+            g_assert_cmphex(ring_pop(0), ==, F_FIRST_DONE(1));
+        }
         qtest_quit(qts);
     }
 }
@@ -1835,6 +1946,8 @@ int main(int argc, char **argv)
         { "early-property-change", test_early_property_change },
         { "vbob-timing-record", test_vbob_timing_record },
         { "dma-abort", test_dma_abort },
+        { "ust-counter", test_ust_counter },
+        { "dma-525-frames", test_dma_525_frames },
         { "widget-reset", test_widget_reset },
         { "vbob-genlock-references", test_vbob_genlock_references },
         { "vbob-nibbles", test_vbob_nibbles },
