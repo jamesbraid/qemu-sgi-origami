@@ -1273,6 +1273,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``ip27-prom-6.156``
    *IP27 node-board PROM*. Silicon Graphics. Firmware, cited by address. For Origin 200, Origin 2000 and Onyx2 IP27 node boards. Version 6.156. Banner ``SGI Version 6.156  built 11:27:56 AM Nov 18, 2003``. Found on IRIX 6.5.30 installation media, /usr/cpu/firmware/ip27prom.img. Hashed as the payload image. SHA-256 ``c2c69bf33c375b43ec7ac511fab41ddf595be1b6838ae717e58a9a1273437fdd``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-ip30-kernel-6-5-13f:
+
+``ip30-kernel-6.5.13f``
+   *IP30 kernel of IRIX 6.5.13f*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 installed kernel. Version 6.5.13. Found on IRIX 6.5.13f (maintenance release f) installation of the IP30 kernel, a linked image; addresses are virtual addresses in it. Hashed as the payload image. SHA-256 ``5ab52e7574ef157af434805d7251ee731691eea4a8f090da8b44b419aa348bcc``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-ip30-kernel-6-5-21:
 
 ``ip30-kernel-6.5.21``
