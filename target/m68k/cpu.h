@@ -149,6 +149,17 @@ typedef struct CPUArchState {
     int pending_vector;
     int pending_level;
 
+    /*
+     * HALT was executed on an ISA A only ColdFire part: interrupts do not
+     * wake it, a reset restarts it. Both are inferences (rated inferred):
+     * the MCF5206e manual (3.5.10, 15.2.1) does not say interrupts are
+     * ignored while halted, or that a reset restarts a core halted by
+     * HALT. A debug-module GO command may also leave the halted state;
+     * no debug module is modelled. The manual's "only a reset restarts a
+     * halted processor" is about the fault-on-fault halt, not HALT.
+     */
+    uint32_t cf_halted;
+
     /* Fields up to this point are cleared by a CPU reset */
     struct {} end_reset_fields;
 
