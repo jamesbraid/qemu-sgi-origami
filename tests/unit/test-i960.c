@@ -1702,6 +1702,47 @@ static void test_xint_dedicated(void)
     g_free(m);
 }
 
+/*
+ * A return from an interrupt (frame status 111) takes PC and AC from the
+ * interrupt record in memory (Rx manual 7.8, 8.2.9.1): a handler that
+ * rewrites its own record, as a thread switch in a dispatcher does, resumes
+ * with the rewritten values and not with the ones saved at entry.
+ */
+static void test_int_ret_rereads_record(void)
+{
+    Mach *m = mach_new();
+    Asm a = { m, CODE };
+    Asm h = { m, HANDLERS };
+
+    mach_setup(m, CODE);
+    /* the handler: store a new AC (condition code 001) into the record */
+    emit(&h, LRR(OP_SUBO, 12, G(15), R(4)));
+    ldc(&h, R(5), 0x1);
+    emit(&h, mema(M_ST, R(5), R(4), 0, true));
+    emit(&h, RRR(OP_MOV, G(15), 0, G(10)));
+    emit(&h, LRR(OP_ADDO, 1, G(6), G(6)));
+    emit(&h, ctrl(C_RET, 0));
+    set_vector(m, 0x32, HANDLERS);
+    wr32(m, CTRL_TABLE + 0x10, 3u << 12);
+    wr32(m, CTRL_TABLE + 0x1c,
+         (0xffu << 2) | (1u << I960_ICON_MO_SHIFT));
+    prelude(&a, 0);
+    ldc(&a, G(0), I960_MMR_IMSK);
+    ldc(&a, G(1), 0xff);
+    emit(&a, mema(M_ST, G(1), G(0), 0, true));
+    emit(&a, LRR(OP_HALT, 1, 0, 0));
+    HALT2(&a);
+    mach_boot(m);
+    i960_run(&m->cpu, 100000);
+    g_assert_true(m->cpu.halted);
+    g_assert_cmphex(m->cpu.ac & 7, !=, 1);
+    i960_set_xint(&m->cpu, 1 << 3);
+    mach_run(m);
+    g_assert_cmpuint(m->cpu.r[G(6)], ==, 1);
+    g_assert_cmphex(m->cpu.ac & 7, ==, 1);      /* the rewritten AC */
+    g_free(m);
+}
+
 static void test_xint_expanded_and_nmi(void)
 {
     Mach *m = mach_new();
@@ -2527,6 +2568,8 @@ int main(int argc, char **argv)
     g_test_add_func("/i960/int/pending-bits", test_sw_interrupt_pending_bits);
     g_test_add_func("/i960/int/nested", test_nested_interrupt);
     g_test_add_func("/i960/int/xint-dedicated", test_xint_dedicated);
+    g_test_add_func("/i960/int/ret-rereads-record",
+                    test_int_ret_rereads_record);
     g_test_add_func("/i960/int/xint-expanded-nmi", test_xint_expanded_and_nmi);
     g_test_add_func("/i960/int/intctl", test_intctl_inten_intdis);
     g_test_add_func("/i960/boot/ibr", test_ibr_boot);
