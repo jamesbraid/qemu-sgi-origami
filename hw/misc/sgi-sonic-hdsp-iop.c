@@ -413,7 +413,10 @@ static void timer_reg_write(SonicHDSPState *h, uint32_t addr, uint32_t val)
     timers_sync(h, now);
     switch (addr & 0xc) {
     case 0x0:
+        /* The count register is loaded from TRR when TRR is written. */
         t->trr = val;
+        t->tcr = val;
+        t->start_ns = now;
         break;
     case 0x4:
         t->tcr = val;
@@ -425,8 +428,8 @@ static void timer_reg_write(SonicHDSPState *h, uint32_t addr, uint32_t val)
         t->tcr = timer_count(h, n, now);
         t->start_ns = now;
         t->tmr = (val & ~1u);
-        if (!was && (val & 2) && (val & 4) && !t->tcr) {
-            t->tcr = t->trr;
+        if (!was && (val & 2)) {
+            t->tcr = t->trr;        /* enabling loads the count from TRR */
         }
         break;
     }

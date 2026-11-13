@@ -1199,7 +1199,11 @@ it; the contract below is what the firmware needs to run.
        the module's microsecond delay and timeouts read an elapsed-time
        service.
      - Two 32-bit timers as the manual describes, counting at the core
-       clock, interrupt on reload.
+       clock, interrupt on reload. The count register is loaded from the
+       reload register when it is written and when the timer is enabled, and
+       the timer interrupt latches only on a terminal count; a timer set to
+       the largest reload at bus clock over 8 does not interrupt for
+       minutes.
      - *inferred*
    * - I2C ``0x1680``-``0x1690``: ICR, ISR, ISAR, IDBR, ICCR
      - The operating system's driver table points at these five registers.
