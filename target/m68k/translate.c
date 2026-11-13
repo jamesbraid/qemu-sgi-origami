@@ -4503,6 +4503,11 @@ DISAS_INSN(halt)
         gen_exception(s, s->pc, EXCP_SEMIHOSTING);
         return;
     }
+    if (m68k_cf_isa_a_only(env)) {
+        /* Only ISA A only parts (MCF5206e) are modelled as staying halted. */
+        tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
+                       offsetof(CPUM68KState, cf_halted));
+    }
     tcg_gen_st_i32(tcg_constant_i32(1), tcg_env,
                    offsetof(CPUState, halted) - offsetof(M68kCPU, env));
     gen_exception(s, s->pc, EXCP_HLT);

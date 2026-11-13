@@ -78,7 +78,10 @@ static void m68k_restore_state_to_opc(CPUState *cs,
 #ifndef CONFIG_USER_ONLY
 static bool m68k_cpu_has_work(CPUState *cs)
 {
-    return cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
+    CPUM68KState *env = cpu_env(cs);
+
+    /* A halted ColdFire core does not take interrupts; reset restarts it. */
+    return !env->cf_halted && cpu_test_interrupt(cs, CPU_INTERRUPT_HARD);
 }
 #endif /* !CONFIG_USER_ONLY */
 
@@ -475,6 +478,40 @@ static bool fpu_needed(void *opaque)
            m68k_feature(&s->env, M68K_FEATURE_FPU);
 }
 
+static bool cf_halted_needed(void *opaque)
+{
+    M68kCPU *s = opaque;
+
+    return s->env.cf_halted;
+}
+
+/*
+ * The m68k vmstate does not carry the generic CPUState, so the halted flag
+ * that makes the main loop consult has_work is not migrated. Set it again
+ * here, or a halted core would run on after the load.
+ */
+static int cf_halted_post_load(void *opaque, int version_id)
+{
+    M68kCPU *s = opaque;
+
+    if (s->env.cf_halted) {
+        CPU(s)->halted = 1;
+    }
+    return 0;
+}
+
+static const VMStateDescription vmstate_cf_halted = {
+    .name = "cpu/cf_halted",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = cf_halted_needed,
+    .post_load = cf_halted_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(env.cf_halted, M68kCPU),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 typedef struct m68k_FPReg_tmp {
     FPReg *parent;
     uint64_t tmp_mant;
@@ -662,6 +699,7 @@ static const VMStateDescription vmstate_m68k_cpu = {
         &vmstate_cf_spregs,
         &vmstate_68040_mmu,
         &vmstate_68040_spregs,
+        &vmstate_cf_halted,
         NULL
     },
 };

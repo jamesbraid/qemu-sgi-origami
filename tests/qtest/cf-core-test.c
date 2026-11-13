@@ -11,6 +11,7 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define VECTOR_TABLE    0x00000
 #define CODE_BASE       0x01000
@@ -479,6 +480,181 @@ static void test_frame_misaligned(void)
     check_trap_frame(INITIAL_SP + 3, 7);
 }
 
+/*
+ * HALT is the end of the line: an interrupt cannot wake it, only a reset
+ * restarts the core.
+ */
+static void test_halt_stops_until_reset(void)
+{
+    QTestState *qts = start();
+    Asm a = { };
+    Asm h = { };
+
+    movei_d(&a, 0, 1);
+    move_d_abs(&a, 0, RESULTS + 4);
+    move_sr_imm(&a, 0x2000);
+    emit16(&a, 0x4ac8);     /* halt */
+    finish(&a, 0x66);
+    finish(&h, 0xd1);
+    set_vector(qts, 0, 70, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+
+    g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
+    /* Give the core time to reach the HALT, then ask for an interrupt. */
+    g_usleep(200 * 1000);
+    qtest_writel(qts, SB_LINE_LEVEL, 3);
+    qtest_writel(qts, SB_LINE_VECTOR, 70);
+    qtest_writel(qts, SB_LINE_ASSERT, 1);
+    g_usleep(500 * 1000);
+    g_assert_cmphex(qtest_readl(qts, RESULTS), ==, 0);
+    g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 0);
+
+    /* A reset restarts it. */
+    qtest_writel(qts, SB_LINE_ASSERT, 0);
+    qtest_writel(qts, RESULTS + 4, 0);
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
+    qtest_quit(qts);
+}
+
+/* Load a program that reports in, runs the HALT and would report again. */
+static void load_halt_program(QTestState *qts)
+{
+    Asm a = { };
+    Asm h = { };
+
+    movei_d(&a, 0, 1);
+    move_d_abs(&a, 0, RESULTS + 4);
+    move_sr_imm(&a, 0x2000);
+    emit16(&a, 0x4ac8);     /* halt */
+    finish(&a, 0x66);
+    finish(&h, 0xd1);
+    set_vector(qts, 0, 70, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+}
+
+static void raise_line(QTestState *qts)
+{
+    qtest_writel(qts, SB_LINE_LEVEL, 3);
+    qtest_writel(qts, SB_LINE_VECTOR, 70);
+    qtest_writel(qts, SB_LINE_ASSERT, 1);
+}
+
+/*
+ * An ISA A only part stays halted when an interrupt arrives. Later parts
+ * are not changed: the interrupt wakes them and the handler runs.
+ */
+static void test_halt_then_interrupt(const void *cpu)
+{
+    QTestState *qts = start_cpu(cpu);
+
+    load_halt_program(qts);
+    g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
+    /* Give the core time to reach the HALT, then ask for an interrupt. */
+    g_usleep(200 * 1000);
+    raise_line(qts);
+    if (!strcmp(cpu, "m5206")) {
+        g_usleep(500 * 1000);
+        g_assert_cmphex(qtest_readl(qts, RESULTS), ==, 0);
+        g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 0);
+    } else {
+        g_assert_cmphex(wait_result(qts, RESULTS), ==, 0xd1);
+        g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 1);
+    }
+    qtest_quit(qts);
+}
+
+/* A reset leaves the halted state for good: STOP later wakes normally. */
+static void test_halt_reset_then_stop(void)
+{
+    QTestState *qts = start();
+    Asm b = { };
+
+    load_halt_program(qts);
+    g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
+    g_usleep(200 * 1000);
+
+    /* After the reset: report in, then wait in STOP for the interrupt. */
+    movei_d(&b, 0, 2);
+    move_d_abs(&b, 0, RESULTS + 4);
+    emit16(&b, 0x4e72);     /* stop #0x2000 */
+    emit16(&b, 0x2000);
+    finish(&b, 0x77);
+    qtest_memwrite(qts, CODE_BASE, b.buf, b.len);
+    qtest_writel(qts, RESULTS + 4, 0);
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 2);
+    g_usleep(200 * 1000);
+    raise_line(qts);
+    g_assert_cmphex(wait_result(qts, RESULTS), ==, 0xd1);
+    qtest_quit(qts);
+}
+
+/* Wait until a migration command on this side has finished. */
+static void wait_migration_done(QTestState *qts)
+{
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+
+    for (;;) {
+        QDict *rsp = qtest_qmp(qts, "{'execute': 'query-migrate'}");
+        QDict *ret = qdict_get_qdict(rsp, "return");
+        const char *status = qdict_haskey(ret, "status") ?
+            qdict_get_str(ret, "status") : "none";
+        bool done = !strcmp(status, "completed");
+
+        g_assert_cmpstr(status, !=, "failed");
+        qobject_unref(rsp);
+        if (done) {
+            return;
+        }
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(10 * 1000);
+    }
+}
+
+/*
+ * A halted core is still halted after its state is saved and loaded: the
+ * interrupt that arrives afterwards must not run, and the instruction
+ * after the HALT must not execute.
+ */
+static void test_halt_survives_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("cf-core-test-XXXXXX", NULL);
+    g_autofree char *file = g_build_filename(dir, "state", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s", file);
+    QTestState *src = start();
+    QTestState *dst;
+
+    load_halt_program(src);
+    g_assert_cmphex(wait_result(src, RESULTS + 4), ==, 1);
+    g_usleep(200 * 1000);
+    qtest_qmp_assert_success(src, "{'execute': 'stop'}");
+    qtest_qmp_assert_success(src, "{'execute': 'migrate', 'arguments': "
+                             "{'uri': %s}}", uri);
+    wait_migration_done(src);
+    qtest_quit(src);
+
+    dst = qtest_initf("-machine cf-core-test -cpu m5206 -accel tcg -S "
+                      "-incoming %s", uri);
+    wait_migration_done(dst);
+    raise_line(dst);
+    qtest_qmp_assert_success(dst, "{'execute': 'cont'}");
+    g_usleep(500 * 1000);
+    g_assert_cmphex(qtest_readl(dst, RESULTS), ==, 0);
+    g_assert_cmpuint(qtest_readl(dst, SB_ACCEPT_COUNT), ==, 0);
+
+    /* A reset still restarts it. */
+    qtest_writel(dst, SB_LINE_ASSERT, 0);
+    qtest_writel(dst, RESULTS + 4, 0);
+    qtest_qmp_assert_success(dst, "{'execute': 'system_reset'}");
+    g_assert_cmphex(wait_result(dst, RESULTS + 4), ==, 1);
+    qtest_quit(dst);
+    unlink(file);
+    rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -503,5 +679,18 @@ int main(int argc, char **argv)
     qtest_add_func("cf-core/irq-without-provider", test_irq_without_provider);
     qtest_add_func("cf-core/frame-aligned", test_frame_aligned);
     qtest_add_func("cf-core/frame-misaligned", test_frame_misaligned);
+    qtest_add_func("cf-core/halt-stops-until-reset",
+                   test_halt_stops_until_reset);
+    qtest_add_data_func("cf-core/halt-interrupt-m5206", "m5206",
+                        test_halt_then_interrupt);
+    qtest_add_data_func("cf-core/halt-interrupt-m5208", "m5208",
+                        test_halt_then_interrupt);
+    qtest_add_data_func("cf-core/halt-interrupt-cfv4e", "cfv4e",
+                        test_halt_then_interrupt);
+    qtest_add_data_func("cf-core/halt-interrupt-any", "any",
+                        test_halt_then_interrupt);
+    qtest_add_func("cf-core/halt-reset-then-stop", test_halt_reset_then_stop);
+    qtest_add_func("cf-core/halt-survives-migration",
+                   test_halt_survives_migration);
     return g_test_run();
 }
