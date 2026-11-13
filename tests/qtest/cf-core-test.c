@@ -418,6 +418,67 @@ static void test_irq_without_provider(void)
     qtest_quit(qts);
 }
 
+/* movea.l #imm,a7 */
+static void movea_a7_imm(Asm *a, uint32_t imm)
+{
+    emit16(a, 0x2e7c);
+    emit32(a, imm);
+}
+
+/* The exception frame for TRAP #0 with the stack pointer at sp. */
+static void check_trap_frame(uint32_t sp, uint32_t format)
+{
+    QTestState *qts = start();
+    Asm a = { };
+    Asm h = { };
+    uint32_t trap_pc;
+
+    movea_a7_imm(&a, sp);
+    trap_pc = CODE_BASE + a.len;
+    trap(&a, 0);
+    move_a7_d(&a, 3);
+    move_d_abs(&a, 3, RESULTS + 0x18);
+    finish(&a, 0x99);
+
+    move_a7_d(&h, 5);
+    move_d_abs(&h, 5, RESULTS + 0x10);
+    move_sp_d(&h, 2);
+    move_d_abs(&h, 2, RESULTS + 4);
+    emit16(&h, 0x2c2f);     /* move.l 4(a7),d6 */
+    emit16(&h, 4);
+    move_d_abs(&h, 6, RESULTS + 8);
+    rte(&h);
+    set_vector(qts, 0, 32, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+
+    g_assert_cmphex(wait_result(qts, RESULTS), ==, 0x99);
+    /* Format and vector fields, status register as it was at the trap. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 4), ==,
+                    (format << 28) | (32 << 18) | 0x2700);
+    /* A TRAP stacks the address of the next instruction. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 8), ==, trap_pc + 2);
+    /* The frame is two longwords at a longword boundary below the stack. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 0x10), ==,
+                    (sp & ~3) - 8);
+    /* RTE gives back the stack pointer as it was, odd bits included. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 0x18), ==, sp);
+    qtest_quit(qts);
+}
+
+static void test_frame_aligned(void)
+{
+    check_trap_frame(INITIAL_SP, 4);
+}
+
+/* The format field records how far the stack pointer was from alignment. */
+static void test_frame_misaligned(void)
+{
+    check_trap_frame(INITIAL_SP + 1, 5);
+    check_trap_frame(INITIAL_SP + 2, 6);
+    check_trap_frame(INITIAL_SP + 3, 7);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -440,5 +501,7 @@ int main(int argc, char **argv)
     qtest_add_func("cf-core/irq-masked-then-taken-and-rte",
                    test_irq_masked_then_taken_and_rte);
     qtest_add_func("cf-core/irq-without-provider", test_irq_without_provider);
+    qtest_add_func("cf-core/frame-aligned", test_frame_aligned);
+    qtest_add_func("cf-core/frame-misaligned", test_frame_misaligned);
     return g_test_run();
 }
