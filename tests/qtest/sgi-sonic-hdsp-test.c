@@ -1884,6 +1884,76 @@ static void test_system_reset_dsp(void)
     card_quit(&c);
 }
 
+/*
+ * The 2K words at 0xfff000 are one RAM seen through both X and Y and shared
+ * by the four DSPs: the card's DSP diagnostic ("4-port memory") has every
+ * DSP write a pattern through X and read it back through Y, expecting the
+ * last writer's.  Past the 2K words nothing is backed and reads give zero.
+ */
+static void test_dsp_io_ram(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t out[4];
+    const uint32_t writer[] = {
+        /* 0x100 */ 0x54f400, 0x123456,         /* move #$123456,a1 */
+        /* 0x102 */ 0x547000, 0xfff7ff,         /* move a1,x:$fff7ff */
+        /* 0x104 */ 0x54f400, 0x654321,
+        /* 0x106 */ 0x547000, 0xfff800,         /* just past the RAM */
+        /* 0x108 */ DSP_WAIT,
+    };
+    const uint32_t reader[] = {
+        /* 0x100 */ 0x5cf000, 0xfff7ff,         /* move y:$fff7ff,a1 */
+        /* 0x102 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x103 */ 0x5cf000, 0xfff800,
+        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x106 */ DSP_WAIT,
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_release(&c, 1);
+    dsp_boot(&c, 0, 0x100, writer, ARRAY_SIZE(writer));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    dsp_boot(&c, 1, 0x100, reader, ARRAY_SIZE(reader));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 2);
+    g_assert_cmphex(out[0], ==, 0x123456);
+    g_assert_cmphex(out[1], ==, 0);
+    card_quit(&c);
+}
+
+/*
+ * The external SRAM at 0x400000 is one memory in X and Y: the card's SRAM
+ * diagnostic writes through X and reads back through Y, and its aliasing
+ * pass uses addresses up to 0x420003.  Past 256K words nothing is backed.
+ */
+static void test_dsp_ext_sram_xy(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t out[4];
+    const uint32_t prog[] = {
+        /* 0x100 */ 0x54f400, 0x00abcd,
+        /* 0x102 */ 0x547000, 0x420003,         /* move a1,x:$420003 */
+        /* 0x104 */ 0x54f400, 0x00dcba,
+        /* 0x106 */ 0x547000, 0x440000,         /* past the SRAM */
+        /* 0x108 */ 0x54f400, 0,
+        /* 0x10a */ 0x5cf000, 0x420003,         /* move y:$420003,a1 */
+        /* 0x10c */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x10d */ 0x5cf000, 0x440000,
+        /* 0x10f */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x110 */ DSP_WAIT,
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 2);
+    g_assert_cmphex(out[0], ==, 0xabcd);
+    g_assert_cmphex(out[1], ==, 0);
+    card_quit(&c);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1934,6 +2004,8 @@ int main(int argc, char **argv)
                    test_dsp_host_command_priority_off);
     qtest_add_func("/sgi-sonic-hdsp/dsp/boot-zero-count",
                    test_dsp_boot_zero_count);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
     qtest_add_func("/sgi-sonic-hdsp/sec-config-subword",
                    test_sec_config_subword);
     qtest_add_func("/sgi-sonic-hdsp/system-reset-dsp", test_system_reset_dsp);
