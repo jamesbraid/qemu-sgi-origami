@@ -4,6 +4,7 @@
 #include "qemu/osdep.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/1wire/ds2502.h"
+#include "hw/1wire/ds2505.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
@@ -318,16 +319,29 @@ static bool sgi_xio_board_attach_part(SGIXioBoardState *board,
     uint8_t rom[SGI_BRIDGE_ONEWIRE_RECORD_SIZE];
     uint64_t serial = known->serial;
     DeviceState *part;
+    bool ds2505;
 
     if (bc->identity_record) {
         bc->identity_record(board, known, &stored, &serial);
     }
     sgi_bridge_onewire_build_record(rom, &stored);
-    part = qdev_new(TYPE_ONEWIRE_DS2502);
+    /*
+     * The family code picks the part: 0x0b is a DS2505, whose memory
+     * commands answer no header CRC and close each status page with a
+     * CRC-16; any other family here is a DS2502, which echoes a CRC-8 first.
+     * Presenting a DS2505 family code on the DS2502 model sends a reader the
+     * wrong framing.
+     */
+    ds2505 = identity->family == SGI_XIO_BOARD_FAMILY_DS2505;
+    part = qdev_new(ds2505 ? TYPE_ONEWIRE_DS2505 : TYPE_ONEWIRE_DS2502);
     object_property_add_child(OBJECT(board), known->child_name, OBJECT(part));
     qdev_prop_set_uint8(part, "family", identity->family);
     qdev_prop_set_uint64(part, "serial", serial);
-    ds2502_set_image(part, rom, sizeof(rom));
+    if (ds2505) {
+        ds2505_set_image(part, rom, sizeof(rom));
+    } else {
+        ds2502_set_image(part, rom, sizeof(rom));
+    }
     return qdev_realize_and_unref(part, BUS(board->onewire_bus), errp);
 }
 

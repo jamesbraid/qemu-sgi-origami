@@ -134,6 +134,27 @@ fixed-offset record of :ref:`sgi-bridge-onewire` with ``board-name``
 *approximation*. A capture of the register while a read runs, or the
 accessor routine's source layout, would settle it.
 
+The part is a DS2505, family code ``0x0b``, modelled in ``hw/1wire/ds2505.c``
+(not the DS2502 model, which answers a different framing). The kernel's NIC
+reader asks the part for Read Status (``0xaa``) at ``0x0100`` first, eight
+bytes of the redirection map followed by a CRC-16, *observed* in a one-wire
+trace. A guest run on a build that fitted the DS2502 model there got a CRC-8
+echo (``0xc2``) in the first data position and logged ``invalid crc16 reading
+redirection map page 0``, *observed*. The DS2505 datasheet, Read
+Status, :src:`ds2505-datasheet p. 7` and :src:`ds2505-datasheet p. 11`,
+*established*: the command is followed by two address bytes, the data bytes
+run to the end of an 8-byte status page, and a 16-bit CRC follows. The first
+page's CRC is the result of clearing the generator and shifting in the
+command byte, both address bytes and that page's data bytes; each later
+page's CRC covers only its own bytes. The CRC is sent complemented
+(:src:`ds2505-datasheet`, the CRC-16 description). An unprogrammed status page
+reads ``0xff``. For ``aa 00 01`` and eight ``0xff`` bytes the generator ends
+at ``0xce6f`` and the part sends ``0x90`` then ``0x31``; later pages of
+eight ``0xff`` send ``0xbe`` then ``0x7b``. The datasheet does not state the
+byte order of the CRC; low byte first is the model's choice, matching the
+Bridge, *approximation*. The DS2505 echoes no CRC before its data, so a
+Read Memory at ``0x0000`` starts with the first record byte.
+
 The kernel builds the NIC text from the one-wire part as
 ``Part:...;Name:...;Serial:...;Revision:...;Group:...;Capability:...;
 Variety:...;Laser:...;``, :src:`dm2-driver-ip30-1.1.3 0x5e8`, *software

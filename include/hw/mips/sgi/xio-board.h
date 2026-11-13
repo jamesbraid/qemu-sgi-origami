@@ -215,6 +215,9 @@ typedef struct SGIXioBoardIdentityPart {
     bool fitted;
 } SGIXioBoardIdentityPart;
 
+/* The one-wire family code of a DS2505-class part; DS2502 is 0x09. */
+#define SGI_XIO_BOARD_FAMILY_DS2505 0x0b
+
 /*
  * A board class's one-wire identity chain: the family code its parts
  * answer with, the board's own part, whose part number "board-part" can
