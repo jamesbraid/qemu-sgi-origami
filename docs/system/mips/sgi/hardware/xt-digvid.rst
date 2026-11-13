@@ -1027,13 +1027,16 @@ Other core words:
        ``0x47494601``, an *approximation*, since only the upper 24 bits
        are tested.
    * - ``0x80008c``
-     - UST and media stream counter
-     - Stored 0 immediately before the host UST is sampled. The role is
-       the board's own timestamp counter, *inferred* from the pattern and
-       the driver treating it as the board's own clock. A model keeps it as storage and
-       does not count.
-     - *software expectation* for the store; *approximation* for the
-       model.
+     - UST counter
+     - Stored 0 immediately before the host UST is sampled
+       (:src:`dm2-driver-ip30-1.1.3 0xa034`). The role is the board's own
+       timestamp counter that word 0 of each status entry samples,
+       *inferred* from that pattern and the driver treating word 0 as the
+       board's own clock (:ref:`sgi-xt-digvid-ust`). The register is never
+       read. A model counts from the stored value, one tick per 960 ns, in
+       32 bits, and reads it back.
+     - *software expectation* for the store; *inferred* for the role;
+       *approximation* for the model's width and rate.
 
 Packer, unpacker, VIF, HDOC and the colour converters
 -----------------------------------------------------
@@ -1460,15 +1463,14 @@ pipe sets the valid bit and then video enable
 the output pipe needs genlock lock unless the source is internal
 (:ref:`sgi-xt-digvid-vbob`); both gates are the library's.
 
-The stream counter. The library picks an initial device counter, 100 for a
+The field counter. The library picks an initial device counter, 100 for a
 field-1-first or progressive stream and 101 otherwise, and the driver
-holds it in memory as its field counter (:src:`dm2-library-1.1.3
-0x40bfdc`, :src:`dm2-driver-ip30-1.1.3 0x15de4`, *software expectation*).
-No register carries it. The hardware counter in word 0 of each status
-entry has an unknown value at stream start: the driver neither writes it
-nor clears its extension. The model starts it at 0 when the pipe reset
-word is stored and counts one per field interrupt on the pipe, an
-*approximation*; a capture of word 0 across a start would settle it.
+holds it in memory as its field counter, which it adds one to for each
+field interrupt entry and reports as the buffer's media stream counter
+(:src:`dm2-library-1.1.3 0x40bfdc`, :src:`dm2-driver-ip30-1.1.3 0x15de4`,
+:src:`dm2-driver-ip30-1.1.3 0x350f0`, *software expectation*). No register
+carries it. Word 0 of each status entry is a different quantity, the
+board's timestamp (:ref:`sgi-xt-digvid-ust`).
 
 Field parity. After each field interrupt of an interlaced pipe the driver
 adds one to its counter and compares the counter's low bit with the
@@ -1492,13 +1494,23 @@ on an input pipe lets them abort the stream.
 The data transfer
 ~~~~~~~~~~~~~~~~~
 
-The extent of a slot's transfer, the line order, the interleave and the
-packing are fixed by the raster registers and the loaded packer and
-unpacker, and none of them is interpreted by this page's sources; the
-video path is not run. A model completes an armed slot on a field
-boundary of its pipe, validates the map RAM entry for the page that holds
-the slot's first start address, and transfers no payload bytes, an
-*approximation*. Output frames are discarded and input buffers keep their
+The driver arms one slot for each buffer the library queues, never one
+for each field. A buffer is a frame when the path is interleaved, which is
+the mode the shipped confidence test uses, and a field when it is
+single-field, which takes two buffers and two slots to the frame
+(:src:`dm2-library-1.1.3 0x409e50`, :src:`dm2-driver-ip30-1.1.3 0x2a338`,
+*software expectation*). The driver never reads the size the library
+derives for the buffer. The extent of a slot's transfer, the line order,
+the interleave and the packing are fixed by the raster registers and the
+loaded packer and unpacker, and none of them is interpreted by this
+page's sources; the video path is not run. A model completes an armed slot
+on the last field interrupt of a frame of its pipe: every second one for
+an interlaced timing, every one for a progressive timing and before any
+timing is known. It validates the map RAM entry for the page that holds the slot's
+first start address, and transfers no payload bytes, an *approximation*.
+A single-field path, which no register tells the model apart, completes a
+slot per two fields too, so it runs at half the rate the driver expects,
+an *approximation*. Output frames are discarded and input buffers keep their
 previous content. What a slot transfer reads and writes would be settled
 by decoding the raster registers against the manual's packing tables
 (:src:`007-4317-001 5`, :src:`007-4317-001 6`). The field period is taken
@@ -1570,7 +1582,10 @@ copies sees whole entries.
      - entry present
    * - 1
      - flag 1
-     - passed to completion as a boolean; meaning *unknown*
+     - passed to completion as a boolean, which it compares with the low
+       bit of the driver's field counter to choose the stamps of an
+       interleaved frame's completion (:ref:`sgi-xt-digvid-ust`); meaning
+       *unknown*
    * - 2
      - input off
      - pipe 1: input signal absent
@@ -1616,9 +1631,12 @@ expectation*, the names' hardware meaning is *inferred*, and flag 1, field
 parity and current-slot are *unknown*. The driver handles slot-done and slot-aborted bits in
 slot order starting at its own counter, so the board must report
 completions in the order the slots were armed. A model reports slot done for
-the slot it completes, field parity as the low bit of the number of field
-interrupts it has raised on the pipe, flag 1 as 0 and the current-slot bits as
-0, an *approximation*.
+the slot it completes on the field entry that ends the buffer's frame,
+field parity as the low bit of the number of field interrupts it has
+raised on the pipe, flag 1 on that entry as the parity flag of the entry
+before it when the timing is interlaced and otherwise 0, and the
+current-slot bits as 0, an *approximation*. Word 0 is the board's
+timestamp counter when the entry was posted (:ref:`sgi-xt-digvid-ust`).
 
 When the input pipe's signal changes the driver reads two bits: input change
 with input off is a lost signal, input change alone a gained one, input off
@@ -1626,6 +1644,100 @@ alone is logged while DMA runs. The output pipe has no sync flag,
 *software expectation*. A model raises input change|input off when the
 virtual endpoint's input signal disappears and input change when it appears,
 an *approximation* (:ref:`sgi-xt-digvid-vbob`).
+
+.. _sgi-xt-digvid-ust:
+
+Timestamps and buffer completion
+--------------------------------
+
+The media stamps the library reports for a completed buffer are built by the
+driver from the ring, not by the library
+(:src:`dm2-library-1.1.3 0x40d494`, *software expectation*):
+
+- UST. Word 0 of a field interrupt entry is sign- and width-extended from
+  24 bits to 64, multiplied by 12 and added to the host's UST sampled when
+  the driver stored 0 to ``0x80008c``, and the sum is converted to
+  nanoseconds by a host kernel routine
+  (:src:`dm2-driver-ip30-1.1.3 0x10dc8`,
+  :src:`dm2-driver-ip30-1.1.3 0x316dc`,
+  :src:`dm2-driver-ip30-1.1.3 0x9ff4`, *software expectation*). Word 0 is a
+  UST tick count, not a media stream counter. No host timestamp is in the
+  ring. That the unit is nanoseconds follows from the library storing the
+  value unchanged and the confidence test comparing it with
+  33.37 ms, *inferred*. The driver also restarts the counter at every
+  transfer start and warns when the host's UST has moved more than
+  167,772 ticks from the board's, so the counter and the host's UST are
+  expected to run in step.
+- The tick. A word 0 tick is 12 host UST ticks (*software expectation*).
+  The host UST tick is not stated by any shipped object. The model takes
+  80 ns, which the guest then reports as 960 ns per word 0 tick, so a word 0
+  step of one field period (16,683,333 ns) is 17,378 ticks. The 80 ns host
+  tick is *inferred* from one guest observation: an earlier model, whose
+  two stamps had word 0 values 2 apart, showed the driver reporting a
+  1,920 ns difference. It is corroborated by the 12.5 MHz (80 ns) HEART
+  counter, *established* for revision F (:ref:`sgi-heart-timer`), but only
+  on the assumption that the IP30 host UST is that counter, which no
+  shipped object states. Word 0 is 24 bits, so
+  the counter wraps about every 16.1 s and the driver's extension follows
+  it; the shipped driver does not check that a wrap takes longer than a
+  field. A model counts the register in 32 bits and word 0 keeps its low 24,
+  an *approximation*.
+- MSC. The media stream counter is the driver's field counter
+  (:ref:`sgi-xt-digvid-pipes`), one for each field interrupt entry, not
+  DONE bits and not an entry count
+  (:src:`dm2-driver-ip30-1.1.3 0x350f0`, *software expectation*). The
+  completion routine runs before the field interrupt step of its own
+  entry. For an interleaved frame it takes the stamps of the field
+  counter and word 0 as they stood after the last field interrupt it
+  has processed, or the previous pair, or an extrapolation, depending on
+  flag 1 against the counter's low bit and on whether the last field
+  interrupt was processed less than 1 ms before
+  (:src:`dm2-driver-ip30-1.1.3 0x33f30`,
+  :src:`dm2-driver-ip30-1.1.3 0x340a4`,
+  :src:`dm2-driver-ip30-1.1.3 0x33c30`, *software expectation*). Two
+  completions handled in one service pass therefore get identical stamps:
+  the second buffer reports a difference of 0 in both. A model keeps every
+  buffer's completion in an entry of its own, a frame of two field entries
+  apart, so each is handled in its own service pass.
+- What the confidence test expects. Consecutive completed buffers of the
+  525 output must differ by exactly 2 in MSC and by more than 0 and at
+  most 33,378,000 ns in UST; the frame period of 858 by 525 samples at
+  13.5 MHz is 33,366,667 ns and passes. The test reads the ten buffers
+  after the first
+  (:src:`dm2-ust-test-1.1.3 0x100012d0`, *software expectation*). The
+  model's counter steps by 34,756 or 34,757 ticks between completions,
+  33,365,760 or 33,366,720 ns, within one tick of the period. A field
+  entry is stamped with the time its field was due, and the next field is
+  due one period after the last, so the host's timer latency does not
+  reach the counter: a guest run that stamped with the time the timer ran
+  saw frame steps of 33.39 to 33.42 ms and failed the 33,378,000 ns limit.
+- Flag 1. The model sets it on the completing entry of an interlaced
+  frame to the parity flag of the field entry before it, an
+  *approximation*; what flag 1 means to the board is *unknown*. Left 0,
+  the completion takes the stamps of the field interrupt before it, which
+  is the stamp state the contract table gives for a flag that differs
+  from the counter's low bit and needs no freshness test. In a guest run
+  that left the first completed buffer's stamp at the driver's
+  start-of-stream state, so the first checked step was 39.15 ms and the
+  UST check failed (the later steps were one frame). Set to the previous
+  parity, the first step is one frame. Which value the board writes, and
+  what the driver holds in its previous-stamp state before the first field
+  interrupt, are *unknown*.
+  The previous-parity value is a known limit: it makes the completion
+  take the (field counter, word 0) pair of the field interrupt before it
+  only through the driver's 1 ms freshness test, so the UST check passes
+  only if the guest services a frame's first field entry before the
+  completion entry, within 1 ms of the driver's host time. If both are
+  serviced in one pass (the same-pass case in the MSC bullet above), the
+  stamps become the extrapolated pair (field counter less 1, twice the
+  previous word 0 less the current) and deltaMSC is not 2.
+- Frame position. Completion is locked to the absolute count of field
+  interrupts on the pipe, not to the arming of the slot, so a slot armed
+  after an odd field completes one field later than one armed after an
+  even field. The pipe reset word restarts the count, an *approximation*.
+- Not modelled. A path that is single-field takes two buffers for a frame
+  and completes at twice the rate the model gives it; the model cannot
+  tell it from an interleaved path (:ref:`sgi-xt-digvid-pipes`).
 
 .. _sgi-xt-digvid-int:
 
@@ -2417,12 +2529,12 @@ an *approximation*; the last column says what would settle it.
    * - Widget reset
      - XG block back to zero, FPGAs stay configured, map RAM invalid
      - what the reset does to the XG block and the FPGAs
-   * - Stream counter and field parity
-     - word 0 starts at 0 at the pipe reset word and counts field
-       interrupts; the parity flag is 1 on the first field interrupt and
-       alternates
-     - a capture of word 0 across a start; the parity polarity against a
-       known source
+   * - Timestamp counter and field parity
+     - word 0 samples a 32-bit counter that ticks every 960 ns, from the
+       value last stored at ``0x80008c`` and from 0 at reset; the parity
+       flag is 1 on the first field interrupt and alternates
+     - a capture of word 0 against a known clock; the host's UST tick; the
+       parity polarity against a known source
    * - Interrupt gating
      - a status entry raises its pipe's video interrupt when the
        vector word's enable bit is set; control bit 16 is stored and
@@ -2432,8 +2544,10 @@ an *approximation*; the last column says what would settle it.
      - a write of the vector to the destination address
      - a transaction capture
    * - Slot completion and payload
-     - one slot per field boundary in arming order; the first start
-       address's page is checked against the map RAM; no payload bytes
+     - one slot per frame in arming order, a frame being two field
+       interrupts for an interlaced timing and one otherwise; the first
+       start address's page is checked against the map RAM; no payload
+       bytes
      - decoding the raster registers against the packing tables
    * - Field period
      - derived from the latest timing record (line period from the
@@ -2442,8 +2556,11 @@ an *approximation*; the last column says what would settle it.
        1001/60000 s before any record
      - the VBOB's output against a known record
    * - Status entry body and flags
-     - word 0 the 24-bit field counter, flag 1 as 0, field parity the low bit of the
-       field-interrupt count, current-slot 0, bytes 8 to 127 zero
+     - word 0 the low 24 bits of the timestamp counter when the entry
+       was posted, flag 1 the previous field entry's parity on the
+       completing entry of an interlaced frame and 0 otherwise, field
+       parity the low bit of the field-interrupt count, current-slot 0,
+       bytes 8 to 127 zero
      - a capture of the ring
    * - Ring overrun
      - hold the pending entry until the host clears VALID
@@ -2452,7 +2569,8 @@ an *approximation*; the last column says what would settle it.
      - store of 0 restarts the ring at entry 0
      - a capture of the first status write after a reset
    * - Pipe reset words ``0x80006c``, ``0x80007c``
-     - restart the completion counter
+     - restart the field-interrupt count that gives the parity and the
+       frame position; the timestamp counter is untouched
      - the interrupt service's use of the counter
    * - Transmit ack timing
      - a link transmit done entry in the ring of the message's pipe, in the
@@ -2546,8 +2664,9 @@ register concerned.
   ``0x80200c``, bit 0) is set or a slot is armed, and the input pipe only
   with an input signal. The output pipe's lock gate is the library's, not
   the board's. One status entry carries the field interrupt, its parity and
-  the completed or aborted slot. The stream counter in word 0 counts fields
-  from one; the pipe reset word restarts it and the parity.
+  the completed or aborted slot. Word 0 is the board's timestamp counter;
+  the pipe reset word restarts the parity and the frame position, not the
+  counter.
 - Status entries and VBOB notifications are written only once the GIF is
   configured and the pipe's ring page has a valid map RAM entry; before
   that they are dropped without an error, so changing the endpoint's
@@ -2639,6 +2758,5 @@ The page states these as unsupported, each *unknown* or outside scope:
   invalid-entry error.
 - The kernel's simulation-mode ioctls (Discreet's driver routes them to a
   stub), SGI's driver log and custom-format commands.
-- UST accuracy: the board's media stream counter is a field counter, the
-  UST stamp at the field interrupt is the host's clock, and the board's
-  own UST counter at ``0x80008c`` is storage.
+- UST accuracy: the counter's rate and its relation to the host's UST are
+  the model's (:ref:`sgi-xt-digvid-ust`).

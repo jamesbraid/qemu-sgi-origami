@@ -6,7 +6,8 @@
  * The board is one widget on a Crossbow option port. The model has the
  * widget and XG registers, the map RAM, the FPGA programming register and
  * the load handshake of all eight FPGAs, the GIF register file, DMA control
- * with one slot completed per field, the status ring and its interrupts, and
+ * with one slot completed per buffer, the status ring and its interrupts, the
+ * board's timestamp counter, and
  * the VBOB message channel with genlock reporting. It runs no FPGA image and
  * moves no video payload.
  *
@@ -132,6 +133,7 @@ OBJECT_DECLARE_TYPE(DM2State, DM2Class, SGI_XT_DIGVID)
 #define RING_BOARD_ADDR_OUT     0x8000000u
 #define RING_BOARD_ADDR_IN      0x9000000u
 #define RING_FLAG_VALID         BIT(0)
+#define RING_FLAG_ONE           BIT(1)
 #define RING_FLAG_INPUT_OFF     BIT(2)
 #define RING_FLAG_INPUT_CHANGE  BIT(5)
 #define RING_FLAG_PARITY        BIT(6)
@@ -140,7 +142,13 @@ OBJECT_DECLARE_TYPE(DM2State, DM2Class, SGI_XT_DIGVID)
 #define RING_FLAG_SLOT_ABORTED(k) BIT(12 + (k))
 #define RING_FLAG_LINK_TX       BIT(18)
 #define RING_FLAG_LINK_RX       BIT(19)
-#define STREAM_COUNTER_MASK     0xffffff
+/*
+ * "Timestamps and buffer completion": word 0 of an entry samples the board's
+ * 24-bit timestamp counter, which the driver scales by 12 into host ticks.
+ * One counter tick is 12 host ticks of 80 ns.
+ */
+#define UST_MASK                0xffffff
+#define UST_TICK_NS             960
 /* How often a held status entry looks at the host's VALID bit again. */
 #define RING_POLL_NS            (1 * SCALE_MS)
 
@@ -175,6 +183,7 @@ OBJECT_DECLARE_TYPE(DM2State, DM2Class, SGI_XT_DIGVID)
 
 typedef enum {
     GR_PLAIN,
+    GR_UST,
     GR_ID,
     GR_SELECT,
     GR_CTL_OUT,
@@ -224,7 +233,7 @@ static const GifReg gif_regs[] = {
     { 0x800074, 0, GR_RING_OUT },
     { 0x80007c, 0, GR_RESET_OUT },
     { 0x800084, 0, GR_ID },
-    { 0x80008c, FULL, GR_PLAIN },
+    { 0x80008c, FULL, GR_UST },
     /* Packer and unpacker constants */
     { 0x800804, FULL, GR_PLAIN },
     { 0x80080c, FULL, GR_PLAIN },
@@ -376,11 +385,14 @@ typedef struct DM2Pipe {
     /* The slots in the order they were armed. */
     uint8_t queue[SLOTS];
     uint8_t queued;
-    uint32_t stream_counter;
+    /* The timestamp counter when the pending entry was last posted to. */
+    uint32_t pending_ust;
     uint32_t field_ints;
     uint8_t ring_head;
     bool pending;
     uint32_t pending_flags;
+    /* When the pending (or last) field timer was set to fire; 0 when idle. */
+    int64_t next_field_ns;
     QEMUTimer *field_timer;
     QEMUTimer *poll_timer;
 } DM2Pipe;
@@ -434,6 +446,10 @@ struct DM2State {
     uint32_t error_cause;
     uint32_t map_err_addr;
     uint32_t nic_control;
+
+    /* The timestamp counter read ust_base when the clock read ust_zero_ns. */
+    uint32_t ust_base;
+    int64_t ust_zero_ns;
 
     uint32_t map[MAP_ENTRIES];
     uint32_t fpga_ctl;
@@ -557,6 +573,30 @@ static bool dm2_translate(DM2State *s, uint32_t board_addr, hwaddr *host)
 
 /* ---- The status ring ---- */
 
+/*
+ * "Timestamps and buffer completion": the counter at the virtual clock's now.
+ * The register is 32 bits wide in the model; an entry's word 0 keeps 24.
+ */
+static uint32_t dm2_ust_counter_at(DM2State *s, int64_t when_ns)
+{
+    /* A field due before the last store to the register reads its base. */
+    if (when_ns < s->ust_zero_ns) {
+        return s->ust_base;
+    }
+    return s->ust_base + (when_ns - s->ust_zero_ns) / UST_TICK_NS;
+}
+
+static uint32_t dm2_ust_counter(DM2State *s)
+{
+    return dm2_ust_counter_at(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+static void dm2_ust_set(DM2State *s, uint32_t value)
+{
+    s->ust_base = value;
+    s->ust_zero_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
 static uint32_t dm2_ring_base(unsigned pipe)
 {
     return pipe == PIPE_IN ? RING_BOARD_ADDR_IN : RING_BOARD_ADDR_OUT;
@@ -639,7 +679,7 @@ static void dm2_ring_flush(DM2State *s, unsigned p)
                              MEMTXATTRS_UNSPECIFIED, zeros, sizeof(zeros));
     if (res == MEMTX_OK) {
         address_space_stl_be(&s->fabric_as, packet,
-                             pp->stream_counter & STREAM_COUNTER_MASK,
+                             pp->pending_ust & UST_MASK,
                              MEMTXATTRS_UNSPECIFIED, &res);
     }
     if (res == MEMTX_OK) {
@@ -665,6 +705,23 @@ static void dm2_ring_post(DM2State *s, unsigned p, uint32_t flags)
     DM2Pipe *pp = &s->pipe[p];
 
     pp->pending_flags |= flags;
+    pp->pending_ust = dm2_ust_counter(s);
+    pp->pending = true;
+    dm2_ring_flush(s, p);
+}
+
+/*
+ * A field entry is stamped with the field's own time, not the moment the
+ * host thread got to run its timer, so the stamps do not carry the host's
+ * scheduling jitter.
+ */
+static void dm2_ring_post_at(DM2State *s, unsigned p, uint32_t flags,
+                             int64_t when_ns)
+{
+    DM2Pipe *pp = &s->pipe[p];
+
+    pp->pending_flags |= flags;
+    pp->pending_ust = dm2_ust_counter_at(s, when_ns);
     pp->pending = true;
     dm2_ring_flush(s, p);
 }
@@ -860,11 +917,17 @@ static void dm2_pipe_update(DM2State *s, unsigned p)
     }
     if (dm2_pipe_running(s, p)) {
         if (!timer_pending(pp->field_timer)) {
-            timer_mod(pp->field_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                      dm2_field_period_ns(s));
+            int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            int64_t when = (pp->next_field_ns ? pp->next_field_ns : now) +
+                           dm2_field_period_ns(s);
+
+            /* Each field is one period after the last, not after its run. */
+            pp->next_field_ns = MAX(when, now);
+            timer_mod(pp->field_timer, pp->next_field_ns);
         }
     } else {
         timer_del(pp->field_timer);
+        pp->next_field_ns = 0;
     }
 }
 
@@ -879,18 +942,46 @@ static bool dm2_slot_start_page(DM2State *s, unsigned p, unsigned slot)
                          &host);
 }
 
+/*
+ * Field interrupts in one buffer: 2 for an interlaced timing, whose
+ * INTERLEAVED buffer is a frame, and 1 for a progressive one and before
+ * any timing is known ("The data transfer").
+ */
+static unsigned dm2_buffer_fields(DM2State *s)
+{
+    DM2Vbob *v = &s->vbob;
+
+    if (v->output_override) {
+        for (unsigned i = 0; i < ARRAY_SIZE(timing_rows); i++) {
+            if (timing_rows[i].code == v->output_override) {
+                return timing_rows[i].progressive ? 1 : 2;
+            }
+        }
+        return 2;
+    }
+    if (v->have_record[v->active_side]) {
+        const uint8_t *m = v->record[v->active_side];
+
+        return (m[14] | m[15]) ? 2 : 1;
+    }
+    return 1;
+}
+
 static void dm2_field_tick(DM2State *s, unsigned p)
 {
     DM2Pipe *pp = &s->pipe[p];
     uint32_t flags = RING_FLAG_FIELD;
+    bool prev_parity = pp->field_ints & 1;
+    unsigned fields = dm2_buffer_fields(s);
+    int64_t field_ns = pp->next_field_ns;
 
-    pp->stream_counter = (pp->stream_counter + 1) & STREAM_COUNTER_MASK;
     /* "Pipe start, counters and timing": 1 on a stream's first field. */
     if (!(pp->field_ints & 1)) {
         flags |= RING_FLAG_PARITY;
     }
     pp->field_ints++;
-    if (pp->queued) {
+    /* A buffer completes on the last field interrupt of its frame. */
+    if (pp->queued && !(pp->field_ints % fields)) {
         unsigned slot = pp->queue[0];
 
         memmove(pp->queue, pp->queue + 1, --pp->queued);
@@ -898,8 +989,12 @@ static void dm2_field_tick(DM2State *s, unsigned p)
         /* An invalid page raises the error and aborts the slot. */
         flags |= dm2_slot_start_page(s, p, slot) ?
                  RING_FLAG_SLOT_DONE(slot) : RING_FLAG_SLOT_ABORTED(slot);
+        /* Flag 1 tracks the parity flag of the previous field entry. */
+        if (fields == 2 && prev_parity) {
+            flags |= RING_FLAG_ONE;
+        }
     }
-    dm2_ring_post(s, p, flags);
+    dm2_ring_post_at(s, p, flags, field_ns);
     dm2_pipe_update(s, p);
 }
 
@@ -1548,6 +1643,8 @@ static uint32_t dm2_gif_read(DM2State *s, uint32_t addr)
     switch (r->kind) {
     case GR_ID:
         return GIF_ID_VALUE;
+    case GR_UST:
+        return dm2_ust_counter(s);
     case GR_CTL_OUT:
         return dm2_ctl_read(s, PIPE_OUT);
     case GR_CTL_IN:
@@ -1598,6 +1695,9 @@ static void dm2_gif_write(DM2State *s, uint32_t addr, uint32_t value)
             }
         }
         break;
+    case GR_UST:
+        dm2_ust_set(s, value);
+        break;
     case GR_CTL_OUT:
         dm2_ctl_write(s, PIPE_OUT, value);
         break;
@@ -1619,7 +1719,6 @@ static void dm2_gif_write(DM2State *s, uint32_t addr, uint32_t value)
             dm2_unimp("a pipe reset with a non-zero value", addr, true);
             break;
         }
-        s->pipe[r->kind == GR_RESET_IN].stream_counter = 0;
         s->pipe[r->kind == GR_RESET_IN].field_ints = 0;
         break;
     case GR_ENABLE_OUT:
@@ -1841,6 +1940,7 @@ static void dm2_reset_hold(Object *obj, ResetType type)
     s->error_cause = 0;
     s->map_err_addr = 0;
     s->nic_control = NIC_DONE;
+    dm2_ust_set(s, 0);
     memset(s->map, 0, sizeof(s->map));
     s->fpga_ctl = 0;
     memset(s->fpga, 0, sizeof(s->fpga));
@@ -2036,8 +2136,9 @@ static const VMStateDescription vmstate_dm2_pipe = {
         VMSTATE_UINT8(armed, DM2Pipe),
         VMSTATE_UINT8_ARRAY(queue, DM2Pipe, SLOTS),
         VMSTATE_UINT8(queued, DM2Pipe),
-        VMSTATE_UINT32(stream_counter, DM2Pipe),
+        VMSTATE_UINT32(pending_ust, DM2Pipe),
         VMSTATE_UINT32(field_ints, DM2Pipe),
+        VMSTATE_INT64(next_field_ns, DM2Pipe),
         VMSTATE_UINT8(ring_head, DM2Pipe),
         VMSTATE_BOOL(pending, DM2Pipe),
         VMSTATE_UINT32(pending_flags, DM2Pipe),
@@ -2104,6 +2205,8 @@ static const VMStateDescription vmstate_dm2 = {
         VMSTATE_UINT32(error_cause, DM2State),
         VMSTATE_UINT32(map_err_addr, DM2State),
         VMSTATE_UINT32(nic_control, DM2State),
+        VMSTATE_UINT32(ust_base, DM2State),
+        VMSTATE_INT64(ust_zero_ns, DM2State),
         VMSTATE_UINT32_ARRAY(map, DM2State, MAP_ENTRIES),
         VMSTATE_UINT32(fpga_ctl, DM2State),
         VMSTATE_STRUCT_ARRAY(fpga, DM2State, FPGA_COUNT, 1, vmstate_dm2_fpga,
