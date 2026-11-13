@@ -497,9 +497,21 @@ void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
  *     memory and peripherals outside the core. Called from the vCPU
  *     thread; the core takes the BQL around the call, so the callback
  *     runs with it held.
+ * @irq_select: optional interrupt acceptance provider. When set, the core
+ *     asks it at the moment it would take a hardware interrupt, instead of
+ *     using the level and vector last passed to m68k_set_irq_level().
+ *     Returns false when nothing is pending now; otherwise returns the
+ *     level and vector of the interrupt to take. It must not change the
+ *     controller's state, because the core may decline the interrupt
+ *     (the level is not above the interrupt mask).
+ * @irq_accept: called after the core has entered the exception for what
+ *     @irq_select returned, so the controller can clear that request.
+ *     Both run in the vCPU thread with the BQL held.
  */
 typedef struct M68kBoardOps {
     void (*control_write)(void *opaque, uint32_t reg, uint32_t val);
+    bool (*irq_select)(void *opaque, int *level, int *vector);
+    void (*irq_accept)(void *opaque);
 } M68kBoardOps;
 
 /**

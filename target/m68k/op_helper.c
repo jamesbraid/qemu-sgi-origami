@@ -521,20 +521,36 @@ void m68k_cpu_transaction_failed(CPUState *cs, hwaddr physaddr, vaddr addr,
 bool m68k_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
 {
     CPUM68KState *env = cpu_env(cs);
+    const M68kBoardOps *ops = env->board_ops;
+    bool provider = ops && ops->irq_select;
+    int level = env->pending_level;
+    int vector = env->pending_vector;
 
-    if (interrupt_request & CPU_INTERRUPT_HARD
-        && ((env->sr & SR_I) >> SR_I_SHIFT) < env->pending_level) {
-        /*
-         * Real hardware gets the interrupt vector via an IACK cycle
-         * at this point.  Current emulated hardware doesn't rely on
-         * this, so we provide/save the vector when the interrupt is
-         * first signalled.
-         */
-        cs->exception_index = env->pending_vector;
-        do_interrupt_m68k_hardirq(env);
-        return true;
+    if (!(interrupt_request & CPU_INTERRUPT_HARD)) {
+        return false;
     }
-    return false;
+
+    /*
+     * Real hardware gets the interrupt vector via an IACK cycle at this
+     * point. A board with an interrupt provider is asked now; otherwise
+     * the vector was provided when the interrupt was first signalled.
+     */
+    if (provider && !ops->irq_select(env->board_opaque, &level, &vector)) {
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HARD);
+        return false;
+    }
+    if (((env->sr & SR_I) >> SR_I_SHIFT) >= level) {
+        return false;
+    }
+
+    env->pending_level = level;
+    env->pending_vector = vector;
+    cs->exception_index = vector;
+    do_interrupt_m68k_hardirq(env);
+    if (provider && ops->irq_accept) {
+        ops->irq_accept(env->board_opaque);
+    }
+    return true;
 }
 
 #endif /* !CONFIG_USER_ONLY */
