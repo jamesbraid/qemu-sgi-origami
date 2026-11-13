@@ -154,6 +154,10 @@ typedef struct CPUArchState {
 
     /* Fields from here on are preserved across CPU reset. */
     uint64_t features;
+
+    /* Set by the board, not migrated; see m68k_cpu_set_board_ops(). */
+    const struct M68kBoardOps *board_ops;
+    void *board_opaque;
 } CPUM68KState;
 
 /*
@@ -461,6 +465,18 @@ typedef enum {
 /* CACR fields are implementation defined, but some bits are common.  */
 #define M68K_CACR_EUSP  0x10
 
+/*
+ * Bits held by the CACR of an ISA A only ColdFire part (CENB, CPDI, CFRZ,
+ * CEIB, DCM, DBWE, DWP, CLNF); CINV is write-only and reads as zero.
+ */
+#define M68K_CACR_CF_ISA_A_MASK 0x98000723
+/* The vector table of an ISA A only ColdFire part is 1 MiB aligned. */
+#define M68K_VBR_CF_ISA_A_MASK  0xfff00000
+/* RAMBAR: BA[31:13], WP, C/I, SC, SD, UC, UD, V. */
+#define M68K_RAMBAR_CF_ISA_A_MASK 0xffffe13f
+/* MBAR: BA[31:10], SC, SD, UC, UD, V. */
+#define M68K_MBAR_CF_ISA_A_MASK 0xfffffc1f
+
 #define MACSR_PAV0  0x100
 #define MACSR_OMC   0x080
 #define MACSR_SU    0x040
@@ -472,6 +488,28 @@ typedef enum {
 #define MACSR_EV    0x001
 
 void m68k_set_irq_level(M68kCPU *cpu, int level, uint8_t vector);
+
+/**
+ * struct M68kBoardOps - services a board provides to the CPU core
+ * @control_write: called after the core accepts a ColdFire MOVEC write
+ *     to a control register, with the register number and the value the
+ *     core latched. Boards use it to follow RAMBAR and MBAR, which place
+ *     memory and peripherals outside the core. Called from the vCPU
+ *     thread; the core takes the BQL around the call, so the callback
+ *     runs with it held.
+ */
+typedef struct M68kBoardOps {
+    void (*control_write)(void *opaque, uint32_t reg, uint32_t val);
+} M68kBoardOps;
+
+/**
+ * m68k_cpu_set_board_ops: attach board services to a CPU
+ *
+ * The association lives in the board's realized state and is rebuilt when
+ * the board is created, so it is not migrated.
+ */
+void m68k_cpu_set_board_ops(M68kCPU *cpu, const M68kBoardOps *ops,
+                            void *opaque);
 void m68k_switch_sp(CPUM68KState *env);
 
 void do_m68k_semihosting(CPUM68KState *env, int nr);
@@ -561,6 +599,14 @@ enum m68k_features {
 static inline bool m68k_feature(CPUM68KState *env, int feature)
 {
     return (env->features & BIT_ULL(feature)) != 0;
+}
+
+/* A ColdFire part with nothing beyond ISA A; later parts (A+, B) differ. */
+static inline bool m68k_cf_isa_a_only(CPUM68KState *env)
+{
+    return m68k_feature(env, M68K_FEATURE_CF_ISA_A)
+        && !m68k_feature(env, M68K_FEATURE_CF_ISA_APLUSC)
+        && !m68k_feature(env, M68K_FEATURE_CF_ISA_B);
 }
 
 void register_m68k_insns (CPUM68KState *env);

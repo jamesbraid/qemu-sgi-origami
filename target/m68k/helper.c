@@ -30,6 +30,7 @@
 #include "gdbstub/helpers.h"
 #include "fpu/softfloat.h"
 #include "qemu/qemu-print.h"
+#include "qemu/main-loop.h"
 
 #define SIGNBIT (1u << 31)
 
@@ -140,8 +141,14 @@ void m68k_cpu_init_gdb(M68kCPU *cpu)
 
 void HELPER(cf_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
 {
+    /* Parts beyond ISA A (A+, B) keep their own register layouts. */
+    bool isa_a = m68k_cf_isa_a_only(env);
+
     switch (reg) {
     case M68K_CR_CACR:
+        if (isa_a) {
+            val &= M68K_CACR_CF_ISA_A_MASK;
+        }
         env->cacr = val;
         m68k_switch_sp(env);
         break;
@@ -152,13 +159,40 @@ void HELPER(cf_movec_to)(CPUM68KState *env, uint32_t reg, uint32_t val)
         /* TODO: Implement Access Control Registers.  */
         break;
     case M68K_CR_VBR:
+        if (isa_a) {
+            val &= M68K_VBR_CF_ISA_A_MASK;
+        }
         env->vbr = val;
+        break;
+    case M68K_CR_RAMBAR0:
+        if (!isa_a) {
+            goto unimplemented;
+        }
+        val &= M68K_RAMBAR_CF_ISA_A_MASK;
+        env->rambar0 = val;
+        break;
+    case M68K_CR_MBAR:
+        if (!isa_a) {
+            goto unimplemented;
+        }
+        val &= M68K_MBAR_CF_ISA_A_MASK;
+        env->mbar = val;
         break;
     /* TODO: Implement control registers.  */
     default:
+    unimplemented:
         cpu_abort(env_cpu(env),
                   "Unimplemented control register write 0x%x = 0x%x\n",
                   reg, val);
+    }
+
+    if (env->board_ops && env->board_ops->control_write) {
+        /*
+         * The helper runs from translated code without the BQL, and a
+         * board's handler may touch the memory map or raise interrupts.
+         */
+        BQL_LOCK_GUARD();
+        env->board_ops->control_write(env->board_opaque, reg, val);
     }
 }
 
@@ -932,6 +966,13 @@ hwaddr m68k_cpu_get_phys_addr_debug(CPUState *cs, vaddr addr)
     }
 
     return phys_addr;
+}
+
+void m68k_cpu_set_board_ops(M68kCPU *cpu, const M68kBoardOps *ops,
+                            void *opaque)
+{
+    cpu->env.board_ops = ops;
+    cpu->env.board_opaque = opaque;
 }
 
 /*
