@@ -566,22 +566,6 @@ void tb_check_watchpoint(CPUState *cpu, uintptr_t retaddr)
 }
 
 #ifndef CONFIG_USER_ONLY
-TranslationBlock *cpu_io_recompile_tb_lookup(CPUState *cpu, uintptr_t retaddr)
-{
-    CPUJumpCache *jc = cpu->tb_jmp_cache;
-    TranslationBlock *tb;
-
-    if (jc->io_tb && jc->io_retaddr == retaddr) {
-        return jc->io_tb;
-    }
-    tb = tcg_tb_lookup(retaddr);
-    if (tb) {
-        jc->io_retaddr = retaddr;
-        jc->io_tb = tb;
-    }
-    return tb;
-}
-
 /*
  * In deterministic execution mode, instructions doing device I/Os
  * must be at the end of the TB.
@@ -594,7 +578,7 @@ void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr)
     const CPUClass *cc = cpu->cc;
     uint32_t n;
 
-    tb = cpu_io_recompile_tb_lookup(cpu, retaddr);
+    tb = tcg_tb_lookup(retaddr);
     if (!tb) {
         cpu_abort(cpu, "cpu_io_recompile: could not find TB for pc=%p",
                   (void *)retaddr);

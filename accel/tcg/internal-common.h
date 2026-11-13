@@ -134,7 +134,6 @@ void page_table_config_init(void);
 #endif
 
 #ifndef CONFIG_USER_ONLY
-TranslationBlock *cpu_io_recompile_tb_lookup(CPUState *cpu, uintptr_t retaddr);
 G_NORETURN void cpu_io_recompile(CPUState *cpu, uintptr_t retaddr);
 #endif /* CONFIG_USER_ONLY */
 
