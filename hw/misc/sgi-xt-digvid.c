@@ -1734,7 +1734,7 @@ static const SGIBridgeBoardRecord dm2_record = {
 };
 
 static const SGIXioBoardIdentity dm2_identity = {
-    .family = 0x0b,
+    .family = SGI_XIO_BOARD_FAMILY_DS2505,
     .own = {
         .child_name = "onewire-nic",
         .record = &dm2_record,

@@ -270,8 +270,7 @@ static void test_identity(void)
     nic_write_byte(0xf0);
     nic_write_byte(0x00);
     nic_write_byte(0x00);
-    /* The part echoes a check byte over the command and address first. */
-    nic_read_byte();
+    /* A DS2505-class part echoes no header check: data starts at once. */
     for (unsigned i = 0; i < sizeof(rec); i++) {
         rec[i] = nic_read_byte();
     }
@@ -281,6 +280,38 @@ static void test_identity(void)
     g_assert_cmpmem(rec + 1, 3, "EMU", 3);
     /* The revision text is the model's letter G; nothing validates it. */
     g_assert_cmpmem(rec + 38, 1, "G", 1);
+    qtest_quit(qts);
+}
+
+/*
+ * The part behind 0x9c is a DS2505 (family 0x0b), so Read Status (AAh) at
+ * 0100h answers eight unprogrammed 0xff bytes and then a CRC-16, low byte
+ * first, stored complemented. DS2505 datasheet, "READ STATUS [AAH]": the
+ * first page's CRC covers the command, both address bytes and the page's
+ * data bytes; a later page's covers only its own bytes. For aa 00 01 and
+ * eight ff, the generator holds 0xce6f, sent as 0x3190; eight ff alone give
+ * 0x7bbe. A DS2502 model answers a CRC-8 echo (0xc2) in the first data
+ * position instead, which a driver's CRC-16 check rejects.
+ */
+static void test_read_status(void)
+{
+    start("");
+    g_assert_false(nic_slot(520, 65));
+    nic_write_byte(0xcc);
+    nic_write_byte(0xaa);
+    nic_write_byte(0x00);
+    nic_write_byte(0x01);
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmphex(nic_read_byte(), ==, 0xff);
+    }
+    g_assert_cmphex(nic_read_byte(), ==, 0x90);
+    g_assert_cmphex(nic_read_byte(), ==, 0x31);
+    /* The next page: its CRC starts cleared, so no header is in it. */
+    for (unsigned i = 0; i < 8; i++) {
+        g_assert_cmphex(nic_read_byte(), ==, 0xff);
+    }
+    g_assert_cmphex(nic_read_byte(), ==, 0xbe);
+    g_assert_cmphex(nic_read_byte(), ==, 0x7b);
     qtest_quit(qts);
 }
 
@@ -1781,6 +1812,7 @@ int main(int argc, char **argv)
         void (*test)(void);
     } tests[] = {
         { "identity", test_identity },
+        { "read-status", test_read_status },
         { "widths", test_widths },
         { "unimplemented-logged", test_unimplemented_logged },
         { "xg-registers", test_xg_registers },
