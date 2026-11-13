@@ -1604,13 +1604,30 @@ static void test_migration_dsp(void)
     g_autofree char *dir = g_dir_make_tmp("sonic-hdsp-dspmig-XXXXXX", NULL);
     g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
     Card from = card_start(FW_PROXY, ""), to = { 0 };
-    uint32_t out[4];
+    uint32_t out[8];
+    /*
+     * State that must cross: a word in the shared I/O RAM and a DMA
+     * channel's registers and the offset.
+     */
     const uint32_t prog[] = {
         /* 0x100 */ MOVEP_IPP(X_DTXS), 0xc0ffee,
-        /* 0x102 */ JCLR_PP(2, X_DSR), 0x102,
-        /* 0x104 */ MOVEP_RD(REG_A1, X_DRXR),
-        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
-        /* 0x106 */ JMP(0x102),
+        /* 0x102 */ 0x54f400, 0x5a5a5a,
+        /* 0x104 */ 0x5c7000, 0xfff7f0,             /* move a1,y:$fff7f0 */
+        /* 0x106 */ MOVEP_IPP(X_DOR0), 2,
+        /* 0x108 */ MOVEP_IPP(X_DSR_CH(2)), 0x123456,
+        /* 0x10a */ MOVEP_IPP(X_DCO_CH(2)), 0x001001,
+        /* 0x10c */ JCLR_PP(2, X_DSR), 0x10c,
+        /* 0x10e */ MOVEP_RD(REG_A1, X_DRXR),
+        /* 0x10f */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x110 */ 0x5cf000, 0xfff7f0,             /* move y:$fff7f0,a1 */
+        /* 0x112 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x113 */ MOVEP_RD(REG_A1, X_DSR_CH(2)),
+        /* 0x114 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x115 */ MOVEP_RD(REG_A1, X_DCO_CH(2)),
+        /* 0x116 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x117 */ MOVEP_RD(REG_A1, X_DOR0),
+        /* 0x118 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x119 */ JMP(0x10c),
     };
 
     card_boot(&from);
@@ -1637,8 +1654,80 @@ static void test_migration_dsp(void)
     g_assert_cmphex(out[0], ==, 0xc0ffee);
     hp_write(&to, 0, HP_DATA, 0x424242);
     qtest_clock_step(to.qts, 1000 * 1000);
-    g_assert_cmpuint(dsp_words(&to, 0, out, 4), ==, 1);
+    g_assert_cmpuint(dsp_words(&to, 0, out, 8), ==, 5);
     g_assert_cmphex(out[0], ==, 0x424242);
+    g_assert_cmphex(out[1], ==, 0x5a5a5a);      /* the shared I/O RAM */
+    g_assert_cmphex(out[2], ==, 0x123456);      /* a DMA channel's DSR */
+    g_assert_cmphex(out[3], ==, 0x001001);      /* its counter */
+    g_assert_cmphex(out[4], ==, 2);             /* and the offset register */
+
+    g_free(from.fn0);
+    g_free(from.fn1);
+    qpci_free_sgi_bridge(from.bus);
+    qtest_quit(from.qts);
+    g_free(to.fn0);
+    g_free(to.fn1);
+    qpci_free_sgi_bridge(to.bus);
+    qtest_quit(to.qts);
+    alloc_destroy(&alloc);
+    unlink(from.flash);
+    g_free(from.flash);
+    g_free(to.flash);
+    g_rmdir(dir);
+}
+
+/* Host words held back by a full DSP FIFO cross a migration, in order. */
+static void test_migration_dsp_hold(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sonic-hdsp-holdmig-XXXXXX", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s/migrate.sock", dir);
+    Card from = card_start(FW_PROXY, ""), to = { 0 };
+    uint32_t prog[0x20] = { 0 }, out[16];
+    unsigned i = 0, got = 0, at;
+
+    for (unsigned k = 0; k < 8; k++) {
+        prog[i++] = 0x06ffaf;                       /* rep #4095 */
+        prog[i++] = 0x000000;
+    }
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);                  /* a word from the host */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    at = i;
+    prog[i++] = JCLR_PP(1, X_DSR);                  /* room to send */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    prog[i++] = JMP(0x100 + at - 3);
+
+    card_boot(&from);
+    dsp_release(&from, 0);
+    dsp_boot(&from, 0, 0x100, prog, i);
+    for (unsigned k = 0; k < 9; k++) {              /* six fit, three held */
+        hp_write(&from, 0, HP_DATA, 0x700001 + k);
+    }
+
+    to.flash = g_strdup(from.flash);
+    to.qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+                         "-device sgi-sonic-hdsp,id=hdsp,bus=pci,addr=%d,"
+                         "flash-image=%s -incoming %s", SLOT, from.flash, uri);
+    qtest_qmp_assert_success(from.qts, "{ 'execute': 'stop' }");
+    sgi_migrate_stopped(from.qts, uri);
+    sgi_wait_migration(to.qts, "completed");
+    to.bus = qpci_init_sgi_bridge(to.qts, &alloc);
+    sgi_migrate_resume(to.qts);
+    to.fn0 = qpci_device_find(to.bus, QPCI_DEVFN(SLOT, 0));
+    to.fn1 = qpci_device_find(to.bus, QPCI_DEVFN(SLOT, 1));
+    g_assert_nonnull(to.fn1);
+    to.bar = from.bar;
+
+    for (unsigned k = 0; k < 40 && got < 9; k++) {
+        qtest_clock_step(to.qts, 200 * 1000);
+        got += dsp_words(&to, 0, out + got, 9 - got);
+    }
+    g_assert_cmpuint(got, ==, 9);
+    for (unsigned k = 0; k < 9; k++) {
+        g_assert_cmphex(out[k], ==, 0x700001 + k);
+    }
 
     g_free(from.fn0);
     g_free(from.fn1);
@@ -2411,6 +2500,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/box/absent", test_box_absent);
     qtest_add_func("/sgi-sonic-hdsp/box/audio-samples", test_audio_samples);
     qtest_add_func("/sgi-sonic-hdsp/migration-dsp", test_migration_dsp);
+    qtest_add_func("/sgi-sonic-hdsp/migration-dsp-hold",
+                   test_migration_dsp_hold);
     qtest_add_func("/sgi-sonic-hdsp/dsp/slot-counts", test_slot_counts);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-internal-clock-tde",
                    test_dsp_essi0_internal_clock_tde);
