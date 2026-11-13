@@ -1951,6 +1951,33 @@ static void test_dsp_ext_sram_xy(void)
 }
 
 /*
+ * X, Y and P are one external array (the boot code sets the same attribute
+ * pin for all three spaces): code the DSP writes through Y runs from P.
+ */
+static void test_dsp_ext_p_shares_xy(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t out[4];
+    const uint32_t prog[] = {
+        /* 0x100 */ 0x54f400, MOVEP_IPP(X_DTXS),    /* move #op,a1 */
+        /* 0x102 */ 0x5c7000, 0x400100,             /* move a1,y:$400100 */
+        /* 0x104 */ 0x54f400, 0x5a5a5a,
+        /* 0x106 */ 0x5c7000, 0x400101,
+        /* 0x108 */ 0x54f400, DSP_WAIT,
+        /* 0x10a */ 0x5c7000, 0x400102,
+        /* 0x10c */ 0x0af080, 0x400100,             /* jmp $400100 */
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
+    g_assert_cmphex(out[0], ==, 0x5a5a5a);
+    card_quit(&c);
+}
+
+/*
  * A write to a full six-word host FIFO waits (UM p. 6-57): nothing is lost,
  * and HTRQ stays low until the DSP has taken the held words.
  */
@@ -2095,6 +2122,8 @@ int main(int argc, char **argv)
                    test_dsp_boot_zero_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/ext-p-shares-xy",
+                   test_dsp_ext_p_shares_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-fifo-holds",
                    test_dsp_host_fifo_holds);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-poll-sees-drain",

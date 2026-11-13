@@ -38,8 +38,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPDSPState, SGI_SONIC_HDSP_DSP)
 #define SONIC_DSP_XMEM_WORDS    0x800
 #define SONIC_DSP_YMEM_WORDS    0x800
 #define SONIC_DSP_EXT_BASE      0x400000
-#define SONIC_DSP_EXT_WORDS     0x20000
-#define SONIC_DSP_EXT_Y_WORDS   0x40000     /* X and Y share it */
+#define SONIC_DSP_EXT_WORDS     0x40000     /* X, Y and P share it */
 #define SONIC_DSP_IO_BASE       0xfff000
 #define SONIC_DSP_IO_WORDS      0x800
 #define SONIC_DSP_HOLD_DEPTH    256
@@ -94,8 +93,7 @@ struct SonicHDSPDSPState {
     uint32_t pmem[SONIC_DSP_PMEM_WORDS];
     uint32_t xmem[SONIC_DSP_XMEM_WORDS];
     uint32_t ymem[SONIC_DSP_YMEM_WORDS];
-    uint32_t ext_p[SONIC_DSP_EXT_WORDS];
-    uint32_t ext_y[SONIC_DSP_EXT_Y_WORDS];
+    uint32_t ext[SONIC_DSP_EXT_WORDS];
 
     /* HI32 host side, as the page lists it. */
     uint32_t hctr;
