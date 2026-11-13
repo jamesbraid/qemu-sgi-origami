@@ -26,6 +26,12 @@
 #define SB_WRITE_COUNT  (SCOREBOARD + 0x10)
 #define SB_LAST_REG     (SCOREBOARD + 0x14)
 #define SB_LAST_VAL     (SCOREBOARD + 0x18)
+#define SB_LINE_LEVEL   (SCOREBOARD + 0x40)
+#define SB_LINE_VECTOR  (SCOREBOARD + 0x44)
+#define SB_LINE_ASSERT  (SCOREBOARD + 0x48)
+#define SB_ACCEPT_COUNT (SCOREBOARD + 0x4c)
+#define SB_LEGACY_RAISE (SCOREBOARD + 0x50)
+#define SB_PROVIDER     (SCOREBOARD + 0x54)
 
 #define CR_CACR         0x002
 #define CR_ACR0         0x004
@@ -80,6 +86,48 @@ static void movec_d(Asm *a, int n, int cr)
 static void trap(Asm *a, int n)
 {
     emit16(a, 0x4e40 | n);
+}
+
+/* move.l Dn,An-relative forms and the other odds and ends the handlers use */
+static void move_sr_d(Asm *a, int n)
+{
+    emit16(a, 0x40c0 | n);
+}
+
+/* move.l (a7),Dn */
+static void move_sp_d(Asm *a, int n)
+{
+    emit16(a, 0x2017 | (n << 9));
+}
+
+/* move.l a7,Dn */
+static void move_a7_d(Asm *a, int n)
+{
+    emit16(a, 0x200f | (n << 9));
+}
+
+/* move.l (addr).l,Dn */
+static void move_abs_d(Asm *a, uint32_t addr, int n)
+{
+    emit16(a, 0x2039 | (n << 9));
+    emit32(a, addr);
+}
+
+/* move.w #imm,sr */
+static void move_sr_imm(Asm *a, uint16_t sr)
+{
+    emit16(a, 0x46fc);
+    emit16(a, sr);
+}
+
+static void rte(Asm *a)
+{
+    emit16(a, 0x4e73);
+}
+
+static void nop(Asm *a)
+{
+    emit16(a, 0x4e71);
 }
 
 static void bra_self(Asm *a)
@@ -255,6 +303,121 @@ static void test_movec_from_is_illegal(void)
     qtest_quit(qts);
 }
 
+/* Program a line: level, vector, then assert it. The SR mask is still 7. */
+static void line_assert(Asm *a, int level, int vector)
+{
+    movei_d(a, 0, level);
+    move_d_abs(a, 0, SB_LINE_LEVEL);
+    movei_d(a, 0, vector);
+    move_d_abs(a, 0, SB_LINE_VECTOR);
+    movei_d(a, 0, 1);
+    move_d_abs(a, 0, SB_LINE_ASSERT);
+}
+
+/*
+ * A handler that records the SR it runs with and the first word of the
+ * exception frame, then reports.
+ */
+static void frame_handler(Asm *h, uint32_t marker)
+{
+    move_sr_d(h, 1);
+    move_sp_d(h, 2);
+    move_d_abs(h, 1, RESULTS + 8);
+    move_d_abs(h, 2, RESULTS + 4);
+    finish(h, marker);
+}
+
+/*
+ * The core takes the level and vector the controller holds when it
+ * accepts the interrupt, not those it was told when the request was raised.
+ */
+static void test_irq_taken_late(void)
+{
+    QTestState *qts = start();
+    Asm a = { };
+    Asm h = { };
+
+    line_assert(&a, 2, 70);
+    /* The controller's choice changes while the interrupt is masked. */
+    movei_d(&a, 0, 4);
+    move_d_abs(&a, 0, SB_LINE_LEVEL);
+    movei_d(&a, 0, 71);
+    move_d_abs(&a, 0, SB_LINE_VECTOR);
+    move_sr_imm(&a, 0x2000);
+    bra_self(&a);
+    frame_handler(&h, 0xb1);
+    set_vector(qts, 0, 71, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+
+    g_assert_cmphex(wait_result(qts, RESULTS), ==, 0xb1);
+    /* Level 4 became the mask, and the frame carries vector 71. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 8), ==, 0x2400);
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 4), ==, 0x411c2000);
+    g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 1);
+    qtest_quit(qts);
+}
+
+/* A masked request waits, is taken once the mask drops, and RTE returns. */
+static void test_irq_masked_then_taken_and_rte(void)
+{
+    QTestState *qts = start();
+    Asm a = { };
+    Asm h = { };
+
+    move_sr_imm(&a, 0x2300);
+    line_assert(&a, 3, 70);
+    nop(&a);
+    nop(&a);
+    movei_d(&a, 0, 1);
+    move_d_abs(&a, 0, RESULTS + 0x10);
+    move_sr_imm(&a, 0x2200);
+    /* Back from the handler: record the stack pointer, then report. */
+    move_a7_d(&a, 3);
+    move_d_abs(&a, 3, RESULTS + 0x18);
+    finish(&a, 0x99);
+
+    /* Handler: note whether the mask was honoured, then return. */
+    move_abs_d(&h, RESULTS + 0x10, 4);
+    move_d_abs(&h, 4, RESULTS + 0x14);
+    rte(&h);
+    set_vector(qts, 0, 70, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+
+    g_assert_cmphex(wait_result(qts, RESULTS), ==, 0x99);
+    /* The marker was already set when the handler ran: not taken early. */
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 0x14), ==, 1);
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 0x18), ==, INITIAL_SP);
+    g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 1);
+    qtest_quit(qts);
+}
+
+/* Without a provider the level and vector from the raise call are used. */
+static void test_irq_without_provider(void)
+{
+    QTestState *qts = start();
+    Asm a = { };
+    Asm h = { };
+
+    movei_d(&a, 0, 0);
+    move_d_abs(&a, 0, SB_PROVIDER);
+    movei_d(&a, 0, (5 << 8) | 72);
+    move_d_abs(&a, 0, SB_LEGACY_RAISE);
+    move_sr_imm(&a, 0x2000);
+    bra_self(&a);
+    frame_handler(&h, 0xc1);
+    set_vector(qts, 0, 72, HANDLER);
+    qtest_memwrite(qts, HANDLER, h.buf, h.len);
+    run(qts, &a);
+
+    g_assert_cmphex(wait_result(qts, RESULTS), ==, 0xc1);
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 8), ==, 0x2500);
+    g_assert_cmphex(qtest_readl(qts, RESULTS + 4), ==, 0x41202000);
+    g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 0);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -273,5 +436,9 @@ int main(int argc, char **argv)
     qtest_add_func("cf-core/vbr-alignment", test_vbr_alignment);
     qtest_add_func("cf-core/movec-from-is-illegal",
                    test_movec_from_is_illegal);
+    qtest_add_func("cf-core/irq-taken-late", test_irq_taken_late);
+    qtest_add_func("cf-core/irq-masked-then-taken-and-rte",
+                   test_irq_masked_then_taken_and_rte);
+    qtest_add_func("cf-core/irq-without-provider", test_irq_without_provider);
     return g_test_run();
 }
