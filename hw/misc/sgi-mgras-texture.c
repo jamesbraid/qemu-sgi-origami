@@ -3188,18 +3188,22 @@ const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
     return image;
 }
 
-bool sgi_mgras_texture_pixel(SGIMgrasState *s, const float rgba[4],
-                             float out[4])
+const SGIGLTexImage *sgi_mgras_texture_pixel_image(SGIMgrasState *s,
+                                                   SGIGLTexImage *image)
+{
+    if (!(mgras_tex(s)->mddma_cntrl & 1)) {
+        return NULL;
+    }
+    return sgi_mgras_texture_image(s, image);
+}
+
+bool sgi_mgras_texture_pixel_apply(SGIMgrasState *s,
+                                   const SGIGLTexImage *texture,
+                                   const float rgba[4], float out[4])
 {
     static const float white[4] = { 1, 1, 1, 1 };
-    SGIGLTexImage image;
-    const SGIGLTexImage *texture;
 
-    if (!(mgras_tex(s)->mddma_cntrl & 1)) {
-        return false;
-    }
-    texture = sgi_mgras_texture_image(s, &image);
-    return texture && sgi_gl_texture_apply_pixel(
+    return sgi_gl_texture_apply_pixel(
         &s->gl_context[s->gl_current].gl->cur, texture, rgba, white, out);
 }
 

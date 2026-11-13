@@ -797,7 +797,7 @@ bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
                                const SGIRasterTarget *t, int x, int y,
                                double z)
 {
-    uint32_t zq, smax = 0, sref = 0;
+    uint32_t zq = 0, smax = 0, sref = 0;
     bool stencil;
 
     if (!(z >= 0 && z <= 1) ||
@@ -822,8 +822,8 @@ bool sgi_raster_depth_stencil(const SGIRasterRules *rules,
             return false;
         }
     }
-    zq = sgi_raster_depth_code(rules, z);
     if (st->depth_test) {
+        zq = sgi_raster_depth_code(rules, z);
         if (!sgi_soft_compare(st->depth_func, zq,
                               t->load_depth(t->opaque, x, y))) {
             if (stencil) {
@@ -7022,11 +7022,52 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
     if (!sgi_soft_setup_ops(&r)) {
         return;
     }
+    /*
+     * A pixel draw's runs are thousands of fragments with nothing to test
+     * but the window and the scissor: no texture, fog, alpha, depth or
+     * stencil test, no read of the plane, one clip rectangle at most. Each
+     * such fragment passes sgi_soft_fragment_at()'s other tests unchanged,
+     * so it goes straight to the store after the scissor; the work each
+     * skipped test would have done was the larger part of a fragment's
+     * cost. The z range and texture terms cannot be false for the only
+     * caller that sends points: its z is a valid raster position's, in
+     * [0, 1] after glDepthRange's clamp, and its raster target carries no
+     * texture. They stay so that this path is equal to
+     * sgi_soft_fragment_at() for any caller.
+     */
+    bool plain = b->z >= 0.0 && b->z <= 1.0 && !r.texture &&
+                 !b->state->fog && !b->state->alpha_test &&
+                 !b->state->index_bits && t->store_rgba && !r.rgba_read &&
+                 !b->state->depth_test && !b->state->stencil_test &&
+                 r.win.clip->n <= 1;
+
     for (uint32_t i = 0; i < b->npoints; i++) {
         const SGIRasterPoint *pt = &b->points[i];
 
         if (pt->x < r.win.x0 - r.win.ox || pt->x > r.win.x1 - r.win.ox ||
             pt->y < r.win.y0 - r.win.oy || pt->y > r.win.y1 - r.win.oy) {
+            continue;
+        }
+        if (plain) {
+            /* The window clip has been met above; the scissor is left. */
+            SGIRasterColour dest[SGI_GL_MAX_TARGETS] = { 0 };
+
+            if (b->state->scissor_test &&
+                !(pt->x >= b->state->scissor[0] &&
+                  (int64_t)pt->x < (int64_t)b->state->scissor[0] +
+                                   b->state->scissor[2] &&
+                  pt->y >= b->state->scissor[1] &&
+                  (int64_t)pt->y < (int64_t)b->state->scissor[1] +
+                                   b->state->scissor[3])) {
+                continue;
+            }
+
+            frag.rgba[0] = pt->rgba[0];
+            frag.rgba[1] = pt->rgba[1];
+            frag.rgba[2] = pt->rgba[2];
+            frag.rgba[3] = pt->rgba[3];
+            sgi_soft_fragment_store(&r, r.win.ox + pt->x, r.win.oy + pt->y,
+                                    &frag, dest);
             continue;
         }
         frag.rgba[0] = pt->rgba[0];
