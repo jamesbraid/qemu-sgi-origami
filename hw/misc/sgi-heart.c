@@ -1018,6 +1018,15 @@ static uint64_t heart_read(void *opaque, hwaddr offset, unsigned size)
         case 0x50: return s->flow_cell[0];
         case 0x58: return s->flow_cell[1];
         case 0x80: return heart_status(s);
+        /*
+         * The bus error address, bus error miscellaneous and processor
+         * interface access error words the IRIX kernel reads after a bus
+         * error. The model records no error in them, so they read zero.
+         */
+        case 0x88:
+        case 0x90:
+        case 0xa8:
+            return 0;
         case 0x98: return s->ecc_address;
         case 0xa0: return s->ecc_data;
         case 0x10040: return s->cause;

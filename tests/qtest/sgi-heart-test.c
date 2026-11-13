@@ -1639,6 +1639,38 @@ static void test_processor_error_lines(void)
     qtest_quit(s);
 }
 
+/*
+ * The words the IRIX bus error handler reads (bus error address and
+ * miscellaneous, processor-interface access error) are defined: they read
+ * zero and the model does not log them as unsupported.
+ */
+static void test_processor_error_words(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *contents = NULL;
+    g_autofree char *extra = NULL;
+    static const unsigned int words[] = { 0x88, 0x90, 0xa8 };
+    QTestState *s;
+    int fd = g_file_open_tmp("sgi-heart-piu-XXXXXX", &log, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-d unimp -D %s", log);
+    s = heart_start(128, extra);
+    for (unsigned int i = 0; i < G_N_ELEMENTS(words); i++) {
+        g_assert_cmphex(qtest_readq(s, HEART_REGS + words[i]), ==, 0);
+    }
+    qtest_quit(s);
+    g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+    for (unsigned int i = 0; i < G_N_ELEMENTS(words); i++) {
+        g_autofree char *line = g_strdup_printf(
+            "unsupported 8-byte read at 0x%x", words[i]);
+
+        g_assert_null(strstr(contents, line));
+    }
+    unlink(log);
+}
+
 static void test_processor_status(void)
 {
     QTestState *s = heart_start(128, "");
@@ -2731,6 +2763,8 @@ int main(int argc, char **argv)
                     test_high_interrupt_levels);
     qtest_add_func("/heart/processor-error-lines",
                    test_processor_error_lines);
+    g_test_add_func("/heart/processor-error-words",
+                    test_processor_error_words);
     g_test_add_func("/heart/processor-status", test_processor_status);
     g_test_add_func("/heart/revision-f-reset-words",
                     test_revision_f_reset_words);
