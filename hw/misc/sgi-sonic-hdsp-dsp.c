@@ -1087,11 +1087,8 @@ static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr)
     if (space == DSP56300_SPACE_X && addr >= DSP_PERIPH_BASE) {
         return periph_read(s, addr);
     }
-    if (off < SONIC_DSP_EXT_WORDS && space == DSP56300_SPACE_P) {
-        return s->ext_p[off];
-    }
-    if (off < SONIC_DSP_EXT_Y_WORDS && space != DSP56300_SPACE_P) {
-        return s->ext_y[off];
+    if (off < SONIC_DSP_EXT_WORDS) {
+        return s->ext[off];     /* one array for X, Y and P */
     }
     if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
         SONIC_DSP_IO_WORDS) {
@@ -1119,12 +1116,8 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
         periph_write(s, addr, val);
         return;
     }
-    if (off < SONIC_DSP_EXT_WORDS && space == DSP56300_SPACE_P) {
-        s->ext_p[off] = val & 0xffffff;
-        return;
-    }
-    if (off < SONIC_DSP_EXT_Y_WORDS && space != DSP56300_SPACE_P) {
-        s->ext_y[off] = val & 0xffffff;
+    if (off < SONIC_DSP_EXT_WORDS) {
+        s->ext[off] = val & 0xffffff;
         return;
     }
     if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
@@ -1295,8 +1288,7 @@ static void dsp_clear(SonicHDSPDSPState *s)
     memset(s->pmem, 0, sizeof(s->pmem));
     memset(s->xmem, 0, sizeof(s->xmem));
     memset(s->ymem, 0, sizeof(s->ymem));
-    memset(s->ext_p, 0, sizeof(s->ext_p));
-    memset(s->ext_y, 0, sizeof(s->ext_y));
+    memset(s->ext, 0, sizeof(s->ext));
     memset(s->periph, 0, sizeof(s->periph));
     memset(s->dor, 0, sizeof(s->dor));
     s->hctr = 0;
@@ -1479,8 +1471,7 @@ static const VMStateDescription vmstate_sonic_hdsp_dsp = {
         VMSTATE_UINT32_ARRAY(pmem, SonicHDSPDSPState, SONIC_DSP_PMEM_WORDS),
         VMSTATE_UINT32_ARRAY(xmem, SonicHDSPDSPState, SONIC_DSP_XMEM_WORDS),
         VMSTATE_UINT32_ARRAY(ymem, SonicHDSPDSPState, SONIC_DSP_YMEM_WORDS),
-        VMSTATE_UINT32_ARRAY(ext_p, SonicHDSPDSPState, SONIC_DSP_EXT_WORDS),
-        VMSTATE_UINT32_ARRAY(ext_y, SonicHDSPDSPState, SONIC_DSP_EXT_Y_WORDS),
+        VMSTATE_UINT32_ARRAY(ext, SonicHDSPDSPState, SONIC_DSP_EXT_WORDS),
         VMSTATE_UINT32(hctr, SonicHDSPDSPState),
         VMSTATE_UINT32(hcvr, SonicHDSPDSPState),
         VMSTATE_UINT32_ARRAY(tx_fifo, SonicHDSPDSPState,

@@ -1687,21 +1687,27 @@ revisions and 192 words on early ones
 (:src:`nxp-dsp56301um-4 p. 3-2`, *established*). Which revision the card
 carries is *unknown*; the model uses the 3 K ROM, an *approximation*. The
 external memory the board fits is not in any source. The model gives each
-DSP 128K words (``0x20000``) of external P memory and 256K words
-(``0x40000``) of external memory at address ``0x400000`` that X and Y
-share, which covers the external addresses the images use that are in that
+DSP 256K words (``0x40000``) of external memory at address ``0x400000``
+that X, Y and P share, which covers the external addresses the images use that are in that
 range (*software expectation* for the addresses,
 :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000`), an
-*approximation* for the sizes. That X and Y reach the same words, and that
-the SRAM extends past ``0x41ffff``, are *software expectations* from the
+*approximation* for the size. That X, Y and P reach the same words follows
+from the boot code's setup, which sets address attribute registers 1 and 2
+to ``0xfffc39`` and ``0x400239``: one attribute pin for ``0x400000`` to
+``0x7fffff`` in all three spaces, which the manual's port A description,
+having no space pin, reads as one array (*inferred*, the board could decode
+differently; :src:`nxp-dsp56301um-4 section 4.6.3, from p. 4-25`, and the boot block
+as read for the twelfth pass of the monitor analysis). The
+host's update command runs code in place in P at an address it wrote through
+Y, which needs it (*software expectation*, from that reading). That the SRAM extends
+past ``0x41ffff`` is a *software expectation* from the
 card's own SRAM diagnostic, run as a black box: it writes a random pattern
 through X over ``0x400000`` to ``0x41ffff``, reads it back through Y, and its
 aliasing pass uses ``0x420000`` to ``0x420003``; it reported errors with X
 unbacked and with the memory ending at ``0x41ffff``, and none with the memory
-as modelled. Whether P is the same SRAM is *unknown*: the diagnostic does not
-say, and the images' Y fills and P code at ``0x408000`` to ``0x41ffff`` do
-not overlap, so the model keeps P apart. The external bus and wait states
-are not modelled. The
+as modelled. The size is the least the diagnostic touched; the attribute
+registers allow up to ``0x7fffff``, and the board's size is *unknown*. The
+external bus and wait states are not modelled. The
 32768 words the start-up code clears at Y:0x400000 may be storage the
 four DSPs share, and may be four separate banks: no source says, so the
 model gives each DSP its own copy, an *approximation*; a trace of one
@@ -2540,8 +2546,8 @@ with what would settle it:
      - 3 K words
      - The DSP revision on the card
    * - DSP external memory
-     - 128K words of P and 256K words of X and Y at ``0x400000``, a
-       private copy for each DSP; 2K words at ``0xfff000`` that X and Y
+     - 256K words of X, Y and P at ``0x400000``, a private copy for each
+       DSP; 2K words at ``0xfff000`` that X and Y
        reach and the four DSPs share
      - A board photograph, and a cross-DSP trace
    * - Sync flags and the Y:0xfffffb port
@@ -2636,10 +2642,10 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   answers all ones at that width, and a byte write changes only the byte
   it names;
 - the 256K words of external memory at ``0x400000`` read back through Y
-  what X wrote and nothing is backed past them, and the 2K words at
+  what X wrote, run as code from P, and nothing is backed past them;
+  twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
+  low until they drain, and HTRQ reads 1 once a fast DSP has taken a word; and the 2K words at
   ``0xfff000`` are one RAM that DSP 1 reads back from what DSP 0 wrote;
-- twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
-  low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends
