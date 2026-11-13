@@ -1711,26 +1711,24 @@ external bus and wait states are not modelled. The
 32768 words the start-up code clears at Y:0x400000 may be storage the
 four DSPs share, and may be four separate banks: no source says, so the
 model gives each DSP its own copy, an *approximation*; a trace of one
-DSP's writes being read by another would settle it. The nine locations at
-Y:0xfffff7 to Y:0xffffff are shared storage across the four DSPs,
-readable and writable, that read zero after a board reset (*software
-expectation* for the addresses and for their use as synchronisation flags,
-:src:`sonic-dsp-programs-5.0 the sync-wait loops and port accesses of the
-monitor images`; that they are storage the DSPs share is an
-*approximation*). The ports at Y:0xfffffb and Y:0xfffffc are plain words in
-that storage too, returning the last value any DSP wrote; nothing is
-traced. What feeds Y:0xfffffb is *unknown*. What would settle it is a trace
-of which DSP accesses it at which frame of a running monitor image.
-The 2K words from ``0xfff000`` (the data at Y:0xfff000 and the buffers at
-Y:0xfff050 and Y:0xfff258 the start-up code sets up, *software
-expectation*, :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000
-and frame loop`) are one RAM that X and Y both reach and the four DSPs
-share. The card's DSP diagnostic calls it "4-port memory": each DSP writes
+DSP's writes being read by another would settle it. The 4K words from
+``0xfff000`` to ``0xffffff`` (the data at Y:0xfff000 and the buffers at
+Y:0xfff050 and Y:0xfff258 the start-up code sets up, and at the top the nine
+sync flags at Y:0xfffff7 to Y:0xffffff, with two ports at Y:0xfffffb and
+Y:0xfffffc; *software expectation*,
+:src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000, the frame
+loop and the sync-wait loops`) are one RAM that X, Y and P reach and the
+four DSPs share, readable and writable, reading zero after a board reset.
+The boot code's address attribute register 1 (``0xfffc39``) covers exactly
+that range for all three spaces (*inferred*, as for the external array), and
+the images' own data segment at Y:0xffff80 for 128 words lies in it. X
+addresses from ``0xffff80`` are the DSP's own peripherals, not this RAM. That
+the sync flags are storage the DSPs share is an *approximation*, and what
+feeds Y:0xfffffb is *unknown*; a trace of which DSP accesses it at which frame
+of a running monitor image would settle both. The card's DSP diagnostic calls it "4-port memory": each DSP writes
 a pattern through X, reads it back through Y and expects the last writer's
 pattern, which a private copy per DSP fails (*software expectation*, a
-black-box run of the DDM; that the RAM is exactly 2K words is an
-*approximation*: the diagnostic touches ``0xfff000`` to ``0xfff7ff`` and
-the start-up code zeroes those). It reads zero after a board reset. Y
+black-box run of the DDM). Y
 addresses the images use that are in none of these ranges are not backed:
 an access logs ``LOG_UNIMP`` and reads zero. That the page's addresses there
 are 24-bit external addresses, and not an artefact of how the images were
@@ -2547,13 +2545,10 @@ with what would settle it:
      - The DSP revision on the card
    * - DSP external memory
      - 256K words of X, Y and P at ``0x400000``, a private copy for each
-       DSP; 2K words at ``0xfff000`` that X and Y
-       reach and the four DSPs share
+       DSP; 4K words at ``0xfff000``, with the sync flags and the
+       Y:0xfffffb port in the top nine, that X, Y and P reach and the four
+       DSPs share
      - A board photograph, and a cross-DSP trace
-   * - Sync flags and the Y:0xfffffb port
-     - Nine shared words at Y:0xfffff7; Y:0xfffffb returns the last value
-       written
-     - A trace of a running monitor image
    * - Interrupt-out line
      - Timer 0's data output drives the DSP's bit of the interrupt-request
        byte; not wired to the i960's external input
@@ -2642,10 +2637,11 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   answers all ones at that width, and a byte write changes only the byte
   it names;
 - the 256K words of external memory at ``0x400000`` read back through Y
-  what X wrote, run as code from P, and nothing is backed past them;
-  twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
-  low until they drain, and HTRQ reads 1 once a fast DSP has taken a word; and the 2K words at
-  ``0xfff000`` are one RAM that DSP 1 reads back from what DSP 0 wrote;
+  what X wrote, run as code from P, and nothing is backed past them, and
+  the 4K words at ``0xfff000``, sync flags included, are one RAM that DSP 1
+  reads back from what DSP 0 wrote;
+- twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
+  low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

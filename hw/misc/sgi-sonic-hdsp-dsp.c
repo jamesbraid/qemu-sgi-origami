@@ -1090,12 +1090,8 @@ static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr)
     if (off < SONIC_DSP_EXT_WORDS) {
         return s->ext[off];     /* one array for X, Y and P */
     }
-    if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
-        SONIC_DSP_IO_WORDS) {
+    if (addr - SONIC_DSP_IO_BASE < SONIC_DSP_IO_WORDS) {
         return s->hub->io_ram[addr - SONIC_DSP_IO_BASE];
-    }
-    if (space == DSP56300_SPACE_Y && addr >= 0xfffff7) {
-        return s->hub->sync[addr - 0xfffff7];
     }
     if (space == DSP56300_SPACE_P && addr >= DSP_BOOT_ROM &&
         addr < DSP_BOOT_ROM + 0xc00) {
@@ -1120,13 +1116,8 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
         s->ext[off] = val & 0xffffff;
         return;
     }
-    if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
-        SONIC_DSP_IO_WORDS) {
+    if (addr - SONIC_DSP_IO_BASE < SONIC_DSP_IO_WORDS) {
         s->hub->io_ram[addr - SONIC_DSP_IO_BASE] = val & 0xffffff;
-        return;
-    }
-    if (space == DSP56300_SPACE_Y && addr >= 0xfffff7) {
-        s->hub->sync[addr - 0xfffff7] = val & 0xffffff;
         return;
     }
     qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u write of %c:0x%06x = "
@@ -1698,7 +1689,6 @@ void sonic_hdsp_dsp_board_reset(SonicHDSPState *h)
     h->frame_epoch_ns = now;
     h->frame_count = 0;
     h->dsp_ns_rem = 0;
-    memset(h->sync, 0, sizeof(h->sync));
     memset(h->io_ram, 0, sizeof(h->io_ram));
     timer_del(h->dsp_timer);
     if (dsp_any_out_of_reset(h)) {
