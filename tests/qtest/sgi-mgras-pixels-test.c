@@ -3844,6 +3844,108 @@ static void test_gl_pixels_stencil_updates(void)
 }
 
 /*
+ * Pixel runs that meet exactly one of the tests the model's plain-run
+ * path leaves out: the alpha test, fog and a window of two clip
+ * rectangles. Each draws the same image as the states above and checks
+ * every pixel against what the single feature gives, so a path that skips
+ * the feature draws pixels these expect to be absent or changed.
+ */
+static void test_gl_pixels_alpha_test_rejects(gconstpointer data)
+{
+    bool dma = GPOINTER_TO_INT(data);
+
+    gl_pixels_context(qts, 0);
+    gl_alpha_func(qts, GL_GREATER, 2048);
+    gl_one(qts, GL_ALPHA_TEST_HDR, 1);
+    /* Seed 9 is opaque in odd columns and transparent in even ones. */
+    pixrun_image(qts, 9, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, dma);
+    for (uint32_t y = 0; y < PIXRUN_H; y++) {
+        for (uint32_t x = 0; x < PIXRUN_W; x++) {
+            g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y + y),
+                            ==, x & 1 ? pixrun_pixel(9, x, y) >> 8 : 0);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+static void test_gl_pixels_fog_blends(gconstpointer data)
+{
+    bool dma = GPOINTER_TO_INT(data);
+
+    gl_pixels_context(qts, 0);
+    /*
+     * A pixel run has no eye distance, so linear fog from -1 to 1 gives
+     * a factor of one half at distance 0: each channel is halfway between
+     * the pixel and the fog colour, red.
+     */
+    gl_fog_linear(qts, -1, 1);
+    gl_one(qts, GL_FOG_HDR, 1);
+    pixrun_image(qts, 2, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, dma);
+    for (uint32_t y = 0; y < PIXRUN_H; y++) {
+        for (uint32_t x = 0; x < PIXRUN_W; x++) {
+            uint32_t src = pixrun_pixel(2, x, y) >> 8;
+            uint32_t got = gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y + y);
+            int want[3] = {
+                (((src >> 16) & 0xff) + 0xff) / 2,
+                ((src >> 8) & 0xff) / 2,
+                (src & 0xff) / 2,
+            };
+
+            for (int k = 0; k < 3; k++) {
+                int have = (got >> (16 - 8 * k)) & 0xff;
+
+                g_assert_cmpint(abs(have - want[k]), <=, 2);
+            }
+            g_assert_cmphex(got, !=, src);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
+ * The window as two rectangles with a gap between them: the image's
+ * columns 0 to 3 fall in the first, 4 to 8 in the gap and 9 to 19 in the
+ * second.
+ */
+static void test_gl_pixels_two_clip_rectangles(gconstpointer data)
+{
+    const uint32_t x0 = 256, y0 = 640;
+    bool dma = GPOINTER_TO_INT(data);
+    uint32_t image[MGRAS_CONTEXT_WORDS];
+
+    mgras_reset_state(qts);
+    memcpy(image, gl_context_image, sizeof(image));
+    image[0] = GL_SLOT_A;
+    image[1] = gl_context_image[1];
+    image[2] = image[14] = (y0 << 16) | x0;
+    image[3] = 0x13;
+    image[11] = (x0 << 16) | (x0 + PIXRUN_X + 3);
+    image[12] = (y0 << 16) | (y0 + 127);
+    image[9] = ((x0 + PIXRUN_X + 9) << 16) | (x0 + 127);
+    image[10] = (y0 << 16) | (y0 + 127);
+    qtest_writel(qts, REG_PREFIX, 0);
+    qtest_writel(qts, REG_ENTRY, MGRAS_ENTRY_WORD);
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_FLAGS);
+    for (int i = 0; i < MGRAS_CONTEXT_WORDS; i++) {
+        qtest_writel(qts, REG_CONTEXT_COMMAND, image[i]);
+    }
+    qtest_writel(qts, REG_PENDING_ACK, MGRAS_PENDING_CONTEXT);
+    gl_word(qts, GL_CONTEXT_OPENER);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_window_projection(qts);
+    pixrun_image(qts, 2, PIXRUN_W, PIXRUN_H, PIXRUN_X, PIXRUN_Y, dma);
+    for (uint32_t y = 0; y < PIXRUN_H; y++) {
+        for (uint32_t x = 0; x < PIXRUN_W; x++) {
+            bool in = x < 4 || x >= 9;
+
+            g_assert_cmphex(gl_window_pixel(qts, PIXRUN_X + x, PIXRUN_Y + y),
+                            ==, in ? pixrun_pixel(2, x, y) >> 8 : 0);
+        }
+    }
+    g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
+}
+
+/*
  * A zoomed draw puts each source pixel's footprint, and the logic op and
  * the colour mask act on each of its pixels.
  */
@@ -7278,6 +7380,24 @@ int main(int argc, char **argv)
                                       test_gl_pixels_zoom_states, true);
         }
     }
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-alpha-test-inline", GINT_TO_POINTER(0),
+        test_gl_pixels_alpha_test_rejects, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-alpha-test-dma", GINT_TO_POINTER(1),
+        test_gl_pixels_alpha_test_rejects, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-fog-inline", GINT_TO_POINTER(0),
+        test_gl_pixels_fog_blends, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-fog-dma", GINT_TO_POINTER(1),
+        test_gl_pixels_fog_blends, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-two-clip-rectangles-inline",
+        GINT_TO_POINTER(0), test_gl_pixels_two_clip_rectangles, true);
+    mgras_qtest_add_data_func(
+        "sn0/origin2000/mgras/gl-pixels-two-clip-rectangles-dma",
+        GINT_TO_POINTER(1), test_gl_pixels_two_clip_rectangles, true);
     mgras_qtest_add_data_func(
         "sn0/origin2000/mgras/gl-pixels-wide-row-clipped-inline",
         GINT_TO_POINTER(0), test_gl_pixels_wide_row_clipped, true);

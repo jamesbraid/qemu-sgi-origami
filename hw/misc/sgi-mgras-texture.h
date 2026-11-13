@@ -48,8 +48,18 @@ void sgi_mgras_texture_abort(SGIMgrasState *s);
  */
 const SGIGLTexImage *sgi_mgras_texture_image(SGIMgrasState *s,
                                              SGIGLTexImage *image);
-bool sgi_mgras_texture_pixel(SGIMgrasState *s, const float rgba[4],
-                             float out[4]);
+/*
+ * The image a pixel draw's fragments are textured with, or NULL when the
+ * pixel texture is off or its state is one the model does not draw. It
+ * depends only on the registers, so a draw takes it once for all of its
+ * pixels and applies it to each with sgi_mgras_texture_pixel_apply().
+ */
+const SGIGLTexImage *sgi_mgras_texture_pixel_image(SGIMgrasState *s,
+                                                   SGIGLTexImage *image);
+/* Texture one pixel with the image sgi_mgras_texture_pixel_image() made. */
+bool sgi_mgras_texture_pixel_apply(SGIMgrasState *s,
+                                   const SGIGLTexImage *texture,
+                                   const float rgba[4], float out[4]);
 /*
  * Whether a DMA kick, a read when read, is the one an open TRAM save or
  * restore (or a 0x9d10 transfer the model does not take) was waiting for:

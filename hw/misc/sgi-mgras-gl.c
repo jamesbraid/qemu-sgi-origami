@@ -5177,8 +5177,28 @@ static void mgras_gl_pixels_start(SGIMgrasState *s, const uint32_t *payload)
 
 typedef struct MgrasGLPixelRun {
     uint32_t n;
+    /*
+     * The pixel texture, taken on the run's first pixel: building it reads
+     * and checks a few dozen registers, too much to repeat for each pixel
+     * of a 720 by 486 image. The registers cannot change inside a run.
+     */
+    bool texture_taken;
+    const SGIGLTexImage *texture;
+    SGIGLTexImage texture_image;
     SGIRasterPoint point[MGRAS_GL_PIXELS_RUN];
 } MgrasGLPixelRun;
+
+/* Texture a pixel with the draw's pixel texture, if it has one. */
+static bool mgras_gl_pixels_texture(SGIMgrasState *s, MgrasGLPixelRun *run,
+                                    const float rgba[4], float out[4])
+{
+    if (!run->texture_taken) {
+        run->texture = sgi_mgras_texture_pixel_image(s, &run->texture_image);
+        run->texture_taken = true;
+    }
+    return run->texture &&
+           sgi_mgras_texture_pixel_apply(s, run->texture, rgba, out);
+}
 
 /*
  * Draw the run as one list of fragments in the order they were queued:
@@ -5309,7 +5329,7 @@ static void mgras_gl_pixels_pixel(SGIMgrasState *s, SGIMgrasGLPixels *px,
     }
     float textured[4];
 
-    if (sgi_mgras_texture_pixel(s, rgba, textured)) {
+    if (mgras_gl_pixels_texture(s, run, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
     mgras_gl_pixels_emit(s, px, run, rgba, v);
@@ -5345,7 +5365,7 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     }
     float textured[4];
 
-    if (sgi_mgras_texture_pixel(s, rgba, textured)) {
+    if (mgras_gl_pixels_texture(s, run, rgba, textured)) {
         memcpy(rgba, textured, sizeof(rgba));
     }
     mgras_gl_pixels_emit(s, px, run, rgba, 0);
@@ -5361,6 +5381,7 @@ static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
     MgrasGLPixelRun run;
 
     run.n = 0;
+    run.texture_taken = false;
     for (uint32_t i = 0; i < n && px->col < px->w; i++) {
         px->carry = px->carry << 8 | bytes[i];
         if (px->format == MGRAS_GL_PIXELS_FLOAT_RGB ||
