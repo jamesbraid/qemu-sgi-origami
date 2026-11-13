@@ -2405,13 +2405,18 @@ Model limits
   clears the configuration Retry, so a host sizing BAR0 between the two
   would read 32 MiB. IRIX sizes the BAR during its boot-time slot scan;
   that it never sizes it again is *unverified*.
-- No reference run of the shipped DSP programs against the model has been
-  made: the stage tests run programs written from the manuals, and whether
-  the monitor images reach the point where the host library's audio device
-  works is *unverified*. The unknowns that stand between the model and that
-  run are the Y memory the images use beyond the 256K words, the board's
-  clocks and ESSI wiring, and what the box's receive path does on an idle
-  link; each is listed in :ref:`sgi-sonic-hdsp-approximations`.
+- The shipped DSP programs have run against the model once, under Smoke
+  5.0 on an Octane: the card's diagnostic phases pass and the four monitors
+  load (*observed*). The host library's box scan then does not reach the
+  box: after a block download, host command ``0xf5`` and an ``0xe1`` command
+  29, it polls a DSP 2 status word that never changes until it gives up, and
+  DSP 2 stays in its host-command loop and writes no ESSI register
+  (*observed*). Why the monitor does not start the converter-link routine is
+  *unknown*; answering it takes the monitor's host-command handlers, which no
+  source here records. Beyond that, the unknowns between the model and a
+  working audio device are the Y memory the images use beyond the 256K words,
+  the board's clocks and ESSI wiring, and what the box's receive path does on
+  an idle link; each is listed in :ref:`sgi-sonic-hdsp-approximations`.
 
 .. _sgi-sonic-hdsp-approximations:
 
