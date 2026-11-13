@@ -2,6 +2,7 @@ config AN5206
     bool
     default y
     depends on M68K
+    imply TEST_DEVICES
     select COLDFIRE
     select PTIMER
 
@@ -9,6 +10,7 @@ config MCF5208
     bool
     default y
     depends on M68K
+    imply TEST_DEVICES
     select COLDFIRE
     select PTIMER
 
@@ -46,3 +48,9 @@ config M68K_VIRT
     select GOLDFISH_TTY
     select GOLDFISH_RTC
     select VIRTIO_MMIO
+
+config CF_CORE_TEST
+    bool
+    default y if TEST_DEVICES
+    depends on M68K
+    select COLDFIRE
