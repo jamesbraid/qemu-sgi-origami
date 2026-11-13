@@ -1882,28 +1882,34 @@ static void test_system_reset_dsp(void)
 }
 
 /*
- * The 2K words at 0xfff000 are one RAM seen through both X and Y and shared
- * by the four DSPs: the card's DSP diagnostic ("4-port memory") has every
- * DSP write a pattern through X and read it back through Y, expecting the
- * last writer's.  Past the 2K words nothing is backed and reads give zero.
+ * The 4K words from 0xfff000 are one RAM in X and Y shared by the four DSPs
+ * (the card's 4-port memory diagnostic); 0xffff80 up are peripherals.
  */
 static void test_dsp_io_ram(void)
 {
     Card c = card_start(FW_PROXY, "");
-    uint32_t out[4];
+    uint32_t out[6];
     const uint32_t writer[] = {
         /* 0x100 */ 0x54f400, 0x123456,         /* move #$123456,a1 */
         /* 0x102 */ 0x547000, 0xfff7ff,         /* move a1,x:$fff7ff */
-        /* 0x104 */ 0x54f400, 0x654321,
-        /* 0x106 */ 0x547000, 0xfff800,         /* just past the RAM */
-        /* 0x108 */ DSP_WAIT,
+        /* 0x104 */ 0x54f400, 0x246810,
+        /* 0x106 */ 0x5c7000, 0xfffffb,         /* move a1,y:$fffffb */
+        /* 0x108 */ 0x54f400, 0x778899,
+        /* 0x10a */ 0x07708c, 0xfff7fe,         /* movem a1,p:$fff7fe */
+        /* 0x10c */ DSP_WAIT,
     };
     const uint32_t reader[] = {
         /* 0x100 */ 0x5cf000, 0xfff7ff,         /* move y:$fff7ff,a1 */
         /* 0x102 */ MOVEP_WR(REG_A1, X_DTXS),
-        /* 0x103 */ 0x5cf000, 0xfff800,
+        /* 0x103 */ 0x5cf000, 0xfffffb,         /* move y:$fffffb,a1 */
         /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
-        /* 0x106 */ DSP_WAIT,
+        /* 0x106 */ 0x54f000, 0xfff7ff,         /* move x:$fff7ff,a1 */
+        /* 0x108 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x109 */ 0x07f08c, 0xfff7ff,         /* movem p:$fff7ff,a1 */
+        /* 0x10b */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x10c */ 0x5cf000, 0xfff7fe,         /* move y:$fff7fe,a1 */
+        /* 0x10e */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x10f */ DSP_WAIT,
     };
 
     card_boot(&c);
@@ -1913,9 +1919,12 @@ static void test_dsp_io_ram(void)
     qtest_clock_step(c.qts, 1000 * 1000);
     dsp_boot(&c, 1, 0x100, reader, ARRAY_SIZE(reader));
     qtest_clock_step(c.qts, 1000 * 1000);
-    g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 2);
-    g_assert_cmphex(out[0], ==, 0x123456);
-    g_assert_cmphex(out[1], ==, 0);
+    g_assert_cmpuint(dsp_words(&c, 1, out, 6), ==, 5);
+    g_assert_cmphex(out[0], ==, 0x123456);      /* Y after X */
+    g_assert_cmphex(out[1], ==, 0x246810);
+    g_assert_cmphex(out[2], ==, 0x123456);      /* X after X */
+    g_assert_cmphex(out[3], ==, 0x123456);      /* P after X */
+    g_assert_cmphex(out[4], ==, 0x778899);      /* Y after P */
     card_quit(&c);
 }
 

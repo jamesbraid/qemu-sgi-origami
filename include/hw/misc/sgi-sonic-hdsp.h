@@ -40,14 +40,13 @@ OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPDSPState, SGI_SONIC_HDSP_DSP)
 #define SONIC_DSP_EXT_BASE      0x400000
 #define SONIC_DSP_EXT_WORDS     0x40000     /* X, Y and P share it */
 #define SONIC_DSP_IO_BASE       0xfff000
-#define SONIC_DSP_IO_WORDS      0x800
+#define SONIC_DSP_IO_WORDS      0x1000
 #define SONIC_DSP_HOLD_DEPTH    256
 #define SONIC_DSP_FIFO_DEPTH    6
 #define SONIC_DSP_NDMA          6
 #define SONIC_DSP_NESSI         2
 #define SONIC_DSP_NTIMER        3
 #define SONIC_DSP_PERIPH_WORDS  128     /* X:$FFFF80 to X:$FFFFFF */
-#define SONIC_HDSP_SYNC_WORDS   9       /* Y:$FFFFF7 to Y:$FFFFFF */
 
 /* One ESSI: registers as the DSP56301 manual lists them, plus the slot. */
 typedef struct SonicDspEssi {
@@ -171,7 +170,6 @@ struct SonicHDSPState {
     uint64_t frame_count;
     uint64_t dsp_ns_rem;
     int64_t mig_dsp_age, mig_frame_epoch_age;
-    uint32_t sync[SONIC_HDSP_SYNC_WORDS];       /* Y:$FFFFF7 and up */
     /* The four DSPs' shared memory, X and Y at SONIC_DSP_IO_BASE. */
     uint32_t io_ram[SONIC_DSP_IO_WORDS];
 

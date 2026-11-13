@@ -439,7 +439,6 @@ static const VMStateDescription vmstate_sonic_hdsp = {
         VMSTATE_INT64(mig_deadline_left, SonicHDSPState),
         VMSTATE_INT64(mig_busy_left, SonicHDSPState),
         VMSTATE_BOOL(irq_level, SonicHDSPState),
-        VMSTATE_UINT32_ARRAY(sync, SonicHDSPState, SONIC_HDSP_SYNC_WORDS),
         VMSTATE_UINT32_ARRAY(io_ram, SonicHDSPState, SONIC_DSP_IO_WORDS),
         VMSTATE_UINT64(frame_count, SonicHDSPState),
         VMSTATE_INT64(mig_dsp_age, SonicHDSPState),
