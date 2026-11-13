@@ -1263,6 +1263,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``dm2-library-flame-7.6``
    *DMediaPro DM2 module shipped with Discreet Flame*. Discreet Logic. Firmware, cited by address. For Discreet Flame 7.6 OCT2 for IRIX 6.5 on IP30, DM2 media module. Version 7.6. Found on the Flame 7.6 OCT2 media's video board product, installed in the dmSDK module directory; addresses are virtual addresses in the linked library. Hashed as the container image. SHA-256 ``5c8422f3937ae98f19da52408ec2ef85a5da815948bec02d0a1c5efe296c0480``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-dm2-ust-test-1-1-3:
+
+``dm2-ust-test-1.1.3``
+   *DMediaPro DM2 UST and MSC check program*. Silicon Graphics. Firmware, cited by address. For DMediaPro DM2 and DM3 software, video confidence test's timestamp checker. Version 1.1.3. Found on DMediaPro DM2 and DM3 Software 1.1.3 CD set, installed with the video option's diagnostics; addresses are virtual addresses in the program. Hashed as the container image. SHA-256 ``4526fcdfee9c0b8fc5c2938a03f9cd86b4bff1ce1a149830849dc31a0539abbb``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-io6-prom-6-156:
 
 ``io6-prom-6.156``
