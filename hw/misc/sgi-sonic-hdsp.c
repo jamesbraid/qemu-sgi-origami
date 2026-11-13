@@ -373,8 +373,8 @@ static const VMStateDescription vmstate_sonic_hdsp_timer = {
 
 static const VMStateDescription vmstate_sonic_hdsp = {
     .name = "sgi-sonic-hdsp",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .priority = MIG_PRI_PCI_BUS,
     .pre_save = hdsp_pre_save,
     .post_load = hdsp_post_load,
@@ -440,6 +440,7 @@ static const VMStateDescription vmstate_sonic_hdsp = {
         VMSTATE_INT64(mig_busy_left, SonicHDSPState),
         VMSTATE_BOOL(irq_level, SonicHDSPState),
         VMSTATE_UINT32_ARRAY(sync, SonicHDSPState, SONIC_HDSP_SYNC_WORDS),
+        VMSTATE_UINT32_ARRAY(io_ram, SonicHDSPState, SONIC_DSP_IO_WORDS),
         VMSTATE_UINT64(frame_count, SonicHDSPState),
         VMSTATE_INT64(mig_dsp_age, SonicHDSPState),
         VMSTATE_INT64(mig_frame_epoch_age, SonicHDSPState),

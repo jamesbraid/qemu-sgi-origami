@@ -1081,13 +1081,15 @@ static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr)
     if (space == DSP56300_SPACE_X && addr >= DSP_PERIPH_BASE) {
         return periph_read(s, addr);
     }
-    if (off < SONIC_DSP_EXT_WORDS) {
-        if (space == DSP56300_SPACE_P) {
-            return s->ext_p[off];
-        }
-        if (space == DSP56300_SPACE_Y) {
-            return s->ext_y[off];
-        }
+    if (off < SONIC_DSP_EXT_WORDS && space == DSP56300_SPACE_P) {
+        return s->ext_p[off];
+    }
+    if (off < SONIC_DSP_EXT_Y_WORDS && space != DSP56300_SPACE_P) {
+        return s->ext_y[off];
+    }
+    if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
+        SONIC_DSP_IO_WORDS) {
+        return s->hub->io_ram[addr - SONIC_DSP_IO_BASE];
     }
     if (space == DSP56300_SPACE_Y && addr >= 0xfffff7) {
         return s->hub->sync[addr - 0xfffff7];
@@ -1111,15 +1113,18 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
         periph_write(s, addr, val);
         return;
     }
-    if (off < SONIC_DSP_EXT_WORDS) {
-        if (space == DSP56300_SPACE_P) {
-            s->ext_p[off] = val & 0xffffff;
-            return;
-        }
-        if (space == DSP56300_SPACE_Y) {
-            s->ext_y[off] = val & 0xffffff;
-            return;
-        }
+    if (off < SONIC_DSP_EXT_WORDS && space == DSP56300_SPACE_P) {
+        s->ext_p[off] = val & 0xffffff;
+        return;
+    }
+    if (off < SONIC_DSP_EXT_Y_WORDS && space != DSP56300_SPACE_P) {
+        s->ext_y[off] = val & 0xffffff;
+        return;
+    }
+    if (space != DSP56300_SPACE_P && addr - SONIC_DSP_IO_BASE <
+        SONIC_DSP_IO_WORDS) {
+        s->hub->io_ram[addr - SONIC_DSP_IO_BASE] = val & 0xffffff;
+        return;
     }
     if (space == DSP56300_SPACE_Y && addr >= 0xfffff7) {
         s->hub->sync[addr - 0xfffff7] = val & 0xffffff;
@@ -1425,8 +1430,8 @@ static const VMStateDescription vmstate_sonic_dsp_timer = {
 
 static const VMStateDescription vmstate_sonic_hdsp_dsp = {
     .name = "sgi-sonic-hdsp-dsp",
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .post_load = dsp_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SonicHDSPDSPState),
@@ -1435,7 +1440,7 @@ static const VMStateDescription vmstate_sonic_hdsp_dsp = {
         VMSTATE_UINT32_ARRAY(xmem, SonicHDSPDSPState, SONIC_DSP_XMEM_WORDS),
         VMSTATE_UINT32_ARRAY(ymem, SonicHDSPDSPState, SONIC_DSP_YMEM_WORDS),
         VMSTATE_UINT32_ARRAY(ext_p, SonicHDSPDSPState, SONIC_DSP_EXT_WORDS),
-        VMSTATE_UINT32_ARRAY(ext_y, SonicHDSPDSPState, SONIC_DSP_EXT_WORDS),
+        VMSTATE_UINT32_ARRAY(ext_y, SonicHDSPDSPState, SONIC_DSP_EXT_Y_WORDS),
         VMSTATE_UINT32(hctr, SonicHDSPDSPState),
         VMSTATE_UINT32(hcvr, SonicHDSPDSPState),
         VMSTATE_UINT32_ARRAY(tx_fifo, SonicHDSPDSPState,
@@ -1646,6 +1651,7 @@ void sonic_hdsp_dsp_board_reset(SonicHDSPState *h)
     h->frame_count = 0;
     h->dsp_ns_rem = 0;
     memset(h->sync, 0, sizeof(h->sync));
+    memset(h->io_ram, 0, sizeof(h->io_ram));
     timer_del(h->dsp_timer);
     if (dsp_any_out_of_reset(h)) {
         timer_mod(h->dsp_timer, now + DSP_SLICE_NS);

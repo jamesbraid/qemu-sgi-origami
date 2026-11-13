@@ -39,6 +39,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPDSPState, SGI_SONIC_HDSP_DSP)
 #define SONIC_DSP_YMEM_WORDS    0x800
 #define SONIC_DSP_EXT_BASE      0x400000
 #define SONIC_DSP_EXT_WORDS     0x20000
+#define SONIC_DSP_EXT_Y_WORDS   0x40000     /* X and Y share it */
+#define SONIC_DSP_IO_BASE       0xfff000
+#define SONIC_DSP_IO_WORDS      0x800
 #define SONIC_DSP_FIFO_DEPTH    6
 #define SONIC_DSP_NDMA          6
 #define SONIC_DSP_NESSI         2
@@ -91,7 +94,7 @@ struct SonicHDSPDSPState {
     uint32_t xmem[SONIC_DSP_XMEM_WORDS];
     uint32_t ymem[SONIC_DSP_YMEM_WORDS];
     uint32_t ext_p[SONIC_DSP_EXT_WORDS];
-    uint32_t ext_y[SONIC_DSP_EXT_WORDS];
+    uint32_t ext_y[SONIC_DSP_EXT_Y_WORDS];
 
     /* HI32 host side, as the page lists it. */
     uint32_t hctr;
@@ -167,6 +170,8 @@ struct SonicHDSPState {
     uint64_t dsp_ns_rem;
     int64_t mig_dsp_age, mig_frame_epoch_age;
     uint32_t sync[SONIC_HDSP_SYNC_WORDS];       /* Y:$FFFFF7 and up */
+    /* The four DSPs' shared memory, X and Y at SONIC_DSP_IO_BASE. */
+    uint32_t io_ram[SONIC_DSP_IO_WORDS];
 
     /* The processor. */
     I960State cpu;

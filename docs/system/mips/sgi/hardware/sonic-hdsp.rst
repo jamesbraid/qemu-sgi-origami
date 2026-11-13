@@ -1675,11 +1675,21 @@ revisions and 192 words on early ones
 (:src:`nxp-dsp56301um-4 p. 3-2`, *established*). Which revision the card
 carries is *unknown*; the model uses the 3 K ROM, an *approximation*. The
 external memory the board fits is not in any source. The model gives each
-DSP 128K words (``0x20000``) of external P and Y memory at address
-``0x400000``, which covers the external addresses the images use that are
-in that range (*software expectation* for the addresses,
+DSP 128K words (``0x20000``) of external P memory and 256K words
+(``0x40000``) of external memory at address ``0x400000`` that X and Y
+share, which covers the external addresses the images use that are in that
+range (*software expectation* for the addresses,
 :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000`), an
-*approximation* for the size; the external bus and wait states are not modelled. The
+*approximation* for the sizes. That X and Y reach the same words, and that
+the SRAM extends past ``0x41ffff``, are *software expectations* from the
+card's own SRAM diagnostic, run as a black box: it writes a random pattern
+through X over ``0x400000`` to ``0x41ffff``, reads it back through Y, and its
+aliasing pass uses ``0x420000`` to ``0x420003``; it reported errors with X
+unbacked and with the memory ending at ``0x41ffff``, and none with the memory
+as modelled. Whether P is the same SRAM is *unknown*: the diagnostic does not
+say, and the images' Y fills and P code at ``0x408000`` to ``0x41ffff`` do
+not overlap, so the model keeps P apart. The external bus and wait states
+are not modelled. The
 32768 words the start-up code clears at Y:0x400000 may be storage the
 four DSPs share, and may be four separate banks: no source says, so the
 model gives each DSP its own copy, an *approximation*; a trace of one
@@ -1692,13 +1702,19 @@ monitor images`; that they are storage the DSPs share is an
 *approximation*). The ports at Y:0xfffffb and Y:0xfffffc are plain words in
 that storage too, returning the last value any DSP wrote; nothing is
 traced. What feeds Y:0xfffffb is *unknown*. What would settle it is a trace
-of which DSP accesses it at which frame of a running monitor image. Y
-addresses the images use that are neither in the 128K words at
-``0x400000`` nor in this block (the data at Y:0xfff000 and the buffers at
+of which DSP accesses it at which frame of a running monitor image.
+The 2K words from ``0xfff000`` (the data at Y:0xfff000 and the buffers at
 Y:0xfff050 and Y:0xfff258 the start-up code sets up, *software
 expectation*, :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000
-and frame loop`) are not backed: an
-access logs ``LOG_UNIMP`` and reads zero. That the page's addresses there
+and frame loop`) are one RAM that X and Y both reach and the four DSPs
+share. The card's DSP diagnostic calls it "4-port memory": each DSP writes
+a pattern through X, reads it back through Y and expects the last writer's
+pattern, which a private copy per DSP fails (*software expectation*, a
+black-box run of the DDM; that the RAM is exactly 2K words is an
+*approximation*: the diagnostic touches ``0xfff000`` to ``0xfff7ff`` and
+the start-up code zeroes those). It reads zero after a board reset. Y
+addresses the images use that are in none of these ranges are not backed:
+an access logs ``LOG_UNIMP`` and reads zero. That the page's addresses there
 are 24-bit external addresses, and not an artefact of how the images were
 read, is *unknown*, and so is where that memory sits.
 
@@ -2393,7 +2409,7 @@ Model limits
   made: the stage tests run programs written from the manuals, and whether
   the monitor images reach the point where the host library's audio device
   works is *unverified*. The unknowns that stand between the model and that
-  run are the Y memory the images use beyond the 128K words, the board's
+  run are the Y memory the images use beyond the 256K words, the board's
   clocks and ESSI wiring, and what the box's receive path does on an idle
   link; each is listed in :ref:`sgi-sonic-hdsp-approximations`.
 
@@ -2499,8 +2515,9 @@ with what would settle it:
      - 3 K words
      - The DSP revision on the card
    * - DSP external memory
-     - 128K words of P and Y at ``0x400000``, a private copy of the
-       32768 words at Y:0x400000 for each DSP
+     - 128K words of P and 256K words of X and Y at ``0x400000``, a
+       private copy for each DSP; 2K words at ``0xfff000`` that X and Y
+       reach and the four DSPs share
      - A board photograph, and a cross-DSP trace
    * - Sync flags and the Y:0xfffffb port
      - Nine shared words at Y:0xfffff7; Y:0xfffffb returns the last value
@@ -2593,6 +2610,9 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   vendor and device IDs at the access width, an IDSEL with no device
   answers all ones at that width, and a byte write changes only the byte
   it names;
+- the 256K words of external memory at ``0x400000`` read back through Y
+  what X wrote and nothing is backed past them, and the 2K words at
+  ``0xfff000`` are one RAM that DSP 1 reads back from what DSP 0 wrote;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends
