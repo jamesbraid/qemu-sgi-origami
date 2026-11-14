@@ -2424,117 +2424,119 @@ static void ecc_no_first_use(const char *path)
     g_assert_null(strstr(contents, "healthy-memory approximation:"));
 }
 
-static void test_ecc_replacement_values(void)
+/*
+ * One profile, memory-transfer mode and error seeding per case. Each case
+ * stores all 256 byte values with a full state snapshot after each, over
+ * QMP, which took about 180 s for the whole matrix in one process. The
+ * cases are separate Meson tests.
+ */
+static void test_ecc_replacement_values(gconstpointer data)
 {
     const unsigned repeated[] = { 0xa5, 0x3c, 0xf0, 0, 255, 0x81, 0xa5 };
+    const unsigned legacy = GPOINTER_TO_UINT(data) >> 2;
+    const unsigned functional = (GPOINTER_TO_UINT(data) >> 1) & 1;
+    const unsigned seeded = GPOINTER_TO_UINT(data) & 1;
+    g_autofree char *dir = g_dir_make_tmp("crime-ecc-values-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "device.txt", NULL);
+    g_autofree char *options = ecc_options(functional, log, "");
+    QTestState *s = start_profile(legacy, options);
+    EccSnapshot before;
 
-    for (unsigned legacy = 0; legacy < 2; legacy++) {
-        for (unsigned functional = 0; functional < 2; functional++) {
-            for (unsigned seeded = 0; seeded < 2; seeded++) {
-                g_autofree char *dir =
-                    g_dir_make_tmp("crime-ecc-values-XXXXXX", NULL);
-                g_autofree char *log =
-                    g_build_filename(dir, "device.txt", NULL);
-                g_autofree char *options = ecc_options(functional, log, "");
-                QTestState *s = start_profile(legacy, options);
-                EccSnapshot before;
+    g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
+    ecc_seed(s, seeded);
+    before = ecc_snapshot(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    for (unsigned value = 0; value <= 255; value++) {
+        uint8_t raw[8];
 
-                g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
-                ecc_seed(s, seeded);
-                before = ecc_snapshot(s);
-                qtest_qmp_assert_success(s, "{'execute':'cont'}");
-                for (unsigned value = 0; value <= 255; value++) {
-                    uint8_t raw[8];
-
-                    ecc_store(s, 0x270, value);
-                    g_assert_cmphex(ecc_load(s, 0x270), ==, value);
-                    qtest_memread(s, BASE + 0x270, raw, sizeof(raw));
-                    for (unsigned i = 0; i < 7; i++) {
-                        g_assert_cmphex(raw[i], ==, 0);
-                    }
-                    g_assert_cmphex(raw[7], ==, value);
-                    ecc_unchanged(s, &before, 0, value);
-                }
-                for (unsigned i = 0; i < ARRAY_SIZE(repeated); i++) {
-                    ecc_store(s, 0x270, repeated[i]);
-                    ecc_store(s, 0x270, repeated[i]);
-                    g_assert_cmphex(ecc_load(s, 0x270), ==, repeated[i]);
-                    ecc_unchanged(s, &before, 0, repeated[i]);
-                }
-                assert_run_status(s, "running");
-                qtest_system_reset(s);
-                g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
-                g_assert_cmphex(ecc_load(s, 0x200), ==, 0);
-                qtest_quit(s);
-                ecc_no_first_use(log);
-                g_unlink(log);
-                g_rmdir(dir);
-            }
+        ecc_store(s, 0x270, value);
+        g_assert_cmphex(ecc_load(s, 0x270), ==, value);
+        qtest_memread(s, BASE + 0x270, raw, sizeof(raw));
+        for (unsigned i = 0; i < 7; i++) {
+            g_assert_cmphex(raw[i], ==, 0);
         }
+        g_assert_cmphex(raw[7], ==, value);
+        ecc_unchanged(s, &before, 0, value);
     }
+    for (unsigned i = 0; i < ARRAY_SIZE(repeated); i++) {
+        ecc_store(s, 0x270, repeated[i]);
+        ecc_store(s, 0x270, repeated[i]);
+        g_assert_cmphex(ecc_load(s, 0x270), ==, repeated[i]);
+        ecc_unchanged(s, &before, 0, repeated[i]);
+    }
+    assert_run_status(s, "running");
+    qtest_system_reset(s);
+    g_assert_cmphex(ecc_load(s, 0x270), ==, 0);
+    g_assert_cmphex(ecc_load(s, 0x200), ==, 0);
+    qtest_quit(s);
+    ecc_no_first_use(log);
+    g_unlink(log);
+    g_rmdir(dir);
 }
 
-static void test_ecc_replacement_refusal(void)
+/*
+ * One profile and memory-transfer mode per case, for the same reason as the
+ * values cases: every refused access is followed by a full state snapshot.
+ */
+static void test_ecc_replacement_refusal(gconstpointer data)
 {
-    for (unsigned legacy = 0; legacy < 2; legacy++) {
-        for (unsigned functional = 0; functional < 2; functional++) {
-            g_autofree char *dir =
-                g_dir_make_tmp("crime-ecc-refuse-XXXXXX", NULL);
-            g_autofree char *log = g_build_filename(dir, "device.txt", NULL);
-            g_autofree char *options = ecc_options(functional, log, "");
-            QTestState *s = start_profile(legacy, options);
-            uint64_t value;
-            EccSnapshot before;
+    const unsigned legacy = GPOINTER_TO_UINT(data) >> 1;
+    const unsigned functional = GPOINTER_TO_UINT(data) & 1;
+    g_autofree char *dir =
+        g_dir_make_tmp("crime-ecc-refuse-XXXXXX", NULL);
+    g_autofree char *log = g_build_filename(dir, "device.txt", NULL);
+    g_autofree char *options = ecc_options(functional, log, "");
+    QTestState *s = start_profile(legacy, options);
+    uint64_t value;
+    EccSnapshot before;
 
-            ecc_seed(s, true);
-            if (functional) {
-                ecc_store(s, 0x200, 1);
-            }
-            ecc_store(s, 0x270, 0xa5);
-            before = ecc_snapshot(s);
-            qtest_qmp_assert_success(s, "{'execute':'cont'}");
-            for (unsigned bit = 8; bit < 64; bit++) {
-                for (unsigned mixed = 0; mixed < 2; mixed++) {
-                    uint64_t bad = (1ULL << bit) | (mixed ? 0x3c : 0);
+    ecc_seed(s, true);
+    if (functional) {
+        ecc_store(s, 0x200, 1);
+    }
+    ecc_store(s, 0x270, 0xa5);
+    before = ecc_snapshot(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    for (unsigned bit = 8; bit < 64; bit++) {
+        for (unsigned mixed = 0; mixed < 2; mixed++) {
+            uint64_t bad = (1ULL << bit) | (mixed ? 0x3c : 0);
 
-                    g_assert_cmpint(memtx_store(s, BASE + 0x270, bad, 8),
-                                    !=, MEMTX_OK);
-                    ecc_unchanged(s, &before, functional, 0xa5);
-                }
-            }
-            for (unsigned size = 1; size < 8; size *= 2) {
-                g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x3c, size),
-                                !=, MEMTX_OK);
-                g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, size),
-                                !=, MEMTX_OK);
-                ecc_unchanged(s, &before, functional, 0xa5);
-                g_assert_cmpint(memtx_store(s, BASE + 0x278 - size, 0x3c, size),
-                                !=, MEMTX_OK);
-                g_assert_cmpint(memtx_load(s, BASE + 0x278 - size,
-                                          &value, size),
-                                !=, MEMTX_OK);
-                ecc_unchanged(s, &before, functional, 0xa5);
-            }
-            for (unsigned delta = 1; delta < 8; delta++) {
-                g_assert_cmpint(memtx_store(s, BASE + 0x270 + delta, 0x3c, 8),
-                                !=, MEMTX_OK);
-                g_assert_cmpint(memtx_load(s, BASE + 0x270 + delta, &value, 8),
-                                !=, MEMTX_OK);
-                ecc_unchanged(s, &before, functional, 0xa5);
-                g_assert_cmpint(memtx_store(s, BASE + 0x270 - delta, 0x3c, 8),
-                                !=, MEMTX_OK);
-                g_assert_cmpint(memtx_load(s, BASE + 0x270 - delta, &value, 8),
-                                !=, MEMTX_OK);
-                ecc_unchanged(s, &before, functional, 0xa5);
-            }
-            if (legacy || functional) {
-                assert_stopped(s);
-            }
-            qtest_quit(s);
-            g_unlink(log);
-            g_rmdir(dir);
+            g_assert_cmpint(memtx_store(s, BASE + 0x270, bad, 8),
+                            !=, MEMTX_OK);
+            ecc_unchanged(s, &before, functional, 0xa5);
         }
     }
+    for (unsigned size = 1; size < 8; size *= 2) {
+        g_assert_cmpint(memtx_store(s, BASE + 0x270, 0x3c, size),
+                        !=, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + 0x270, &value, size),
+                        !=, MEMTX_OK);
+        ecc_unchanged(s, &before, functional, 0xa5);
+        g_assert_cmpint(memtx_store(s, BASE + 0x278 - size, 0x3c, size),
+                        !=, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + 0x278 - size,
+                                  &value, size),
+                        !=, MEMTX_OK);
+        ecc_unchanged(s, &before, functional, 0xa5);
+    }
+    for (unsigned delta = 1; delta < 8; delta++) {
+        g_assert_cmpint(memtx_store(s, BASE + 0x270 + delta, 0x3c, 8),
+                        !=, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + 0x270 + delta, &value, 8),
+                        !=, MEMTX_OK);
+        ecc_unchanged(s, &before, functional, 0xa5);
+        g_assert_cmpint(memtx_store(s, BASE + 0x270 - delta, 0x3c, 8),
+                        !=, MEMTX_OK);
+        g_assert_cmpint(memtx_load(s, BASE + 0x270 - delta, &value, 8),
+                        !=, MEMTX_OK);
+        ecc_unchanged(s, &before, functional, 0xa5);
+    }
+    if (legacy || functional) {
+        assert_stopped(s);
+    }
+    qtest_quit(s);
+    g_unlink(log);
+    g_rmdir(dir);
 }
 
 /*
@@ -3094,10 +3096,30 @@ int main(int argc, char **argv)
                         "empty-renderer-status", test_feature_mismatch);
     add_case("sgi/crime/legacy/ecc-replacement/stage",
                    test_ecc_replacement_stage);
-    add_case("sgi/crime/legacy/ecc-replacement/values",
-                   test_ecc_replacement_values);
-    add_case("sgi/crime/legacy/ecc-replacement/refusal",
-                   test_ecc_replacement_refusal);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/1.5-plain-clean",
+                  GUINT_TO_POINTER(0), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/1.5-plain-seeded",
+                  GUINT_TO_POINTER(1), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/1.5-func-clean",
+                  GUINT_TO_POINTER(2), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/1.5-func-seeded",
+                  GUINT_TO_POINTER(3), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/legacy-plain-clean",
+                  GUINT_TO_POINTER(4), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/legacy-plain-seeded",
+                  GUINT_TO_POINTER(5), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/legacy-func-clean",
+                  GUINT_TO_POINTER(6), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/values/legacy-func-seeded",
+                  GUINT_TO_POINTER(7), test_ecc_replacement_values);
+    add_data_case("sgi/crime/legacy/ecc-replacement/refusal/1.5-plain",
+                  GUINT_TO_POINTER(0), test_ecc_replacement_refusal);
+    add_data_case("sgi/crime/legacy/ecc-replacement/refusal/1.5-func",
+                  GUINT_TO_POINTER(1), test_ecc_replacement_refusal);
+    add_data_case("sgi/crime/legacy/ecc-replacement/refusal/legacy-plain",
+                  GUINT_TO_POINTER(2), test_ecc_replacement_refusal);
+    add_data_case("sgi/crime/legacy/ecc-replacement/refusal/legacy-func",
+                  GUINT_TO_POINTER(3), test_ecc_replacement_refusal);
     add_data_case("sgi/crime/legacy/ecc-replacement/controls/1.5-plain-0",
                   GUINT_TO_POINTER(0), test_ecc_replacement_controls);
     add_data_case("sgi/crime/legacy/ecc-replacement/controls/1.5-func-0",

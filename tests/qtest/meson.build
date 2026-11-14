@@ -48,10 +48,6 @@ slow_qtests = {
   # and was killed at 120 s in a four-process run of the queue's third
   # share (batch for the R5000 fix); 300 s is about three times the slowest.
   'sgi-crime-mte-test': 300,
-  # The ecc-values group took 25 to 56 s alone on 2026-11-10 and was killed at
-  # the 60 s default in a four-process run of the queue's third qtest share;
-  # about three times the slowest figure, rounded up.
-  'sgi-crime-legacy-test-ecc-values': 180,
   # Its 27 cases each start a Malta machine: 39 to 83 s alone in eleven runs on
   # 2026-11-10, and 3 of 5 runs on a loaded host were killed at the 60 s
   # default. About twice the slowest figure. It is listed with the
