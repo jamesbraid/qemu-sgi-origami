@@ -174,7 +174,9 @@ can sit at any address (:src:`nxp-mcf5206eum-1 p. 9-8`, *established*). The
 core fetches its initial stack and program counter from address 0 and
 ``0x4``, which the flash answers. The model reproduces this: until the first
 write to ``CSMR0`` the flash answers the whole address space, and the
-vectors come from it.
+vectors come from it. A machine reset, such as a watchdog timeout, resets the
+module before the core fetches its vectors, so they come from the flash even
+when the firmware had moved ``CS0`` to its own window.
 
 The firmware's loader reads the byte at ``0x10000040`` before it writes
 ``MBAR``, so the read is an external cycle answered by the global ``CS0``,
