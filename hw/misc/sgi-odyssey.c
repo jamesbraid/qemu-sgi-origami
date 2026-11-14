@@ -1423,21 +1423,6 @@ enum {
 #define ODSY_LIGHT_SPOT_COS 13
 #define ODSY_LIGHT_SPOT_EXP 14
 
-/*
- * The geometry program (docs/analysis/odyssey-gl-geometry-program.md,
- * sections 1 and 2, ESTABLISHED from the library and the captures). Every
- * program word is a class in bits 31:24, bits 22:10 = 0x20 and an 11-bit
- * value split as (value & 0x3ff) | (value >> 10) << 23. Class 0x28 selects a
- * constant-memory index and 0x60 stores a microcode routine address there,
- * then advances; 0x29, 0x2a and 0x2c are the program's entries and 0x33
- * the list index the engine continues from. 0x27 selects a program-memory
- * entry and 0x40 to 0x5f each store one of its six halfwords, 5 down to 0,
- * the sixteen-bit value split as (h & 0x3ff) | (h >> 10) << 23, then the
- * next entry follows (the kernel driver's microcode download and the GL
- * library's program upload use the same words). 0x25 carries a value of
- * unknown meaning, and 0x90808800 with two operands runs a one-shot;
- * neither changes what the model draws, so they are accepted and not kept.
- */
 #define ODSY_PROG_SHAPE 0x007ffc00
 #define ODSY_PROG_TAG 0x00008000
 #define ODSY_PROG_LOW_MASK 0x3ff
@@ -1518,18 +1503,6 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_PROG_LIST_MAX 64
 
 /*
- * APPROXIMATION: the model does not run the geometry engine's microcode.
- * It recognises the program the library selected by the routine addresses
- * below and computes OpenGL's lighting itself (odyssey_gl_light()). The
- * addresses are entry points of the geometry-engine microcode IRIX 6.5.30
- * ships, the same image on IP30 and IP35 media (its identity is recorded
- * in the datasheet), as the GL library selects them. Supported resident
- * lit programs are listed in odyssey_ucode_lit_records below. Other programs
- * are reported once and drawn unlit; a different microcode image would
- * need these entry points checked again. Uploaded programs in the program
- * window are unsupported.
- */
-/*
  * The routine numbering of the IRIX 6.5.9 to 6.5.27 GL libraries. Their
  * program image is the 6.5.30 image less the 99-record spot routine at
  * records 792 to 890 and every record from 2365 on, so they number every
@@ -1548,15 +1521,9 @@ enum { ODSY_ENTRY_29, ODSY_ENTRY_2A, ODSY_ENTRY_2C, ODSY_ENTRY_33 };
 #define ODSY_UCODE_UNLIT 0x0d6
 #define ODSY_UCODE_UNLIT_2A 0x0e0
 #define ODSY_UCODE_UNLIT_2C 0x0ea
-#define ODSY_UCODE_UNLIT_CLIP 0x0f3  /* unlit, clip head: 0x0f3 0x100 0x10c */
+#define ODSY_UCODE_UNLIT_CLIP 0x0f3
 #define ODSY_UCODE_UNLIT_CLIP_2A 0x100
 #define ODSY_UCODE_UNLIT_CLIP_2C 0x10c
-/*
- * The program window (docs/analysis/odyssey-gl-geometry-
- * program.md, "Program memory"): the library copies up to 0xc7 entries of
- * the image into 0x738 .. 0x7fe and relocates the program's addresses at or
- * above its first source entry by 0x738 minus that entry.
- */
 #define ODSY_PROG_WINDOW_BASE 0x738
 #define ODSY_PROG_WINDOW_ENTRIES SGI_ODYSSEY_GL_WINDOW_ENTRIES
 /*
@@ -8439,10 +8406,6 @@ static bool odyssey_is_program_word(uint32_t word)
     if ((word & ODSY_PROG_SHAPE) != ODSY_PROG_TAG) {
         return false;
     }
-    /*
-     * A program-memory halfword is 16 bits, so its value reaches bits 28:23
-     * and its class byte runs 0x40 to 0x5f (0x43808320 is halfword 0x1f20).
-     */
     if (cls >= ODSY_PROG_PROGRAM_HALFWORD &&
         cls <= ODSY_PROG_PROGRAM_HALFWORD_LAST) {
         return true;

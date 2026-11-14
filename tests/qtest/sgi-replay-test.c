@@ -109,7 +109,8 @@ static const ReplayHead replay_heads[] = {
         .console = "graphics-slot",
         .display_pixel_property = "x-test-display-pixel",
         .needs_prom = true,
-    }, {
+    },
+    {
         /*
          * The same machine with the SI board's textured sibling, SI+T, for
          * captures of the texture path.
@@ -126,7 +127,8 @@ static const ReplayHead replay_heads[] = {
         .auxiliary_planes = true,
         .trace = "-trace enable=sgi_mgras_mmio "
                  "-trace enable=sgi_mgras_control_mmio",
-    }, {
+    },
+    {
         /*
          * The same machine with the SSI board, two raster engines, whose
          * colour-buffer slots 2 and 3 a deep GL window draws into.
@@ -156,6 +158,7 @@ static const ReplayHead *find_head(const char *codename)
     return NULL;
 }
 
+#define KONA_MAINTENANCE_MENU "maintenance-menu.replay"
 #define DEFAULT_REPLAY    "fill.replay"
 #define MINIMAL_REPLAY    "minimal.replay"
 #define MASKED_READ       "masked-read.replay"
@@ -189,8 +192,6 @@ static const ReplayHead *find_head(const char *codename)
 #define INVALID_DMA_EXTRA "invalid-dma-extra.replay"
 #define INVALID_DMA_HEX_MISMATCH \
     "invalid-dma-hex-mismatch.replay"
-
-#define KONA_MAINTENANCE_MENU "maintenance-menu.replay"
 
 static char *replay_family_fixture_path(const char *family, const char *name)
 {
@@ -882,10 +883,11 @@ static void test_kona_screendump(void)
     g_assert_no_error(error);
     g_assert_cmpuint(length, ==, sizeof(header) - 1 + 1280 * 1024 * 3);
     g_assert_cmpmem(image, sizeof(header) - 1, header, sizeof(header) - 1);
-    g_assert_cmpmem(image + sizeof(header) - 1 + (50 * 1280 + 100) * 3, 3,
-                    "\xff\0\0", 3);
-    g_assert_cmpmem(image + sizeof(header) - 1 + (150 * 1280 + 200) * 3, 3,
-                    "\0\xff\0", 3);
+    /* Textport Y counts upward; PPM rows start at the top. */
+    g_assert_cmpmem(image + sizeof(header) - 1 +
+                    ((1024 - 1 - 50) * 1280 + 100) * 3, 3, "\xff\0\0", 3);
+    g_assert_cmpmem(image + sizeof(header) - 1 +
+                    ((1024 - 1 - 150) * 1280 + 200) * 3, 3, "\0\xff\0", 3);
 
     records = g_strconcat(contents, "\nscreendump points.ppm\n", NULL);
     g_assert_true(g_file_set_contents(fixture, records, -1, &error));
@@ -1590,11 +1592,6 @@ static void test_invalid_no_head(void)
                         "'head CODENAME'*");
 }
 
-/*
- * The IO6 PROM drawing its graphical System Maintenance Menu on
- * InfiniteReality: a captured boot's register accesses, its screendump
- * compared byte for byte at the end. See the fixture's own comments.
- */
 static void test_kona_trace_ordering(void)
 {
     const ReplayHead *head = find_head("sgi-kona");
@@ -1698,6 +1695,10 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     if (qtest_has_device("sgi-kona")) {
+        qtest_add_func("sgi-replay/kona/trace-ordering",
+                       test_kona_trace_ordering);
+        qtest_add_func("sgi-replay/kona/maintenance-menu",
+                       test_kona_maintenance_menu);
         qtest_add_func("sgi-replay/kona/ordering", test_kona_ordering);
         qtest_add_func("sgi-replay/kona/checkpoint", test_kona_checkpoint);
         qtest_add_func("sgi-replay/kona/screendump", test_kona_screendump);
@@ -1766,9 +1767,6 @@ int main(int argc, char **argv)
                    test_invalid_dma_extra);
     qtest_add_func("sgi-replay/mgras/invalid-dma-hex-mismatch",
                    test_invalid_dma_hex_mismatch);
-    qtest_add_func("sgi-replay/kona/trace-ordering", test_kona_trace_ordering);
-    qtest_add_func("sgi-replay/kona/maintenance-menu",
-                   test_kona_maintenance_menu);
     qtest_add_func("sgi-replay/screendump-record", test_screendump_record);
     qtest_add_func("sgi-replay/screendump-record-mismatch",
                    test_screendump_record_mismatch);

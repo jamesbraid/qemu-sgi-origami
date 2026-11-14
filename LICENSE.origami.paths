@@ -115,6 +115,7 @@ hw/display/sgi/renderer.c
 hw/display/sgi/scanout.c
 hw/display/sgi/trace-events
 hw/display/sgi/trace.h
+hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
 hw/input/psitech-rad4-km.c
 hw/input/sgi-ioc3-kbc.c
@@ -318,6 +319,7 @@ hw/misc/sgi-kona-mesa-provider.c
 hw/misc/sgi-kona-mesa-provider.h
 hw/misc/sgi-kona-ports.c
 hw/misc/sgi-kona-record.c
+hw/misc/sgi-kona-texture.c
 hw/misc/sgi-kona.c
 hw/misc/sgi-l1-pbay.c
 hw/misc/sgi-l1.c
@@ -374,6 +376,7 @@ include/hw/display/sgi/head-ops.h
 include/hw/display/sgi/pixel-dma.h
 include/hw/display/sgi/rasterizer.h
 include/hw/display/sgi/scanout.h
+include/hw/display/sgi/x-gc.h
 include/hw/i2c/pcf8584.h
 include/hw/input/psitech-rad4-km.h
 include/hw/input/sgi-ioc3-kbc.h
@@ -419,6 +422,7 @@ include/hw/misc/sgi-kona-dma.h
 include/hw/misc/sgi-kona-gl-decode.h
 include/hw/misc/sgi-kona-ports.h
 include/hw/misc/sgi-kona-record.h
+include/hw/misc/sgi-kona-texture.h
 include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1-pbay.h
 include/hw/misc/sgi-l1.h
@@ -663,6 +667,10 @@ tests/functional/mips64/lib_sn0_hub.py
 tests/functional/mips64/lib_sn_reset.py
 tests/functional/mips64/lib_translation_health.py
 tests/functional/mips64/mgras-reference/README
+tests/functional/mips64/mgras-reference/emxi-doublebuffer.json
+tests/functional/mips64/mgras-reference/emxi-lit3d.json
+tests/functional/mips64/mgras-reference/emxi-pixels.json
+tests/functional/mips64/mgras-reference/emxi-texture.json
 tests/functional/mips64/mgras-reference/esi-lit3d.json
 tests/functional/mips64/mgras-reference/esi-pixels.json
 tests/functional/mips64/mgras-reference/esi-t-lit3d.json
@@ -671,6 +679,10 @@ tests/functional/mips64/mgras-reference/esi-t-texture.json
 tests/functional/mips64/mgras-reference/essi-doublebuffer.json
 tests/functional/mips64/mgras-reference/essi-lit3d.json
 tests/functional/mips64/mgras-reference/essi-pixels.json
+tests/functional/mips64/mgras-reference/mxi-doublebuffer.json
+tests/functional/mips64/mgras-reference/mxi-lit3d.json
+tests/functional/mips64/mgras-reference/mxi-pixels.json
+tests/functional/mips64/mgras-reference/mxi-texture.json
 tests/functional/mips64/mgras-reference/si-lit3d.json
 tests/functional/mips64/mgras-reference/si-pixels.json
 tests/functional/mips64/mgras-reference/si-t-lit3d.json
@@ -846,6 +858,8 @@ tests/qtest/fixtures/sgi-router-test.c
 tests/qtest/fixtures/sgi-xbow-transport-test.c
 tests/qtest/ics1890-test.c
 tests/qtest/ioc3-release-fixture.c
+tests/qtest/kona-read-fixture.c
+tests/qtest/kona-read-fixture.h
 tests/qtest/l1-bic-startup-fixture.c
 tests/qtest/l1-query-routing-fixture.c
 tests/qtest/libqos/libqos-sgi-bridge.c
@@ -884,6 +898,7 @@ tests/qtest/sgi-heart-cpu-test.c
 tests/qtest/sgi-heart-test.c
 tests/qtest/sgi-ioc3-eth-test.c
 tests/qtest/sgi-ioc4-test.c
+tests/qtest/sgi-kona-read-defense-test.c
 tests/qtest/sgi-l1-identity-vectors.h
 tests/qtest/sgi-l1-pbay-test.c
 tests/qtest/sgi-l1-test.h
@@ -1039,6 +1054,7 @@ tests/unit/test-sgi-initial-flash.c
 tests/unit/test-sgi-kona-gl-decode.c
 tests/unit/test-sgi-kona-mesa-provider.c
 tests/unit/test-sgi-kona-ports.c
+tests/unit/test-sgi-kona-texture.c
 tests/unit/test-sgi-memory.c
 tests/unit/test-sgi-o2000-module-mgmt-real.c
 tests/unit/test-sgi-o2000-module-mgmt-stubs.c
@@ -1052,6 +1068,7 @@ tests/unit/test-sgi-render-resource.c
 tests/unit/test-sgi-router.c
 tests/unit/test-sgi-scanout.c
 tests/unit/test-sgi-synthetic-serial.c
+tests/unit/test-sgi-x-gc.c
 tests/unit/test-sn-model.c
 tests/unit/test-sn0-fabric-routed.c
 tests/unit/test-sn1-topology.c
