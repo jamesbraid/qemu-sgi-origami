@@ -1284,3 +1284,5 @@ hw/m68k/mcf5206e-mbus.c
 include/hw/m68k/mcf5206e-mbus.h
 hw/misc/sgi-l1-identity.c
 include/hw/misc/sgi-l1-identity.h
+hw/m68k/sgi-l1-board-peers.c
+include/hw/m68k/sgi-l1-board-peers.h
