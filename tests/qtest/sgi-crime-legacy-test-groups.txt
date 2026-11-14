@@ -2,10 +2,46 @@
 # Native Meson groups retain every case in the quick suite exactly once.
 # The named sgi-crime-legacy-test executable runs all cases for diagnosis.
 
-state /mips64/sgi/crime/transfer-mask/tiled
-state /mips64/sgi/crime/transfer-mask/stage
-state /mips64/sgi/crime/transfer-mask/refusal
-state /mips64/sgi/crime/transfer-mask/commands
+state-mask /mips64/sgi/crime/transfer-mask/tiled
+state-mask /mips64/sgi/crime/transfer-mask/stage
+state-mask /mips64/sgi/crime/transfer-mask/refusal
+state-mask /mips64/sgi/crime/transfer-mask/commands
+state-mask /mips64/sgi/crime/1.5/interrupt-mask-upper-refusal
+state-mask /mips64/sgi/crime/legacy/identity
+state-mask /mips64/sgi/crime/legacy/controls
+state-mask /mips64/sgi/crime/legacy/software-causes
+state-mask /mips64/sgi/crime/legacy/error-enable-zero
+state-registers /mips64/sgi/crime/legacy/interrupt-mask-upper
+state-registers /mips64/sgi/crime/legacy/error-enable-refusal
+state-registers /mips64/sgi/crime/legacy/register-access
+state-registers /mips64/sgi/crime/legacy/banks
+state-registers /mips64/sgi/crime/legacy/immutable
+state-registers /mips64/sgi/crime/legacy/level-latches
+state-registers /mips64/sgi/crime/legacy/counter
+state-registers /mips64/sgi/crime/legacy/counter-access
+state-routing /mips64/sgi/crime/legacy/source-routing
+state-routing /mips64/sgi/crime/legacy/functional-source-routing
+state-routing /mips64/sgi/crime/legacy/source-reset
+state-routing /mips64/sgi/crime/legacy/functional-source-reset
+state-routing /mips64/sgi/crime/legacy/migration
+state-routing /mips64/sgi/crime/legacy/functional-migration-sources
+state-routing /mips64/sgi/crime/default/migration-sources
+state-routing /mips64/sgi/crime/default/functional-migration-sources
+state-routing /mips64/sgi/crime/legacy/cpu-clock-interrupt
+state-routing /mips64/sgi/crime/legacy/machine-admission
+state-profile /mips64/sgi/crime/legacy/mismatch-to-default
+state-profile /mips64/sgi/crime/legacy/mismatch-from-default
+state-profile /mips64/sgi/crime/legacy/invalid-missing-section
+state-profile /mips64/sgi/crime/legacy/invalid-profile-id
+state-profile /mips64/sgi/crime/legacy/invalid-functional-policy
+state-profile /mips64/sgi/crime/legacy/invalid-latch-mask
+state-profile /mips64/sgi/crime/legacy/invalid-cpu-error
+state-profile /mips64/sgi/crime/legacy/invalid-memory-address
+state-profile /mips64/sgi/crime/legacy/invalid-hardware
+state-profile /mips64/sgi/crime/legacy/invalid-timer-fraction
+state-profile /mips64/sgi/crime/legacy/invalid-version
+state-profile /mips64/sgi/crime/legacy/feature-id-word
+state-profile /mips64/sgi/crime/legacy/feature-inert-renderer
 renderer /mips64/sgi/crime/renderer/ifb/read
 renderer /mips64/sgi/crime/renderer/ifb/write
 renderer /mips64/sgi/crime/renderer/status-bank/write
@@ -17,10 +53,7 @@ renderer /mips64/sgi/crime/renderer/refusal
 renderer /mips64/sgi/crime/renderer/hard-stop
 renderer /mips64/sgi/crime/renderer/profiles
 renderer /mips64/sgi/crime/renderer/reset-word
-state /mips64/sgi/crime/1.5/interrupt-mask-upper-refusal
 renderer /mips64/sgi/crime/renderer/no-generated-irq
-state /mips64/sgi/crime/default/migration-sources
-state /mips64/sgi/crime/default/functional-migration-sources
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/stage
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/values
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/refusal
@@ -35,5 +68,4 @@ ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/migration
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/invalid-stream
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/width-stop
 renderer /mips64/sgi/crime/renderer/cpu
-state /mips64/sgi/crime/legacy
 bank-word /mips64/sgi/crime/legacy/bank-word
