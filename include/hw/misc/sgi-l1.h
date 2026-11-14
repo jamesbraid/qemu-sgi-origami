@@ -347,6 +347,17 @@ struct SGIL1State {
     uint8_t cx_console_board;
     uint8_t cx_console_subchannel;
     bool cx_filter;
+    /*
+     * Router role: bits 7:4 of byte +0x17 of the settings record (setting
+     * 0x3c), the word the start-up initialiser copied into the controller's
+     * own table entry, and the byte last written to the router control
+     * expander. Only the Cx-brick and the R-brick use them.
+     */
+    uint8_t router_role;
+    uint8_t router_entry;
+    uint8_t router_control;
+    /* Setting 0x3d, bits 2:1 of byte +0x17: the series word, 0 to 3. */
+    uint8_t router_series;
     /* The optional power-bay link: not migrated, it blocks migration. */
     SGIL1Pbay pbay;
     SGIL1EnvSettings env;

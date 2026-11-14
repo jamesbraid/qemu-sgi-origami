@@ -2600,6 +2600,388 @@ static void test_partition_notice(void)
     l2_stub_free(b);
 }
 
+/* A uint8 QOM property of controller @n, such as the router role bytes. */
+static unsigned qom_u8(QTestState *s, unsigned n, const char *name)
+{
+    g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", n);
+    QDict *response = qtest_qmp(s, "{'execute':'qom-get','arguments':"
+                                "{'path':%s,'property':%s}}", path, name);
+    unsigned value;
+
+    g_assert_true(qdict_haskey(response, "return"));
+    value = qdict_get_int(response, "return");
+    qobject_unref(response);
+    return value;
+}
+
+/* The unvalidated writer: any value, whatever the console would accept. */
+static void qom_u8_set(QTestState *s, unsigned n, const char *name,
+                       unsigned value)
+{
+    g_autofree char *path = g_strdup_printf(DEVICES "l1c%u", n);
+    QDict *response = qtest_qmp(s, "{'execute':'qom-set','arguments':"
+                                "{'path':%s,'property':%s,'value':%u}}",
+                                path, name, value);
+
+    g_assert_true(qdict_haskey(response, "return"));
+    qobject_unref(response);
+}
+
+/* The role word of the controller's own table entry, via the L2 link. */
+static uint32_t table_role_word(L2Stub *stub, uint32_t source)
+{
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+    const uint8_t *record;
+    size_t length = ask_table(stub, source, NULL, 0, reply);
+
+    record = table_record(reply, length, 0);
+    g_assert_nonnull(record);
+    return ldl_be_p(record + 0x2c);
+}
+
+/*
+ * The router role (setting 0x3c): 0xf ordinary, 0xe meta, 0xc repeater. The
+ * R-brick's release writes it to bits 7:4 of ROUTER CONTROL, cold start 0xf1;
+ * the console command changes only the stored value, and a hold is not a
+ * release. A value another writer stored is repaired to 0xf, and stored back,
+ * at the next release (software expectation, l1-brick-profiles.rst).
+ */
+static void test_router_role_release(void)
+{
+    QTestState *s = start_one("brick-type=router,router-board=rbrick,"
+                              "auto-power=off");
+    g_autofree char *output = NULL;
+    int32_t code = 0;
+
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xf1);
+    expect_command(s, 0, "router", "NEW        : router type is ordinary\n");
+    g_free(output);
+    output = command(s, 0, "router meta", &code);
+    g_assert_cmpint(code, ==, 0);
+    g_assert_cmpstr(output, ==,
+                    "router type changed, effective on power up or reset\n");
+    expect_command(s, 0, "router", "NEW        : router type is meta\n");
+    /* Nothing is driven at once. */
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xf1);
+    g_free(output);
+    output = command(s, 0, "power up", NULL);
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xe1);
+
+    /* A hold does not write the pins; the release after it does. */
+    g_free(output);
+    output = command(s, 0, "router rep", NULL);
+    g_free(output);
+    output = command(s, 0, "reset hold", NULL);
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xe1);
+    g_free(output);
+    output = command(s, 0, "reset", NULL);
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xc1);
+
+    /* An illegal stored value is shown as such, then repaired at release. */
+    qom_u8_set(s, 0, "router-role", 0x3);
+    expect_command(s, 0, "router",
+                   "NEW        : router type is unknown (0x03)\n");
+    g_free(output);
+    output = command(s, 0, "reset", NULL);
+    g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xf1);
+    g_assert_cmphex(qom_u8(s, 0, "router-role"), ==, 0xf);
+    expect_command(s, 0, "router", "NEW        : router type is ordinary\n");
+    /* The series word follows setting 0x3d, two bits. */
+    for (unsigned i = 0; i < 4; i++) {
+        static const char *const words[4] = {
+            "NEW        ", "UNDECIDED  ", "3400 Series", "3800 Series",
+        };
+        g_autofree char *text = g_strdup_printf(
+            "%s: router type is ordinary\n", words[i]);
+
+        qom_u8_set(s, 0, "router-series", i);
+        expect_command(s, 0, "router", text);
+    }
+    qom_u8_set(s, 0, "router-series", 6);
+    expect_command(s, 0, "router",
+                   "3400 Series: router type is ordinary\n");
+    qtest_quit(s);
+}
+
+/*
+ * The start-up record initialiser repairs the stored role, on the R-brick
+ * (whose pins keep their cold-start value until a release) and on the
+ * Cx-brick, and copies it into the controller's own table entry, which
+ * travels to the L2 whole. Other bricks have no role word. The model's
+ * R-brick has no rack and slot to name itself with, so it offers no table
+ * entry.
+ */
+static void test_router_role_table_word(void)
+{
+    static const struct {
+        const char *props;
+        unsigned role;
+        uint32_t entry;
+    } cases[] = {
+        { "brick-type=cxbrick,named=on,rack=2,bay=3", 0xf, 0xf },
+        { "brick-type=cxbrick,named=on,rack=2,bay=3,router-role=0xe", 0xe,
+          0xe },
+        { "brick-type=cxbrick,named=on,rack=2,bay=3,router-role=0xc", 0xc,
+          0xc },
+        { "brick-type=cxbrick,named=on,rack=2,bay=3,router-role=0x6", 0xf,
+          0xf },
+        { "brick-type=cxbrick,named=on,rack=2,bay=3,router-role=0", 0xf,
+          0xf },
+        { "brick-type=cbrick,named=on,rack=2,bay=3", 0xf, 0 },
+    };
+    static const struct {
+        const char *props;
+        unsigned role;
+    } routers[] = {
+        { "brick-type=router,router-board=rbrick,auto-power=off", 0xf },
+        { "brick-type=router,router-board=rbrick,auto-power=off,"
+          "router-role=0xe", 0xe },
+        { "brick-type=router,router-board=rbrick,auto-power=off,"
+          "router-role=0xa", 0xf },
+        { "brick-type=router,router-board=rbrick,auto-power=off,"
+          "router-role=0", 0xf },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        L2Stub *stub = l2_stub_listen();
+        QTestState *s = start_linked(stub, cases[i].props);
+
+        g_assert_cmphex(qom_u8(s, 0, "router-role"), ==, cases[i].role);
+        g_assert_cmphex(table_role_word(stub, L2_CONFIG_SOURCE_WORD(2, 3)),
+                        ==, cases[i].entry);
+        qtest_quit(s);
+        l2_stub_free(stub);
+    }
+    for (unsigned i = 0; i < G_N_ELEMENTS(routers); i++) {
+        QTestState *s = start_one(routers[i].props);
+
+        g_assert_cmphex(qom_u8(s, 0, "router-role"), ==, routers[i].role);
+        g_assert_cmphex(qom_u8(s, 0, "router-control"), ==, 0xf1);
+        qtest_quit(s);
+    }
+}
+
+/*
+ * The word in the entry is the start-up copy: the console command changes
+ * the stored value, not the entry, which follows at the next controller
+ * start.
+ */
+static void test_router_role_entry_follows_restart(void)
+{
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cxbrick,named=on,rack=2,"
+                                 "bay=3");
+    g_autofree char *output = command(s, 0, "router meta", NULL);
+
+    g_assert_cmphex(table_role_word(stub, L2_CONFIG_SOURCE_WORD(2, 3)), ==,
+                    0xf);
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    g_assert_cmphex(table_role_word(stub, L2_CONFIG_SOURCE_WORD(2, 3)), ==,
+                    0xe);
+    qtest_quit(s);
+    l2_stub_free(stub);
+}
+
+static void migrate_pair(QTestState *from, QTestState *to, const char *uri);
+
+/*
+ * Migrate @from to a file and return the stream, which ends with the
+ * description of every section it carries, so a section's name shows whether
+ * it was sent.
+ */
+static char *migrate_stream(QTestState *from, gsize *length)
+{
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-l1-stream-XXXXXX", &error);
+    g_autofree char *path = g_build_filename(dir, "stream", NULL);
+    g_autofree char *uri = g_strdup_printf("exec:cat >%s", path);
+    char *contents = NULL;
+
+    g_assert_no_error(error);
+    qtest_qmp_assert_success(from, "{'execute':'migrate','arguments':"
+                             "{'uri':%s}}", uri);
+    sgi_wait_migration(from, "completed");
+    g_assert_true(g_file_get_contents(path, &contents, length, NULL));
+    g_assert_cmpint(unlink(path), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+    return contents;
+}
+
+static bool stream_names(const char *stream, gsize length, const char *name)
+{
+    return memmem(stream, length, name, strlen(name)) != NULL;
+}
+
+/*
+ * The controls section (router role, router control byte, node disable mask)
+ * is sent only when one differs from a cold start. A default controller of
+ * any profile sends none, so its stream still loads into a binary that does
+ * not know the section.
+ */
+static void test_controls_section_only_when_set(void)
+{
+    static const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+        "brick-type=cxbrick,named=on,rack=1,bay=4",
+        "brick-type=router,router-board=rbrick,auto-power=off",
+        "brick-type=ip45",
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(props); i++) {
+        QTestState *s = start_one(props[i]);
+        gsize length;
+        g_autofree char *stream = migrate_stream(s, &length);
+
+        g_assert_true(stream_names(stream, length, "sgi-l1"));
+        g_assert_false(stream_names(stream, length, "sgi-l1/controls"));
+        qtest_quit(s);
+    }
+}
+
+/*
+ * The router role and the control byte it was written to cross a migration:
+ * a role stored by the console, and the byte a release wrote. The router is
+ * unpowered, as a powered one does not migrate.
+ */
+static void test_router_role_migration(void)
+{
+    const char *const props[] = {
+        "brick-type=router,router-board=rbrick,auto-power=off",
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-l1-o3k-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *output = NULL;
+    QTestState *from = start_with(1, props, "");
+    QTestState *to = start_with(1, props, "-incoming defer");
+
+    g_assert_no_error(error);
+    qom_u8_set(from, 0, "router-series", 3);
+    output = command(from, 0, "router meta", NULL);
+    g_free(output);
+    output = command(from, 0, "power up", NULL);
+    g_assert_cmphex(qom_u8(from, 0, "router-control"), ==, 0xe1);
+    g_free(output);
+    output = command(from, 0, "router rep", NULL);
+    g_free(output);
+    output = command(from, 0, "power down", NULL);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qom_u8(to, 0, "router-role"), ==, 0xc);
+    g_assert_cmphex(qom_u8(to, 0, "router-control"), ==, 0xe1);
+    /* The series setting crosses too. */
+    g_assert_cmphex(qom_u8(to, 0, "router-series"), ==, 3);
+    expect_command(to, 0, "router",
+                   "3800 Series: router type is repeater\n");
+    /* The next release on the destination writes the stored role. */
+    g_free(output);
+    output = command(to, 0, "power up", NULL);
+    g_assert_cmphex(qom_u8(to, 0, "router-control"), ==, 0xc1);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+/*
+ * The migration section must also be sent when only the table-entry copy or
+ * only the control byte differs from a cold start. A role of meta at start-up
+ * and a console change back to ordinary leaves the copy at meta; a release
+ * with meta and a later change to ordinary leaves the byte at 0xe1. Either
+ * stream must round-trip.
+ */
+static void test_router_role_migration_single_terms(void)
+{
+    const char *const props[] = {
+        "brick-type=cxbrick,named=on,rack=1,bay=4,router-role=0xe",
+    };
+    const char *const plain[] = {
+        "brick-type=cxbrick,named=on,rack=1,bay=4",
+    };
+    const char *const router[] = {
+        "brick-type=router,router-board=rbrick,auto-power=off",
+    };
+    g_autoptr(GError) error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-l1-o3k-XXXXXX", &error);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    g_autofree char *output = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    /* The copy alone: the stored role is back to ordinary. */
+    from = start_with(1, props, "");
+    /*
+     * The destination starts with the default role, so only the stream can
+     * bring the copy across.
+     */
+    to = start_with(1, plain, "-incoming defer");
+    output = command(from, 0, "router ord", NULL);
+    g_assert_cmphex(qom_u8(from, 0, "router-role"), ==, 0xf);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qom_u8(to, 0, "router-role"), ==, 0xf);
+    g_assert_cmphex(qom_u8(to, 0, "router-entry"), ==, 0xe);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+
+    /* The series alone: every other term is at its cold-start value. */
+    from = start_with(1, plain, "");
+    to = start_with(1, plain, "-incoming defer");
+    qom_u8_set(from, 0, "router-series", 2);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qom_u8(to, 0, "router-series"), ==, 2);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+
+    /* The control byte alone: released as meta, then set back. */
+    from = start_with(1, router, "");
+    to = start_with(1, router, "-incoming defer");
+    g_free(output);
+    output = command(from, 0, "router meta", NULL);
+    g_free(output);
+    output = command(from, 0, "power up", NULL);
+    g_free(output);
+    output = command(from, 0, "router ord", NULL);
+    g_free(output);
+    output = command(from, 0, "power down", NULL);
+    g_assert_cmphex(qom_u8(from, 0, "router-control"), ==, 0xe1);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qom_u8(to, 0, "router-role"), ==, 0xf);
+    g_assert_cmphex(qom_u8(to, 0, "router-control"), ==, 0xe1);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
+/* The command is offered on the router and the Cx-brick, not elsewhere. */
+static void test_router_command_scope(void)
+{
+    static const char *const props[] = {
+        "brick-type=cbrick,named=on,rack=1,bay=4",
+        "brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP,
+    };
+    QTestState *s = start_with(2, props, "");
+
+    expect_command_code(s, 0, "router", UNSUPPORTED, -1);
+    expect_command_code(s, 1, "router", UNSUPPORTED, -1);
+    qtest_quit(s);
+
+    /*
+     * The image's handler is offered to the Origin 3000 family's brick types
+     * only. The Origin 300 profile is outside that set, so the model has no
+     * such command there, an approximation.
+     */
+    s = start_one("brick-type=ip45");
+    expect_command_code(s, 0, "router", NOT_FOUND, -1);
+    expect_command_code(s, 0, "rtr", NOT_FOUND, -1);
+    qtest_quit(s);
+}
+
 /*
  * A selector 2 or 13 request that arrives on the L2 link is answered with
  * the six-descriptor reply and stores nothing: the arrival port is not a
@@ -3757,6 +4139,19 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/partition-refusal-zeroes",
                    test_partition_refusal_zeroes);
     qtest_add_func("sgi-l1-o3k/partition-notice", test_partition_notice);
+    qtest_add_func("sgi-l1-o3k/router-role/release", test_router_role_release);
+    qtest_add_func("sgi-l1-o3k/router-role/table-word",
+                   test_router_role_table_word);
+    qtest_add_func("sgi-l1-o3k/router-role/entry-follows-restart",
+                   test_router_role_entry_follows_restart);
+    qtest_add_func("sgi-l1-o3k/migration/controls-only-when-set",
+                   test_controls_section_only_when_set);
+    qtest_add_func("sgi-l1-o3k/migration/router-role",
+                   test_router_role_migration);
+    qtest_add_func("sgi-l1-o3k/migration/router-role-single-terms",
+                   test_router_role_migration_single_terms);
+    qtest_add_func("sgi-l1-o3k/router-role/command-scope",
+                   test_router_command_scope);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
         name = g_strdup_printf("sgi-l1-o3k/link-before-realize/%u", i);

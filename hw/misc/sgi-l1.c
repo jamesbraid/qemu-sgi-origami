@@ -356,6 +356,49 @@ static bool l1_is_rbrick(const SGIL1State *s)
            s->router_board && !strcmp(s->router_board, "rbrick");
 }
 
+/* The router role byte: 0xf ordinary, 0xe meta, 0xc repeater. */
+#define L1_ROLE_ORDINARY 0xf
+#define L1_ROLE_META     0xe
+#define L1_ROLE_REPEATER 0xc
+/* ROUTER CONTROL after a cold start; the role is bits 7:4. */
+#define L1_ROUTER_CONTROL_COLD 0xf1
+
+static bool l1_router_role_valid(uint8_t role)
+{
+    return role == L1_ROLE_ORDINARY || role == L1_ROLE_META ||
+           role == L1_ROLE_REPEATER;
+}
+
+/* Only the stored low four bits count; anything else becomes ordinary. */
+static void l1_router_role_repair(SGIL1State *s)
+{
+    s->router_role &= 0xf;
+    if (!l1_router_role_valid(s->router_role)) {
+        s->router_role = L1_ROLE_ORDINARY;
+    }
+}
+
+/*
+ * The series word the router command prints before the role, from setting
+ * 0x3d: two bits, so 0 to 3 (software expectation, l1-brick-profiles.rst).
+ * Nothing in the model writes the setting but a property; the image's
+ * "INVALID" cannot be read back through it.
+ */
+static const char *l1_router_series(const SGIL1State *s)
+{
+    static const char *const words[4] = {
+        "NEW        ", "UNDECIDED  ", "3400 Series", "3800 Series",
+    };
+
+    return words[s->router_series & 3];
+}
+
+/* The brick types whose start-up record initialiser reads the role. */
+static bool l1_has_router_role(const SGIL1State *s)
+{
+    return l1_is_cxbrick(s) || l1_is_rbrick(s);
+}
+
 /* The bricks whose L1 holds downstream resets: bridges or the router. */
 static bool l1_holds_resets(const SGIL1State *s)
 {
@@ -858,6 +901,16 @@ static void l1_boot_local(SGIL1State *s)
         s->pending_partition = 0;
     }
     s->partition = s->pending_partition;
+    /*
+     * The record initialiser repairs the stored role and copies it into
+     * the controller's own table entry (software expectation, see the
+     * router role section of l1-brick-profiles.rst). The pins keep their
+     * value until the router is released.
+     */
+    if (l1_has_router_role(s)) {
+        l1_router_role_repair(s);
+        s->router_entry = s->router_role;
+    }
     s->console_mode = s->escaped = s->warned_off = false;
     s->command_len = 0;
     memset(s->frame, 0, sizeof(s->frame));
@@ -1661,6 +1714,7 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
 #define L1_L2_RECORD_RACK   0x08
 #define L1_L2_RECORD_BAY    0x0c
 #define L1_L2_RECORD_PARTITION 0x3c
+#define L1_L2_RECORD_ROLE   0x2c
 #define L1_L2_RECORD_NAME   0x40
 #define L1_L2_RECORD_NAME_MAX (L1_L2_RECORD_PRESENT - L1_L2_RECORD_NAME)
 #define L1_L2_RECORD_PRESENT 0x60
@@ -1793,6 +1847,9 @@ static void l1_table_fill(uint8_t *record, const SGIL1State *brick,
     stl_be_p(record + L1_L2_RECORD_RACK, brick->rack);
     stl_be_p(record + L1_L2_RECORD_BAY, brick->bay);
     stl_be_p(record + L1_L2_RECORD_PARTITION, l1_partition(brick));
+    if (l1_has_router_role(brick)) {
+        stl_be_p(record + L1_L2_RECORD_ROLE, brick->router_entry);
+    }
     g_strlcpy((char *)record + L1_L2_RECORD_NAME, name,
               L1_L2_RECORD_NAME_MAX);
     stl_be_p(record + L1_L2_RECORD_PRESENT, 1);
@@ -2574,6 +2631,17 @@ static void l1_hold_resets(SGIL1State *s, bool in_reset)
     if (s->reset_hold != in_reset) {
         s->reset_hold = in_reset;
         qemu_set_irq(s->reset_hold_out, in_reset);
+        if (!in_reset && l1_is_rbrick(s)) {
+            /*
+             * The R-brick's release repairs the stored role and writes it
+             * to bits 7:4 of ROUTER CONTROL; nothing else drives them
+             * (software expectation, as above). The pins
+             * the bits reach are unknown, so the model keeps the byte.
+             */
+            l1_router_role_repair(s);
+            s->router_control = (s->router_control & 0x0f) |
+                                (s->router_role << 4);
+        }
     }
 }
 
@@ -2903,6 +2971,50 @@ static bool l1_brick_partition(SGIL1State *s, const char *word,
         l1_printf(s, "brick partition cleared.\r\n");
     }
     return true;
+}
+
+/*
+ * "router" shows the stored role; "router ordinary|ord", "meta" and
+ * "repeater|rep" store 0xf, 0xe or 0xc and say when it takes effect. Only
+ * the stored value changes: the pins follow at the next release of the
+ * router, the table entry at the next start (software expectation, as
+ * above). The service mode lines the image prints
+ * first, while a service time is set, are not modelled.
+ */
+static void l1_router_command(SGIL1State *s, int argc, char **argv)
+{
+    static const struct {
+        const char *name, *short_name;
+        uint8_t role;
+    } words[] = {
+        { "ordinary", "ord", L1_ROLE_ORDINARY },
+        { "meta", "meta", L1_ROLE_META },
+        { "repeater", "rep", L1_ROLE_REPEATER },
+    };
+
+    if (argc == 1) {
+        uint8_t role = s->router_role & 0xf;
+
+        for (unsigned i = 0; i < ARRAY_SIZE(words); i++) {
+            if (words[i].role == role) {
+                l1_printf(s, "%s: router type is %s\r\n", l1_router_series(s),
+                          words[i].name);
+                return;
+            }
+        }
+        l1_printf(s, "%s: router type is unknown (0x%02x)\r\n",
+                  l1_router_series(s), role);
+        return;
+    }
+    for (unsigned i = 0; argc == 2 && i < ARRAY_SIZE(words); i++) {
+        if (l1_word(argv[1], words[i].name, words[i].short_name)) {
+            s->router_role = words[i].role;
+            l1_printf(s, "router type changed, effective on power up or "
+                      "reset\r\n");
+            return;
+        }
+    }
+    l1_invalid(s, "router");
 }
 
 /* The cfg listing: this brick at 0, each cabled brick at its port number. */
@@ -3731,6 +3843,8 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
         } else {
             l1_invalid(s, "log");
         }
+    } else if (l1_word(argv[0], "router", "rtr") && l1_has_router_role(s)) {
+        l1_router_command(s, argc, argv);
     } else if (!strcmp(argv[0], "brick")) {
         unsigned long value = 0;
 
@@ -5829,6 +5943,31 @@ static const VMStateDescription vmstate_l1_env = {
     },
 };
 
+static bool l1_controls_needed(void *opaque)
+{
+    SGIL1State *s = opaque;
+
+    return s->router_series ||
+           s->router_role != L1_ROLE_ORDINARY ||
+           s->router_entry != L1_ROLE_ORDINARY ||
+           s->router_control != L1_ROUTER_CONTROL_COLD;
+}
+
+/* Sent only when the router role or its pins differ from a cold start. */
+static const VMStateDescription vmstate_l1_controls = {
+    .name = "sgi-l1/controls",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = l1_controls_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(router_series, SGIL1State),
+        VMSTATE_UINT8(router_role, SGIL1State),
+        VMSTATE_UINT8(router_entry, SGIL1State),
+        VMSTATE_UINT8(router_control, SGIL1State),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 /* Product identity must match before loading the selected record cache. */
 static const VMStateDescription vmstate_l1 = {
     .name = TYPE_SGI_L1,
@@ -5914,6 +6053,7 @@ static const VMStateDescription vmstate_l1 = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_l1_env,
+        &vmstate_l1_controls,
         NULL
     },
 };
@@ -7463,6 +7603,22 @@ static void l1_init(Object *obj)
                              SGI_L1_CX_BOARDS);
     object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
                                   OBJ_PROP_FLAG_READ);
+    /*
+     * The stored role, which any writer can set to any four-bit value, and
+     * the router control byte the R-brick's release writes. A never-written
+     * role reads as ordinary.
+     */
+    s->router_role = L1_ROLE_ORDINARY;
+    s->router_entry = L1_ROLE_ORDINARY;
+    s->router_control = L1_ROUTER_CONTROL_COLD;
+    object_property_add_uint8_ptr(obj, "router-role", &s->router_role,
+                                  OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint8_ptr(obj, "router-control", &s->router_control,
+                                  OBJ_PROP_FLAG_READ);
+    object_property_add_uint8_ptr(obj, "router-entry", &s->router_entry,
+                                  OBJ_PROP_FLAG_READ);
+    object_property_add_uint8_ptr(obj, "router-series", &s->router_series,
+                                  OBJ_PROP_FLAG_READWRITE);
     /*
      * Settable after realize: each chassis's node realizes its own L1, so the
      * machine can only join the two once both exist.
