@@ -858,16 +858,19 @@ Interrupts
    * - The glue logic has an interrupt-request byte and two enable bytes, which
        the library sets and reads. Which of them drives the PCI pin, and
        whether the card has any interrupt source the library enables, are
-       not recorded.
-     - *unknown*
+       not recorded. The model leaves the pin to the messaging unit.
+     - *inferred*
      - :src:`sonic-hdsp-library-5.0 0x5ec167c0`.
 
 The model raises the PCI pin the ATU interrupt pin register names while a
-messaging-unit outbound source is unmasked and pending. It also raises it
-while the interrupt-request byte is nonzero and both enable bytes are
-nonzero, an *approximation*; with the stock library, which keeps both
-disabled, no interrupt is raised. A trace of an enabled run would settle
-which sources reach the pin. The card's INTB wires to Bridge pin *device*
+messaging-unit outbound source is unmasked and pending. The DSPs' request
+bits do not drive it: the interrupt-request byte reads back and the two
+enable bytes keep what is written, but the pin ignores them (*inferred*).
+The IRIX handler touches no register, so a level held by the DSP requests
+would never drop, while the library polls the request byte and clears it
+itself with host command ``0xE1`` sub-command 6 (*software expectation*, the
+monitor reader's analysis of the library and the driver). Whether the real
+glue gates any request onto the pin is *unknown*. The card's INTB wires to Bridge pin *device*
 XOR 4 (:doc:`bridge`, *software expectation*). INTA is the chip's reset
 value, which the stock boot code replaces, so a model that wires INTA by
 hand disagrees with what the boot code programs.
@@ -2786,6 +2789,9 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - with ``x-essi1-chain``, four words DMA'd out of one DSP's ESSI1 arrive in
   another's through its own DMA channel, in order, and without the chain
   nothing arrives;
+- with a DSP's request bit set the card's pin rises only while both glue enable
+  bytes are nonzero, drops when one is written 0 and comes back when it is
+  rewritten, and drops for good when the DSP clears timer 0 bit 13;
 - a timer's compare flag triggers DMA words one period apart, and timer 0's
   data output sets and clears the DSP's bit of the interrupt-request byte,
   and holding the DSP in reset clears it;
