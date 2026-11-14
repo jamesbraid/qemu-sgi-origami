@@ -353,11 +353,15 @@ static void test_naming_takes_effect_on_restart(void)
     g_free(output);
     output = command(s, 0, "brick partition 9", &code);
     g_assert_cmpint(code, ==, 0);
-    /* Nothing changes until the controller restarts. */
+    /*
+     * Rack and slot change nothing until the controller restarts. The
+     * partition applies at once (software expectation, see the
+     * partition rows of l1-brick-profiles.rst).
+     */
     expect_unnamed_identity(s, 0);
     expect_command(s, 0, "config", "0: ---c--\n");
     expect_command(s, 0, "brick",
-                   "rack: ---, slot: --, partition: 2, type: C [?MB flash], "
+                   "rack: ---, slot: --, partition: 9, type: C [?MB flash], "
                    "serial:(null), source: EEPROM\n");
     g_free(output);
     output = command(s, 0, "reboot_l1", &code);
@@ -1846,8 +1850,9 @@ static void test_unnamed_attachment_gets_named(void)
 
 /*
  * The "brick" command: "partition none" clears the stored partition and the
- * reply is "brick partition cleared."; like a number, it applies at the next
- * L1 boot.
+ * reply is "brick partition cleared."; on these bricks the change applies at
+ * once (software expectation, see l1-brick-profiles.rst; the manual does not
+ * say when the number takes effect).
  */
 static void test_partition_clear(void)
 {
@@ -1859,7 +1864,7 @@ static void test_partition_clear(void)
 
     output = command(s, 0, "brick partition none", NULL);
     g_assert_nonnull(strstr(output, "brick partition cleared."));
-    expect_partition(s, 0, 2);
+    expect_partition(s, 0, 0);
     g_free(output);
     output = command(s, 0, "reboot_l1", NULL);
     /* Read back with the partition request: independent of the brick text. */
@@ -1910,7 +1915,9 @@ static void test_no_l2_route(void)
 
 /*
  * The partition is limited to sixteen bits: the width of the stored value,
- * not a hardware figure.
+ * not a hardware figure. A rejected number still leaves the stored setting at
+ * 0, because the command zeroes it first, while the module record keeps its
+ * value until the next start (software expectation, l1-brick-profiles.rst).
  */
 static void test_partition_limit(void)
 {
@@ -1924,13 +1931,14 @@ static void test_partition_limit(void)
     expect_partition(s, 0, 2);
     output = command(s, 0, "brick partition 65536", NULL);
     g_assert_nonnull(strstr(output, "ERROR"));
-    output = command(s, 0, "reboot_l1", NULL);
     expect_partition(s, 0, 2);
     g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    expect_partition(s, 0, 0);
+    g_free(output);
+    /* 65535 is accepted and applied at once, and reads as "?" (255 up). */
     output = command(s, 0, "brick partition 65535", NULL);
     g_assert_nonnull(strstr(output, "65535"));
-    g_free(output);
-    output = command(s, 0, "reboot_l1", NULL);
     expect_partition(s, 0, 65535);
     /* The request that sets it takes the same limit. */
     length = rpc(s, 0, LOCAL_GENERAL, 0x1006, args, sizeof(args), 1, reply);
@@ -2452,6 +2460,141 @@ static void test_l2_config_peer_table(void)
     /* A request without readable text leaves the stored serial alone. */
     g_assert_cmpstr((const char *)record + 0x64, ==, "SN12345");
     g_assert_nonnull(table_record(reply, length, 1));
+    qtest_quit(s);
+    l2_stub_free(a);
+    l2_stub_free(b);
+}
+
+/*
+ * Setting 14 takes 0 to 254, applies at once and survives a restart; a
+ * value of 255 or more is accepted at run time and replaced by 0 at the
+ * next start (software expectation, l1-brick-profiles.rst).
+ */
+static void test_partition_applies_at_once(void)
+{
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4");
+    g_autofree char *output = NULL;
+
+    output = command(s, 0, "brick partition 254", NULL);
+    g_assert_null(strstr(output, "takes effect"));
+    expect_partition_request(s, 0, 9, 254);
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    expect_partition_request(s, 0, 9, 254);
+    g_free(output);
+    output = command(s, 0, "brick partition 255", NULL);
+    expect_partition_request(s, 0, 9, 255);
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    expect_partition_request(s, 0, 9, 0);
+    qtest_quit(s);
+
+    /* A stored 300 given at realize is replaced the same way. */
+    s = start_one("brick-type=cbrick,named=on,rack=1,bay=4,partition=300");
+    expect_partition_request(s, 0, 9, 0);
+    qtest_quit(s);
+}
+
+/*
+ * The texts and forms of "brick partition" (software expectation, see
+ * l1-brick-profiles.rst): "none" in three spellings and a number in two, a
+ * bare "partition" or "p <number>" a parse error that changes nothing, and
+ * setting 18 putting its warning before the number's "set to" line.
+ */
+static void test_partition_texts(void)
+{
+    static const char error[] = "ERROR: invalid arguments for 'brick' "
+                                "command, try \"help brick\"\n";
+    static const char warning[] =
+        "WARNING: brick appears to get partition from L2.\n";
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4");
+    g_autofree char *with_flag = NULL;
+
+    expect_command(s, 0, "brick partition 7", "brick partition set to 7.\n");
+    expect_command(s, 0, "brick part 8", "brick partition set to 8.\n");
+    expect_command(s, 0, "brick partition none",
+                   "brick partition cleared.\n");
+    expect_command(s, 0, "brick part none", "brick partition cleared.\n");
+    expect_command(s, 0, "brick p none", "brick partition cleared.\n");
+    expect_command(s, 0, "brick partition 7", "brick partition set to 7.\n");
+    expect_command(s, 0, "brick p 9", error);
+    expect_command(s, 0, "brick partition", error);
+    expect_command(s, 0, "brick partition abc", error);
+    expect_partition_request(s, 0, 9, 7);
+    qtest_quit(s);
+
+    s = start_one("brick-type=cbrick,named=on,rack=1,bay=4,"
+                  "l2-partition-flag=1,partition=3");
+    expect_command(s, 0, "brick partition none", warning);
+    expect_partition_request(s, 0, 9, 0);
+    with_flag = g_strdup_printf("%sbrick partition set to 9.\n", warning);
+    expect_command(s, 0, "brick partition 9", with_flag);
+    expect_partition_request(s, 0, 9, 9);
+    qtest_quit(s);
+}
+
+/*
+ * A refused command has already zeroed the setting: an I/O brick that holds
+ * a value (no compute brick attached) reports the old record until it
+ * restarts, then none. A router's start-up clears its setting whatever was
+ * stored.
+ */
+static void test_partition_refusal_zeroes(void)
+{
+    QTestState *s = start_one("brick-type=ibrick,named=on,rack=1,bay=31,"
+                              "partition=3,mac=" MAC_PROP);
+    g_autofree char *output = NULL;
+    int32_t code = 0;
+
+    output = command(s, 0, "brick partition 5", &code);
+    g_assert_cmpint(code, ==, -1);
+    expect_partition_request(s, 0, 9, 3);
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    expect_partition_request(s, 0, 9, 0);
+    qtest_quit(s);
+
+    s = start_one("brick-type=router,router-board=rbrick,partition=5");
+    expect_partition_request(s, 0, 9, 0);
+    qtest_quit(s);
+}
+
+/*
+ * A partition change publishes a notice that a peer files under the sender's
+ * rack and bay. The peer answers its next table request from the record it
+ * holds while the sender restarts and cannot be asked again; the sender's
+ * I-brick entry is not part of the notice and keeps the old word. The
+ * record's partition word is at +0x3c (software expectation).
+ */
+static void test_partition_notice(void)
+{
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    QTestState *s = start_pair(a, b, PAIR_A, PAIR_B, true, "");
+    uint32_t source = L2_CONFIG_SOURCE_WORD(1, 7);
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+    g_autofree char *output = NULL;
+    const uint8_t *record;
+    size_t length;
+
+    /* The partner learns the first brick's entries, partition 0. */
+    length = ask_table(b, source, NULL, 0, reply);
+    record = table_record(reply, length, 5);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x3c), ==, 0);
+
+    output = command(s, 0, "brick partition 5", NULL);
+    g_assert_null(strstr(output, "takes effect"));
+    g_free(output);
+    output = command(s, 0, "reboot_l1", NULL);
+    length = ask_table(b, source, NULL, 0, reply);
+    record = table_record(reply, length, 5);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 4);
+    g_assert_cmpuint(ldl_be_p(record + 0x3c), ==, 5);
+    record = table_record(reply, length, 6);
+    g_assert_nonnull(record);
+    g_assert_cmpuint(ldl_be_p(record + 0x0c), ==, 31);
+    g_assert_cmpuint(ldl_be_p(record + 0x3c), ==, 0);
     qtest_quit(s);
     l2_stub_free(a);
     l2_stub_free(b);
@@ -3414,10 +3557,13 @@ static void test_migration(void)
     g_free(output);
     output = command(from, 0, "brick partition 9", &code);
     migrate_pair(from, to, uri);
-    /* The pending name and partition crossed; neither has taken effect. */
+    /*
+     * The pending name crossed and has not taken effect; the partition was
+     * applied before the migration and crossed as applied.
+     */
     expect_unnamed_identity(to, 0);
     expect_command(to, 0, "brick",
-                   "rack: ---, slot: --, partition: 2, type: C [?MB flash], "
+                   "rack: ---, slot: --, partition: 9, type: C [?MB flash], "
                    "serial:(null), source: EEPROM\n");
     g_free(output);
     output = command(to, 0, "reboot_l1", &code);
@@ -3560,6 +3706,12 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-o3k/l2-link/migration-blocker",
                    test_l2_migration_blocker);
     qtest_add_func("sgi-l1-o3k/partition-clear", test_partition_clear);
+    qtest_add_func("sgi-l1-o3k/partition-applies-at-once",
+                   test_partition_applies_at_once);
+    qtest_add_func("sgi-l1-o3k/partition-texts", test_partition_texts);
+    qtest_add_func("sgi-l1-o3k/partition-refusal-zeroes",
+                   test_partition_refusal_zeroes);
+    qtest_add_func("sgi-l1-o3k/partition-notice", test_partition_notice);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
         name = g_strdup_printf("sgi-l1-o3k/link-before-realize/%u", i);

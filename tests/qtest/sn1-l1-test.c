@@ -665,9 +665,10 @@ static void test_irouter_identity_overrides(void)
     s = start_irouter(
         "rack=3,bay=2,partition=255,brick-type-code=81,irouter-compat=on,"
         "brick-serial=", false, "");
+    /* A stored 255 is replaced by 0 at start-up (l1-brick-profiles.rst). */
     static const char empty_serial[] =
-        "rack: 003, slot: 02, partition: ?, type: Rackmount WS [?MB flash], "
-        "serial:, source: OTHER\n\n";
+        "rack: 003, slot: 02, partition: none, type: Rackmount WS [?MB "
+        "flash], serial:, source: OTHER\n\n";
 
     send_frame_at(s, BASE, request, request_length);
     irouter_expect_text(s, BASE, 0x30, 0x000c2215, 0x000c2003,
@@ -2946,8 +2947,10 @@ static void test_o300_console_brick(void)
 
 /*
  * The "brick" command: "partition none|<n>" is accepted by the Origin 300
- * console too, and "none" answers "brick partition cleared.". The change
- * applies at the next L1 boot, like the rack and slot setters.
+ * console too, and "none" answers "brick partition cleared.". The Origin 300
+ * runs the same package as the Origin 3000 compute bricks, which stores,
+ * records and publishes the number at once; only the rack and slot setters
+ * wait for the next L1 boot (l1-brick-profiles.rst).
  */
 static void test_o300_console_brick_partition(void)
 {
@@ -2956,12 +2959,10 @@ static void test_o300_console_brick_partition(void)
     QTestState *s = console_start(&fd, ",partition=3,auto-power=off", "");
 
     reply = env_run(fd, "brick partition 9");
-    g_assert_cmpstr(reply, ==,
-                    "brick partition set to 9 (takes effect on next "
-                    "L1 reboot/power cycle)\r\n");
+    g_assert_cmpstr(reply, ==, "brick partition set to 9.\r\n");
     g_free(reply);
     reply = env_run(fd, "brick");
-    g_assert_nonnull(strstr(reply, "partition: 3,"));
+    g_assert_nonnull(strstr(reply, "partition: 9,"));
     g_free(reply);
     reply = env_run(fd, "brick partition none");
     g_assert_cmpstr(reply, ==, "brick partition cleared.\r\n");
@@ -3405,7 +3406,11 @@ static void test_env_custom_limits(void)
     close(fd);
 }
 
-/* The partition setting prints "?" from 255 up and the number below. */
+/*
+ * The partition setting prints "?" from 255 up and the number below. A
+ * stored 255 or more is replaced by 0 at start-up, so those two are set at
+ * run time, which the console applies at once (l1-brick-profiles.rst).
+ */
 static void test_chimera_brick_partition(void)
 {
     static const struct {
@@ -3415,9 +3420,10 @@ static void test_chimera_brick_partition(void)
                   { "300", "?" } };
 
     for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        bool set_later = atoi(cases[i].partition) >= 255;
         g_autofree char *props = g_strdup_printf(
             ",brick-type-code=55,irouter-compat=on,partition=%s,"
-            "auto-power=off", cases[i].partition);
+            "auto-power=off", set_later ? "0" : cases[i].partition);
         g_autofree char *expected = g_strdup_printf(
             "rack: 001, slot: 01, partition: %s, type: Chimera Server "
             "[2MB flash], serial:(null), source: EEPROM\r\n", cases[i].text);
@@ -3425,6 +3431,12 @@ static void test_chimera_brick_partition(void)
         int fd;
         QTestState *s = console_start(&fd, props, "");
 
+        if (set_later) {
+            g_autofree char *set = g_strdup_printf("brick partition %s",
+                                                   cases[i].partition);
+
+            g_free(env_run(fd, set));
+        }
         reply = env_run(fd, "brick");
         g_assert_cmpstr(reply, ==, expected);
         qtest_quit(s);

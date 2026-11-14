@@ -849,6 +849,14 @@ static void l1_boot_local(SGIL1State *s)
     s->pbay.bay_number = s->bay;
     s->rack_valid = s->pending_rack_valid;
     s->bay_valid = s->pending_bay_valid;
+    /*
+     * Start-up clears a stored partition of 255 or more, and a router's: the
+     * module word and the setting are both rewritten (software
+     * expectation; the partition rows of l1-brick-profiles.rst).
+     */
+    if (s->pending_partition >= 255 || l1_is_rbrick(s)) {
+        s->pending_partition = 0;
+    }
     s->partition = s->pending_partition;
     s->console_mode = s->escaped = s->warned_off = false;
     s->command_len = 0;
@@ -1649,6 +1657,7 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
 #define L1_L2_RECORD_VALID  0x00
 #define L1_L2_RECORD_RACK   0x08
 #define L1_L2_RECORD_BAY    0x0c
+#define L1_L2_RECORD_PARTITION 0x3c
 #define L1_L2_RECORD_NAME   0x40
 #define L1_L2_RECORD_NAME_MAX (L1_L2_RECORD_PRESENT - L1_L2_RECORD_NAME)
 #define L1_L2_RECORD_PRESENT 0x60
@@ -1661,6 +1670,45 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
 #define L1_TABLE_REPLY_RECORDS 8
 #define L1_TABLE_PACKET_LENGTH \
     (SGI_L1_L2_SEG_DESC + 6 * 8 + SGI_L1_TABLE_GROUP * SGI_L1_L2_RECORD_SIZE)
+
+/*
+ * Applying a differing partition number stores it in the module record and
+ * publishes a partition notice, which a peer files under the announcer's rack
+ * and bay in whatever entry it holds for it, and ignores when it holds none;
+ * the entries behind the announcer's own, such as its I-brick's, are not
+ * touched (inferred). Software expectation for the notice, see
+ * l1-brick-profiles.rst. The peer link carries no wire format, so the notice
+ * is an in-process store.
+ */
+static void l1_publish_partition(SGIL1State *s)
+{
+    SGIL1State *peer = l1_linked_peer(s);
+
+    if (!peer) {
+        return;
+    }
+    for (unsigned g = 0; g < ARRAY_SIZE(peer->peer_table); g++) {
+        for (unsigned e = 0; e < SGI_L1_TABLE_GROUP; e++) {
+            uint8_t *record = peer->peer_table[g][e];
+
+            if (ldl_be_p(record + L1_L2_RECORD_PRESENT) &&
+                ldl_be_p(record + L1_L2_RECORD_RACK) == s->rack &&
+                ldl_be_p(record + L1_L2_RECORD_BAY) == s->bay) {
+                stl_be_p(record + L1_L2_RECORD_PARTITION, s->partition);
+            }
+        }
+    }
+}
+
+/* Store @value as the setting and apply it to the module record now. */
+static void l1_apply_partition(SGIL1State *s, uint32_t value)
+{
+    s->pending_partition = value;
+    if (s->partition != value) {
+        s->partition = value;
+        l1_publish_partition(s);
+    }
+}
 
 static void l1_l2_put_integer(uint8_t *segment, unsigned i, uint32_t value)
 {
@@ -1741,6 +1789,7 @@ static void l1_table_fill(uint8_t *record, const SGIL1State *brick,
     stl_be_p(record + L1_L2_RECORD_VALID, 1);
     stl_be_p(record + L1_L2_RECORD_RACK, brick->rack);
     stl_be_p(record + L1_L2_RECORD_BAY, brick->bay);
+    stl_be_p(record + L1_L2_RECORD_PARTITION, l1_partition(brick));
     g_strlcpy((char *)record + L1_L2_RECORD_NAME, name,
               L1_L2_RECORD_NAME_MAX);
     stl_be_p(record + L1_L2_RECORD_PRESENT, 1);
@@ -2798,6 +2847,60 @@ static void l1_brick_power(SGIL1State *s, int argc, char **argv)
     }
 }
 
+/*
+ * "brick partition none" and "brick partition <number>" (words "partition",
+ * "part" and "p" for the first, "partition" and "part" for the second). The
+ * command zeroes the stored setting first, before it looks at the brick type,
+ * so a refusal on a router or an I/O brick leaves it at 0 while the module
+ * record keeps its value until the next start. A nonzero setting 18 prints
+ * a warning; the image's "cleared" line is overwritten by it, so the "none"
+ * form prints only the warning (software expectation). A number is applied
+ * to the record at once and the image prints no restart note for it (the
+ * rows on l1-brick-profiles.rst). The model rejects a number
+ * above 16 bits after the zeroing, which is its own limit, an approximation.
+ * Returns false when the words are not a partition command, which then is
+ * an invalid one.
+ */
+static bool l1_brick_partition(SGIL1State *s, const char *word,
+                               const char *arg, int *result)
+{
+    bool none = !strcmp(arg, "none");
+    unsigned long value = 0;
+
+    if (!l1_word(word, "partition", "part") &&
+        !(none && !strcmp(word, "p"))) {
+        return false;
+    }
+    if (!none && qemu_strtoul(arg, NULL, 10, &value)) {
+        return false;
+    }
+    s->pending_partition = 0;
+    if (!none && value > 0xffff) {
+        l1_invalid(s, "brick");
+        *result = -1;
+        return true;
+    }
+    if (l1_is_rbrick(s) || l1_is_iobrick(s)) {
+        /* The refusal strings are the image's; the exit code is ours. */
+        l1_printf(s, "%s", l1_is_rbrick(s) ?
+                  "INFO: can't set partition on routers.\r\n" :
+                  "INFO: can't set partition on I/O brick (it is "
+                  "acquired from attached C-brick)\r\n");
+        *result = -1;
+        return true;
+    }
+    if (s->two_bit_setting) {
+        l1_printf(s, "WARNING: brick appears to get partition from L2.\r\n");
+    }
+    l1_apply_partition(s, value);
+    if (!none) {
+        l1_printf(s, "brick partition set to %lu.\r\n", value);
+    } else if (!s->two_bit_setting) {
+        l1_printf(s, "brick partition cleared.\r\n");
+    }
+    return true;
+}
+
 /* The cfg listing: this brick at 0, each cabled brick at its port number. */
 static void l1_o3k_config(SGIL1State *s)
 {
@@ -3627,7 +3730,9 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
     } else if (!strcmp(argv[0], "brick")) {
         unsigned long value = 0;
 
-        if (argc == 1 && s->profile->o3k) {
+        if (argc == 3 && l1_brick_partition(s, argv[1], argv[2], &result)) {
+            /* Done by l1_brick_partition(). */
+        } else if (argc == 1 && s->profile->o3k) {
             l1_o3k_brick_print(s);
         } else if (argc == 1 && l1_is_rbrick(s)) {
             /*
@@ -3638,14 +3743,6 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
              */
             l1_printf(s, "rack: %03u, slot: %02u, partition: N/A, type: R, "
                       "source: EEPROM\r\n", s->rack, s->bay);
-        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
-                   (l1_is_rbrick(s) || l1_is_iobrick(s))) {
-            /* The refusal strings are the L1 sheet's; the code is ours. */
-            l1_printf(s, "%s", l1_is_rbrick(s) ?
-                      "INFO: can't set partition on routers.\r\n" :
-                      "INFO: can't set partition on I/O brick (it is "
-                      "acquired from attached C-brick)\r\n");
-            result = -1;
         } else if (argc == 1 && l1_chimera_type_name(s)) {
             l1_chimera_brick(s, l1_chimera_type_name(s));
         } else if (argc == 1) {
@@ -3668,17 +3765,6 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             s->pending_rack = value;
             s->pending_rack_valid = true;
             l1_printf(s, "brick rack set to %03lu (takes effect on next "
-                      "L1 reboot/power cycle)\r\n", value);
-        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
-                   !strcmp(argv[2], "none")) {
-            /* The L1 sheet's brick setter: "none" clears the stored ID. */
-            s->pending_partition = 0;
-            l1_printf(s, "brick partition cleared.\r\n");
-        } else if (argc == 3 && !strcmp(argv[1], "partition") &&
-                   !qemu_strtoul(argv[2], NULL, 10, &value) &&
-                   value <= 0xffff) {
-            s->pending_partition = value;
-            l1_printf(s, "brick partition set to %lu (takes effect on next "
                       "L1 reboot/power cycle)\r\n", value);
         } else {
             l1_invalid(s, "brick");
@@ -5022,7 +5108,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
                 error = -105;
                 break;
             }
-            s->partition = s->pending_partition = ldl_be_p(args + 1);
+            l1_apply_partition(s, ldl_be_p(args + 1));
         } else {
             s->two_bit_setting = ldl_be_p(args + 1) & 3;
         }
