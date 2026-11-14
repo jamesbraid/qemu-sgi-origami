@@ -2318,6 +2318,20 @@ firmware:
       image: payload
       sha256: 0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4
       container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
+  l1-firmware-1.44.0-base:
+    title: "L1 system controller firmware, Base 1MB image"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 3000 C-, I- and R-brick L1 controllers"
+    version: "1.44"
+    banner: "1.44.0, built 2006-07-17 18:19:54, label Base 1MB image"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (the flash body of the Base 1MB image range, 982,376 bytes at file offset 0x68)"
+      image: payload
+      sha256: 3c8a7aa93eb38502289cf0c2921ea91e6800228005bd8abd67425ce615f7b364
+      container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
   ip32-prom-4.18:
     title: "IP32 PROM"
     publisher: Silicon Graphics
