@@ -636,6 +636,9 @@ sn0_machine_qtests = \
 
 sgi_qtests = \
   ['ds1742-test', 'r5000-cpu-test'] + \
+  (config_all_devices.has_key('CONFIG_M48T35') and
+   config_all_devices.has_key('CONFIG_DS1685') ?
+    ['sgi-store-format-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_MACE') ?
     ['sgi-mace-eth-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_O2_ROM') ? ['sgi-o2-rom-test'] : []) + \
