@@ -103,7 +103,7 @@ model implements.
      - *software expectation*
    * - Module registers
      - ``0x10000000``, placed by ``MBAR``
-     - SIM, timers, UARTs, parallel port, two-wire bus
+     - SIM, timers, UARTs, parallel port, two-wire (M-Bus) controller
      - *software expectation*
    * - ``CS0``
      - ``0xffe00000``, 2 MiB window, cut to 1 MiB by the firmware's mirror
@@ -328,12 +328,12 @@ reads ``RSR`` as ``0x20`` afterwards. A timeout without that option
 raises the level 7 interrupt. The reset pin pulse the chip drives is not
 connected, an *approximation*.
 
-The model implements no register of the DRAM controller, the parallel port,
-the two-wire bus or the DMA channels: a read returns zero and a write is
-dropped, and each is logged with ``LOG_UNIMP``. The firmware writes the
-DRAM controller registers to clear them, drives the parallel port as a scan
-chain master and runs its two-wire bus bring-up, all *software
-expectation*; none of them has a modelled effect.
+The model implements no register of the DRAM controller, the parallel port
+or the DMA channels: a read returns zero and a write is dropped, and each is
+logged with ``LOG_UNIMP``. The firmware writes the DRAM controller registers
+to clear them and drives the parallel port as a scan chain master, both
+*software expectation*; neither has a modelled effect. The two-wire bus
+controller is modelled, as :ref:`sgi-l1-board-mbus` describes.
 
 .. _sgi-l1-board-interrupts:
 
@@ -359,7 +359,8 @@ table shows, a *software expectation*.
    * - Two-wire bus
      - 6
      - ``ICR11`` ``0x99``
-     - no source
+     - interrupt while the controller's interrupt flag and enable are both
+       set
    * - On-chip UART 1
      - 6
      - ``ICR12`` ``0x1a``, vector from the UART's vector register
@@ -458,6 +459,145 @@ Channel 2 is the L1 operator console at 38,400 baud, channel 3 the node link at
 *software expectation*. The model connects serial backend 0 to channel 2, 1
 to channel 3, 2 to channel 0, 3 to channel 1 and 4 to on-chip UART 1.
 
+.. _sgi-l1-board-mbus:
+
+Two-wire bus controller
+=======================
+
+The two-wire bus is the MCF5206e's M-Bus module, five byte registers in the
+module block (:src:`nxp-mcf5206eum-1 pp. 13-6 to 13-11`, *established*):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 14 14 58
+
+   * - Register
+     - Offset
+     - Reset
+     - Defined fields
+   * - ``MADR``
+     - ``+0x1e0``
+     - ``0x00``
+     - the module's own slave address, bits 7 to 1
+   * - ``MFDR``
+     - ``+0x1e4``
+     - ``0x00``
+     - the divider selector, bits 5 to 0
+   * - ``MBCR``
+     - ``+0x1e8``
+     - ``0x00``
+     - ``MEN`` 7, ``MIEN`` 6, ``MSTA`` 5, ``MTX`` 4, ``TXAK`` 3, ``RSTA`` 2
+       (write one to repeat the START, reads zero)
+   * - ``MBSR``
+     - ``+0x1ec``
+     - ``0x81``
+     - ``MCF`` 7, ``MAAS`` 6, ``MBB`` 5, ``MAL`` 4, ``SRW`` 2, ``MIF`` 1,
+       ``RXAK`` 0; software clears ``MAL`` and ``MIF`` by writing zero to
+       them and no other bit
+   * - ``MBDR``
+     - ``+0x1f0``
+     - ``0x00``
+     - the data byte
+
+The manual's behaviour, all *established* (:src:`nxp-mcf5206eum-1 pp. 13-2
+to 13-14`):
+
+- ``MSTA`` rising in an enabled module sends a START; ``MSTA`` falling sends
+  a STOP and returns the module to slave mode. ``MBB`` follows the START and
+  STOP seen on the bus, whoever sends them.
+- With ``MTX`` set, a write to ``MBDR`` sends the byte most significant bit
+  first. The first byte of a transfer is the calling byte: the target's
+  seven-bit address and the read bit. ``MCF`` is clear while a byte is on
+  the bus and sets on the falling edge of its ninth clock together with
+  ``MIF``. ``RXAK`` is the level of the data line on the ninth clock: zero
+  is an acknowledge. A transmitter's ``TXAK`` does not affect it.
+- A master receiver clears ``MTX``, reads ``MBDR`` once to start the first
+  byte, and each later read of ``MBDR`` returns the byte and starts the
+  next. ``TXAK`` clear drives an acknowledge on the ninth clock of a
+  received byte and ``TXAK`` set drives none. The software sets ``TXAK``
+  before reading the second-last byte and clears ``MSTA`` before reading the
+  last.
+- ``MIF`` requests an interrupt only while ``MIEN`` is set; clearing
+  ``MIEN`` hides the request without clearing the flag.
+- A START asked for while the bus is busy, or a repeated START asked for by a
+  module that is not the master, loses arbitration: ``MAL`` and ``MIF`` set,
+  ``MSTA`` clears and no STOP is sent.
+- The divider selector indexes a table of 64 divisors, not a linear
+  scale: ``0x00`` is 28, ``0x07`` 68, ``0x13`` 480, ``0x20`` 20 and ``0x3f``
+  2048 (:src:`nxp-mcf5206eum-1 p. 13-7`). The manual gives no clock-high and
+  clock-low split.
+
+The firmware's use is a *software expectation*: it clears ``MBCR``, writes
+``MFDR`` ``0x13``, ``MADR`` zero and ``MBCR`` ``0x80``, and starts a transfer
+with ``MBCR`` ``0xf0`` and a calling byte; ``0xf4`` repeats the START,
+``0xe0`` starts a receive, ``0xe8`` sets ``TXAK`` and ``0x80`` stops. It
+accepts a byte transfer when ``MBSR`` masked with ``0xb2`` is ``0xa2``. If
+the bus reads busy at bring-up it writes ``MBCR`` ``0xa0``, reads ``MBDR``
+and clears ``MBSR`` and ``MBCR``, up to 1000 times. The same bring-up runs
+as bus recovery after any failed transaction: the driver clears ``MBCR``,
+sets the divider, enables the module again and clocks the bus only if
+``MBB`` is still set, then returns the same error. It does not retry the
+transfer. A bus on which nothing answers therefore sees one controller
+reinitialisation per refused call and no repeated attempt. With the 48 MHz
+clock the selector ``0x13`` gives a 100 kHz clock, which agrees with the
+assumed processor clock (see :ref:`sgi-l1-board-identity`).
+
+The model gives the controller a ColdFire clock input, the module clock, and
+an interrupt output to ``ICR11``. The controller has a standard QEMU two-wire
+bus, with a timed wire so that the calling byte, the acknowledge clock and
+the byte completion are separate events at the divided clock. Its
+choices where the manual is silent are each an *approximation*:
+
+- The clock-high and clock-low phases are equal, each half the period the
+  selector gives. The manual fixes only the total.
+- A change to ``MFDR`` takes effect at the next byte.
+- A STOP asked for while a byte is on the bus waits for the end of that byte.
+- Writing zero to ``MEN`` stops any transfer, releases both lines and
+  returns every status bit to its reset value. The manual says the module is
+  held in software reset and the registers stay readable, but not what
+  they read: the model keeps ``MADR``, ``MFDR`` and ``MBDR`` and nothing
+  checks that choice.
+- ``MEN`` must be set before any other ``MBCR`` bit has an effect
+  (:src:`nxp-mcf5206eum-1 p. 13-8`, *established*). Bits written while it is
+  clear are stored and read back but start nothing, and they do not count as
+  an earlier state: a write that sets ``MEN`` and ``MSTA`` together starts a
+  transfer. The manual does not say whether one write may do both, an
+  *approximation*.
+- The interrupt pending bit in the SIM sets at once, not one processor clock
+  after the request, as the manual describes for the generic SIM
+  (:src:`nxp-mcf5206eum-1 pp. 8-10 to 8-12`). The timers and UARTs of this
+  model do the same.
+
+What the model does not do, and logs: the slave role. ``MADR`` is stored, no
+address is matched, ``MAAS`` and ``SRW`` never set, and a nonzero ``MADR``
+is logged with ``LOG_UNIMP``; the firmware writes zero. Another master on
+the bus is not modelled either. The manual lists five causes of arbitration
+loss (:src:`nxp-mcf5206eum-1 p. 13-10`, *established*). The model produces
+two of them: a START asked for while the bus is busy, and a repeated START
+asked for in slave mode. Cause 5, a STOP detected that the master did not
+request, is not modelled, and neither are causes 1 and 2, where SDA reads
+low while the master drives it high, because they need a second master.
+Word and longword accesses and misaligned
+accesses that overlap the five registers are logged with ``LOG_GUEST_ERROR``
+and ignored: the manual says nothing about them, so their hardware result is
+*unknown*. The model has no migration for the controller; the board refuses
+migration as a whole. The controller reports the clock phases it last
+used as the read-only properties ``scl-low-ns`` and ``scl-high-ns``, so that
+a test can check the divider table without timing the bus.
+
+Which parts are fitted on the bus, at what addresses and with what clock
+stretching is *unknown* for the board except where the firmware's own tables
+name an address (:ref:`sgi-l1-board-mbus-peers`).
+
+.. _sgi-l1-board-mbus-peers:
+
+Devices on the two-wire bus
+---------------------------
+
+The model fits no device yet. A calling byte to any address is not
+acknowledged, so ``RXAK`` reads one at the end of the byte and the firmware's
+transfer reports no acknowledge.
+
 .. _sgi-l1-board-nvram:
 
 Clock RAM
@@ -489,10 +629,10 @@ register name and the value. ``-d guest_errors`` adds accesses to addresses
 that are not registers.
 
 - The management USB controller at ``CS3`` and the device at ``CS5``.
-- The two-wire bus registers, so every bus transaction the firmware starts
-  times out and the firmware reports the board identification EEPROMs and
-  the display expander as unreadable; a read of the status register returns
-  zero, an *approximation*.
+- The two-wire bus has the controller described above but no device on it
+  unless the board is given one (:ref:`sgi-l1-board-mbus-peers`): a transfer
+  to an address nothing answers is not acknowledged, and the firmware reports
+  the board identification EEPROMs and the display expander as unreadable.
 - The parallel port, which the firmware drives as a JTAG scan master.
 - The DRAM controller registers, the DMA registers and ``DMCR``'s default
   memory behaviour.
@@ -514,8 +654,8 @@ Model limits
 ============
 
 - The board has no node, no link to another controller and no
-  environmental peers: the two-wire bus has no devices and its registers
-  are not modelled.
+  environmental peers: the two-wire bus carries only the devices
+  :ref:`sgi-l1-board-mbus-peers` lists.
 - The processor is QEMU's ``m5206`` core, with the instruction cache not
   modelled and the control-register ``MOVEC`` writes limited to the
   registers the core accepts.
