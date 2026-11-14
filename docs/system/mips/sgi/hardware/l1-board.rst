@@ -660,7 +660,8 @@ leave the firmware's type unknown, because the type it knows an I-brick by is
 named in the logic board's record and the behavioural L1 does not use that
 name.
 
-Not fitted, and so not acknowledged: the processor and memory module records
+Not fitted unless ``board-peers`` is set (:ref:`sgi-l1-board-cbrick-peers`),
+and so not acknowledged: the processor and memory module records
 that sit behind a bus segment select (the select expander itself, the
 monitors, the other expanders, the memory module EEPROMs and the display
 expander). The firmware's tables give these parts' addresses and register
@@ -674,6 +675,139 @@ expander not fitted (segment 3), the firmware's read of it fails and it
 treats both processor modules as absent, so it disables their supplies,
 expanders and EEPROM records, and monitor entries 5 and 6, and does not call
 them again; all of this is a *software expectation*.
+
+.. _sgi-l1-board-cbrick-peers:
+
+The C-brick's polled devices
+----------------------------
+
+With ``brick-type=cbrick,board-peers=on`` the board also fits the devices
+the firmware's C-brick tables name on segments 0 to 3 of the bus, and the
+management USB controller at ``CS3``, so that its calls are acknowledged
+instead of reported as unreadable. Without ``board-peers`` (the default)
+none of this exists and the bus is as described above. ``board-peers``
+needs ``brick-type=cbrick``; there is no I-brick table to fit.
+
+The wire addresses, segments and masks are the firmware's tables, a
+*software expectation*. The parts are not named by any image or by a
+published schematic, so each part below is an *inferred* family and the
+model is the family's usual bus behaviour and nothing more. No data sheet
+for the PCF8574 family, the DS1780, LM78 and ADM9240 family or the USS-820D
+is in the Library, so none of that family behaviour is cited to a document:
+it is *inferred*.
+
+**Bus select.** The expander at ``0x4e`` is a one-byte latch whose value
+decides which segments the controller reaches, as the firmware writes it
+(*software expectation*). It starts at ``0xff``, every segment off, which
+is the byte the firmware writes to it at start-up (*software expectation*);
+the part's own power-on state before that write is *unknown*. The model reads the bits as the
+firmware's select bytes suggest (*inferred*): bit 7 low enables segment 2,
+bit 6 segment 3, bit 5 segment 4, bit 4 segment 5, and with bit 3 low bits
+2 to 0 enable segment 6 plus that number. The firmware writes only ``0xff``,
+``0x78``, ``0xb8``, ``0xd8``, ``0xe8`` and ``0xf0`` to ``0xf7``; any other
+byte is decoded bit by bit the same way, and several segments can then be
+enabled together, an *approximation*. When two enabled segments hold a
+device at the same wire address, one device answers: the bus searches its
+devices newest first, so the one fitted last wins. The firmware never enables
+two segments, so this is the model's choice and not a statement about the
+board. Segment 0 is the controller's own
+bus and is always reachable. The parts behind the select bits are
+*unknown*, and the model shows only that a segment's devices answer or do
+not.
+
+**Expanders.** Each is a one-byte quasi-bidirectional latch with no
+register byte (*software expectation*; PCF8574 family, *inferred*). A write
+stores the byte. A read returns the stored byte with the input bits set, as a
+part of that family does when its inputs are written high (*inferred*). The
+firmware writes each expander and reads it back (*software expectation*);
+beyond the supply, fan and display state its start-up check compares, what it
+does with the byte is *unknown*. The latch starts at ``0xff``, the power-on
+state of that family (*inferred*). Input pins read high whatever drives them, as if nothing pulled them low,
+an *approximation*: the pin meanings are *unknown* beyond the masks. No
+change is ever reported, because the interrupt wiring is *unknown*.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 10 14 14
+
+   * - Name
+     - Segment
+     - Wire address
+     - Input bits
+   * - display control
+     - 0
+     - ``0x40``
+     - ``0x0f``
+   * - LED 0 low, high; LED 1 low, high
+     - 2
+     - ``0x42``, ``0x44``, ``0x46``, ``0x48``
+     - ``0xff``
+   * - COM control
+     - 2
+     - ``0x4c``
+     - ``0xf1``
+   * - Bedrock control 1, 2
+     - 3
+     - ``0x42``, ``0x44``
+     - ``0x00``
+   * - port control
+     - 3
+     - ``0x46``
+     - ``0x55``
+   * - power control
+     - 3
+     - ``0x48``
+     - ``0xde``
+   * - processor module presence
+     - 3
+     - ``0x4a``
+     - ``0xff``
+   * - fan control
+     - 3
+     - ``0x4c``
+     - ``0x40``
+
+The processor module presence expander reads ``0xff`` because every bit is an
+input and nothing drives it. The firmware reads that as both processor modules
+absent (*software expectation*). No processor module is fitted, so nothing on
+segments 4 and 5 is, and the model does not invent a module type: the
+codes the firmware accepts for a present module and what each one means are
+*unknown*.
+
+**Monitors.** The three node monitors, wire ``0x58``, ``0x5a`` and ``0x5c``
+on segment 2, are 256-register files of the voltage and temperature monitor
+family the firmware's register numbers fit (DS1780, LM78, ADM9240;
+*inferred*). A write is an address byte, a register byte and a value; a read
+sets the register by a write phase, then a repeated start and one byte. The
+register pointer holds after a read and a write does not move it. Every
+register starts at zero, so each voltage and the temperature read as
+zero, as an unpowered part, an *approximation*; no environment value is
+invented and no conversion is modelled. Writes are stored and read back,
+including the initialisation sequence the firmware sends, so a part's
+self-clearing bits are not modelled either. The alert response address is
+not fitted.
+
+**Not fitted.** Everything on segments 4 to 13: the processor modules'
+power expanders, monitors and records, and the eight memory module records.
+Each call stays unacknowledged, and the firmware's probe of the memory
+modules clears their presence silently (*software expectation*).
+
+**Management USB controller.** With ``board-peers`` the 64 KiB window at
+``CS3`` is a model of the two registers the firmware's probe uses and
+logs the rest as unimplemented. The revision register at offset ``0x18`` is
+read-only and reads ``0x13``; the scratch register at ``0x1b`` stores a
+byte. The probe the firmware runs treats ``0x10``, ``0x11`` and ``0x13``
+as quiet passes, and the published USS-820D data sheet puts the revision
+at ``0x18`` and a scratch register at ``0x1b`` and gives those three as the
+B, C and D revisions (*inferred*, from the sheet's reading of it). Which
+revision is fitted is *unknown*; ``0x13`` is the newest of the three and
+the choice is an *approximation*. The data sheet is not in the Library. The
+two offsets, the revision at ``0x18`` and the scratch register at ``0x1b``,
+agree with a public driver header (*inferred*); the mapping of ``0x10``,
+``0x11`` and ``0x13`` to the three revisions rests on the data sheet alone,
+as the firmware sheet summarises it, and is *inferred*. The scratch register of the real part has
+a resume interrupt enable in bit 7 that the model does not act on. Every
+other offset is a logged unimplemented access that reads zero.
 
 .. _sgi-l1-board-identity-run:
 
@@ -729,7 +863,8 @@ Start the machine with ``-d unimp`` to see every access, with the window or
 register name and the value. ``-d guest_errors`` adds accesses to addresses
 that are not registers.
 
-- The management USB controller at ``CS3`` and the device at ``CS5``.
+- The management USB controller at ``CS3`` (except its revision and scratch
+  registers with ``board-peers``) and the device at ``CS5``.
 - The two-wire bus has the controller described above but no device on it
   unless the board is given one (:ref:`sgi-l1-board-mbus-peers`): a transfer
   to an address nothing answers is not acknowledged, and the firmware reports
@@ -756,7 +891,9 @@ Model limits
 
 - The board has no node, no link to another controller and no
   environmental peers: the two-wire bus carries only the identity parts
-  :ref:`sgi-l1-board-mbus-peers` lists.
+  :ref:`sgi-l1-board-mbus-peers` lists, and with ``board-peers`` the devices
+  :ref:`sgi-l1-board-cbrick-peers` lists, which answer the firmware's calls but
+  report nothing about a brick.
 - The processor is QEMU's ``m5206`` core, with the instruction cache not
   modelled and the control-register ``MOVEC`` writes limited to the
   registers the core accepts.
