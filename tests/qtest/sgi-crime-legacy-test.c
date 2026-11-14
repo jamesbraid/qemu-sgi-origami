@@ -2990,10 +2990,6 @@ static void add_data_case(const char *path, gconstpointer data,
 
 int main(int argc, char **argv)
 {
-    const char *faults[] = {
-        "missing-section", "profile-id", "functional-policy", "latch-mask",
-        "cpu-error", "memory-address", "hardware", "timer-fraction", "version",
-    };
     const char *renderer_cpu[] = {
         "posted-store", "read-bus-error", "control-stop", "go-stop",
         "malformed-stop", "status-bank-store",
@@ -3074,13 +3070,24 @@ int main(int argc, char **argv)
                         GINT_TO_POINTER(1), test_profile_mismatch);
     add_data_case("sgi/crime/legacy/mismatch-from-default",
                         GINT_TO_POINTER(0), test_profile_mismatch);
-    for (unsigned i = 0; i < ARRAY_SIZE(faults); i++) {
-        g_autofree char *name = g_strdup_printf("sgi/crime/legacy/invalid-%s",
-                                               faults[i]);
-
-        add_data_case(name, GUINT_TO_POINTER(i),
-                            test_invalid_profile_state);
-    }
+    add_data_case("sgi/crime/legacy/invalid-missing-section",
+                        GUINT_TO_POINTER(0), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-profile-id",
+                        GUINT_TO_POINTER(1), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-functional-policy",
+                        GUINT_TO_POINTER(2), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-latch-mask",
+                        GUINT_TO_POINTER(3), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-cpu-error",
+                        GUINT_TO_POINTER(4), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-memory-address",
+                        GUINT_TO_POINTER(5), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-hardware",
+                        GUINT_TO_POINTER(6), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-timer-fraction",
+                        GUINT_TO_POINTER(7), test_invalid_profile_state);
+    add_data_case("sgi/crime/legacy/invalid-version",
+                        GUINT_TO_POINTER(8), test_invalid_profile_state);
     add_data_case("sgi/crime/legacy/feature-id-word", "prom-id-word",
                         test_feature_mismatch);
     add_data_case("sgi/crime/legacy/feature-inert-renderer",
