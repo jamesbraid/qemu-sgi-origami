@@ -60,10 +60,90 @@ captured controller output.
        with neither set shows ``---c--`` or ``---i--`` in ``config``.
      - established
      - :src:`007-4240-002 p. 112-113`.
-   * - ``brick rack``, ``brick slot`` and ``brick partition`` take effect
-       at the next L1 restart.
+   * - ``brick rack`` and ``brick slot`` take effect at the next L1 restart.
+       Page numbers in this section are printed page numbers.
      - established
-     - :src:`007-3938-001 p. 39`.
+     - :src:`007-3938-006 p. 39` (PDF page 63), which says the controller
+       must be rebooted for a new rack and slot to take effect. The
+       examples at :src:`007-3938-001 p. 39` (PDF page 55) show the same
+       two commands without saying so.
+   * - The manuals list ``brick partition none`` and ``brick partition
+       <partition number>``, with the output ``brick partition cleared.``
+       and ``brick partition set to 1.``. They do not say when the number
+       takes effect: no page names a restart for the partition. The later
+       manual also says ``part`` or ``p`` may stand for ``partition``; that
+       edition covers the Altix 3000 series, Altix 450 and Altix 4700
+       (:src:`007-3938-006 p. 1`, printed page), and the 1.44 image accepts ``p``
+       for ``none`` only, so ``p <number>`` is a parse error there. Whether
+       the note ever held for an Origin 3000 L1 is *unknown*.
+     - established for the two output lines and the list of forms;
+       unknown for when the number takes effect; the ``p`` spelling of the
+       later manual disagrees with the image
+     - :src:`007-3938-001 p. 38-39` (PDF pages 54-55) and
+       :src:`007-3938-006 p. 56-57` (PDF pages 80-81).
+   * - When the command runs the image stores the typed number in the
+       settings record, records it in the brick's own module record and
+       publishes a partition notice; further configuration messages follow,
+       whose contents were not read. The rack, slot and type setters print a
+       text that says the change takes effect on the next L1 reboot or power
+       cycle, and the partition setter prints none.
+     - software expectation
+     - :src:`l1-firmware-1.44.0-base brick partition and partition apply`
+   * - The Origin 300 profile runs the Fuel, Origin 300 and PE package that
+       the partition reading was made on, so applying the number at once with
+       no restart note, and clearing a stored 255 or more at start-up, is a
+       *software expectation* there. The test
+       ``sn1/l1/o300/console-brick-partition`` pins it. The handler
+       refuses only routers, the I/O brick types and type ``A``, so the
+       Chimera types ``7``, ``8``, ``9`` and ``Q`` behave as a C-brick does
+       on that package, and the model gives them the same behaviour; the
+       rating is for those types read on the Fuel, Origin 300 and PE
+       package.
+     - software expectation for the Origin 300 and the Chimera types
+     - :src:`l1-firmware-1.44.0 brick partition console case` (the Fuel,
+       Origin 300 and PE package). Tests: ``sn1/l1/chimera/brick-partition`` and
+       ``sn1/l1/irouter/identity-overrides``.
+   * - The model gives every profile that runs this console one behaviour
+       for the partition: applied at once, no restart note, while rack and
+       slot still wait for a restart. A profile whose image behaves
+       otherwise would differ, and a test that told the two apart would be a
+       hardware observation of the setting at restart.
+     - approximation
+     - The model's single behaviour is limited by what no source says of the
+       other profiles. Tests: ``sgi-l1-o3k/partition-applies-at-once`` and
+       ``sgi-l1-o3k/partition-texts``.
+   * - The command zeroes the stored setting 14 before it looks at the brick
+       type. A router or an I/O brick refuses with the setting left at 0,
+       while the module record keeps its old value until the next start.
+       With setting 18 nonzero the image prints ``WARNING: brick appears to
+       get partition from L2.`` and still writes the value. That the warning
+       takes the place of the ``cleared`` line for ``none`` is the console
+       reading's; the model prints the warning alone then, which is
+       *inferred* for the display. A bare ``brick partition`` is a parse
+       error that changes nothing, as is ``brick p <number>``. The image
+       refuses type ``A`` before zeroing; the model has no such brick.
+       Start-up replaces a stored 255 or more with 0 and forces a router's
+       to 0.
+     - software expectation for the order, the warning, the forms and the
+       start-up rules; inferred for the suppressed ``cleared`` line
+     - :src:`l1-firmware-1.44.0-base brick partition and start-up clamp`
+   * - The model stores any number up to 16 bits at run time and rejects a
+       larger one after zeroing the setting. The image has no such limit; the
+       width is the model's stored value, and the rejection is the model's.
+       A run-time value of 255 or more prints ``?`` in the brick line.
+     - approximation
+     - The image compares no value on the console path. Test:
+       ``sgi-l1-o3k/partition-limit``.
+   * - A record's partition word is at ``+0x3c`` of the 0x70-byte module
+       record and is what the L2 receives. A partition notice stores the
+       announced word in the peer's record found by the sender's rack and
+       slot, and does nothing when the peer holds none. Entries behind the
+       sender's own, its I-brick's included, are not changed by it.
+     - software expectation for the record and the notice; inferred that the
+       I-brick's entry is left as it was
+     - :src:`l1-firmware-1.44.0-base partition notice handler`. The notice is an
+       in-process store, an *approximation* of the serial frame. Test:
+       ``sgi-l1-o3k/partition-notice``.
    * - ``0x0003`` answers the packed rack and bay and the letter ``C`` or
        ``I``.
      - inferred
@@ -319,7 +399,7 @@ next brick's name line, and on task 3 they arrive as separate fields.
        published.
      - ``config`` shows the unnamed brick (:src:`007-4240-002 p. 112-113`).
    * - The partition is limited to 16 bits, as a property, by ``brick
-       partition`` and by the request that sets it.
+       partition`` and by the request that sets it (*approximation*).
      - The manuals name no width; this is the width of the stored value.
      - None.
    * - ``cti`` with no I-brick prints ``INFO: no I/O brick is attached.``
