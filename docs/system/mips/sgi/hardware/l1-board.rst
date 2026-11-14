@@ -594,9 +594,110 @@ name an address (:ref:`sgi-l1-board-mbus-peers`).
 Devices on the two-wire bus
 ---------------------------
 
-The model fits no device yet. A calling byte to any address is not
-acknowledged, so ``RXAK`` reads one at the end of the byte and the firmware's
-transfer reports no acknowledge.
+The firmware's own tables name the parts it expects on segment 0 of the bus,
+the part with no bus switch in front of it, a *software expectation*:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 14 14 26 46
+
+   * - Wire address
+     - Seven-bit
+     - Firmware table
+     - Model
+   * - ``0xa4``
+     - ``0x52``
+     - the C-brick's node board; the I- and R-bricks' power board
+     - a 256-byte EEPROM window with the board identity record
+   * - ``0xa8``
+     - ``0x54``
+     - the I- and R-bricks' logic board
+     - the same, for an I-brick
+   * - ``0x40``
+     - ``0x20``
+     - the display I/O expander, one byte wide; a PCF8574-family part
+       (*inferred*)
+     - nothing: a call is not acknowledged
+   * - ``0x4e``
+     - ``0x27``
+     - the bus select expander, one byte wide
+     - nothing: a call is not acknowledged
+   * - ``0xa0``, ``0xac``
+     - ``0x50``, ``0x56``
+     - identification routes, read only when the brick type is already
+       ``%``; they never change it
+     - nothing: never called, because the model presents no such brick
+
+The identity parts exist only when the machine option ``brick-type`` is
+``cbrick`` or ``ibrick``; with it unset the bus is empty, as the sections
+above describe. The model builds each part's record with the behavioural L1's
+own builder (``hw/misc/sgi-l1-identity.c``), from the properties that L1
+takes: ``node-board-name``, ``node-board-part`` and ``node-board-revision``
+for a C-brick, and ``mac`` for an I-brick's logic board. The behavioural
+defaults apply (name ``NODE``, part ``NOTOBSERVED0``, revision ``00``; an
+I-brick's boards ``POWER`` and ``LOGIC``), so both models serve the same
+record for the same inputs. The record is an eight-byte common header, a
+chassis area and a board area, each summing to zero, as the L1 page's whole
+image records are; the contents are placeholders and a marked synthetic
+serial, an *approximation*.
+
+What the firmware reads from them is a *software expectation*: it calls the
+part with one word-address byte, then a repeated START and reads bytes.
+The part is *inferred* to be a 24C04-compatible EEPROM: the firmware adds
+the upper offset bit to the slave byte, so offsets 256 to 511 of a 512-byte
+record go to wire address ``0xa6`` for the node board and ``0xaa`` for the
+logic board. Its write protection is *unknown*, and the stock firmware image
+contains no routine that writes these records. The model answers one 256-byte
+window at the first address and does not acknowledge a call to the second
+page's address, an *approximation*; the records fit the first 256 bytes. The
+part accepts writes, which last until the machine exits, and nothing says a
+write-protect pin is wired. The firmware decides the brick
+type from the board name in the record: ``IP35`` at ``0xa4`` makes it a
+C-brick (:ref:`sgi-l1-board-identity-run`). The behavioural defaults do
+not make that name for a C-brick, so a C-brick run with the stock firmware
+needs ``node-board-name=IP35``; the I-brick's ``POWER`` and ``LOGIC`` names
+leave the firmware's type unknown, because the type it knows an I-brick by is
+named in the logic board's record and the behavioural L1 does not use that
+name.
+
+Not fitted, and so not acknowledged: the processor and memory module records
+that sit behind a bus segment select (the select expander itself, the
+monitors, the other expanders, the memory module EEPROMs and the display
+expander). The firmware's tables give these parts' addresses and register
+sequences but not the parts, their pin meanings or the display text path, so
+the model does not invent answers for them. The firmware selects a segment by writing one
+byte to the select expander before each access to a device on segments 2 to
+13, and skips the write for segment 0, so a segment chosen earlier stays
+enabled and the identity parts stay reachable. With the expander not fitted,
+each such access ends with the error and no retry. With the PIMM presence
+expander not fitted (segment 3), the firmware's read of it fails and it
+treats both processor modules as absent, so it disables their supplies,
+expanders and EEPROM records, and monitor entries 5 and 6, and does not call
+them again; all of this is a *software expectation*.
+
+.. _sgi-l1-board-identity-run:
+
+What the firmware does with the identity part
+---------------------------------------------
+
+Run once on this model with the Base 1MB image as boot flash, a *software
+expectation* and not a statement about a board:
+
+- With nothing on the bus the firmware calls ``0xa4``, ``0xa8``, the
+  display expander (``0x41``, a read) and then ``0xa4`` and ``0xa8`` again,
+  in that order; none acknowledges. It probes the display before it knows
+  the brick type. It prints the display expander as unreadable ("no
+  acknowledge") and the missing serial number. Before the
+  controller existed the same run printed the display expander and both
+  board EEPROM probes as time-outs.
+- With a C-brick record named ``IP35`` the record is accepted: no missing
+  serial number message, the prompt is ``---c---L1>``, and ``brick`` prints
+  type ``C (IP35)``, ``[1MB flash]`` and the record's serial. The firmware
+  then registers the C-brick's monitors and expanders, and each call to one
+  that is not fitted reports no acknowledge; polling repeats those reports.
+- With an I-brick's ``POWER`` and ``LOGIC`` records the type stays unknown
+  (prompt ``---?---L1>``, ``brick`` prints ``Unknown``), with the serial and
+  the source read as NVRAM.
 
 .. _sgi-l1-board-nvram:
 
@@ -654,7 +755,7 @@ Model limits
 ============
 
 - The board has no node, no link to another controller and no
-  environmental peers: the two-wire bus carries only the devices
+  environmental peers: the two-wire bus carries only the identity parts
   :ref:`sgi-l1-board-mbus-peers` lists.
 - The processor is QEMU's ``m5206`` core, with the instruction cache not
   modelled and the control-register ``MOVEC`` writes limited to the
@@ -675,6 +776,9 @@ Tests
 ``tests/qtest/sgi-l1-board-test.c`` runs test-owned ColdFire code from a test
 flash image and checks the global chip select, the chip-select windows, the
 interrupt controller, the timers, the watchdog and the four-channel UART.
+The same test reads the two-wire controller from the host against a stock
+AT24C EEPROM and an address nothing answers, and each identity part through the
+controller, checking the record layout and the names given.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
-operator console prompt when the firmware image is available and is skipped
-when it is not.
+operator console prompt, with an empty bus and with a C-brick record, when the
+firmware image is available and is skipped when it is not.

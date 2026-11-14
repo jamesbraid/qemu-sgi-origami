@@ -25,6 +25,9 @@
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/m68k/mcf5206e.h"
+#include "hw/misc/sgi-l1-identity.h"
+#include "hw/nvram/eeprom_at24c.h"
+#include "net/util.h"
 #include "hw/core/loader.h"
 #include "migration/blocker.h"
 #include "system/address-spaces.h"
@@ -44,6 +47,30 @@
 
 #define RAM_SIZE_FULL       (512 * KiB)
 #define RAM_SIZE_ALIASED    (128 * KiB)
+
+/*
+ * The firmware calls each identity part with one address byte, so the model
+ * answers a 256-byte window at each address the firmware's table names. The
+ * table's configured length is 512; the part, and what lies above 256, is
+ * unknown, and a call to the second page's address is not acknowledged.
+ */
+#define IDENTITY_EEPROM_SIZE    256
+#define IDENTITY_NODE_ADDR7     0x52    /* wire address 0xa4 */
+#define IDENTITY_LOGIC_ADDR7    0x54    /* wire address 0xa8 */
+
+#define TYPE_L1_BOARD_MACHINE   MACHINE_TYPE_NAME("sgi-l1-board")
+OBJECT_DECLARE_SIMPLE_TYPE(L1BoardMachine, L1_BOARD_MACHINE)
+
+struct L1BoardMachine {
+    MachineState parent_obj;
+
+    /* Which brick's identity parts the two-wire bus carries; none if unset. */
+    char *brick_type;
+    char *node_board_name;
+    char *node_board_part;
+    char *node_board_revision;
+    char *mac;
+};
 
 typedef struct L1Board {
     M68kCPU *cpu;
@@ -135,9 +162,115 @@ static void l1_board_reset(void *opaque)
     b->cpu->env.pc = ldl_phys(cs->as, 4);
 }
 
+#define L1_BOARD_STRING_PROPERTY(field)                                     \
+    static char *l1_board_get_##field(Object *obj, Error **errp)            \
+    {                                                                       \
+        return g_strdup(L1_BOARD_MACHINE(obj)->field);                      \
+    }                                                                       \
+    static void l1_board_set_##field(Object *obj, const char *value,        \
+                                     Error **errp)                          \
+    {                                                                       \
+        L1BoardMachine *m = L1_BOARD_MACHINE(obj);                          \
+                                                                            \
+        g_free(m->field);                                                   \
+        m->field = g_strdup(value);                                         \
+    }
+
+L1_BOARD_STRING_PROPERTY(brick_type)
+L1_BOARD_STRING_PROPERTY(node_board_name)
+L1_BOARD_STRING_PROPERTY(node_board_part)
+L1_BOARD_STRING_PROPERTY(node_board_revision)
+L1_BOARD_STRING_PROPERTY(mac)
+
+static void l1_board_add_identity_eeprom(I2CBus *bus, uint8_t addr7,
+                                         GByteArray *chassis,
+                                         GByteArray *board)
+{
+    uint8_t *image = sgi_l1_identity_board_image(chassis, board,
+                                                 IDENTITY_EEPROM_SIZE,
+                                                 &error_fatal);
+
+    at24c_eeprom_init_rom(bus, addr7, IDENTITY_EEPROM_SIZE, image,
+                          IDENTITY_EEPROM_SIZE);
+    g_free(image);
+    g_byte_array_free(chassis, true);
+    g_byte_array_free(board, true);
+}
+
+/*
+ * The identity parts on bus segment 0, built by the behavioural L1's own
+ * builder from the same inputs, so that both models present one identity:
+ * a C-brick's node board, and an I-brick's power and logic boards. The
+ * processor modules' and memory modules' records sit behind a bus segment
+ * select that is not modelled.
+ */
+static void l1_board_identity(L1BoardMachine *m, I2CBus *bus, Error **errp)
+{
+    uint8_t mac[6];
+
+    if (!m->brick_type) {
+        if (m->node_board_name || m->node_board_part ||
+            m->node_board_revision || m->mac) {
+            error_setg(errp, "identity properties need a brick-type");
+        }
+        return;
+    }
+    if (!strcmp(m->brick_type, "cbrick")) {
+        if (m->mac) {
+            error_setg(errp, "mac is for the I-brick only");
+            return;
+        }
+        if ((m->node_board_name || m->node_board_part ||
+             m->node_board_revision) &&
+            (!m->node_board_name || !m->node_board_part ||
+             !m->node_board_revision)) {
+            error_setg(errp, "a node board identity needs a name, part and "
+                       "revision");
+            return;
+        }
+        if (m->node_board_name &&
+            (strlen(m->node_board_name) > 0x3f ||
+             strlen(m->node_board_part) > 0x3f ||
+             strlen(m->node_board_revision) > 0x3f)) {
+            error_setg(errp, "a node board identity field is too long");
+            return;
+        }
+        l1_board_add_identity_eeprom(bus, IDENTITY_NODE_ADDR7,
+            sgi_l1_identity_chassis_area(),
+            sgi_l1_identity_board_area(
+                m->node_board_name ? m->node_board_name : "NODE",
+                m->node_board_part ? m->node_board_part : "NOTOBSERVED0",
+                m->node_board_revision ? m->node_board_revision : "00",
+                NULL, 'N', 0, NULL, NULL));
+    } else if (!strcmp(m->brick_type, "ibrick")) {
+        if (m->node_board_name || m->node_board_part ||
+            m->node_board_revision) {
+            error_setg(errp, "a node board identity is for the C-brick only");
+            return;
+        }
+        if (!m->mac || net_parse_macaddr(mac, m->mac) < 0 ||
+            !memcmp(mac, "\0\0\0\0\0\0", 6) || (mac[0] & 1)) {
+            error_setg(errp, "an I-brick needs a nonzero unicast mac");
+            return;
+        }
+        l1_board_add_identity_eeprom(bus, IDENTITY_NODE_ADDR7,
+            sgi_l1_identity_chassis_area(),
+            sgi_l1_identity_board_area("POWER", "NOTOBSERVED0", "00", NULL,
+                                       'S', 0, NULL, NULL));
+        l1_board_add_identity_eeprom(bus, IDENTITY_LOGIC_ADDR7,
+            sgi_l1_identity_chassis_area(),
+            sgi_l1_identity_board_area("LOGIC", "NOTOBSERVED0", "00", mac,
+                                       'I', 0, NULL, NULL));
+    } else {
+        error_setg(errp, "brick-type is cbrick or ibrick");
+        return;
+    }
+}
+
 static void l1_board_init(MachineState *machine)
 {
     L1Board *b = g_new0(L1Board, 1);
+    L1BoardMachine *lm = L1_BOARD_MACHINE(machine);
     DeviceState *sim_dev, *or_dev;
     MemoryRegion *quart_window;
     uint64_t ram_size = machine->ram_size;
@@ -164,6 +297,7 @@ static void l1_board_init(MachineState *machine)
     }
     sysbus_realize_and_unref(SYS_BUS_DEVICE(sim_dev), &error_fatal);
     b->sim = MCF5206E_SIM(sim_dev);
+    l1_board_identity(lm, mcf5206e_sim_mbus(b->sim), &error_fatal);
 
     /* CS1: clock RAM. */
     {
@@ -228,8 +362,10 @@ static void l1_board_init(MachineState *machine)
     qemu_register_reset(l1_board_reset, b);
 }
 
-static void l1_board_machine_init(MachineClass *mc)
+static void l1_board_class_init(ObjectClass *oc, const void *data)
 {
+    MachineClass *mc = MACHINE_CLASS(oc);
+
     mc->desc = "SGI L1 controller board, C-, I- and R-brick (ColdFire)";
     mc->init = l1_board_init;
     mc->default_cpu_type = M68K_CPU_TYPE_NAME("m5206");
@@ -238,6 +374,43 @@ static void l1_board_machine_init(MachineClass *mc)
     mc->no_parallel = 1;
     mc->no_floppy = 1;
     mc->no_cdrom = 1;
+
+    object_class_property_add_str(oc, "brick-type", l1_board_get_brick_type,
+                                  l1_board_set_brick_type);
+    object_class_property_set_description(oc, "brick-type",
+        "Brick whose identity EEPROMs the two-wire bus carries: cbrick or "
+        "ibrick; none if unset");
+    object_class_property_add_str(oc, "node-board-name",
+                                  l1_board_get_node_board_name,
+                                  l1_board_set_node_board_name);
+    object_class_property_add_str(oc, "node-board-part",
+                                  l1_board_get_node_board_part,
+                                  l1_board_set_node_board_part);
+    object_class_property_add_str(oc, "node-board-revision",
+                                  l1_board_get_node_board_revision,
+                                  l1_board_set_node_board_revision);
+    object_class_property_set_description(oc, "node-board-name",
+        "C-brick node board name, as the behavioural L1 takes it");
+    object_class_property_set_description(oc, "node-board-part",
+        "C-brick node board part number, as the behavioural L1 takes it");
+    object_class_property_set_description(oc, "node-board-revision",
+        "C-brick node board revision, as the behavioural L1 takes it");
+    object_class_property_add_str(oc, "mac", l1_board_get_mac,
+                                  l1_board_set_mac);
+    object_class_property_set_description(oc, "mac",
+        "I-brick logic board station address");
 }
 
-DEFINE_MACHINE("sgi-l1-board", l1_board_machine_init)
+static const TypeInfo l1_board_machine_info = {
+    .name          = TYPE_L1_BOARD_MACHINE,
+    .parent        = TYPE_MACHINE,
+    .instance_size = sizeof(L1BoardMachine),
+    .class_init    = l1_board_class_init,
+};
+
+static void l1_board_register_types(void)
+{
+    type_register_static(&l1_board_machine_info);
+}
+
+type_init(l1_board_register_types)

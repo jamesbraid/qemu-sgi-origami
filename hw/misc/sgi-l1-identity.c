@@ -7,6 +7,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qapi/error.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-l1-identity.h"
 
@@ -148,4 +149,42 @@ GByteArray *sgi_l1_identity_board_area(const char *name, const char *part,
     /* Byte 1 counts the area's eight-byte units, checksum included. */
     area->data[1] = (area->len + 1 + 7) / 8;
     return l1_ia_finish(area);
+}
+
+/*
+ * A whole board EEPROM image, as the firmware reads it: an eight-byte common
+ * header whose bytes 2 and 3 give the chassis and board areas' offsets in
+ * eight-byte units and whose last byte makes the header sum to zero, the two
+ * areas back to back, and erased (0xff) bytes to @size. The firmware's
+ * checks of the areas are by sum and length, so a record that does not fit
+ * @size is refused.
+ */
+uint8_t *sgi_l1_identity_board_image(const GByteArray *chassis,
+                                     const GByteArray *board, size_t size,
+                                     Error **errp)
+{
+    size_t chassis_at = SGI_L1_IDENTITY_HEADER_SIZE;
+    size_t board_at = chassis_at + chassis->len;
+    uint8_t *image;
+    uint8_t sum = 0;
+
+    if (board_at + board->len >= size || chassis->len % 8 ||
+        board->len % 8 || (board_at / 8) > 0xff) {
+        error_setg(errp, "the identity areas (%u and %u bytes) do not fit a "
+                   "%zu-byte EEPROM", chassis->len, board->len, size);
+        return NULL;
+    }
+    image = g_malloc(size);
+    memset(image, 0xff, size);
+    memset(image, 0, SGI_L1_IDENTITY_HEADER_SIZE);
+    image[0] = 1;
+    image[2] = chassis_at / 8;
+    image[3] = board_at / 8;
+    for (unsigned i = 0; i < SGI_L1_IDENTITY_HEADER_SIZE - 1; i++) {
+        sum += image[i];
+    }
+    image[SGI_L1_IDENTITY_HEADER_SIZE - 1] = -sum;
+    memcpy(image + chassis_at, chassis->data, chassis->len);
+    memcpy(image + board_at, board->data, board->len);
+    return image;
 }
