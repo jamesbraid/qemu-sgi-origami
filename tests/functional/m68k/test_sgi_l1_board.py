@@ -16,6 +16,7 @@
 
 import hashlib
 import os
+import re
 
 from qemu_test import QemuSystemTest, skipIfMissingEnv
 from qemu_test import exec_command_and_wait_for_pattern
@@ -124,6 +125,66 @@ class SgiL1Board(QemuSystemTest):
         self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa4 nack 0', text)
         self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa5 nack 0', text)
         self.assertIn('mcf5206e_mbus_byte tx 1 byte 0x41 nack 1', text)
+
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_l1_board_cbrick_peers(self):
+        flash = self.flash_image()
+        log = os.path.join(self.workdir, 'l1-board-peers.log')
+
+        # The C-brick's polled devices fitted: the select expander, the
+        # expanders, the node monitors and the management USB controller.
+        self.set_machine('sgi-l1-board')
+        self.vm.set_console()
+        self.vm.add_args('-machine', 'sgi-l1-board,brick-type=cbrick,'
+                         'node-board-name=IP35,node-board-part=NOTOBSERVED0,'
+                         'node-board-revision=00,board-peers=on')
+        self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log,
+                         '-trace', 'mcf5206e_mbus*', '-trace', 'sgi_l1_*')
+        self.vm.add_args('-icount', 'shift=10,align=off')
+        self.vm.launch()
+
+        wait_for_console_pattern(self, 'SGI SN1 L1 Controller')
+        wait_for_console_pattern(self, 'c---L1>')
+        exec_command_and_wait_for_pattern(
+            self, 'brick',
+            'type: C (IP35) [1MB flash], serial:EMUN00, source: EEPROM')
+        # The supply table reads the monitors it can now reach: zero volts,
+        # where an empty bus gave an error code for every supply.
+        exec_command_and_wait_for_pattern(
+            self, 'power', 'DIMM    off    0.000V  default   136')
+        self.vm.shutdown()
+
+        with open(self.console_log_name, encoding='utf-8') as logfile:
+            console = logfile.read()
+        # Every device the board now carries is acknowledged: none of these
+        # reports is printed.
+        for gone in ('USS820', 'display I/O expander', 'PIMM PSC',
+                     'NODE 0 monitor', 'NODE 1 monitor', 'NODE 2 monitor',
+                     'Port 0 initialization', 'Port 1 initialization',
+                     'USB mode', 'power (5V AUX) monitoring',
+                     'NODE 0 power (12 BIAS)', 'NODE 1 power (3.3V L1)',
+                     'NODE 0 fan monitoring', 'NODE 1 fan monitoring',
+                     'COM CONTROL', 'PORT CONTROL', 'POWER CONTROL',
+                     'FAN CONTROL', 'monitor NODE', 'uninitialized device',
+                     'ERROR (-404)'):
+            self.assertNotIn(gone, console)
+        # What is left names a part nothing models: no processor module is
+        # fitted, so its monitors do not answer, and the display driver's
+        # own part is unknown.
+        self.assertIn('Error initializing the PIMM0 A monitor, '
+                      'no acknowledge', console)
+        self.assertIn('Display reset error: no acknowledge', console)
+
+        with open(log, encoding='utf-8') as logfile:
+            text = logfile.read()
+        self.assertIn('sgi_l1_usb_read offset 0x18 read 0x13', text)
+        self.assertIn('sgi_l1_expander_write wire 0x4e segment 0 '
+                      'write 0xb8', text)
+        # The calls nothing answers: the memory module records, the
+        # processor module 0 monitors and the display driver.
+        nacked = set(re.findall(
+            r'mcf5206e_mbus_byte tx 1 byte (0x[0-9a-f]{2}) nack 1', text))
+        self.assertEqual(nacked, {'0xa0', '0x5c', '0x5e', '0xf0', '0xf1'})
 
 
 if __name__ == '__main__':
