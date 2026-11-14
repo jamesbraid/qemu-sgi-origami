@@ -1278,3 +1278,4 @@ scripts/tests/test_sgi_docs_publish_workflow.py
 hw/m68k/sgi-l1-board.c
 hw/m68k/mcf5206e.c
 include/hw/m68k/mcf5206e.h
+tests/qtest/sgi-l1-board-test.c
