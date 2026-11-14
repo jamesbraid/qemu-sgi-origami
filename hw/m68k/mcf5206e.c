@@ -572,7 +572,7 @@ static void sim_control_write(void *opaque, uint32_t reg, uint32_t val)
 enum {
     R_NONE, R_SIMR, R_MARB, R_ICR, R_IMR, R_IPR, R_RSR, R_SYPCR, R_SWIVR,
     R_SWSR, R_CSAR, R_CSMR, R_CSCR, R_DMCR, R_PAR, R_TIMER, R_UART,
-    R_UIVR, R_UIP, R_UOP1, R_UOP0, R_UNIMP,
+    R_UIVR, R_UIP, R_UOP1, R_UOP0, R_MBUS, R_UNIMP,
 };
 
 typedef struct RegSpan {
@@ -649,15 +649,15 @@ static RegSpan sim_reg_at(unsigned off)
     case 0x1bc:
         return (RegSpan){ R_UOP0, 0x1bc, 1, 1, "UOP0(2)" };
     case 0x1e0:
-        return (RegSpan){ R_UNIMP, 0x1e0, 1, 0, "MADR" };
+        return (RegSpan){ R_MBUS, 0x1e0, 1, 0, "MADR" };
     case 0x1e4:
-        return (RegSpan){ R_UNIMP, 0x1e4, 1, 0, "MFDR" };
+        return (RegSpan){ R_MBUS, 0x1e4, 1, 0, "MFDR" };
     case 0x1e8:
-        return (RegSpan){ R_UNIMP, 0x1e8, 1, 0, "MBCR" };
+        return (RegSpan){ R_MBUS, 0x1e8, 1, 0, "MBCR" };
     case 0x1ec:
-        return (RegSpan){ R_UNIMP, 0x1ec, 1, 0, "MBSR" };
+        return (RegSpan){ R_MBUS, 0x1ec, 1, 0, "MBSR" };
     case 0x1f0:
-        return (RegSpan){ R_UNIMP, 0x1f0, 1, 0, "MBDR" };
+        return (RegSpan){ R_MBUS, 0x1f0, 1, 0, "MBDR" };
     case 0x200 ... 0x25f:
         return (RegSpan){ R_UNIMP, off & ~3u, 4, 0, "DMA" };
     }
@@ -747,6 +747,8 @@ static uint32_t sim_reg_get(MCF5206ESIMState *s, RegSpan r, bool side_effects)
     case R_UOP0:
         /* write-only */
         return 0;
+    case R_MBUS:
+        return mcf5206e_mbus_read(s->mbus, r.start, side_effects);
     case R_UNIMP:
         if (side_effects) {
             qemu_log_mask(LOG_UNIMP, "mcf5206e: read of %s (MBAR+0x%x): "
@@ -861,6 +863,9 @@ static void sim_reg_set(MCF5206ESIMState *s, RegSpan r, uint32_t val)
     case R_UOP0:
         sim_uop(s, r, val);
         break;
+    case R_MBUS:
+        mcf5206e_mbus_write(s->mbus, r.start, val);
+        break;
     case R_UNIMP:
         qemu_log_mask(LOG_UNIMP, "mcf5206e: write of %s (MBAR+0x%x) = 0x%x:"
                       " not modelled, ignored\n", r.name, r.start, val);
@@ -883,6 +888,14 @@ static uint64_t sim_mmio_read(void *opaque, hwaddr addr, unsigned size)
         if (r.kind == R_NONE) {
             qemu_log_mask(LOG_GUEST_ERROR, "mcf5206e: read of MBAR+0x%"
                           HWADDR_PRIx " is not a register\n", addr + i);
+            val <<= 8;
+            i++;
+            continue;
+        }
+        if (r.kind == R_MBUS && size != 1) {
+            qemu_log_mask(LOG_GUEST_ERROR, "mcf5206e: %u-byte read over the "
+                          "M-Bus %s (MBAR+0x%x): only byte accesses are "
+                          "defined, reads as 0\n", size, r.name, r.start);
             val <<= 8;
             i++;
             continue;
@@ -914,6 +927,13 @@ static void sim_mmio_write(void *opaque, hwaddr addr, uint64_t val,
         if (r.kind == R_NONE) {
             qemu_log_mask(LOG_GUEST_ERROR, "mcf5206e: write of MBAR+0x%"
                           HWADDR_PRIx " is not a register\n", addr + i);
+            i++;
+            continue;
+        }
+        if (r.kind == R_MBUS && size != 1) {
+            qemu_log_mask(LOG_GUEST_ERROR, "mcf5206e: %u-byte write over the "
+                          "M-Bus %s (MBAR+0x%x): only byte accesses are "
+                          "defined, ignored\n", size, r.name, r.start);
             i++;
             continue;
         }
@@ -1076,6 +1096,16 @@ static void mcf5206e_sim_realize(DeviceState *dev, Error **errp)
                                      qemu_chr_fe_get_driver(&s->uart_chr[i]));
     }
 
+    s->mbus = MCF5206E_MBUS(qdev_new(TYPE_MCF5206E_MBUS));
+    object_property_add_child(OBJECT(dev), "mbus", OBJECT(s->mbus));
+    qdev_prop_set_uint32(DEVICE(s->mbus), "clock-hz", s->clock_hz);
+    if (!sysbus_realize_and_unref(SYS_BUS_DEVICE(s->mbus), errp)) {
+        return;
+    }
+    sysbus_connect_irq(SYS_BUS_DEVICE(s->mbus), 0,
+                       qdev_get_gpio_in_named(dev, "internal-irq",
+                                              MCF5206E_SRC_MBUS));
+
     m68k_cpu_set_board_ops(s->cpu, &sim_board_ops, s);
 }
 
@@ -1108,6 +1138,11 @@ static const TypeInfo mcf5206e_sim_info = {
     .instance_size = sizeof(MCF5206ESIMState),
     .class_init    = mcf5206e_sim_class_init,
 };
+
+I2CBus *mcf5206e_sim_mbus(MCF5206ESIMState *s)
+{
+    return mcf5206e_mbus_get_bus(s->mbus);
+}
 
 MemoryRegion *mcf5206e_sim_cs_window(MCF5206ESIMState *s, int n)
 {

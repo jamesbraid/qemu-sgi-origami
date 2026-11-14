@@ -3649,6 +3649,7 @@ if have_system
     'hw/intc',
     'hw/isa',
     'hw/mem',
+    'hw/m68k',
     'hw/mips',
     'hw/mips/sgi',
     'hw/misc',

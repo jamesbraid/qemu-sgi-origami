@@ -1,0 +1,7 @@
+# See docs/devel/tracing.rst for syntax documentation.
+
+# mcf5206e-mbus.c
+mcf5206e_mbus_start(bool repeated) "repeated %d"
+mcf5206e_mbus_byte(bool tx, uint8_t byte, bool nack) "tx %d byte 0x%02x nack %d"
+mcf5206e_mbus_stop(void) ""
+mcf5206e_mbus_lost(void) ""
