@@ -87,6 +87,24 @@ layer:
         memory is a model choice. The router answers the model's synthetic
         diagnostics, which no hardware record settles.
       emulation:
+        # A rack with an R-brick holds an L2 (established), but starting
+        # one is a launch choice that rests on model runs, so the default
+        # is an approximation. The L2 is the shipped firmware running under
+        # qemu-ppc behind a model L1 that drops the L2's own requests. With
+        # it attached, the PROM booted on the Origin 3200, Origin 3400,
+        # two-partition Origin 3400 and Onyx 3400, and IRIX on the Origin
+        # 3200 and Origin 3400 only; the Origin 3800 family was never
+        # booted. The console output differs from a run without it only in
+        # timing, NIC ids and where one boot line is interleaved.
+        l2_controller:
+          default: "on"
+          rating: approximated
+          reason: >-
+            Starting the L2 is a launch choice backed by model runs, not a
+            hardware fact. The L2 is the shipped firmware under qemu-ppc
+            behind a model L1 that drops L2-originated requests. The PROM booted with it on this topology, and IRIX booted too.
+          provenance: measured-on-our-model
+          sources: ["qemu:docs/system/mips/sgi/hardware/l1-l2-link.rst"]
         bedrock_nodes:
           c0-bedrock: &cbrick-bedrock
             # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the

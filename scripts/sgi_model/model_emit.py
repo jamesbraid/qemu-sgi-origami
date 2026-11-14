@@ -1223,7 +1223,7 @@ def _validate_export_profiles(model: dict, topology: dict) -> None:
 
 
 def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
-                   line) -> list[dict]:
+                   line, authored: bool) -> list[dict]:
     """The link from each C-brick L1 to a rack L2, one per L1, bound by
     the machine's controller-l2-chardev list: the L1 of a controller that
     no module owns and exactly one of @nodes names (a module-owned L1
@@ -1239,8 +1239,10 @@ def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
     in for the short rack. It matches every current offering (the
     routerless ones are the Origin 3200 and Onyx 3200 short racks) but is
     a proxy, to be revisited if a routerless tall rack is added. Only the
-    optional links name the l2-controller setting that fits them."""
-    optional = not topology["routers"]
+    optional links name the l2-controller setting that fits them, and so
+    do the links of a model that authors the setting's default
+    (@authored), which is how a mandatory L2 is started by default."""
+    optional = not topology["routers"] or authored
     lines = []
     for index, controller in enumerate(topology["controllers"]):
         if controller["kind"] != "L1" or controller.get("owner") == "module":
@@ -1264,7 +1266,8 @@ def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
 
 def _serial_lines_for(topology: dict, machine_name: str,
                       launch_recipe: str | None, consoles: list[dict],
-                      tablet: bool, nodes: tuple[int, ...]) -> list[dict]:
+                      tablet: bool, nodes: tuple[int, ...],
+                      l2_authored: bool = False) -> list[dict]:
     """Every serial line a launch backs, with its -serial position, as
     the machines read them: the console, the system controller's, the
     second IOC3 port (the tablet's, where a launch drives one), and the
@@ -1310,7 +1313,7 @@ def _serial_lines_for(topology: dict, machine_name: str,
                                   "system-controller", node=c["node"],
                                   serial=c["line"]))
         if machine_name == "origin3000":
-            lines += _l2_link_lines(topology, nodes, line)
+            lines += _l2_link_lines(topology, nodes, line, l2_authored)
         return lines
     # SN0: node n's block starts at 6n (IOC3 A and B, the system
     # controller's AUX, the bring-up UART, the two records).
@@ -1445,6 +1448,9 @@ def _offerings_for(model: dict, topology: dict,
     # Launch preparation and endpoint records describe this selected model's
     # authored runtime inputs. Product facts remain the source for defaults.
     model_harness = model["machine"].get("harness", {})
+    # The model's own default for the l2-controller setting, where it
+    # authors one; the generator reads it and holds no table of topologies.
+    l2_default = model["machine"]["emulation"].get("l2_controller")
     launch_harness = dict(harness)
     for field in ("launch_recipe", "console_records"):
         if field in model_harness:
@@ -1593,13 +1599,14 @@ def _offerings_for(model: dict, topology: dict,
                        if "audio" in DEVICES[machine_name] else {})},
                 "serial-lines": _serial_lines_for(
                     topology, machine_name, launch_recipe, consoles,
-                    DEVICES[machine_name]["tablet"], tuple(row["nodes"])),
+                    DEVICES[machine_name]["tablet"], tuple(row["nodes"]),
+                    l2_default is not None),
             })
             offering = offerings[-1]
             settings, groups = offering_settings(
                 {**offering, "resources": resources}, topology,
                 assembly.get("prid"), assembly.get("fpu_prid"),
-                choice.get("board_id_word"))
+                choice.get("board_id_word"), l2_default)
             offering["settings"] = settings
             offering["setting-groups"] = groups
     return offerings

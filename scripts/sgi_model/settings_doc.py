@@ -107,6 +107,7 @@ def render(catalogue: dict) -> str:
                     f"     - {_slots(item)}",
                     f"     - {_target(definition)}",
                     f"     - {_default(item)}"]
+        out += _serial_line_settings(catalogue, product, definitions)
         groups = offering["setting-groups"]
         if groups:
             out += [""]
@@ -117,6 +118,32 @@ def render(catalogue: dict) -> str:
         out += [""]
     out += _basis_section(catalogue)
     return "\n".join(out).rstrip("\n") + "\n"
+
+
+def _serial_line_settings(catalogue: dict, product: str,
+                          definitions: dict) -> list[str]:
+    """Which topologies of @product offer a setting that turns on serial
+    lines, with the default each shows. The table above shows the first
+    offering only, and these defaults differ by topology."""
+    found: dict[str, dict[str, set[str]]] = {}
+    for offering in catalogue["offerings"]:
+        if offering["product"] != product:
+            continue
+        for item in offering["settings"]:
+            if definitions[item["name"]]["target"]["kind"] != "serial-lines":
+                continue
+            by_default = found.setdefault(item["name"], {})
+            by_default.setdefault(_default(item), set()).add(
+                offering["topology"])
+    out = []
+    for name, by_default in sorted(found.items()):
+        parts = [f"{', '.join(f'``{t}``' for t in sorted(topologies))} "
+                 f"default {default}"
+                 for default, topologies in sorted(by_default.items())]
+        out += ["", f"The ``{name}`` setting is offered by the topologies "
+                + "; ".join(parts) + ". The product's other topologies "
+                "do not offer it."]
+    return out
 
 
 def _basis_section(catalogue: dict) -> list[str]:

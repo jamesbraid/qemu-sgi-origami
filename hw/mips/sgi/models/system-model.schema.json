@@ -827,6 +827,19 @@
                 }
               }
             },
+            "l2_controller": {
+              "type": "object",
+              "required": ["default", "rating", "reason", "provenance", "sources"],
+              "additionalProperties": false,
+              "description": "The default of the l2-controller setting for an Origin 3000 topology whose C-brick L1s have rack-L2 link lines. Authoring it makes every such line name the setting and the offerings list it with this default; a topology that omits it lists the setting only where no R-brick makes the L2 mandatory, off, and leaves the other topologies' links unnamed. The rating is the manual page's word for the default as a launch choice; a default that rests on model runs is an approximation.",
+              "properties": {
+                "default": { "enum": ["on", "off"] },
+                "rating": { "enum": ["established", "inferred", "approximated"] },
+                "reason": { "type": "string", "minLength": 1 },
+                "provenance": { "$ref": "#/$defs/fact-provenance" },
+                "sources": { "$ref": "#/$defs/sources" }
+              }
+            },
             "initially_operational_crossbow_links": {
               "type": "array",
               "description": "Per-Crossbow static emulator startup health. Each listed widget begins operational. Machine launch and whole-machine reset reapply this policy. Migration restores runtime link state and does not reapply it. Physical attachment is derived separately and does not by itself make a link operational. This policy does not model hardware link training, predict a physical training outcome, or establish diagnostic acceptance. The compiler requires every listed widget to be physically attached in the selected composition.",

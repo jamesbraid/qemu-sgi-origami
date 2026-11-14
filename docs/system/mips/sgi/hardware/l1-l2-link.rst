@@ -71,17 +71,35 @@ controller in the selected topology, the same numbering as
   unbacked, may report that and does not refuse the launch; the
   machine runs and the L1 answers as with the property unset. A consumer
   that does not know the kind ignores the line. Router machines always
-  list the links. On the Origin 3200 and Onyx 3200 (the ``origin3200``
-  and ``onyx3000`` topologies) the line names the ``l2-controller``
-  setting (:ref:`sgi-settings`), off by default, whose target is the
-  lines rather than a property, and a launch binds only the lines whose
-  setting is on. The owner's guides split the cases by rack height: the
-  L2 is included with every tall rack that holds C-bricks, optional in a
-  short rack, and required with an R-brick
-  (:src:`007-4311-002 p. 42`, :src:`007-4240-002 p. 6, 15, 75, 82-83`,
-  :src:`007-4264-002 p. 24, 26, 96`, :src:`007-4653-001 p. 116` for the
-  Origin 3900), *established*. The catalogue takes a rack with no
-  routers to be a short rack, which holds for every current offering.
+  list the links. A line names the ``l2-controller`` setting
+  (:ref:`sgi-settings`), whose target is the lines rather than a
+  property, and a launch binds only the lines whose setting is on. The
+  Origin 3200 and Onyx 3200 (the ``origin3200`` and ``onyx3000``
+  topologies) name it, off by default. So do the Origin 3400, its
+  two-partition form and the Onyx 3400 with InfiniteReality (the
+  ``origin3400``, ``origin3400-two-partitions`` and ``onyx3400-ir``
+  topologies), on by default. The other router topologies name no
+  setting. The owner's guides split the cases by rack height: the L2 is
+  included with every tall rack that holds C-bricks, optional in a short
+  rack, and required with an R-brick (:src:`007-4311-002 p. 42`,
+  :src:`007-4240-002 p. 6, 15, 75, 82-83`, :src:`007-4264-002 p. 24, 26,
+  96`, :src:`007-4653-001 p. 116` for the Origin 3900), *established*.
+  The catalogue takes a rack with no routers to be a short rack, which
+  holds for every current offering. An Origin 3400 holds an L2 as
+  standard (:src:`007-4311-002 p. 42`, *established*), as does every rack
+  with an R-brick, but whether a launch starts one is a launch choice, so
+  its default is an *approximation*. The L2 is the shipped firmware
+  running under user-mode emulation behind a model L1 that drops the
+  requests the L2 originates. The default is on for the three topologies
+  above because the PROM booted with the L2 attached on the Origin 3200,
+  the Origin 3400, the two-partition Origin 3400 and the Onyx 3400, and
+  IRIX on the Origin 3200 and the Origin 3400 only. The two-partition
+  Origin 3400 and the Onyx 3400 reached the PROM menu and no further.
+  Apart from timing, NIC ids and the interleaving of one boot line, the
+  console output matched a run without the L2. The Origin 3800 topologies
+  and the two-router Origin 3400 have never been booted with it and keep
+  no default. This list is written by hand: change it with the
+  ``l2_controller`` record in the model files.
 
 ``controller-l2-partition-flag.N=<index>=<0 to 3>``
   Sets ``l2-partition-flag`` on that controller's L1. It needs no
