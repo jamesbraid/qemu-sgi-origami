@@ -2,7 +2,7 @@
 /*
  * CHD (MAME "compressed hunks of data") hard-disk images.
  *
- * The container is read and written by MAME's own CHD code
+ * The container is read, written and compressed by MAME's own CHD code
  * (subprojects/libchdman), so this driver does what the iris emulator does
  * with the same files:
  *
@@ -10,7 +10,8 @@
  *  - a compressed one is never written: guest writes go to an uncompressed
  *    "<image>.diff.chd" beside it, and a diff that is already there is
  *    reattached;
- *  - "overlay" sends an uncompressed image's writes to a diff as well;
+ *  - when QEMU exits cleanly the diff is folded back into the image, which is
+ *    rebuilt with the codecs it had, unless "overlay" asks to keep the diff;
  *  - a hunk's map entry reaches the disk only after the hunk's data has been
  *    synced, so a crash never leaves a map entry pointing at data that is not
  *    there.
@@ -252,7 +253,9 @@ typedef struct BDRVChdState {
     ChdIO *top_io;          /* top's file; NULL if top is the read-only image */
     BdrvChild *diff;        /* the diff file, or NULL */
 
-    bool overlay;           /* option: diff an uncompressed image too */
+    bool overlay;           /* option: keep the diff, never fold it */
+    bool dirty;             /* the diff holds changes to fold back */
+    bool diff_fresh;        /* this open made the diff */
     char *base_path;        /* absolute */
     char *diff_path;
 
@@ -275,8 +278,8 @@ static QemuOptsList chd_runtime_opts = {
         {
             .name = "overlay",
             .type = QEMU_OPT_BOOL,
-            .help = "Keep guest writes in the .diff.chd file, also for an "
-                    "uncompressed image",
+            .help = "Keep guest writes in the .diff.chd file instead of "
+                    "folding it back into the image on exit",
         },
         {
             .name = "cache-size",
@@ -293,6 +296,60 @@ static int chd_probe(const uint8_t *buf, int buf_size, const char *filename)
         return 100;
     }
     return 0;
+}
+
+/* ---- diffs that a crash or an earlier session left behind ---- */
+
+static char *chd_marker_path(const char *diff_path)
+{
+    return g_strconcat(diff_path, ".folding", NULL);
+}
+
+/*
+ * A fold writes the SHA-1 of the rebuilt image into the marker before it
+ * renames the image into place, and removes the marker last. A marker that is
+ * still there means the process died after that. If the image is the rebuilt
+ * one, the diff is already folded into it and no longer fits it: remove the
+ * diff. If it is the old image the rename never happened and the diff is good.
+ */
+typedef enum ChdMarker {
+    CHD_NO_MARKER,
+    CHD_MARKER_BEFORE,      /* the rename never happened: the diff is good */
+    CHD_MARKER_AFTER,       /* the image already holds the diff */
+} ChdMarker;
+
+static ChdMarker chd_marker_state(const char *base_path, const char *diff_path)
+{
+    g_autofree char *marker = chd_marker_path(diff_path);
+    g_autofree char *want = NULL;
+    gsize len = 0;
+    uint8_t have[20];
+
+    if (!g_file_get_contents(marker, &want, &len, NULL)) {
+        return CHD_NO_MARKER;
+    }
+    if (len == 20 && chd_shim_sha1_of(base_path, have) == 0 &&
+        !memcmp(have, want, 20)) {
+        return CHD_MARKER_AFTER;
+    }
+    return CHD_MARKER_BEFORE;
+}
+
+static void chd_finish_interrupted_fold(const char *base_path,
+                                        const char *diff_path)
+{
+    g_autofree char *marker = chd_marker_path(diff_path);
+
+    switch (chd_marker_state(base_path, diff_path)) {
+    case CHD_NO_MARKER:
+        return;
+    case CHD_MARKER_AFTER:
+        qemu_unlink(diff_path);
+        break;
+    case CHD_MARKER_BEFORE:
+        break;
+    }
+    qemu_unlink(marker);
 }
 
 /* ---- creating a diff ---- */
@@ -368,6 +425,159 @@ static int chd_create_diff_file(ChdShimFile *base, const char *diff_path,
         chd_sync_dir(diff_path);
     }
     return ret;
+}
+
+/* ---- folding a diff back into the image, once QEMU has exited ---- */
+
+typedef struct ChdPendingFold {
+    char *base_path;
+    char *diff_path;
+    bool fold;              /* else the diff is empty: just remove it */
+    bool keep;              /* a later overlay session owns the diff */
+} ChdPendingFold;
+
+static GSList *chd_pending_folds;
+static bool chd_fold_registered;
+
+typedef struct ChdFoldProgress {
+    const char *path;
+    int next_pct;
+} ChdFoldProgress;
+
+static void chd_fold_progress(void *opaque, uint64_t done, uint64_t total)
+{
+    ChdFoldProgress *p = opaque;
+    int pct = total ? (int)(done * 100 / total) : 100;
+
+    if (pct >= p->next_pct) {
+        error_report("chd: folding %s: %d%%", p->path, pct / 10 * 10);
+        p->next_pct = pct / 10 * 10 + 10;
+    }
+}
+
+/*
+ * Rebuild the image from the merged view of image and diff into a temporary
+ * file next to it, make that durable, rename it over the image, and only then
+ * remove the diff. Any failure before the rename leaves image and diff as
+ * they were, and the next start simply reattaches the diff.
+ */
+static int chd_fold(const char *base_path, const char *diff_path)
+{
+    g_autofree char *tmp = g_strconcat(base_path, ".synctmp.chd", NULL);
+    g_autofree char *marker = chd_marker_path(diff_path);
+    ChdFoldProgress progress = { .path = base_path, .next_pct = 10 };
+    uint8_t sha1[20];
+    int fd, ret;
+
+    ret = chd_shim_flatten(base_path, diff_path, tmp, chd_fold_progress,
+                           NULL, &progress);
+    if (ret) {
+        error_report("chd: could not fold %s into %s: %s", diff_path,
+                     base_path, chd_shim_strerror(ret));
+        qemu_unlink(tmp);
+        return -EIO;
+    }
+    /*
+     * MAME writes the file through stdio and never syncs it. Without this a
+     * power loss after the durable rename and marker could leave an image
+     * whose data never reached the disk, and the diff already deleted.
+     */
+    fd = qemu_open_old(tmp, O_RDWR | O_BINARY);
+    if (fd < 0 || fsync(fd) < 0) {
+        error_report("chd: could not sync %s: %s", tmp, strerror(errno));
+        if (fd >= 0) {
+            qemu_close(fd);
+        }
+        qemu_unlink(tmp);
+        return -EIO;
+    }
+    qemu_close(fd);
+    ret = chd_shim_sha1_of(tmp, sha1);
+    if (ret == 0) {
+        gchar *contents = (gchar *)sha1;
+        ret = g_file_set_contents_full(marker, contents, 20,
+                                       G_FILE_SET_CONTENTS_CONSISTENT |
+                                       G_FILE_SET_CONTENTS_DURABLE, 0644, NULL)
+              ? 0 : -EIO;
+    }
+    if (ret == 0 && g_rename(tmp, base_path) < 0) {
+        ret = -errno;
+    }
+    if (ret) {
+        error_report("chd: could not replace %s: %s", base_path,
+                     ret == -EIO ? "I/O error" : strerror(-ret));
+        qemu_unlink(tmp);
+        qemu_unlink(marker);
+        return ret;
+    }
+    chd_sync_dir(base_path);
+    qemu_unlink(diff_path);
+    qemu_unlink(marker);
+    return 0;
+}
+
+static void chd_fold_at_exit(void)
+{
+    for (GSList *l = chd_pending_folds; l; l = l->next) {
+        ChdPendingFold *f = l->data;
+
+        if (f->keep) {
+            continue;
+        } else if (f->fold) {
+            chd_fold(f->base_path, f->diff_path);
+        } else {
+            qemu_unlink(f->diff_path);
+        }
+    }
+}
+
+/*
+ * A later session that keeps the diff (overlay) must not have an earlier
+ * one fold its changes away at exit.
+ */
+static void chd_cancel_fold(const char *base_path)
+{
+    for (GSList *l = chd_pending_folds; l; l = l->next) {
+        ChdPendingFold *f = l->data;
+
+        if (!strcmp(f->base_path, base_path)) {
+            f->fold = false;
+            f->keep = true;
+        }
+    }
+}
+
+/*
+ * Folding replaces the image, which cannot happen while a node holds it open
+ * (and Windows will not rename over an open file), so it is left for exit,
+ * after the block layer has closed everything. A kill leaves the diff, and the
+ * next open reattaches it.
+ */
+static void chd_schedule_fold(BDRVChdState *s, bool fold)
+{
+    ChdPendingFold *f;
+
+    /*
+     * One entry per image: the same image can be closed and opened again in
+     * one process, and the second fold would find the diff already gone.
+     */
+    for (GSList *l = chd_pending_folds; l; l = l->next) {
+        f = l->data;
+        if (!strcmp(f->base_path, s->base_path)) {
+            f->fold |= fold;
+            f->keep = false;
+            return;
+        }
+    }
+    f = g_new0(ChdPendingFold, 1);
+    f->fold = fold;
+    f->base_path = g_strdup(s->base_path);
+    f->diff_path = g_strdup(s->diff_path);
+    chd_pending_folds = g_slist_prepend(chd_pending_folds, f);
+    if (!chd_fold_registered) {
+        chd_fold_registered = true;
+        atexit(chd_fold_at_exit);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -530,8 +740,19 @@ static int chd_open(BlockDriverState *bs, QDict *options, int flags,
      * uncompressed image is written in place (unless overlay asks for a diff)
      * and a compressed one gets a fresh diff.
      */
+    if (want_write && s->diff_path) {
+        chd_finish_interrupted_fold(s->base_path, s->diff_path);
+    }
+    /*
+     * A read-only open cannot finish a fold that died after its rename, but
+     * it must not attach the diff the image already holds: it no longer
+     * names the image as its parent.
+     */
     diff_exists = s->diff_path &&
-                  g_file_test(s->diff_path, G_FILE_TEST_EXISTS);
+                  g_file_test(s->diff_path, G_FILE_TEST_EXISTS) &&
+                  (want_write ||
+                   chd_marker_state(s->base_path, s->diff_path) !=
+                   CHD_MARKER_AFTER);
     use_diff = diff_exists || (want_write && (s->overlay || info.version != 5 ||
                                               info.compressed));
     if (use_diff && !s->diff_path) {
@@ -579,6 +800,9 @@ static int chd_open(BlockDriverState *bs, QDict *options, int flags,
             if (ret < 0) {
                 goto fail;
             }
+            s->diff_fresh = true;
+        } else if (want_write) {
+            s->dirty = true;
         }
         qdict_put_str(options, "diff.driver", "file");
         qdict_put_str(options, "diff.filename", s->diff_path);
@@ -804,6 +1028,9 @@ chd_co_pwritev(BlockDriverState *bs, int64_t offset, int64_t bytes,
     chd_cache_invalidate(s, offset / s->hunk_bytes,
                          (offset + bytes - 1) / s->hunk_bytes);
     if (ret == 0) {
+        if (s->diff) {
+            s->dirty = true;
+        }
         /*
          * A write that allocated a hunk left a map entry waiting for its
          * data: sync now, so that a kill never keeps a later write and loses
@@ -854,6 +1081,11 @@ static void chd_close(BlockDriverState *bs)
         bdrv_graph_rdlock_main_loop();
         chd_io_sync(s->base_io);
         bdrv_graph_rdunlock_main_loop();
+    }
+    if (s->writable && s->diff && s->overlay) {
+        chd_cancel_fold(s->base_path);
+    } else if (s->writable && s->diff && (s->dirty || s->diff_fresh)) {
+        chd_schedule_fold(s, s->dirty);
     }
     if (s->top_io != s->base_io) {
         chd_io_free(s->top_io);

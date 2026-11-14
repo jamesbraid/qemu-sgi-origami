@@ -94,6 +94,9 @@ int chd_shim_write_bytes(ChdShimFile *f, uint64_t offset, const void *buf,
 int chd_shim_hunk_info(ChdShimFile *f, uint32_t hunk, uint32_t *compressor,
                        uint32_t *compbytes);
 
+/* The SHA-1 a CHD records for itself, by path (UTF-8). */
+int chd_shim_sha1_of(const char *path, uint8_t sha1[20]);
+
 /*
  * Compress the raw hard disk image raw into a new CHD at out (UTF-8 paths),
  * with the given codecs (FourCC, 0 for none) and hunk size, and record the
@@ -102,6 +105,16 @@ int chd_shim_hunk_info(ChdShimFile *f, uint32_t hunk, uint32_t *compressor,
  */
 int chd_shim_create_from_raw(const char *out, const char *raw,
                              const uint32_t codecs[4], uint32_t hunk_bytes);
+
+/*
+ * Rebuild base with diff folded into it, as base.chd would have been made
+ * with the same codecs, hunk size and metadata, and write it to out. Paths are
+ * UTF-8. cancel is polled between steps; nonzero stops with an error and
+ * leaves out for the caller to delete.
+ */
+int chd_shim_flatten(const char *base, const char *diff, const char *out,
+                     ChdShimProgress progress, int (*cancel)(void *opaque),
+                     void *opaque);
 
 #ifdef __cplusplus
 }
