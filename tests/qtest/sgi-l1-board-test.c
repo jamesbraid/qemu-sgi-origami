@@ -1844,11 +1844,13 @@ static void test_peers_bus_select(void)
     g_assert_cmphex(v, ==, 0xff);
     g_assert_false(answers(qts, 0x42));
     g_assert_false(answers(qts, 0x4a));
+    g_assert_false(answers(qts, 0x58));
     /* Segment 0 needs no select. */
     g_assert_true(answers(qts, 0x40));
 
-    /* Segment 2: the LED and COM expanders. */
+    /* Segment 2: the LED and COM expanders and the node monitors. */
     select_segment(qts, 0x78);
+    g_assert_true(answers(qts, 0x58));
     g_assert_true(byte_read(qts, SEL_WIRE | 1, &v));
     g_assert_cmphex(v, ==, 0x78);
     g_assert_true(answers(qts, 0x42));
@@ -1861,6 +1863,7 @@ static void test_peers_bus_select(void)
     /* Segment 3: 0x42 is Bedrock control 1, with no inputs. */
     select_segment(qts, 0xb8);
     g_assert_true(answers(qts, 0x4a));
+    g_assert_false(answers(qts, 0x58));
     g_assert_true(byte_write(qts, 0x42, 0x00));
     g_assert_true(byte_read(qts, 0x43, &v));
     g_assert_cmphex(v, ==, 0x00);
@@ -2011,6 +2014,106 @@ static void test_peers_expanders(void)
     quit_all(qts, &f);
 }
 
+/* One register of a monitor: pointer byte, then value; a read re-points. */
+static bool mon_write(QTestState *qts, uint8_t call, uint8_t reg, uint8_t val)
+{
+    const uint8_t wr[] = { reg, val };
+
+    return bus_txn(qts, call, wr, 2, NULL, 0);
+}
+
+static bool mon_read(QTestState *qts, uint8_t call, uint8_t reg, uint8_t *val)
+{
+    return bus_txn(qts, call, &reg, 1, val, 1);
+}
+
+/*
+ * The three node monitors on segment 2: register files that start at zero,
+ * take the firmware's initialisation writes and read them back, keep the
+ * pointer between reads and do not step it.
+ */
+static void test_peers_monitors(void)
+{
+    static const uint8_t wire[] = { 0x58, 0x5a, 0x5c };
+    static const uint8_t reg47[] = { 0xa0, 0x20, 0x00 };
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v, two[2];
+    int i, r;
+
+    /* Not on segment 3, nor on the processor module segments. */
+    select_segment(qts, 0xb8);
+    g_assert_false(mon_read(qts, wire[0], 0x20, &v));
+    select_segment(qts, 0xd8);
+    g_assert_false(mon_read(qts, 0x5c, 0x20, &v));
+    g_assert_false(mon_read(qts, 0x5e, 0x20, &v));
+    select_segment(qts, 0xe8);
+    g_assert_false(mon_read(qts, 0x5e, 0x20, &v));
+
+    select_segment(qts, 0x78);
+    for (i = 0; i < 3; i++) {
+        /* Voltages 0x20 to 0x25 and the temperature 0x27 read zero. */
+        for (r = 0x20; r <= 0x27; r++) {
+            g_assert_true(mon_read(qts, wire[i], r, &v));
+            g_assert_cmphex(v, ==, 0);
+        }
+        /* The firmware's initialisation order. */
+        g_assert_true(mon_write(qts, wire[i], 0x40, 0x80));
+        g_assert_true(mon_write(qts, wire[i], 0x43, 0xdf));
+        g_assert_true(mon_write(qts, wire[i], 0x44, 0x13));
+        g_assert_true(mon_write(qts, wire[i], 0x47, reg47[i]));
+        g_assert_true(mon_write(qts, wire[i], 0x40, 0x03));
+        g_assert_true(mon_read(qts, wire[i], 0x40, &v));
+        g_assert_cmphex(v, ==, 0x03);
+        g_assert_true(mon_read(qts, wire[i], 0x43, &v));
+        g_assert_cmphex(v, ==, 0xdf);
+        g_assert_true(mon_read(qts, wire[i], 0x44, &v));
+        g_assert_cmphex(v, ==, 0x13);
+        g_assert_true(mon_read(qts, wire[i], 0x47, &v));
+        g_assert_cmphex(v, ==, reg47[i]);
+    }
+    /* Each monitor has its own registers. */
+    g_assert_true(mon_read(qts, wire[0], 0x47, &v));
+    g_assert_cmphex(v, ==, 0xa0);
+
+    /* A pointer alone, then reads: the pointer holds and does not step. */
+    g_assert_true(bus_txn(qts, wire[0], (const uint8_t[]){ 0x43 }, 1, NULL, 0));
+    g_assert_true(bus_txn(qts, wire[0], NULL, 0, two, 2));
+    g_assert_cmphex(two[0], ==, 0xdf);
+    g_assert_cmphex(two[1], ==, 0xdf);
+    /* A write of a second value goes to the same register, not the next. */
+    g_assert_true(bus_txn(qts, wire[0], (const uint8_t[]){ 0x50, 0x11, 0x22 },
+                          3, NULL, 0));
+    g_assert_true(mon_read(qts, wire[0], 0x50, &v));
+    g_assert_cmphex(v, ==, 0x22);
+    g_assert_true(mon_read(qts, wire[0], 0x51, &v));
+    g_assert_cmphex(v, ==, 0x00);
+
+    /* The SMBus alert response address is not fitted. */
+    g_assert_false(answers(qts, 0x18));
+    quit_all(qts, &f);
+}
+
+/* A system reset clears the monitors' registers. */
+static void test_peers_monitor_reset(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+
+    select_segment(qts, 0x78);
+    g_assert_true(mon_write(qts, 0x58, 0x50, 0x22));
+    g_assert_true(mon_read(qts, 0x58, 0x50, &v));
+    g_assert_cmphex(v, ==, 0x22);
+    qtest_writel(qts, DONE, 0);
+    qtest_system_reset(qts);
+    wait_for(qts, DONE, 1);
+    select_segment(qts, 0x78);
+    g_assert_true(mon_read(qts, 0x58, 0x50, &v));
+    g_assert_cmphex(v, ==, 0x00);
+    quit_all(qts, &f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2065,7 +2168,11 @@ int main(int argc, char **argv)
                    test_peers_multi_segment);
     qtest_add_func("sgi-l1-board/peers-reset", test_peers_reset);
     qtest_add_func("sgi-l1-board/peers-expanders", test_peers_expanders);
+    qtest_add_func("sgi-l1-board/peers-monitors", test_peers_monitors);
 
+
+    qtest_add_func("sgi-l1-board/peers-monitor-reset",
+                   test_peers_monitor_reset);
 
     return g_test_run();
 }

@@ -920,7 +920,9 @@ controller, checking the record layout and the names given. With
 reads all ones at power-up and switches segments, that a segment 0 access
 leaves the select alone, that segments 4 to 13 hold nothing, and each
 expander's wire address, segment, reset value and input bits, from the
-firmware's table written out in the test.
+firmware's table written out in the test, and that each node monitor starts
+at zero, takes the firmware's initialisation writes and reads them back, and
+keeps its register pointer between reads without stepping it.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.

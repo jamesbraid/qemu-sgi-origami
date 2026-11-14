@@ -11,9 +11,9 @@
 #include "hw/i2c/i2c.h"
 
 /*
- * Fit the C-brick's bus select expander and the expanders on segments 0 to 3
- * on @bus. A device on a non-zero segment answers only while the select
- * expander enables that segment.
+ * Fit the C-brick's bus select expander, the expanders on segments 0 to 3
+ * and the node monitors on @bus. A device on a non-zero segment answers only
+ * while the select expander enables that segment.
  */
 void sgi_l1_cbrick_peers_fit(I2CBus *bus);
 
