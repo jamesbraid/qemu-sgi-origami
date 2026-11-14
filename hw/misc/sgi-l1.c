@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/misc/sgi-l1-env.h"
+#include "hw/misc/sgi-l1-identity.h"
 #include "hw/misc/sgi-l1-l2-link.h"
 #include "hw/misc/sgi-l1-pbay.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
@@ -5828,151 +5829,32 @@ static const VMStateDescription vmstate_l1 = {
 };
 
 /*
- * Synthetic identity records: what the L1 hands out when no raw record file
- * names a component. Each area uses the Information-Area encoding OpenBSD's
- * l1.c reads: a type/length byte (top two bits the type, low six the length),
- * then the bytes. SGI 007-4498-002 printed pages 181-182 and 007-4365-001
- * printed page 75 give the IO8 areas' 16- and 80-byte field boundaries.
- * The contents are not factory data: dates, keys and the IO8 part are
- * placeholders, the serials are marked synthetic ones, and only the node
- * board's name, part and revision letter come from real inventories (the
- * caller supplies them). Every area
- * sums to zero modulo 256. A Fuel's single system board answers as both
- * the node board and the I/O logic board, the second area carrying the
- * station address in the IO8 position.
+ * The synthetic identity areas come from the builder in sgi-l1-identity.c,
+ * which the firmware-backed L1 board shares so that both present one
+ * identity. These keep the record a copy of the area.
  */
-#define L1_IA_BINARY 0
-#define L1_IA_ASCII 3
-#define L1_IA_EOF 0xc1
-
-static void l1_ia_field(GByteArray *area, unsigned type, const char *data,
-                        size_t length)
+static void l1_record_from_area(SGIL1EEPROM *record, GByteArray *area)
 {
-    uint8_t tag = type << 6 | length;
-
-    g_assert(length <= 0x3f);
-    g_byte_array_append(area, &tag, 1);
-    g_byte_array_append(area, (const uint8_t *)data, length);
-}
-
-static void l1_ia_text(GByteArray *area, const char *text)
-{
-    l1_ia_field(area, L1_IA_ASCII, text, strlen(text));
-}
-
-static void l1_ia_u32(GByteArray *area, uint32_t value)
-{
-    uint8_t data[4];
-
-    stl_be_p(data, value);
-    l1_ia_field(area, L1_IA_BINARY, (const char *)data, sizeof(data));
-}
-
-/* Pads to a multiple of eight bytes and appends the zero-sum checksum. */
-static void l1_ia_finish(SGIL1EEPROM *record, GByteArray *area)
-{
-    uint8_t zero = 0;
-    uint8_t sum = 0;
-
-    while ((area->len + 1) % 8) {
-        g_byte_array_append(area, &zero, 1);
-    }
-    for (unsigned i = 0; i < area->len; i++) {
-        sum += area->data[i];
-    }
-    sum = -sum;
-    g_byte_array_append(area, &sum, 1);
     record->length = area->len;
     record->data = g_byte_array_free(area, false);
     record->invalid = false;
 }
 
-typedef struct SGIL1CPUContext {
-    uint32_t mode_word;
-    uint32_t cpu_mhz;
-    uint32_t hub_mhz;
-} SGIL1CPUContext;
-
-/* The chassis area: both identity strings the placeholder "NA". */
 static void l1_build_chassis_area(SGIL1EEPROM *record)
 {
-    static const uint8_t header[] = { 0x00, 0x02, 0x00 };
-    GByteArray *area = g_byte_array_new();
-    uint8_t eof = L1_IA_EOF;
-
-    g_byte_array_append(area, header, sizeof(header));
-    l1_ia_text(area, "NA");
-    l1_ia_text(area, "NA");
-    g_byte_array_append(area, &eof, 1);
-    l1_ia_finish(record, area);
+    l1_record_from_area(record, sgi_l1_identity_chassis_area());
 }
 
-/*
- * A board area: placeholder manufacturer "SYNTHETIC", a marked synthetic
- * serial and a zero date, the given name, part and revision, and zeroed
- * placeholder fields. An optional IP53 CPU context is separate from the
- * identity prefix. An I/O board also carries its station address. The serial
- * is @serial when the machine gave one, else component @letter's, instance
- * @index: "EMUN00" for node 0's board. On the model, with "000000" here
- * the stock IP35 PROM reported after every reset that the NVRAM did not
- * belong to this system and reinitialized it, and with the marked serials
- * it does not. Which property of "000000" the PROM rejects is unknown.
- */
 static void l1_build_board_area(SGIL1EEPROM *record, const char *name,
                                 const char *part, const char *revision,
                                 const uint8_t *mac, char letter,
                                 unsigned int index, const char *serial_text,
                                 const SGIL1CPUContext *cpu_context)
 {
-    static const char zeros[4];
-    GByteArray *area = g_byte_array_new();
-    uint8_t header[6] = { 0 };
-    uint8_t fru_file = 0, eof = L1_IA_EOF, type_three = 0x03;
-    char serial[SGI_SYNTHETIC_TEXT_MIN_WIDTH + 1];
-
-    sgi_synthetic_text_serial(serial, SGI_SYNTHETIC_TEXT_MIN_WIDTH, letter,
-                              index);
-    g_byte_array_append(area, header, sizeof(header));
-    if (cpu_context) {
-        area->data[0] = 0x02;
-    }
-    l1_ia_text(area, "SYNTHETIC");
-    l1_ia_text(area, name);
-    l1_ia_text(area, serial_text ? serial_text : serial);
-    l1_ia_text(area, part);
-    g_byte_array_append(area, &fru_file, 1);
-    l1_ia_text(area, revision);
-    l1_ia_field(area, L1_IA_BINARY, zeros, 1);
-    l1_ia_text(area, "00");
-    if (cpu_context) {
-        l1_ia_field(area, L1_IA_BINARY, (const char *)&type_three, 1);
-        static const char empty;
-
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_u32(area, cpu_context->mode_word);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_u32(area, cpu_context->hub_mhz);
-        l1_ia_u32(area, cpu_context->cpu_mhz);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-        l1_ia_field(area, L1_IA_BINARY, &empty, 0);
-    }
-    for (unsigned i = 0; i < 3; i++) {
-        l1_ia_field(area, L1_IA_BINARY, zeros, sizeof(zeros));
-    }
-    if (mac) {
-        char digits[13];
-
-        snprintf(digits, sizeof(digits), "%02X%02X%02X%02X%02X%02X",
-                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-        l1_ia_text(area, digits);
-    }
-    g_byte_array_append(area, &eof, 1);
-    /* Byte 1 counts the area's eight-byte units, checksum included. */
-    area->data[1] = (area->len + 1 + 7) / 8;
-    l1_ia_finish(record, area);
+    l1_record_from_area(record,
+                        sgi_l1_identity_board_area(name, part, revision, mac,
+                                                   letter, index,
+                                                   serial_text, cpu_context));
 }
 
 /*
@@ -5987,7 +5869,7 @@ static bool l1_io8_board_mac(const SGIL1EEPROM *record, uint8_t mac[6])
     if (record->length != 80 || record->invalid ||
         data[0] || data[1] != 0x0a || data[2] ||
         data[49] != 0x04 || data[54] != 0x04 || data[59] != 0x04 ||
-        data[64] != 0xcc || data[77] != L1_IA_EOF || data[78]) {
+        data[64] != 0xcc || data[77] != SGI_L1_IA_EOF || data[78]) {
         return false;
     }
     for (unsigned i = 0; i < 12; i++) {
