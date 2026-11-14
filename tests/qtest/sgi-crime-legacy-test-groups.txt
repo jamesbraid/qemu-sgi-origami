@@ -24,7 +24,12 @@ state /mips64/sgi/crime/default/functional-migration-sources
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/stage
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/values
 ecc-values /mips64/sgi/crime/legacy/ecc-replacement/refusal
-ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/controls
+ecc-controls-1.5-plain-0 /mips64/sgi/crime/legacy/ecc-replacement/controls/1.5-plain-0
+ecc-controls-1.5-func-0 /mips64/sgi/crime/legacy/ecc-replacement/controls/1.5-func-0
+ecc-controls-1.5-func-1 /mips64/sgi/crime/legacy/ecc-replacement/controls/1.5-func-1
+ecc-controls-legacy-plain-0 /mips64/sgi/crime/legacy/ecc-replacement/controls/legacy-plain-0
+ecc-controls-legacy-func-0 /mips64/sgi/crime/legacy/ecc-replacement/controls/legacy-func-0
+ecc-controls-legacy-func-1 /mips64/sgi/crime/legacy/ecc-replacement/controls/legacy-func-1
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/peers
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/migration
 ecc-controls /mips64/sgi/crime/legacy/ecc-replacement/invalid-stream
