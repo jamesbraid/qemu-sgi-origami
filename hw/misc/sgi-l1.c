@@ -1604,17 +1604,19 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
  *
  * - The request is class 0, selector 6 in the first integer descriptor, the
  *   serial text or an integer 0 second, an integer third (established).
- * - The table has fifteen 0x70-byte entries: the unit's own at 0 to 4, those
- *   learned over peer port 1 at 5 to 9 and over port 2 at 10 to 14
- *   (established for the stores; the naming is inferred).
+ * - The table has ten 0x70-byte entries: the unit's own at 0 to 4 and those
+ *   learned over peer port 1 at 5 to 9. A group stored for peer port 2 would
+ *   start at the table's end, 10 to 14, outside the allocation; the reply
+ *   never lists it and the model keeps nothing for it (see the manual page
+ *   for the rating of each part).
  * - The reply is class 1 to the request's source word, status 0, the
  *   request's code, with the descriptors integer 7, the third descriptor
  *   echoed, a record count, the record size 0x70, a byte array of table
  *   indices and the records (established). Entries whose word at +0x60 is
- *   zero are skipped, and a group of five whose first entry's string at
- *   +0x40 repeats an earlier group's is skipped (established; that the
- *   consumer is the reply is inferred). A nonzero third descriptor shortens
- *   the reply to the integer 7 (established).
+ *   zero are skipped, and a peer group of five whose first entry's string at
+ *   +0x40 equals that of a record already listed is skipped (established;
+ *   that the consumer is the reply is inferred). A nonzero third descriptor
+ *   shortens the reply to the integer 7 (established).
  * - The descriptor types are those the L1 builds: the index array by
  *   reference, type 0x01, and the record block as a copy, type 0x09, each
  *   with segment byte 1 (established for the values the L1 builds; that
@@ -1629,7 +1631,8 @@ static void l1_l2_plain_reply(SGIL1State *s, unsigned transport,
  *   sent (inferred). The packet is class 0 (inferred), code 0, destination
  *   0x0ffff00e, the sender's task 14 word as source, six descriptors: the
  *   selector, then the sender's own entries 0 to 4 as 0x70-byte copies. The
- *   receiver stores them at 5 (arrival port 1) or 10 (port 2), clears the
+ *   receiver stores them at 5 (arrival port 1; an arrival on port 2 is not
+ *   kept, see above), clears the
  *   five entries first, marks the entry present, and answers with a
  *   response carrying the same selector and its own entries 0 to 4, also
  *   when it stored nothing (established).
@@ -1819,8 +1822,8 @@ static void l1_table_own(SGIL1State *s,
 
 /*
  * The entries a selector 6 reply lists: those with their present word set,
- * in table order, minus every group whose first entry names a brick an
- * earlier group's first entry named. Returns the count.
+ * in table order, minus every peer group whose first entry has the name of a
+ * record already listed. Returns the count.
  */
 static unsigned l1_table_collect(SGIL1State *s, uint8_t *index,
                                  uint8_t records[][SGI_L1_L2_RECORD_SIZE])
@@ -1835,13 +1838,15 @@ static unsigned l1_table_collect(SGIL1State *s, uint8_t *index,
         const uint8_t *first = table[g * SGI_L1_TABLE_GROUP];
         bool repeat = false;
 
-        for (unsigned e = 0; e < g; e++) {
-            const uint8_t *earlier = table[e * SGI_L1_TABLE_GROUP];
-
-            repeat |= ldl_be_p(earlier + L1_L2_RECORD_PRESENT) &&
-                !strncmp((const char *)earlier + L1_L2_RECORD_NAME,
-                         (const char *)first + L1_L2_RECORD_NAME,
-                         L1_L2_RECORD_NAME_MAX);
+        /*
+         * The head of a peer group is compared with the name of every record
+         * already collected, its own group's included; a match skips the head
+         * and the four after it.
+         */
+        for (unsigned e = 0; g && e < count; e++) {
+            repeat |= !strncmp((const char *)records[e] + L1_L2_RECORD_NAME,
+                               (const char *)first + L1_L2_RECORD_NAME,
+                               L1_L2_RECORD_NAME_MAX);
         }
         for (unsigned k = 0; k < SGI_L1_TABLE_GROUP && !repeat; k++) {
             unsigned entry = g * SGI_L1_TABLE_GROUP + k;
@@ -1903,11 +1908,11 @@ static void l1_peer_trace(const SGIL1State *s, unsigned port, bool sent,
 }
 
 /*
- * Store the five entries of a table packet as the peer group @group (0 for
- * the port 1 peer's entries 5 to 9, 1 for port 2's 10 to 14): clear the
- * group, copy descriptors 1 to 5 into it, mark its first entry present.
- * Every copy is the smaller of 0x70 and descriptor 1's length; a
- * descriptor that does not lie inside the segment is not copied.
+ * Store the five entries of a table packet as the peer group @group (0, the
+ * port 1 peer's entries 5 to 9): clear the group, copy descriptors 1 to 5
+ * into it, mark its first entry present. Every copy is the smaller of 0x70
+ * and descriptor 1's length; a descriptor that does not lie inside the
+ * segment is not copied.
  */
 static void l1_table_store(SGIL1State *s, unsigned group,
                            const uint8_t *segment, unsigned length)
@@ -1948,9 +1953,9 @@ static unsigned l1_table_receive(SGIL1State *s, const uint8_t *request,
 
     if (port == L1_PEER_PORT_A || port == L1_PEER_PORT_B) {
         l1_peer_trace(s, port, false, request, length);
-        if (!request[SGI_L1_L2_SEG_FLAGS]) {
-            l1_table_store(s, port == L1_PEER_PORT_A ? 0 : 1, request,
-                           length);
+        /* Port 2's entries would land past the table's end: not kept. */
+        if (!request[SGI_L1_L2_SEG_FLAGS] && port == L1_PEER_PORT_A) {
+            l1_table_store(s, 0, request, length);
         }
     }
     return l1_table_packet(s, reply, SGI_L1_L2_CLASS_RESPONSE,
@@ -1984,10 +1989,9 @@ static void l1_table_exchange(SGIL1State *s, uint32_t selector)
     reply_length = l1_table_receive(peer, request, length, port, reply);
     l1_peer_trace(peer, port, true, reply, reply_length);
     l1_peer_trace(s, port, false, reply, reply_length);
-    /* The reply to selector 2 stores as port 1's entries, 13 as port 2's. */
-    if (!reply[SGI_L1_L2_SEG_FLAGS]) {
-        l1_table_store(s, port == L1_PEER_PORT_A ? 0 : 1, reply,
-                       reply_length);
+    /* The reply to selector 2 stores as port 1's entries. */
+    if (!reply[SGI_L1_L2_SEG_FLAGS] && port == L1_PEER_PORT_A) {
+        l1_table_store(s, 0, reply, reply_length);
     }
 }
 

@@ -2697,6 +2697,49 @@ static void test_l2_config_peer_repeat_dropped(void)
     l2_stub_free(b);
 }
 
+/*
+ * A peer group is dropped whole, the head and the four entries after it, when
+ * the head's name equals a record already listed. With an I-brick on each
+ * controller the partner's entry 1 would otherwise be listed at position 6.
+ * The name of a C-brick cannot equal the name of an I-brick, so a match with a
+ * record other than the controller's own entry 0 is not reachable in the
+ * model, and neither is a group with entries past the second.
+ */
+static void test_l2_config_peer_repeat_drops_the_group(void)
+{
+    L2Stub *a = l2_stub_listen(), *b = l2_stub_listen();
+    g_autofree char *extra = g_strdup_printf(
+        "-chardev socket,id=l2a,path=%s -chardev socket,id=l2b,path=%s",
+        a->path, b->path);
+    const char *const props[] = {
+        PAIR_A, PAIR_IO,
+        "brick-type=cbrick,named=on,rack=1,bay=4,l2=l2b",
+        "brick-type=ibrick,named=on,rack=1,bay=30,mac=" MAC_PROP,
+    };
+    QTestState *s = start_with(4, props, extra);
+    uint8_t reply[SGI_L1_L2_SEGMENT_MAX];
+
+    l2_stub_accept(a);
+    l2_stub_accept(b);
+    for (unsigned i = 0; i < 10000 &&
+         !(qtest_qom_get_bool(s, DEVICES "l1c0", "l2-link-up") &&
+           qtest_qom_get_bool(s, DEVICES "l1c2", "l2-link-up")); i++) {
+        g_usleep(1000);
+    }
+    link_io(s, 0, 1);
+    link_io(s, 2, 3);
+    link_peer(s, 0, 2);
+    ask_table(a, L2_CONFIG_SOURCE_WORD(1, 4), NULL, 0, reply);
+    g_assert_cmpuint(desc_integer(reply, 2), ==, 2);
+    g_assert_nonnull(table_record(reply, SGI_L1_L2_SEGMENT_MAX, 0));
+    g_assert_nonnull(table_record(reply, SGI_L1_L2_SEGMENT_MAX, 1));
+    g_assert_null(table_record(reply, SGI_L1_L2_SEGMENT_MAX, 5));
+    g_assert_null(table_record(reply, SGI_L1_L2_SEGMENT_MAX, 6));
+    qtest_quit(s);
+    l2_stub_free(a);
+    l2_stub_free(b);
+}
+
 /* The first brick's table size after one request; the exchange ran if 3. */
 static unsigned table_count(L2Stub *stub, uint32_t source)
 {
@@ -3691,6 +3734,8 @@ int main(int argc, char **argv)
                    test_l2_config_peer_closed);
     qtest_add_func("sgi-l1-o3k/l2-link/config-peer-repeat-dropped",
                    test_l2_config_peer_repeat_dropped);
+    qtest_add_func("sgi-l1-o3k/l2-link/config-peer-repeat-drops-group",
+                   test_l2_config_peer_repeat_drops_the_group);
     qtest_add_func("sgi-l1-o3k/l2-link/config-peer-unnamed",
                    test_l2_config_peer_unnamed);
     qtest_add_func("sgi-l1-o3k/l2-link/config-peer-restarting",
