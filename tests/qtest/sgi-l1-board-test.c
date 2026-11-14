@@ -741,6 +741,40 @@ static void test_watchdog_reset(void)
 }
 
 /*
+ * The reset puts chip select 0 back to the global select, so the core
+ * takes its vectors from flash again even when the program had moved the
+ * flash to its own window before the watchdog fired.
+ */
+static void test_watchdog_reset_moved_cs0(void)
+{
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+    size_t first;
+
+    prologue(&a);
+    mbar_on(&a);
+    ld_l(&a, RESULT(7), 1);
+    tst_l(&a, 1);
+    first = beq_w(&a);
+    ld_b(&a, MBAR_BASE + RSR, 1);
+    st_l(&a, 1, RESULT(0));
+    finish(&a);
+    patch_here(&a, first);
+    put_l(&a, RESULT(7), 1);
+    cs_setup(&a, 0, 0xffe0, 0x001f0000, 0x1183);
+    put_b(&a, MBAR_BASE + SYPCR, 0xfe);
+    bra_self(&a);
+    f = flash_build(&a, NULL, NULL);
+    qts = start(&f, "");
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    g_assert_cmphex(qtest_readl(qts, RESULT(0)), ==, 0x20);
+    quit_all(qts, &f);
+}
+
+/*
  * A serviced watchdog does not reset the chip. The machine runs on the
  * instruction-count clock, so model time moves only as the program runs
  * and a host that stalls the vCPU thread cannot starve the watchdog.
@@ -1689,6 +1723,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/timer-event-and-reset",
                    test_timer_event_and_reset);
     qtest_add_func("sgi-l1-board/watchdog-reset", test_watchdog_reset);
+    qtest_add_func("sgi-l1-board/watchdog-reset-moved-cs0",
+                   test_watchdog_reset_moved_cs0);
     qtest_add_func("sgi-l1-board/watchdog-service", test_watchdog_service);
     qtest_add_func("sgi-l1-board/watchdog-period", test_watchdog_period);
     qtest_add_func("sgi-l1-board/clock-hz-zero", test_clock_hz_zero);

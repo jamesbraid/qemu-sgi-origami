@@ -70,6 +70,8 @@ struct L1BoardMachine {
     char *node_board_part;
     char *node_board_revision;
     char *mac;
+
+    struct L1Board *board;
 };
 
 typedef struct L1Board {
@@ -151,12 +153,21 @@ static void l1_board_unimp_window(MemoryRegion *window, const char *name,
                                 sysbus_mmio_get_region(SYS_BUS_DEVICE(dev), 0));
 }
 
-static void l1_board_reset(void *opaque)
+static void l1_board_reset(MachineState *machine, ResetType type)
 {
-    L1Board *b = opaque;
+    L1Board *b = L1_BOARD_MACHINE(machine)->board;
     CPUState *cs = CPU(b->cpu);
 
-    /* The SIM has been reset: CS0 is global, so the vectors come from flash. */
+    /*
+     * Reset the SIM first: CS0 is then global again, so the vectors come
+     * from flash even if the firmware had moved CS0 before a watchdog or
+     * software reset. cpu_reset() then clears the core's pending interrupt
+     * level, so a device whose line stayed asserted through its own reset
+     * would go unheard until the line changed. None does here: the SIM
+     * clears and masks its sources and the four-channel UART lowers its
+     * line.
+     */
+    qemu_devices_reset(type);
     cpu_reset(cs);
     b->cpu->env.aregs[7] = ldl_phys(cs->as, 0);
     b->cpu->env.pc = ldl_phys(cs->as, 4);
@@ -269,8 +280,8 @@ static void l1_board_identity(L1BoardMachine *m, I2CBus *bus, Error **errp)
 
 static void l1_board_init(MachineState *machine)
 {
-    L1Board *b = g_new0(L1Board, 1);
     L1BoardMachine *lm = L1_BOARD_MACHINE(machine);
+    L1Board *b = lm->board = g_new0(L1Board, 1);
     DeviceState *sim_dev, *or_dev;
     MemoryRegion *quart_window;
     uint64_t ram_size = machine->ram_size;
@@ -358,8 +369,6 @@ static void l1_board_init(MachineState *machine)
     if (migrate_add_blocker(&b->migration_blocker, &error_fatal) < 0) {
         exit(1);
     }
-
-    qemu_register_reset(l1_board_reset, b);
 }
 
 static void l1_board_class_init(ObjectClass *oc, const void *data)
@@ -368,6 +377,7 @@ static void l1_board_class_init(ObjectClass *oc, const void *data)
 
     mc->desc = "SGI L1 controller board, C-, I- and R-brick (ColdFire)";
     mc->init = l1_board_init;
+    mc->reset = l1_board_reset;
     mc->default_cpu_type = M68K_CPU_TYPE_NAME("m5206");
     mc->default_ram_id = "sgi-l1-board.ram";
     mc->default_ram_size = RAM_SIZE_FULL;
