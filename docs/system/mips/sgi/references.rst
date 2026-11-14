@@ -1323,6 +1323,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``l1-firmware-1.44.0``
    *L1 system controller firmware, Fuel/PE/O300 1MB image*. Silicon Graphics. Firmware, cited by address. For Origin 300, Fuel and PCI expansion module L1 controllers. Version 1.44. Banner ``1.44.0, built 2006-07-17 18:20:38, label Fuel/PE/O300 1MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (982,412-byte Origin 300 range). Hashed as the payload image. SHA-256 ``0c969f9e98c73826495dc37bff685b3403e248993ba92194a288333d9d42b2f4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-l1-firmware-1-44-0-base:
+
+``l1-firmware-1.44.0-base``
+   *L1 system controller firmware, Base 1MB image*. Silicon Graphics. Firmware, cited by address. For Origin 3000 C-, I- and R-brick L1 controllers. Version 1.44. Banner ``1.44.0, built 2006-07-17 18:19:54, label Base 1MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (the flash body of the Base 1MB image range, 982,376 bytes at file offset 0x68). Hashed as the payload image. SHA-256 ``3c8a7aa93eb38502289cf0c2921ea91e6800228005bd8abd67425ce615f7b364``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-sonic-dsp-programs-5-0:
 
 ``sonic-dsp-programs-5.0``

@@ -118,6 +118,7 @@ I/O and system control
    hardware/l1
    hardware/l1-l2-link
    hardware/l1-brick-profiles
+   hardware/l1-board
    hardware/l1-power-bay-link
    hardware/pbay
    hardware/elsc
