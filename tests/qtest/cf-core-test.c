@@ -33,6 +33,7 @@
 #define SB_ACCEPT_COUNT (SCOREBOARD + 0x4c)
 #define SB_LEGACY_RAISE (SCOREBOARD + 0x50)
 #define SB_PROVIDER     (SCOREBOARD + 0x54)
+#define SB_CPU_HALTED   (SCOREBOARD + 0x58)
 
 #define CR_CACR         0x002
 #define CR_ACR0         0x004
@@ -186,6 +187,22 @@ static uint32_t wait_result(QTestState *qts, uint32_t addr)
         g_usleep(1000);
     }
     return v;
+}
+
+/*
+ * Wait until the core has stopped in HALT or STOP. A fixed sleep after the
+ * program reports in is not enough: if the vCPU thread is descheduled between
+ * the report and the stop, an interrupt asked for early is taken before the
+ * core halts, and a part that is meant to stay halted runs the handler.
+ */
+static void wait_halted(QTestState *qts)
+{
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+
+    while (!qtest_readl(qts, SB_CPU_HALTED)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(1000);
+    }
 }
 
 static void test_run_program(void)
@@ -501,11 +518,12 @@ static void test_halt_stops_until_reset(void)
     run(qts, &a);
 
     g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
-    /* Give the core time to reach the HALT, then ask for an interrupt. */
-    g_usleep(200 * 1000);
+    /* Ask for the interrupt only once the core is in the HALT. */
+    wait_halted(qts);
     qtest_writel(qts, SB_LINE_LEVEL, 3);
     qtest_writel(qts, SB_LINE_VECTOR, 70);
     qtest_writel(qts, SB_LINE_ASSERT, 1);
+    /* Absence cannot be witnessed: wait long enough for a wrong wake-up. */
     g_usleep(500 * 1000);
     g_assert_cmphex(qtest_readl(qts, RESULTS), ==, 0);
     g_assert_cmpuint(qtest_readl(qts, SB_ACCEPT_COUNT), ==, 0);
@@ -552,8 +570,8 @@ static void test_halt_then_interrupt(const void *cpu)
 
     load_halt_program(qts);
     g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
-    /* Give the core time to reach the HALT, then ask for an interrupt. */
-    g_usleep(200 * 1000);
+    /* Ask for the interrupt only once the core is in the HALT. */
+    wait_halted(qts);
     raise_line(qts);
     if (!strcmp(cpu, "m5206")) {
         g_usleep(500 * 1000);
@@ -574,7 +592,7 @@ static void test_halt_reset_then_stop(void)
 
     load_halt_program(qts);
     g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 1);
-    g_usleep(200 * 1000);
+    wait_halted(qts);
 
     /* After the reset: report in, then wait in STOP for the interrupt. */
     movei_d(&b, 0, 2);
@@ -586,7 +604,8 @@ static void test_halt_reset_then_stop(void)
     qtest_writel(qts, RESULTS + 4, 0);
     qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
     g_assert_cmphex(wait_result(qts, RESULTS + 4), ==, 2);
-    g_usleep(200 * 1000);
+    /* The reset cleared the halted flag, so this one is the STOP's. */
+    wait_halted(qts);
     raise_line(qts);
     g_assert_cmphex(wait_result(qts, RESULTS), ==, 0xd1);
     qtest_quit(qts);
@@ -629,7 +648,7 @@ static void test_halt_survives_migration(void)
 
     load_halt_program(src);
     g_assert_cmphex(wait_result(src, RESULTS + 4), ==, 1);
-    g_usleep(200 * 1000);
+    wait_halted(src);
     qtest_qmp_assert_success(src, "{'execute': 'stop'}");
     qtest_qmp_assert_success(src, "{'execute': 'migrate', 'arguments': "
                              "{'uri': %s}}", uri);

@@ -35,6 +35,13 @@
 #define SB_LEGACY_RAISE     0x50
 /* Write 0 to run without the interrupt provider, 1 to have it. */
 #define SB_PROVIDER         0x54
+/*
+ * Reads 1 once the core has stopped in HALT or STOP, 0 while it runs. The
+ * flag is set by the instruction itself, with no interrupt check between
+ * the store and the stop, so a test that has seen 1 knows the core cannot
+ * take an interrupt first.
+ */
+#define SB_CPU_HALTED       0x58
 /* What the board was told about the control register writes. */
 #define SB_WRITE_COUNT      0x10
 #define SB_LAST_REG         0x14
@@ -77,6 +84,8 @@ static uint64_t scoreboard_read(void *opaque, hwaddr addr, unsigned size)
         return t->last_val;
     case SB_ACCEPT_COUNT:
         return t->accept_count;
+    case SB_CPU_HALTED:
+        return qatomic_read(&CPU(t->cpu)->halted);
     default:
         return 0;
     }
