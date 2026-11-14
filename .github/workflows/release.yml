@@ -45,11 +45,11 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
       - name: cache vcpkg binaries
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build-package/vcpkg-binary-cache
           key: vcpkg-linux-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/debian-bookworm.docker') }}
@@ -79,7 +79,7 @@ jobs:
             /sgi/bin/qemu-system-mips64 -M help | tee /tmp/machines
             grep -qw octane2 /tmp/machines
           '
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archive-linux-x86_64
           path: build-package/dist/*
@@ -93,10 +93,10 @@ jobs:
     steps:
       # The runner's Git converts line endings, which breaks configure.
       - run: git config --global core.autocrlf false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
-      - uses: msys2/setup-msys2@v2
+      - uses: msys2/setup-msys2@ec48f7c5447b3140e2b088413ae3a55687bccb6e # v2
         with:
           msystem: MINGW64
           update: true
@@ -106,7 +106,7 @@ jobs:
             mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
             mingw-w64-x86_64-cmake
       - name: cache vcpkg binaries
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build-package/vcpkg-binary-cache
           key: vcpkg-windows-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/x64-mingw-origami.cmake') }}
@@ -132,7 +132,7 @@ jobs:
           if ($LASTEXITCODE) { throw "-M help: $LASTEXITCODE" }
           $machines
           if (-not ($machines -match '\boctane2\b')) { throw 'octane2 is not listed' }
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archive-windows-x86_64
           path: build-package/dist/*
@@ -144,13 +144,13 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 1
       - name: install build tools
         run: brew install ninja pkgconf python autoconf automake libtool
       - name: cache vcpkg binaries
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build-package/vcpkg-binary-cache
           key: vcpkg-macos-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/arm64-osx-origami.cmake') }}
@@ -165,7 +165,7 @@ jobs:
           unpacked/bin/qemu-img --version
           unpacked/bin/qemu-system-mips64 -M help | tee machines.txt
           grep -qw octane2 machines.txt
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archive-macos-arm64
           path: build-package/dist/*
@@ -181,10 +181,10 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: archive-*
           path: archives
