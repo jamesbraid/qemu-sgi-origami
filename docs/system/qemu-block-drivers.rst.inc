@@ -373,6 +373,82 @@ This section describes each format and the options that are supported for it.
 Read-only formats
 ~~~~~~~~~~~~~~~~~
 
+.. program:: image-formats
+.. option:: chd
+
+  MAME's "compressed hunks of data" container, as written by ``chdman`` and
+  used to distribute hard disk images of the SGI machines. Only 512-byte
+  sector hard disk images are supported, not CD-ROM images and not a diff that
+  needs a parent of its own. The driver is built when a C++ compiler is
+  available and the library it wraps can be fetched; ``configure
+  --enable-chd`` makes either a failure to build it an error. ``qemu-img
+  create`` is not supported: make the file with ``chdman``.
+
+  The container is read and written by MAME's own CHD code, taken unmodified
+  from the ``libchdman-rs`` crate (MAME 0.289), the library the iris emulator
+  links. The driver follows what iris does with the same files, so an image
+  can be used with either:
+
+  - Every codec ``chdman`` can write for a hard disk reads: ``lzma``,
+    ``zlib``, ``huff``, ``flac`` and ``zstd``, in any mix.
+  - An uncompressed version 5 image is written in place.
+  - A compressed image is never written. Guest writes go to an uncompressed
+    ``<image>.diff.chd`` beside it, which holds only the hunks that changed
+    and names the image by its SHA-1. A diff that is already there is attached
+    on the next open, including a read-only one, so ``qemu-img convert`` of the
+    image gives the data as the guest last saw it.
+  - When QEMU exits normally the diff is folded back into the image. The image
+    is rebuilt with the codecs, hunk size and metadata it had, in
+    ``<image>.synctmp.chd``, and renamed over the original, so the disk is one
+    file again. The fold takes the time to recompress the whole image and
+    needs room for a second copy of it, and it reports its progress on stderr.
+    Any other way of stopping, a kill or a crash, leaves the diff for the next
+    open to attach. A diff that was already there when the image was opened
+    read-write is folded even if nothing was written to it, so open an image
+    read-only for anything but a guest's disk. A diff that session created
+    and nothing wrote to is removed instead. A fold the machine died in the
+    middle of is finished by the next read-write open, using
+    ``<image>.diff.chd.folding``; a read-only open ignores a diff the image
+    already holds.
+  - The diff and the fold go beside the image's real path: a symlink is
+    followed, and an image that is not on a plain file (``nbd``, ``json:``)
+    can be read but has no place for a diff.
+  - A write that allocates a hunk is made durable, data before the map entry
+    that points at it, before it completes.
+
+  .. warning::
+
+    Never use one image with iris and QEMU at the same time. Each folds a
+    diff into the image when it exits and then deletes the diff, and iris does
+    not take part in QEMU's image locking, so one can fold away or replace the
+    files under a session in the other. Stop one before starting the other,
+    and keep the image and its ``.diff.chd`` together. The two use the same
+    file names and the same MAME code, but running one against the other's
+    diff has not been tested.
+
+  MAME's parser is not hardened against damaged or hostile files. The driver
+  refuses the version 5 header fields that make MAME crash, but do not open
+  CHDs from sources you do not trust.
+
+  An uncompressed image that ``chdman createhd --compression none`` wrote
+  records no SHA-1, so a diff cannot name it as its parent: it can be written
+  in place, and ``overlay`` is refused. Its recorded checksums also go stale
+  when it is written in place, as in iris.
+
+  Supported options:
+
+  .. program:: chd
+  .. option:: overlay
+
+    Keep guest writes in the ``.diff.chd`` file and never fold it into the
+    image, also for an uncompressed image. Defaults to ``off``.
+
+  .. option:: cache-size
+
+    Bytes of decoded hunks to keep, 32 MiB by default. Reading decodes a
+    whole hunk, in the thread that handles the request, and one request is
+    served at a time for each image.
+
 More disk image file formats are supported in a read-only mode.
 
 .. program:: image-formats
