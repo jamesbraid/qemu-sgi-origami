@@ -2841,6 +2841,23 @@ static void test_controls_section_only_when_set(void)
 }
 
 /*
+ * Bits of the node-disable property above the fitted boards do nothing, so a
+ * Cx-brick with only such bits set still sends no controls section.
+ */
+static void test_stray_disable_bits_send_no_section(void)
+{
+    QTestState *s = start_one("brick-type=cxbrick,named=on,rack=1,bay=4");
+    gsize length;
+    g_autofree char *stream = NULL;
+
+    qom_u8_set(s, 0, "node-disable", 0xf8);
+    stream = migrate_stream(s, &length);
+    g_assert_true(stream_names(stream, length, "sgi-l1"));
+    g_assert_false(stream_names(stream, length, "sgi-l1/controls"));
+    qtest_quit(s);
+}
+
+/*
  * The router role and the control byte it was written to cross a migration:
  * a role stored by the console, and the byte a release wrote. The router is
  * unpowered, as a powered one does not migrate.
@@ -2958,6 +2975,53 @@ static void test_router_role_migration_single_terms(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+/*
+ * "cpu d" and "cpu e" on a C-brick (software expectation, see
+ * l1-brick-profiles.rst): every processor or one letter a to d, refused
+ * while any supply is on, silent on success, and kept across a controller
+ * restart. The Cx-brick has no such command in the model.
+ */
+static void test_cbrick_cpu_disable(void)
+{
+    static const char bad[] =
+        "ERROR: invalid CPU (valid format is '<node>[a|b|c|d]', or "
+        "'a|b|c|d' for single-node brick types)\n";
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4");
+    g_autofree char *output = NULL;
+
+    /* Powered: refused, nothing stored. */
+    expect_command_code(s, 0, "cpu d a",
+                        "ERROR: CPU:power must be down to enable/disable "
+                        "CPUs\n", -1);
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0);
+    qtest_quit(s);
+
+    s = start_one("brick-type=cbrick,named=on,rack=1,bay=4,auto-power=off");
+    expect_command(s, 0, "cpu d b", "");
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0x2);
+    expect_command(s, 0, "cpu d", "");
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0xf);
+    expect_command(s, 0, "cpu e c", "");
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0xb);
+    expect_command(s, 0, "cpu e", "");
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0);
+    expect_command_code(s, 0, "cpu d e", bad, -1);
+    expect_command_code(s, 0, "cpu d 0a", bad, -1);
+    expect_command_code(s, 0, "cpu x", bad, -1);
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0);
+
+    /* The choice survives a controller restart. */
+    expect_command(s, 0, "cpu d d", "");
+    output = command(s, 0, "reboot_l1", NULL);
+    g_assert_cmphex(qom_u8(s, 0, "cpu-disable"), ==, 0x8);
+    qtest_quit(s);
+
+    /* Other bricks have no "cpu d". */
+    s = start_one("brick-type=ibrick,named=on,rack=1,bay=31,mac=" MAC_PROP);
+    expect_command_code(s, 0, "cpu d", UNSUPPORTED, -1);
+    qtest_quit(s);
+}
+
 /* The command is offered on the router and the Cx-brick, not elsewhere. */
 static void test_router_command_scope(void)
 {
@@ -2980,6 +3044,66 @@ static void test_router_command_scope(void)
     expect_command_code(s, 0, "router", NOT_FOUND, -1);
     expect_command_code(s, 0, "rtr", NOT_FOUND, -1);
     qtest_quit(s);
+}
+
+/*
+ * The C-brick has one control block for its nodes (software expectation, see
+ * l1-brick-profiles.rst): "softreset <n>" is "softreset", so one pulse
+ * serves both nodes, "reset <n>" and the "node" family are refused for the
+ * brick type, and nothing here disables a node.
+ */
+static void test_cbrick_node_commands(void)
+{
+    QTestState *s = start_one("brick-type=cbrick,named=on,rack=1,bay=4");
+
+    qtest_irq_intercept_out_named(s, DEVICES "l1c0", "soft-reset");
+    expect_command(s, 0, "softreset", "");
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 1);
+    expect_command(s, 0, "softreset 1", "");
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 2);
+    expect_command(s, 0, "softreset 2", "");
+    g_assert_cmpuint(qtest_get_irq_raise_count(s, 0), ==, 3);
+    expect_command_code(s, 0, "reset 1", UNSUPPORTED, -1);
+    expect_command_code(s, 0, "node d 1", UNSUPPORTED, -1);
+    expect_command_code(s, 0, "node 1 d", UNSUPPORTED, -1);
+    expect_command_code(s, 0, "node e", UNSUPPORTED, -1);
+    qtest_quit(s);
+}
+
+/*
+ * The L2 hears nothing of a node reset, soft reset, NMI or node disable: none
+ * of them reaches the routine that sends a power-state notice or any other
+ * event (software expectation, l1-brick-profiles.rst).
+ */
+static void test_cx_node_commands_tell_the_l2_nothing(void)
+{
+    static const char *const powered[] = {
+        "reset 1", "softreset 1", "nmi 1", "softreset", "nmi",
+    };
+    uint8_t segment[SGI_L1_L2_SEGMENT_MAX];
+    L2Stub *stub = l2_stub_listen();
+    QTestState *s = start_linked(stub, "brick-type=cxbrick,named=on,rack=2,"
+                                 "bay=3");
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(powered); i++) {
+        g_autofree char *output = command(s, 0, powered[i], NULL);
+
+        g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    }
+    qtest_quit(s);
+    l2_stub_free(stub);
+
+    stub = l2_stub_listen();
+    s = start_linked(stub, "brick-type=cxbrick,named=on,rack=2,bay=3,"
+                     "auto-power=off");
+    for (unsigned i = 0; i < 3; i++) {
+        static const char *const text[] = { "node 1 d", "node 1 e", "node d" };
+        g_autofree char *output = command(s, 0, text[i], NULL);
+
+        g_assert_cmpuint(l2_stub_read_segment(stub, segment, 300), ==, 0);
+    }
+    qtest_quit(s);
+    l2_stub_free(stub);
 }
 
 /*
@@ -4146,12 +4270,20 @@ int main(int argc, char **argv)
                    test_router_role_entry_follows_restart);
     qtest_add_func("sgi-l1-o3k/migration/controls-only-when-set",
                    test_controls_section_only_when_set);
+    qtest_add_func("sgi-l1-o3k/migration/stray-disable-bits",
+                   test_stray_disable_bits_send_no_section);
     qtest_add_func("sgi-l1-o3k/migration/router-role",
                    test_router_role_migration);
     qtest_add_func("sgi-l1-o3k/migration/router-role-single-terms",
                    test_router_role_migration_single_terms);
     qtest_add_func("sgi-l1-o3k/router-role/command-scope",
                    test_router_command_scope);
+    qtest_add_func("sgi-l1-o3k/node-commands/cpu-disable",
+                   test_cbrick_cpu_disable);
+    qtest_add_func("sgi-l1-o3k/node-commands/cbrick",
+                   test_cbrick_node_commands);
+    qtest_add_func("sgi-l1-o3k/node-commands/l2-silent",
+                   test_cx_node_commands_tell_the_l2_nothing);
     qtest_add_func("sgi-l1-o3k/ctci", test_ctci_unimplemented);
     for (unsigned i = 0; i < G_N_ELEMENTS(link_cases); i++) {
         name = g_strdup_printf("sgi-l1-o3k/link-before-realize/%u", i);

@@ -1042,6 +1042,220 @@ static void test_nmi(void)
     rig_stop(&rig);
 }
 
+/* The raise counts of the four intercepted lines, to take a difference. */
+static void line_counts(CxRig *rig, unsigned counts[4])
+{
+    for (unsigned i = 0; i < 4; i++) {
+        counts[i] = qtest_get_irq_raise_count(rig->qts, i);
+    }
+}
+
+/* Expect exactly @want (bit i: line i pulsed once) since @before. */
+static void expect_pulses(CxRig *rig, const unsigned before[4], unsigned want)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        g_assert_cmpuint(qtest_get_irq_raise_count(rig->qts, i) - before[i],
+                         ==, (want >> i) & 1);
+    }
+}
+
+/* Power the brick down, with the machine kept alive by -no-shutdown. */
+static void power_down(CxRig *rig)
+{
+    g_autofree char *output = command(rig, 0, "power down", NULL);
+
+    qtest_qmp_eventwait(rig->qts, "SHUTDOWN");
+}
+
+/*
+ * The node commands of a Cx-brick go through the per-node path (software
+ * expectation, see l1-brick-profiles.rst): "nmi <n>" and "softreset
+ * <n>" act on that node alone, a brick-wide command on every present, enabled
+ * node. A node that is out of range, absent or disabled is refused by name,
+ * and "node d" is refused while any supply is on, sets the node aside, and
+ * the brick-wide commands skip it from then on. The error texts are the
+ * model's.
+ */
+static void test_node_pulses(gconstpointer opaque)
+{
+    const char *line = opaque;
+    const char *one = !strcmp(line, "nmi") ? "nmi" : "softreset";
+    g_autofree char *one_node = g_strdup_printf("%s 2", one);
+    g_autofree char *disabled = g_strdup_printf("%s 1", one);
+    unsigned before[4];
+    CxRig rig;
+
+    rig_start(&rig, NAMED, 0xf, false, "-no-shutdown");
+    qtest_irq_intercept_out_named(rig.qts, L1, line);
+    line_counts(&rig, before);
+    expect_command(&rig, 0, one_node, "");
+    expect_pulses(&rig, before, 0x4);
+    line_counts(&rig, before);
+    expect_command(&rig, 0, one, "");
+    expect_pulses(&rig, before, 0xf);
+
+    expect_command(&rig, 0, "node 1 d",
+                   "ERROR: Node:power must be down to enable/disable "
+                   "NODEs\n");
+    power_down(&rig);
+    expect_command(&rig, 0, "node 1 d", "");
+    send_resetting(&rig, 1, LOCAL_COMMAND, 0, "\001power up", 10, 1);
+
+    line_counts(&rig, before);
+    expect_command(&rig, 0, disabled, "ERROR: Node:node disabled\n");
+    expect_pulses(&rig, before, 0);
+    expect_command(&rig, 0, one, "");
+    expect_pulses(&rig, before, 0xd);
+    rig_stop(&rig);
+}
+
+static void test_node_refusals(void)
+{
+    CxRig rig;
+
+    rig_start(&rig, NAMED, 0x7, false, "");
+    expect_command(&rig, 0, "softreset 3", "ERROR: Node:node not present\n");
+    expect_command(&rig, 0, "nmi 3", "ERROR: Node:node not present\n");
+    expect_command(&rig, 0, "softreset 4",
+                   "ERROR: Node:invalid node number\n");
+    expect_command(&rig, 0, "nmi 9", "ERROR: Node:invalid node number\n");
+    /*
+     * "reset <n>" takes 0 to 4, the image's limit although there are four
+     * nodes, and refuses more. Index 4 reads past the node table to an
+     * effect that is unknown; the model does nothing and does not call it
+     * invalid.
+     */
+    expect_command(&rig, 0, "reset 4", "");
+    expect_command(&rig, 0, "reset 5", "ERROR: invalid NODE index 5.\n");
+    rig_stop(&rig);
+
+    rig_start(&rig, NAMED ",auto-power=off", 0x7, false, "");
+    expect_command(&rig, 0, "node 3 d", "ERROR: Node:node not present\n");
+    expect_command(&rig, 0, "node 4 d", "ERROR: Node:invalid node number\n");
+    expect_command(&rig, 0, "node 1 d", "");
+    expect_command(&rig, 0, "node 1 e", "");
+    expect_command(&rig, 0, "node d", "");
+    expect_command(&rig, 0, "node e", "");
+    /* The number follows "node": "node d 2" matches no row of the image. */
+    expect_command(&rig, 0, "node d 2",
+                   "INFO: command not supported on this brick type\n");
+    expect_command(&rig, 0, "node e 2",
+                   "INFO: command not supported on this brick type\n");
+    rig_stop(&rig);
+}
+
+/*
+ * The node-disable property accepts bits above the four nodes and ignores
+ * them: a brick-wide NMI still reaches every fitted board. A bit of a board
+ * that is not fitted does nothing either.
+ */
+static void test_node_disable_mask(void)
+{
+    unsigned before[4];
+    CxRig rig;
+
+    rig_start(&rig, NAMED, 0x7, false, "");
+    qtest_irq_intercept_out_named(rig.qts, L1, "nmi");
+    qtest_qmp_assert_success(rig.qts, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'node-disable','value':%u}}", L1, 0xf8);
+    line_counts(&rig, before);
+    expect_command(&rig, 0, "nmi", "");
+    expect_pulses(&rig, before, 0x7);
+    rig_stop(&rig);
+
+    /*
+     * With only such bits set no node is disabled, so a brick-wide reset is
+     * the brick-wide pulse and not a pulse per board.
+     */
+    rig_start(&rig, NAMED, 0x7, false, "");
+    qtest_irq_intercept_out_named(rig.qts, L1, "board-reset");
+    qtest_qmp_assert_success(rig.qts, "{'execute':'qom-set','arguments':"
+        "{'path':%s,'property':'node-disable','value':%u}}", L1, 0xf8);
+    line_counts(&rig, before);
+    {
+        /*
+         * The command has run when the frame is taken in; the reset it
+         * schedules is not waited for.
+         */
+        uint32_t dest = LOCAL_COMMAND;
+        uint8_t request[8 + 7] = { 0x10, dest >> 24, dest >> 16, dest >> 8,
+                                   dest, 0, 0, 1, 1, 'r', 'e', 's', 'e', 't',
+                                   0 };
+
+        send_on(&rig, 1, request, sizeof(request));
+    }
+    expect_pulses(&rig, before, 0);
+    rig_stop(&rig);
+}
+
+/*
+ * "reset <n>" bypasses the node iterator: it restarts the named node alone,
+ * a disabled one too, where a brick-wide reset skips disabled nodes. The
+ * model's hold is the node's reset pulse (an approximation).
+ */
+static void test_node_reset(void)
+{
+    unsigned before[4];
+    CxRig rig;
+
+    rig_start(&rig, NAMED, 0xf, false, "-no-shutdown");
+    qtest_irq_intercept_out_named(rig.qts, L1, "board-reset");
+    line_counts(&rig, before);
+    expect_command(&rig, 0, "reset 3", "");
+    expect_pulses(&rig, before, 0x8);
+
+    power_down(&rig);
+    expect_command(&rig, 0, "node 2 d", "");
+    send_resetting(&rig, 1, LOCAL_COMMAND, 0, "\001power up", 10, 1);
+
+    line_counts(&rig, before);
+    expect_command(&rig, 0, "reset 2", "");
+    expect_pulses(&rig, before, 0x4);
+    line_counts(&rig, before);
+    expect_command(&rig, 0, "reset", "");
+    expect_pulses(&rig, before, 0xb);
+    rig_stop(&rig);
+}
+
+/*
+ * The node-disable mask crosses a migration: the destination refuses the
+ * disabled node by name, and after the brick is powered a brick-wide NMI
+ * skips it.
+ */
+static void test_node_disable_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-l1-cxbrick-XXXXXX", &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    unsigned before[4];
+    CxRig from, to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    rig_start(&from, NAMED ",auto-power=off", 0xf, false, "-no-shutdown");
+    rig_start(&to, NAMED ",auto-power=off", 0xf, false,
+              "-no-shutdown -incoming defer");
+    expect_command(&from, 0, "node 2 d", "");
+    qtest_qmp_assert_success(to.qts,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from.qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(from.qts, "completed");
+    sgi_wait_migration(to.qts, "completed");
+    expect_command(&to, 0, "softreset 2", "ERROR: Node:node disabled\n");
+    expect_command(&to, 0, "nmi 2", "ERROR: Node:node disabled\n");
+    qtest_irq_intercept_out_named(to.qts, L1, "nmi");
+    send_resetting(&to, 1, LOCAL_COMMAND, 0, "\001power up", 10, 1);
+    line_counts(&to, before);
+    expect_command(&to, 0, "nmi", "");
+    expect_pulses(&to, before, 0xb);
+    rig_stop(&from);
+    rig_stop(&to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 /* The refusals at realize, each an input the profile does not take. */
 static const struct {
     const char *args;
@@ -1084,22 +1298,35 @@ static void test_refusal(gconstpointer opaque)
     g_test_trap_assert_stderr(refusal_cases[index].message);
 }
 
-/* A Cx-brick takes no peer link. */
+/*
+ * A Cx-brick takes no peer link, at either end and whatever it is paired
+ * with (l1_peer_fault() in hw/misc/sgi-l1.c).
+ */
 static void test_no_peer(void)
 {
-    QTestState *s = qtest_init("-M none -cpu R10000 -S "
-                               "-device sgi-l1,id=a,brick-type=cxbrick "
-                               "-device sgi-l1,id=b,brick-type=cxbrick");
-    QDict *response = qtest_qmp(s,
-        "{'execute':'qom-set','arguments':{'path':'/machine/peripheral/a',"
-        "'property':'peer','value':'/machine/peripheral/b'}}");
+    static const char *const pairs[][2] = {
+        { "cxbrick", "cxbrick" }, { "cxbrick", "cbrick" },
+        { "cbrick", "cxbrick" },
+    };
 
-    g_assert_true(qdict_haskey(response, "error"));
-    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(response, "error"),
-                                          "desc"),
-                            "models no peer link"));
-    qobject_unref(response);
-    qtest_quit(s);
+    for (unsigned i = 0; i < G_N_ELEMENTS(pairs); i++) {
+        QTestState *s = qtest_initf("-M none -cpu R10000 -S "
+                                    "-device sgi-l1,id=a,brick-type=%s "
+                                    "-device sgi-l1,id=b,brick-type=%s",
+                                    pairs[i][0], pairs[i][1]);
+        QDict *response = qtest_qmp(s,
+            "{'execute':'qom-set','arguments':"
+            "{'path':'/machine/peripheral/a','property':'peer',"
+            "'value':'/machine/peripheral/b'}}");
+
+        g_assert_true(qdict_haskey(response, "error"));
+        g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(response,
+                                                              "error"),
+                                              "desc"),
+                                "models no peer link"));
+        qobject_unref(response);
+        qtest_quit(s);
+    }
 }
 
 /*
@@ -1174,6 +1401,14 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-cxbrick/volunteer", test_volunteer);
     qtest_add_func("sgi-l1-cxbrick/power-scope", test_power_scope);
     qtest_add_func("sgi-l1-cxbrick/nmi", test_nmi);
+    qtest_add_data_func("sgi-l1-cxbrick/node/nmi", "nmi", test_node_pulses);
+    qtest_add_data_func("sgi-l1-cxbrick/node/softreset", "board-soft-reset",
+                        test_node_pulses);
+    qtest_add_func("sgi-l1-cxbrick/node/refusals", test_node_refusals);
+    qtest_add_func("sgi-l1-cxbrick/node/disable-mask", test_node_disable_mask);
+    qtest_add_func("sgi-l1-cxbrick/node/reset", test_node_reset);
+    qtest_add_func("sgi-l1-cxbrick/node/disable-migration",
+                   test_node_disable_migration);
     for (unsigned i = 0; i < ARRAY_SIZE(refusal_cases); i++) {
         g_autofree char *name =
             g_strdup_printf("sgi-l1-cxbrick/refusal/%u", i);

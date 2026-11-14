@@ -226,6 +226,18 @@ static bool l1_cx_fitted_board(const SGIL1State *s, unsigned board)
     return board < SGI_L1_CX_BOARDS && (s->cx_boards & (1u << board));
 }
 
+/* The disabled nodes that exist: bits above the fitted boards are ignored. */
+static unsigned l1_cx_disabled(const SGIL1State *s)
+{
+    return s->node_disable & s->cx_boards;
+}
+
+/* A node a brick-wide hold, release, soft reset or NMI reaches. */
+static bool l1_cx_node_runs(const SGIL1State *s, unsigned board)
+{
+    return l1_cx_fitted_board(s, board) && !(l1_cx_disabled(s) & (1u << board));
+}
+
 /* Each board link is one of the UART windows the transports already index. */
 QEMU_BUILD_BUG_ON(SGI_L1_CX_BOARDS > SGI_L1_IROUTER_TRANSPORTS);
 
@@ -785,6 +797,15 @@ static void l1_node_reset(SGIL1State *s, uint8_t reason)
     l1_display_set(s, 1, "Reset done");
     l1_log(s, "reset (%s)", l1_reasons[reason]);
     /* The hold time is not modeled: the line pulses. */
+    if (l1_is_cxbrick(s) && l1_cx_disabled(s)) {
+        /* The brick-wide hook skips disabled nodes, so each node is asked. */
+        for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+            if (l1_cx_node_runs(s, i)) {
+                qemu_irq_pulse(s->board_reset_out[i]);
+            }
+        }
+        return;
+    }
     qemu_irq_pulse(s->node_reset_out);
     /*
      * A node the machine joined to the line decides what restarts: its
@@ -2675,6 +2696,12 @@ static void l1_peer_power(SGIL1State *peer, bool up, uint8_t reason,
     l1_publish_power(peer);
 }
 
+/*
+ * A peer is another C-brick: l1_peer_fault() refuses a Cx-brick at either end
+ * of a peer link (sgi-l1-cxbrick/no-peer tests it), and the only other caller
+ * is an I-brick's or R-brick's own reset, so a Cx-brick never reaches this and
+ * its brick-wide reset needs no disabled-node skip here.
+ */
 static void l1_peer_reset(SGIL1State *peer)
 {
     if (!peer->node_power) {
@@ -2970,6 +2997,214 @@ static bool l1_brick_partition(SGIL1State *s, const char *word,
     } else if (!s->two_bit_setting) {
         l1_printf(s, "brick partition cleared.\r\n");
     }
+    return true;
+}
+
+/*
+ * "cpu d" and "cpu e" on a C-brick, for every processor or for one letter
+ * a to d (software expectation, see l1-brick-profiles.rst). Refused while any
+ * supply is on; success is silent. The choice persists in the settings record
+ * and the board initialisation applies it to each processor again, which the
+ * model stands for by keeping the mask across a controller restart; which pin
+ * each bit reaches is unknown, so it drives nothing. The digit form is
+ * refused as a bad word, inferred. The "cpu" status table is not modelled.
+ * The image checks the word, then the supply state, then the index and
+ * the hook; with four processors a to d the last two cannot fail here.
+ */
+static int l1_cbrick_cpu(SGIL1State *s, int argc, char **argv)
+{
+    const char *action = argc >= 2 ? argv[1] : NULL;
+    unsigned mask = 0xf;
+
+    if (argc == 1 || (argc == 2 && !strcmp(argv[1], "status"))) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: the cpu status display is not "
+                      "modelled\n");
+        return 0;
+    }
+    if (argc > 3 || (strcmp(action, "d") && strcmp(action, "e")) ||
+        (argc == 3 && (strlen(argv[2]) != 1 || argv[2][0] < 'a' ||
+                       argv[2][0] > 'd'))) {
+        l1_printf(s, "ERROR: invalid CPU (valid format is "
+                  "'<node>[a|b|c|d]', or 'a|b|c|d' for single-node brick "
+                  "types)\r\n");
+        return -1;
+    }
+    if (s->node_power) {
+        l1_printf(s, "ERROR: CPU:power must be down to enable/disable "
+                  "CPUs\r\n");
+        return -1;
+    }
+    if (argc == 3) {
+        mask = 1u << (argv[2][0] - 'a');
+    }
+    if (*action == 'd') {
+        s->cpu_disable |= mask;
+    } else {
+        s->cpu_disable &= ~mask;
+    }
+    return 0;
+}
+
+/*
+ * The node index of a Cx-brick command: false when @word is not a number.
+ * The personality has four nodes whatever is fitted.
+ */
+static bool l1_cx_index(const char *word, unsigned long *n)
+{
+    return !qemu_strtoul(word, NULL, 10, n);
+}
+
+/*
+ * The error the node iterator gives a single node it will not run, printed
+ * as "ERROR: Node:<text>" with the codes -4201, -4203 and -4204 behind them
+ * (software expectation, see l1-brick-profiles.rst). Returns true when
+ * refused.
+ */
+static bool l1_cx_node_refused(SGIL1State *s, unsigned long n)
+{
+    const char *text = n >= SGI_L1_CX_BOARDS ? "invalid node number" :
+        !l1_cx_fitted_board(s, n) ? "node not present" :
+        !l1_cx_node_runs(s, n) ? "node disabled" : NULL;
+
+    if (text) {
+        l1_printf(s, "ERROR: Node:%s\r\n", text);
+    }
+    return text;
+}
+
+/*
+ * "softreset" and "nmi" of a Cx-brick go through the node iterator: with no
+ * number every present, enabled node in turn, with a number that node alone,
+ * refused when it is out of range, absent or disabled. The same hook pulses
+ * a line of each node. The -1 the command returns is the model's.
+ */
+static int l1_cx_pulse(SGIL1State *s, int argc, char **argv,
+                       const char *display, const char *log,
+                       qemu_irq *lines)
+{
+    unsigned long n = 0;
+    bool one = argc == 2 && l1_cx_index(argv[1], &n);
+
+    if (argc > 2 || (argc == 2 && !one)) {
+        l1_invalid(s, argv[0]);
+        return -1;
+    }
+    if (one && l1_cx_node_refused(s, n)) {
+        return -1;
+    }
+    if (!s->node_power) {
+        return 0;
+    }
+    l1_display_set(s, 1, display);
+    l1_log(s, "%s", log);
+    for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+        if (one ? i == n : l1_cx_node_runs(s, i)) {
+            qemu_irq_pulse(lines[i]);
+        }
+    }
+    return 0;
+}
+
+/*
+ * "node d" and "node e" for every present node, and "node <n> d" and
+ * "node <n> e" for one. No other order parses: "node d <n>" matches no row
+ * and falls to the catch-all one, which fails every brick type. The supply
+ * is checked before the index, and the image's error codes behind the texts
+ * are -4202 and -4201, -4204 for an absent node (software expectation, see
+ * l1-brick-profiles.rst). The node status display, bare "node", is not
+ * modelled.
+ */
+static int l1_cx_node_set(SGIL1State *s, int argc, char **argv)
+{
+    const char *action = NULL;
+    unsigned long n = 0;
+    bool one = argc == 3;
+
+    if (argc == 2 && (!strcmp(argv[1], "d") || !strcmp(argv[1], "e"))) {
+        action = argv[1];
+    } else if (argc == 3 && l1_cx_index(argv[1], &n) &&
+               (!strcmp(argv[2], "d") || !strcmp(argv[2], "e"))) {
+        action = argv[2];
+    }
+    if (!action) {
+        if (argc == 1 || (argc == 2 && !strcmp(argv[1], "status"))) {
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: the node status display is not "
+                          "modelled\n");
+            return 0;
+        }
+        l1_printf(s, "INFO: command not supported on this brick type\r\n");
+        return -1;
+    }
+    if (s->node_power) {
+        l1_printf(s, "ERROR: Node:power must be down to enable/disable "
+                  "NODEs\r\n");
+        return -1;
+    }
+    if (one && (n >= SGI_L1_CX_BOARDS || !l1_cx_fitted_board(s, n))) {
+        l1_printf(s, "ERROR: Node:%s\r\n", n >= SGI_L1_CX_BOARDS ?
+                  "invalid node number" : "node not present");
+        return -1;
+    }
+    for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
+        if (one ? i == n : l1_cx_fitted_board(s, i)) {
+            if (*action == 'd') {
+                s->node_disable |= 1u << i;
+            } else {
+                s->node_disable &= ~(1u << i);
+            }
+        }
+    }
+    return 0;
+}
+
+/*
+ * The node commands that exist on the Cx-brick only: "reset <n>" and the
+ * "node" family. On a C-brick they are refused as unsupported for the brick
+ * type. "reset <n>" bypasses the iterator and so reaches a disabled node;
+ * the model's hold is the node's reset pulse. "node d" and "node e" set or
+ * clear bit n of the persistent disable setting, for one node or every
+ * present one, and are refused while the brick is powered. Returns true
+ * when the line was one of these.
+ */
+static bool l1_cx_node_command(SGIL1State *s, int argc, char **argv,
+                               int *result)
+{
+    bool is_reset = l1_word(argv[0], "reset", "rst") && argc == 2;
+    bool is_node = !strcmp(argv[0], "node");
+    unsigned long n = 0;
+
+    if (!l1_is_cxbrick(s) && !l1_is_cbrick(s)) {
+        return false;
+    }
+    if (is_reset && !l1_cx_index(argv[1], &n)) {
+        return false;
+    }
+    if (!is_reset && !is_node) {
+        return false;
+    }
+    if (!l1_is_cxbrick(s)) {
+        qemu_log_mask(LOG_UNIMP, "sgi-l1: command %s unsupported on the %s "
+                      "profile\n", argv[0], s->profile->name);
+        l1_printf(s, "INFO: command not supported on this brick type\r\n");
+        *result = -1;
+        return true;
+    }
+    if (is_reset) {
+        if (n > SGI_L1_CX_BOARDS) {
+            l1_printf(s, "ERROR: invalid NODE index %lu.\r\n", n);
+            *result = -1;
+        } else if (n == SGI_L1_CX_BOARDS) {
+            qemu_log_mask(LOG_UNIMP, "sgi-l1: reset node %lu reads past the "
+                          "node table; the effect is unknown\n", n);
+        } else if (s->node_power && l1_cx_fitted_board(s, n)) {
+            l1_reason(s, 1);
+            l1_display_set(s, 1, "Reset done");
+            l1_log(s, "reset (%s)", l1_reasons[1]);
+            qemu_irq_pulse(s->board_reset_out[n]);
+        }
+        return true;
+    }
+    *result = l1_cx_node_set(s, argc, argv);
     return true;
 }
 
@@ -3720,19 +3955,30 @@ static int l1_run_line(SGIL1State *s, const char *text, bool console)
             }
             l1_invalid(s, "power");
         }
+    } else if (l1_is_cbrick(s) && !strcmp(argv[0], "cpu")) {
+        result = l1_cbrick_cpu(s, argc, argv);
+    } else if (l1_cx_node_command(s, argc, argv, &result)) {
+        /* Done by l1_cx_node_command(). */
     } else if (l1_word(argv[0], "reset", "rst")) {
         if (broadcast && peer) {
             l1_peer_reset(peer);
         }
         l1_node_reset(s, 1);
     } else if (l1_word(argv[0], "softreset", "softrst")) {
-        if (s->node_power) {
+        if (l1_is_cxbrick(s)) {
+            result = l1_cx_pulse(s, argc, argv, "Sft rst done",
+                                 "soft reset (COMMAND)",
+                                 s->board_soft_reset_out);
+        } else if (s->node_power) {
             l1_display_set(s, 1, "Sft rst done");
             l1_log(s, "soft reset (COMMAND)");
             qemu_irq_pulse(s->soft_reset_out);
         }
     } else if (!strcmp(argv[0], "nmi")) {
-        if (s->node_power) {
+        if (l1_is_cxbrick(s)) {
+            result = l1_cx_pulse(s, argc, argv, "NMI done", "NMI (COMMAND)",
+                                 s->nmi_out);
+        } else if (s->node_power) {
             l1_display_set(s, 1, "NMI done");
             l1_log(s, "NMI (COMMAND)");
             for (unsigned i = 0; i < SGI_L1_CX_BOARDS; i++) {
@@ -5947,13 +6193,13 @@ static bool l1_controls_needed(void *opaque)
 {
     SGIL1State *s = opaque;
 
-    return s->router_series ||
+    return l1_cx_disabled(s) || s->cpu_disable || s->router_series ||
            s->router_role != L1_ROLE_ORDINARY ||
            s->router_entry != L1_ROLE_ORDINARY ||
            s->router_control != L1_ROUTER_CONTROL_COLD;
 }
 
-/* Sent only when the router role or its pins differ from a cold start. */
+/* Sent only when a node, a processor or the router role is not default. */
 static const VMStateDescription vmstate_l1_controls = {
     .name = "sgi-l1/controls",
     .version_id = 1,
@@ -5961,6 +6207,8 @@ static const VMStateDescription vmstate_l1_controls = {
     .needed = l1_controls_needed,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(router_series, SGIL1State),
+        VMSTATE_UINT8(node_disable, SGIL1State),
+        VMSTATE_UINT8(cpu_disable, SGIL1State),
         VMSTATE_UINT8(router_role, SGIL1State),
         VMSTATE_UINT8(router_entry, SGIL1State),
         VMSTATE_UINT8(router_control, SGIL1State),
@@ -7601,6 +7849,10 @@ static void l1_init(Object *obj)
     qdev_init_gpio_out_named(DEVICE(obj), &s->soft_reset_out, "soft-reset", 1);
     qdev_init_gpio_out_named(DEVICE(obj), s->nmi_out, "nmi",
                              SGI_L1_CX_BOARDS);
+    qdev_init_gpio_out_named(DEVICE(obj), s->board_reset_out, "board-reset",
+                             SGI_L1_CX_BOARDS);
+    qdev_init_gpio_out_named(DEVICE(obj), s->board_soft_reset_out,
+                             "board-soft-reset", SGI_L1_CX_BOARDS);
     object_property_add_uint8_ptr(obj, "event-subchannel", &s->event_subchannel,
                                   OBJ_PROP_FLAG_READ);
     /*
@@ -7618,6 +7870,10 @@ static void l1_init(Object *obj)
     object_property_add_uint8_ptr(obj, "router-entry", &s->router_entry,
                                   OBJ_PROP_FLAG_READ);
     object_property_add_uint8_ptr(obj, "router-series", &s->router_series,
+                                  OBJ_PROP_FLAG_READWRITE);
+    object_property_add_uint8_ptr(obj, "cpu-disable", &s->cpu_disable,
+                                  OBJ_PROP_FLAG_READ);
+    object_property_add_uint8_ptr(obj, "node-disable", &s->node_disable,
                                   OBJ_PROP_FLAG_READWRITE);
     /*
      * Settable after realize: each chassis's node realizes its own L1, so the
