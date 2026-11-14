@@ -469,6 +469,8 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - the serial lines that name it
      - ``off`` (approximated)
 
+The ``l2-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks`` default ``off`` (approximated); ``onyx3400-ir``, ``origin3400``, ``origin3400-two-partitions`` default ``on`` (approximated). The product's other topologies do not offer it.
+
 ``origin350``
 -------------
 
@@ -594,7 +596,7 @@ tool never shows a value with nothing behind it.
      - The processor assembly in the model file, for the FPU revision the product's inventory prints; not a raw read.
    * - ``l2-controller``
      - approximated
-     - A launch choice, off: both a 3200 with and without an L2 shipped (hardware/l1-l2-link.rst); with it off the L1s' links stay unbacked, which hardware/l1-l2-link.rst describes as the model running without an L2 peer.
+     - A launch choice, so an approximation either way; the default is off unless the model file authors one. That a rack with an R-brick holds an L2 is established, and the L2 is optional on the Origin 3200 and Onyx 3200 (hardware/l1-l2-link.rst), but starting one rests on model runs, not on those pages. The L2 is the shipped firmware under qemu-ppc behind a model L1 that drops the L2's own requests. A default of on is authored only where the PROM has booted with it; the console output differs from a run without it in timing, NIC ids and the interleaving of one boot line. The topologies are listed in hardware/l1-l2-link.rst, which is written by hand and must change with the model files.
    * - ``origin300-l1cmd-compat``
      - approximated
      - The machine property's own default, off; the commands it enables are an approximation (hardware/l1.rst).

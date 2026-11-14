@@ -172,16 +172,24 @@ DEFAULT_BASIS = {
         "The machine property's own default, off; the commands it "
         "enables are an approximation (hardware/l1.rst)."),
     "l2-controller": (
-        "A launch choice, off: both a 3200 with and without an L2 shipped "
-        "(hardware/l1-l2-link.rst); with it off the L1s' links stay "
-        "unbacked, which hardware/l1-l2-link.rst describes as the model "
-        "running without an L2 peer."),
+        "A launch choice, so an approximation either way; the default is "
+        "off unless the model file authors one. That a rack with an R-brick "
+        "holds an L2 is established, and the L2 is optional on the Origin "
+        "3200 and Onyx 3200 (hardware/l1-l2-link.rst), but starting one "
+        "rests on model runs, not on those pages. The L2 is the shipped "
+        "firmware under qemu-ppc behind a model L1 that drops the L2's "
+        "own requests. A default of on is authored only where the PROM has "
+        "booted with it; the console output differs from a run without it "
+        "in timing, NIC ids and the interleaving of one boot line. The "
+        "topologies are listed in hardware/l1-l2-link.rst, which is "
+        "written by hand and must change with the model files."),
 }
 
 
 def default_provenance(product: str, name: str, value: str) -> str:
     """How well @value is known as @product's default for setting @name:
-    established, inferred, approximated, per DEFAULT_BASIS."""
+    established, inferred, approximated, per DEFAULT_BASIS. An authored
+    l2-controller default carries its own rating and never reaches here."""
     if name == "board-id-word":
         if product == "origin3000":
             # The 400 MHz row (2) and the 500 and 800 MHz PIMMs (1, 5) are
@@ -256,14 +264,16 @@ def _expansion_controllers(topology: dict) -> list[int]:
 def offering_settings(offering: dict, topology: dict,
                       default_prid: int | None,
                       default_fpu: int | None,
-                      option_board_id: int | None = None
+                      option_board_id: int | None = None,
+                      l2_default: dict | None = None
                       ) -> tuple[list[dict], list[dict]]:
     """The settings and setting groups @offering offers, in definition
     order. @topology is the compiled record; the processor registers'
     defaults come from the offering's own processor, and the board
     identity word from the processor option it selects when that option
     carries one (a PIMM brings its own), else from the topology's first
-    node."""
+    node. @l2_default is the model's authored `l2_controller` record, if
+    any: it sets the default and its rating for that topology."""
     product = offering["product"]
     part = offering["processor"]["part"]
     chosen: list[dict] = []
@@ -327,7 +337,12 @@ def offering_settings(offering: dict, topology: dict,
             {} if board_id is None else {"default": str(board_id)}))]
         chosen += [_entry(name) for name in _BEDROCK[1:]]
         chosen += prid_entries()
-        if not topology["routers"]:
+        if l2_default is not None:
+            # The model states the default, so it states its rating too.
+            chosen.append(_entry(
+                "l2-controller", default=l2_default["default"],
+                **{"default-provenance": l2_default["rating"]}))
+        elif not topology["routers"]:
             # An L2 is optional without an R-brick (the Origin 3200 and
             # Onyx 3200) and standard with one.
             chosen.append(_entry("l2-controller", default="off"))
@@ -353,7 +368,7 @@ def offering_settings(offering: dict, topology: dict,
         # Off unless a launch fits it, so there is no default to mark.
         chosen.append(_entry("junk-uart"))
     for entry in chosen:
-        if "default" in entry:
+        if "default" in entry and "default-provenance" not in entry:
             entry["default-provenance"] = default_provenance(
                 product, entry["name"], entry["default"])
     return chosen, groups

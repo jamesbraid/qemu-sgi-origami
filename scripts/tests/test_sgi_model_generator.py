@@ -16,8 +16,11 @@ import sys
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 INPUTS = ROOT / "hw/mips/sgi/models"
+# The topologies whose offerings start the L2 by default: authored in the
+# model, because a shipped L2 daemon has booted each of them.
+L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "4d271abf34b0d7fff74d17b9bb4087109fd7bd9d98cb7acaebfbc57e68385e15"
+    "280a8dedc6b48f79d812e61dc68ef78775056701507d705c7c0052146ab2bd99"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -778,9 +781,9 @@ class StorageTests(unittest.TestCase):
         """Each Origin 3000 C-brick L1 has a link line to a rack L2,
         bound by a controller-l2-chardev slot, and the Cx-brick's
         module-owned L1 has none. The link names the l2-controller
-        setting exactly where the L2 is optional: no R-brick, which is
-        the Origin 3200 and Onyx 3200. A link without that setting is
-        always present."""
+        setting where the L2 is optional (no R-brick: the Origin 3200 and
+        Onyx 3200) and where the model authors a default for it (the
+        topologies in L2_DEFAULT_ON). Any other link has no setting."""
         catalogue = json.loads(render_qemu_inputs(INPUTS)[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {item["name"]: item for item in catalogue["topologies"]}
@@ -808,7 +811,8 @@ class StorageTests(unittest.TestCase):
                                  len(links))
                 for line in links:
                     self.assertNotIn("serial", line)
-                optional = not topology["routers"]
+                optional = (not topology["routers"]
+                            or row["topology"] in L2_DEFAULT_ON)
                 self.assertEqual(
                     [line.get("setting") for line in links],
                     ["l2-controller" if optional else None] * len(links))
@@ -834,7 +838,33 @@ class StorageTests(unittest.TestCase):
                               if any("setting" in line
                                      for line in row["serial-lines"])}
         self.assertEqual(optional_offerings, {
-            "onyx3000", "origin3200", "origin3200-two-ibricks"})
+            "onyx3000", "origin3200", "origin3200-two-ibricks"}
+            | L2_DEFAULT_ON)
+
+    def test_l2_controller_defaults(self):
+        """The L2 starts by default exactly where the model authors it: on,
+        rated approximated, since starting it is a launch choice backed
+        by model runs. The routerless offerings keep their approximated
+        off, and every other router offering lists no setting at all."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        for row in catalogue["offerings"]:
+            found = [item for item in row["settings"]
+                     if item["name"] == "l2-controller"]
+            with self.subTest(offering=row["id"]):
+                if row["topology"] in L2_DEFAULT_ON:
+                    self.assertEqual(
+                        found, [{"name": "l2-controller", "required": False,
+                                 "default": "on",
+                                 "default-provenance": "approximated"}])
+                elif row["topology"] in ("onyx3000", "origin3200",
+                                         "origin3200-two-ibricks"):
+                    self.assertEqual(
+                        found, [{"name": "l2-controller", "required": False,
+                                 "default": "off",
+                                 "default-provenance": "approximated"}])
+                else:
+                    self.assertEqual(found, [])
 
     def test_board_slots_list_the_baseio_slot_and_the_empty_xio_slots(self):
         """An Origin 2000 or Onyx 2 topology lists its BaseIO slot, whose
@@ -1433,8 +1463,9 @@ class FuelTests(unittest.TestCase):
             want = list(expected[row["product"]])
             if row["processor"]["part"] == "R12000" and "prid" in want:
                 want.insert(want.index("prid") + 1, "fpu-id")
-            if row["product"] == "origin3000" and \
-                    row["topology"] in routerless:
+            if row["product"] == "origin3000" and (
+                    row["topology"] in routerless or
+                    row["topology"] in L2_DEFAULT_ON):
                 # The L2 is optional only where no R-brick needs one.
                 want.append("l2-controller")
             if "controller-brick-serial" in names:

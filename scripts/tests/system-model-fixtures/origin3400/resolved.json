@@ -2911,6 +2911,15 @@
           ]
         }
       },
+      "l2_controller": {
+        "default": "on",
+        "provenance": "measured-on-our-model",
+        "rating": "approximated",
+        "reason": "Starting the L2 is a launch choice backed by model runs, not a hardware fact. The L2 is the shipped firmware under qemu-ppc behind a model L1 that drops L2-originated requests. The PROM booted with it on this topology, and IRIX booted too.",
+        "sources": [
+          "qemu:docs/system/mips/sgi/hardware/l1-l2-link.rst"
+        ]
+      },
       "lifecycle": "implemented",
       "machine_name": "origin3000",
       "profile": "origin3400",
