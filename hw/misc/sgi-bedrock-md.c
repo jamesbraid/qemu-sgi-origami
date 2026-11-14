@@ -3566,20 +3566,33 @@ static void md_soft_reset_input(void *opaque, int n, int level)
  * few writes into 2 MiB pages, they took 9.5 GiB of resident memory from a
  * machine that had run nothing, enough to get four parallel qtests
  * OOM-killed on a 16 GiB CI builder. Map them anonymously without huge
- * pages, and on Linux reset them by giving the pages back, which also
- * leaves them zero.
+ * pages, and reset them by giving the pages back, which also leaves them
+ * zero.
+ *
+ * Only Linux can skip the swap reservation: other hosts have no
+ * MAP_NORESERVE behaviour, and qemu_anon_ram_alloc() refuses to map with
+ * the flag there, so asking for it made every Bedrock machine fail to start
+ * on macOS. Those hosts overcommit anonymous memory and fault pages in on
+ * first touch anyway. SGI_BEDROCK_MD_PORTABLE_TABLES selects this path on
+ * Linux so a Linux build can test it.
  */
+#if defined(CONFIG_LINUX) && !defined(SGI_BEDROCK_MD_PORTABLE_TABLES)
+#define MD_TABLE_NORESERVE true
+#else
+#define MD_TABLE_NORESERVE false
+#endif
+
+/* Lengths are whole host pages: 16 KiB on Apple Silicon, 4 KiB elsewhere. */
+static size_t md_table_bytes(size_t size)
+{
+    return QEMU_ALIGN_UP(size, qemu_real_host_page_size());
+}
+
 static void *md_table_alloc(size_t size, Error **errp)
 {
     uint64_t align;
-#ifdef _WIN32
-    /* Windows cannot skip the reservation. */
-    const bool noreserve = false;
-#else
-    /* Do not make the kernel count tables that are mostly never touched. */
-    const bool noreserve = true;
-#endif
-    void *table = qemu_anon_ram_alloc(size, &align, false, noreserve);
+    void *table = qemu_anon_ram_alloc(md_table_bytes(size), &align, false,
+                                      MD_TABLE_NORESERVE);
 
     if (!table) {
         error_setg(errp, "sgi-bedrock-md: cannot map %zu bytes of tables",
@@ -3594,24 +3607,36 @@ static void md_tables_free(SGIBedrockMDState *s)
 {
     if (s->directory) {
         qemu_anon_ram_free(s->directory,
-                           s->directory_entries * sizeof(*s->directory));
+                           md_table_bytes(s->directory_entries *
+                                          sizeof(*s->directory)));
         s->directory = NULL;
     }
     if (s->page_counters) {
         qemu_anon_ram_free(s->page_counters,
-                           s->directory_entries * sizeof(*s->page_counters));
+                           md_table_bytes(s->directory_entries *
+                                          sizeof(*s->page_counters)));
         s->page_counters = NULL;
     }
     if (s->ecc) {
-        qemu_anon_ram_free(s->ecc, s->ecc_entries * sizeof(*s->ecc));
+        qemu_anon_ram_free(s->ecc,
+                           md_table_bytes(s->ecc_entries * sizeof(*s->ecc)));
         s->ecc = NULL;
     }
 }
 
 static void md_table_zero(void *table, size_t size)
 {
-#ifdef CONFIG_LINUX
+#if defined(CONFIG_LINUX) && !defined(SGI_BEDROCK_MD_PORTABLE_TABLES)
     if (!qemu_madvise(table, size, QEMU_MADV_DONTNEED)) {
+        return;
+    }
+#elif defined(CONFIG_POSIX) && !defined(EMSCRIPTEN)
+    /*
+     * MADV_DONTNEED leaves the data on BSD hosts. Mapping fresh anonymous
+     * pages over the table drops the old ones and reads back as zero.
+     */
+    if (mmap(table, md_table_bytes(size), PROT_READ | PROT_WRITE,
+             MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) != MAP_FAILED) {
         return;
     }
 #endif

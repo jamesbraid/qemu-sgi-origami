@@ -1154,6 +1154,30 @@ static void assert_storage_zero(QTestState *s)
     }
 }
 
+/*
+ * Every table is mapped in whole host pages and reset by dropping them, so
+ * the last line of the largest and smallest node must survive a write and
+ * read back zero after a reset, on 4 KiB and 16 KiB page hosts alike.
+ */
+static void test_reset_clears_table_tails(void)
+{
+    static const char *const sizes[] = { "32M", "512M" };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(sizes); i++) {
+        QTestState *s = start_with_memory(sizes[i], "");
+        uint64_t last = i ? DIRECTORY_LAST_512M : 0x1ffff0;
+
+        qtest_writeq(s, MD(0x8), memory_bank_config(0, i ? 5 : 1));
+        /* Raw patterns need directory ECC ignored, as the PROM's walk has. */
+        qtest_writeq(s, MD(0x40000), 2);
+        qtest_writeq(s, DIRECTORY(last), 0x76543210);
+        g_assert_cmphex(qtest_readq(s, DIRECTORY(last)), ==, 0x76543210);
+        qtest_system_reset(s);
+        g_assert_cmphex(qtest_readq(s, DIRECTORY(last)), ==, 0);
+        qtest_quit(s);
+    }
+}
+
 static void test_reset(void)
 {
     uint64_t compat_offsets[DIRECTORY_COMPAT_ENTRIES];
@@ -3102,6 +3126,8 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/perf-counter-lock-word",
                    test_perf_counter_lock_word);
     qtest_add_func("sn1/bedrock-md/reset", test_reset);
+    qtest_add_func("sn1/bedrock-md/reset-table-tails",
+                   test_reset_clears_table_tails);
     qtest_add_func("sn1/bedrock-md/migration", test_migration);
     qtest_add_func("sn1/bedrock-md/memory-installed-migration",
                    test_memory_installed_migration);
