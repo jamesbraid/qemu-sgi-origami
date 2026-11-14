@@ -1658,18 +1658,25 @@ static void emit_or(uint8_t *program, size_t *n, uint8_t value, uint8_t dest)
     emit(program, n, alu_word(0, value, 0x6a, dest, false));
 }
 
-static void emit_cdb_completion(uint8_t *program, size_t *n,
-                                 const uint8_t *cdb, size_t cdb_len,
-                                 bool write, bool host_dma)
+static void emit_cdb_issue(uint8_t *program, size_t *n,
+                           const uint8_t *cdb, size_t cdb_len,
+                           bool write, bool host_dma)
 {
-    unsigned wait_at, free_at, idle_at;
-
     g_assert_cmpuint(cdb_len, <=, 16);
     emit_or(program, n, 0x80, 0x03);
     for (size_t i = 0; i < cdb_len; i++) {
         emit_or(program, n, cdb[i], 0x06);
     }
     emit_or(program, n, (write ? 0x34 : 0x30) | (host_dma ? 10 : 0), 0x93);
+}
+
+static void emit_cdb_completion(uint8_t *program, size_t *n,
+                                 const uint8_t *cdb, size_t cdb_len,
+                                 bool write, bool host_dma)
+{
+    unsigned wait_at, free_at, idle_at;
+
+    emit_cdb_issue(program, n, cdb, cdb_len, write, host_dma);
     wait_at = *n / 4;
     emit(program, n, branch_word(0xf, 2, 0x0b, wait_at));
     emit_or(program, n, 0xc0, 0x03);
@@ -1684,23 +1691,29 @@ static void emit_cdb_completion(uint8_t *program, size_t *n,
     emit(program, n, branch_word(8, 0, 0x65, idle_at));
 }
 
+static void emit_command_setup(uint8_t *program, size_t *n, bool write,
+                               int identify)
+{
+    emit_or(program, n, 0x08, 0x01); /* automatic PIO */
+    emit_or(program, n, 0x07, 0x05); /* initiator 7, target 0 */
+    emit_or(program, n, 0, 0x93); /* disable the old data path */
+    emit_or(program, n, write ? 4 : 0, 0x93);
+    emit(program, n, alu_word(1, 0xff, 0x6a, 0x00, false));
+    emit_or(program, n, identify >= 0 ? 0xa0 : 0x80, 0x03);
+    emit_or(program, n, identify >= 0 ? 0x48 : 0x40, 0x00);
+    if (identify >= 0) {
+        emit_or(program, n, identify, 0x06);
+        emit_or(program, n, 0x40, 0x0c);
+    }
+}
+
 static size_t build_command_program_mode(uint8_t *program, const uint8_t *cdb,
                                          size_t cdb_len, bool write,
                                          bool host_dma, int identify)
 {
     size_t n = 0;
 
-    emit_or(program, &n, 0x08, 0x01); /* automatic PIO */
-    emit_or(program, &n, 0x07, 0x05); /* initiator 7, target 0 */
-    emit_or(program, &n, 0, 0x93); /* disable the old data path */
-    emit_or(program, &n, write ? 4 : 0, 0x93);
-    emit(program, &n, alu_word(1, 0xff, 0x6a, 0x00, false));
-    emit_or(program, &n, identify >= 0 ? 0xa0 : 0x80, 0x03);
-    emit_or(program, &n, identify >= 0 ? 0x48 : 0x40, 0x00);
-    if (identify >= 0) {
-        emit_or(program, &n, identify, 0x06);
-        emit_or(program, &n, 0x40, 0x0c);
-    }
+    emit_command_setup(program, &n, write, identify);
     emit_cdb_completion(program, &n, cdb, cdb_len, write, host_dma);
     return n;
 }
@@ -14951,6 +14964,617 @@ static void test_command_dma_inquiry(void)
     qtest_quit(qts);
 }
 
+/*
+ * DFSTATUS polls in the functional sequencer. The register file is the
+ * recurrence key, so a poll loop with no pending event parks the sequencer
+ * until a host access, a PCI configuration write or a backend completion.
+ */
+
+#define DFSTATUS_FIFOEMP    0x01
+#define DFSTATUS_HDONE      0x08
+#define DFSTATUS_MREQPEND   0x10
+#define DFSTATUS_FIFOQWDEMP 0x20
+
+#define BRANCH_CALL 0x0b
+#define BRANCH_JNZ 0x0d
+#define BRANCH_JZ  0x0f
+
+#define PCI_COMMAND_MEMORY_ONLY 0x0002
+#define PCI_COMMAND_MEMORY_MASTER 0x0006
+
+static bool sequencer_waiting(QTestState *qts)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{"
+        "'path':'/machine/peripheral/hba',"
+        "'property':'x-test-sequencer-waiting'}}");
+
+    g_assert_true(qdict_haskey(reply, "return"));
+    return qdict_get_bool(reply, "return");
+}
+
+/* Run work that the last host access made due. */
+static void sequencer_settle(QTestState *qts)
+{
+    for (unsigned i = 0; i < 4; i++) {
+        qtest_clock_step(qts, 1);
+    }
+}
+
+/* Nanoseconds from now to the next virtual-clock deadline. */
+static int64_t next_deadline_ns(QTestState *qts)
+{
+    int64_t now = qtest_clock_step(qts, 1);
+
+    return qtest_clock_step_next(qts) - now;
+}
+
+/*
+ * Poll DFSTATUS while the branch @op on @mask is taken. When the poll
+ * ends the program spins on an SCB read, which never parks, so a clear
+ * wait flag and SEQADDR 1 show that the poll exited.
+ */
+static size_t build_dfstatus_poll(uint8_t *program, uint8_t op, uint8_t mask)
+{
+    size_t n = 0;
+
+    emit(program, &n, branch_word(op, mask, 0x94, 0));
+    emit(program, &n, branch_word(BRANCH_JZ, 1, 0xa0, 1));
+    return n;
+}
+
+static void start_dfstatus_poll(QTestState *qts, uint8_t op, uint8_t mask)
+{
+    uint8_t program[2 * 4];
+
+    start_program(qts, program, build_dfstatus_poll(program, op, mask));
+    sequencer_settle(qts);
+}
+
+static void check_poll_exited(QTestState *qts)
+{
+    sequencer_settle(qts);
+    g_assert_false(sequencer_waiting(qts));
+    g_assert_cmpint(next_deadline_ns(qts), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+}
+
+static void check_poll_parked(QTestState *qts)
+{
+    sequencer_settle(qts);
+    g_assert_true(sequencer_waiting(qts));
+    g_assert_cmpint(next_deadline_ns(qts), >, 1);
+    g_assert_true(sequencer_waiting(qts));
+}
+
+static void event_memory_dma(QTestState *qts)
+{
+    host_dma_program(qts, 0x10000, 8);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x05);
+    qtest_writeb(qts, REG_BASE + 0x93, 0x0c);
+}
+
+static void event_first_fifo_byte(QTestState *qts)
+{
+    qtest_writeb(qts, REG_BASE + 0x93, 0x01);
+    qtest_writeb(qts, REG_BASE + 0x99, 0x5a);
+}
+
+static void event_first_fifo_word(QTestState *qts)
+{
+    qtest_writeb(qts, REG_BASE + 0x93, 0x01);
+    for (unsigned i = 0; i < 7; i++) {
+        qtest_writeb(qts, REG_BASE + 0x99, i);
+    }
+    /* A seven-byte FIFO has no complete word: the wait stands. */
+    check_poll_parked(qts);
+    qtest_writeb(qts, REG_BASE + 0x99, 7);
+}
+
+static void test_dfstatus_park_engages(void)
+{
+    static const struct {
+        const char *name;
+        uint8_t op;
+        uint8_t mask;
+        bool master_off;
+        void (*event)(QTestState *qts);
+    } cases[] = {
+        { "HDONE", BRANCH_JZ, DFSTATUS_HDONE, false, event_memory_dma },
+        { "MREQPEND", BRANCH_JZ, DFSTATUS_MREQPEND, true, event_memory_dma },
+        { "FIFOEMP", BRANCH_JNZ, DFSTATUS_FIFOEMP, false,
+          event_first_fifo_byte },
+        { "FIFOQWDEMP", BRANCH_JNZ, DFSTATUS_FIFOQWDEMP, false,
+          event_first_fifo_word },
+    };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
+        QTestState *qts = start_aic();
+
+        g_test_message("DFSTATUS %s poll", cases[i].name);
+        if (cases[i].master_off) {
+            config_writew(qts, 0x04, PCI_COMMAND_MEMORY_ONLY);
+        }
+        start_dfstatus_poll(qts, cases[i].op, cases[i].mask);
+        check_poll_parked(qts);
+        cases[i].event(qts);
+        check_poll_exited(qts);
+        qtest_quit(qts);
+    }
+}
+
+static void test_dfstatus_park_unparkable_reference(void)
+{
+    /* An SCB poll is not a pure window: it keeps its 1 ns continuation. */
+    QTestState *qts = start_aic();
+    uint8_t program[4];
+    size_t n = 0;
+
+    emit(program, &n, branch_word(BRANCH_JZ, 1, 0xa0, 0));
+    start_program(qts, program, n);
+    sequencer_settle(qts);
+    g_assert_false(sequencer_waiting(qts));
+    g_assert_cmpint(next_deadline_ns(qts), ==, 1);
+    qtest_quit(qts);
+}
+
+static void check_bus_master_wake(bool two_instruction_loop)
+{
+    uint8_t program[3 * 4];
+    QTestState *qts = start_aic();
+    size_t n = 0;
+
+    config_writew(qts, 0x04, PCI_COMMAND_MEMORY_ONLY);
+    event_memory_dma(qts);
+    if (two_instruction_loop) {
+        /* SSTAT0 and DFSTATUS both refresh DMADONE on every pass. */
+        emit(program, &n, branch_word(BRANCH_JZ, 1, 0x0b, 1));
+        emit(program, &n, branch_word(BRANCH_JZ, DFSTATUS_HDONE, 0x94, 0));
+        emit(program, &n, branch_word(BRANCH_JZ, 1, 0xa0, 2));
+    } else {
+        n = build_dfstatus_poll(program, BRANCH_JZ, DFSTATUS_HDONE);
+    }
+    start_program(qts, program, n);
+    check_poll_parked(qts);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & DFSTATUS_HDONE,
+                    ==, 0);
+    sequencer_settle(qts);
+    g_assert_true(sequencer_waiting(qts));
+    config_writew(qts, 0x04, PCI_COMMAND_MEMORY_MASTER);
+    sequencer_settle(qts);
+    g_assert_false(sequencer_waiting(qts));
+    g_assert_cmpint(next_deadline_ns(qts), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==,
+                    two_instruction_loop ? 2 : 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & DFSTATUS_HDONE,
+                    ==, DFSTATUS_HDONE);
+    qtest_quit(qts);
+}
+
+static void test_dfstatus_park_wakes_on_bus_master(void)
+{
+    check_bus_master_wake(false);
+}
+
+static void test_dfstatus_park_two_instruction_loop(void)
+{
+    check_bus_master_wake(true);
+}
+
+static void test_dfstatus_park_wakes_on_backend_transfer(void)
+{
+    static const uint8_t read_cdb[10] = {
+        0x28, 0, 0, 0, 0, 0, 0, 0, 1, 0
+    };
+    static const uint8_t sense_cdb[6] = { 0x03, 0, 0, 0, 18, 0 };
+    uint8_t program[128] = { 0 };
+    uint8_t guard[512], got[512], zero[512] = { 0 };
+    g_autofree char *path = NULL;
+    size_t n = 0;
+    QTestState *qts;
+    int fd = g_file_open_tmp("aic7880-park-XXXXXX", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 4096), ==, 0);
+    close(fd);
+    qts = start_throttled_disk(path);
+    g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
+                                 0x10000, 512, false), ==, 2);
+    g_assert_cmphex(run_disk_cdb(qts, sense_cdb, sizeof(sense_cdb),
+                                 0x11000, 18, false), ==, 0);
+    g_assert_cmphex(run_disk_cdb(qts, read_cdb, sizeof(read_cdb),
+                                 0x10000, 512, false), ==, 0);
+
+    memset(guard, 0xa5, sizeof(guard));
+    qtest_memwrite(qts, 0x12000, guard, sizeof(guard));
+    qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+    host_dma_program(qts, 0x12000, 512);
+    qtest_writeb(qts, REG_BASE + 0x08, 0x00);
+    qtest_writeb(qts, REG_BASE + 0x09, 0x02);
+    emit_command_setup(program, &n, false, -1);
+    emit_cdb_issue(program, &n, read_cdb, sizeof(read_cdb), false, true);
+    emit(program, &n, branch_word(BRANCH_JZ, DFSTATUS_HDONE, 0x94, n / 4));
+    emit(program, &n, branch_word(BRANCH_JZ, 1, 0xa0, n / 4));
+    start_program(qts, program, n);
+    sequencer_settle(qts);
+    /* The throttled backend has not delivered the block yet. */
+    check_poll_parked(qts);
+
+    /* Only the backend and guest memory are touched until the block lands. */
+    for (unsigned i = 0; i < 1000; i++) {
+        qtest_memread(qts, 0x12000, got, sizeof(got));
+        if (!memcmp(got, zero, sizeof(got))) {
+            break;
+        }
+        qtest_clock_step(qts, 1000);
+        g_usleep(10000);
+    }
+    g_assert_cmpmem(got, sizeof(got), zero, sizeof(zero));
+    sequencer_settle(qts);
+    g_assert_false(sequencer_waiting(qts));
+    g_assert_cmpint(next_deadline_ns(qts), ==, 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, n / 4 - 1);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & DFSTATUS_HDONE,
+                    ==, DFSTATUS_HDONE);
+    qtest_quit(qts);
+    unlink(path);
+}
+
+static void start_negative_control(QTestState *qts, const uint8_t *program,
+                                   size_t n)
+{
+    start_program(qts, program, n);
+    for (unsigned i = 0; i < 20; i++) {
+        qtest_clock_step(qts, 1);
+        g_assert_false(sequencer_waiting(qts));
+    }
+}
+
+static void test_dfstatus_park_negative_controls(void)
+{
+    uint8_t program[4 * 4];
+    QTestState *qts;
+    size_t n;
+
+    /* A counter that wraps every 512 instructions never recurs in 128. */
+    qts = start_aic();
+    n = 0;
+    emit(program, &n, alu_word(3, 1, 0x20, 0x20, false));
+    emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x94, 0));
+    start_negative_control(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_quit(qts);
+
+    /* An SCB read in the loop body is not a pure window. */
+    qts = start_aic();
+    n = 0;
+    emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x94, 1));
+    emit(program, &n, branch_word(BRANCH_JZ, 1, 0xa0, 0));
+    start_negative_control(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_quit(qts);
+
+    /* CALL and RET change the return stack. */
+    qts = start_aic();
+    n = 0;
+    emit(program, &n, branch_word(BRANCH_CALL, 0, 0x6a, 2));
+    emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x94, 0));
+    emit(program, &n, alu_word(0, 0, 0x6a, 0x20, true));
+    start_negative_control(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+    qtest_quit(qts);
+
+    /* The sequencer may write HCNT and DFCNTRL, which feed DFSTATUS. */
+    for (unsigned reg = 0x8c; reg <= 0x93; reg += 7) {
+        qts = start_aic();
+        n = 0;
+        emit(program, &n, alu_word(0, 0, 0x6a, reg, false));
+        emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x94, 0));
+        start_negative_control(qts, program, n);
+        g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x92), ==, 0);
+        qtest_quit(qts);
+    }
+
+    /* DFDAT consumes the FIFO and stops with an error when it is empty. */
+    qts = start_aic();
+    qtest_writeb(qts, REG_BASE + 0x93, 0x01);
+    for (unsigned i = 0; i < 3; i++) {
+        qtest_writeb(qts, REG_BASE + 0x99, i);
+    }
+    n = 0;
+    emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x99, 0));
+    start_negative_control(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x94) & DFSTATUS_FIFOEMP,
+                    ==, DFSTATUS_FIFOEMP);
+    qtest_quit(qts);
+
+    /* DSPCISTATUS is an input to DFSTATUS and is host-only. */
+    qts = start_aic();
+    n = 0;
+    emit(program, &n, alu_word(0, 0, 0x6a, 0x86, false));
+    emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x94, 0));
+    start_negative_control(qts, program, n);
+    g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x87) & 4, ==, 4);
+    qtest_quit(qts);
+}
+
+static void test_dfstatus_park_stale_status_recomputes(void)
+{
+    for (unsigned spin_while_set = 0; spin_while_set < 2; spin_while_set++) {
+        QTestState *qts = start_aic();
+
+        /*
+         * HDMAEN with HCNT 0, then HCNT 8 without a DFCNTRL write: the HCNT
+         * write does not refresh DFSTATUS, so MREQPEND reads clear until
+         * the first DFSTATUS read recomputes it.
+         */
+        qtest_writeb(qts, REG_BASE + 0x93, 0x05);
+        qtest_writeb(qts, REG_BASE + 0x93, 0x0c);
+        qtest_writeb(qts, REG_BASE + 0x8c, 8);
+        if (spin_while_set) {
+            start_dfstatus_poll(qts, BRANCH_JNZ, DFSTATUS_MREQPEND);
+            check_poll_parked(qts);
+            qtest_writeb(qts, REG_BASE + 0x8c, 0);
+        } else {
+            start_dfstatus_poll(qts, BRANCH_JZ, DFSTATUS_MREQPEND);
+        }
+        check_poll_exited(qts);
+        qtest_quit(qts);
+    }
+}
+
+static const uint8_t dump_ranges[][2] = {
+    { 0x00, 0x05 }, { 0x08, 0x0c }, { 0x10, 0x11 }, { 0x14, 0x17 },
+    { 0x1f, 0x5f }, { 0x60, 0x60 }, { 0x62, 0x6b }, { 0x6e, 0x6e },
+    { 0x86, 0x8e }, { 0x90, 0x94 }, { 0x9a, 0x9a }, { 0x9c, 0x9c },
+    { 0x9e, 0x9e },
+};
+
+/* Registers whose host read has no side effect, in the order read. */
+static size_t dump_registers(QTestState *qts, uint8_t *out)
+{
+    size_t n = 0;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(dump_ranges); i++) {
+        for (unsigned reg = dump_ranges[i][0]; reg <= dump_ranges[i][1];
+             reg++) {
+            out[n++] = qtest_readb(qts, REG_BASE + reg);
+        }
+    }
+    return n;
+}
+
+static void test_dfstatus_park_matches_clocked_reference(void)
+{
+    static const unsigned stored_steps[] = {
+        0, 1, 7, 8, 24, 28, 128, 132, 192, 196, 228, 232, 255, 256
+    };
+
+    for (unsigned selector = 0; selector < 4; selector++) {
+        for (unsigned from_memory = 0; from_memory < 2; from_memory++) {
+            for (unsigned requesting = 0; requesting < 2; requesting++) {
+                QTestState *parked = start_aic();
+                QTestState *clocked = start_clocked_aic();
+                QTestState *machines[] = { parked, clocked };
+                unsigned stored = 0;
+
+                for (unsigned m = 0; m < 2; m++) {
+                    uint8_t program[2 * 4];
+                    size_t n = 0;
+
+                    /* DFSTATUS bit 6 is never set: poll forever. */
+                    emit(program, &n,
+                         branch_word(BRANCH_JZ, 0x40, 0x94, 0));
+                    if (requesting) {
+                        config_writew(machines[m], 0x04,
+                                      PCI_COMMAND_MEMORY_ONLY);
+                    }
+                    qtest_writeb(machines[m], REG_BASE + 0x93,
+                                 (from_memory << 2) | 1);
+                    qtest_writeb(machines[m], REG_BASE + 0x86,
+                                 selector << 6);
+                    if (requesting) {
+                        host_dma_program(machines[m], 0x10000, 0x100);
+                        qtest_writeb(machines[m], REG_BASE + 0x93,
+                                     (from_memory << 2) | 8);
+                    }
+                    start_program(machines[m], program, n);
+                }
+                for (unsigned s = 0; s < ARRAY_SIZE(stored_steps); s++) {
+                    uint8_t dump[2][128];
+                    size_t count[2];
+
+                    for (; stored < stored_steps[s]; stored++) {
+                        for (unsigned m = 0; m < 2; m++) {
+                            qtest_writeb(machines[m], REG_BASE + 0x99,
+                                         stored);
+                        }
+                    }
+                    sequencer_settle(parked);
+                    qtest_clock_step(clocked, 1000);
+                    g_assert_true(sequencer_waiting(parked));
+                    g_assert_false(sequencer_waiting(clocked));
+                    count[0] = dump_registers(parked, dump[0]);
+                    count[1] = dump_registers(clocked, dump[1]);
+                    g_assert_cmpuint(count[0], ==, count[1]);
+                    g_assert_cmpmem(dump[0], count[0], dump[1], count[1]);
+                }
+                qtest_quit(parked);
+                qtest_quit(clocked);
+            }
+        }
+    }
+}
+
+static void test_dfstatus_park_clocked_reference_never_waits(void)
+{
+    QTestState *qts = start_clocked_aic();
+
+    start_dfstatus_poll(qts, BRANCH_JZ, DFSTATUS_HDONE);
+    for (unsigned i = 0; i < 20; i++) {
+        qtest_clock_step(qts, 1000);
+        g_assert_false(sequencer_waiting(qts));
+    }
+    g_assert_cmpint(next_deadline_ns(qts), <=, 125);
+    qtest_quit(qts);
+}
+
+static void test_dfstatus_park_indirect_source(void)
+{
+    for (unsigned scb = 0; scb < 2; scb++) {
+        uint8_t program[2 * 4];
+        QTestState *qts = start_aic();
+        size_t n = 0;
+
+        /* SINDEX selects the register that the SINDIR read reaches. */
+        emit_or(program, &n, scb ? 0xa0 : 0x94, 0x65);
+        emit(program, &n, branch_word(BRANCH_JZ, 0x40, 0x6c, 0));
+        start_program(qts, program, n);
+        sequencer_settle(qts);
+        g_assert_cmpint(sequencer_waiting(qts), ==, !scb);
+        if (!scb) {
+            qtest_writeb(qts, REG_BASE + 0x20, 0x11);
+            sequencer_settle(qts);
+            g_assert_true(sequencer_waiting(qts));
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_dfstatus_park_lifecycle(void)
+{
+    static const char *const names[] = {
+        "pause", "step", "load", "chip reset", "pci reset"
+    };
+
+    for (unsigned mode = 0; mode < ARRAY_SIZE(names); mode++) {
+        uint8_t program[2 * 4];
+        QTestState *qts = start_aic();
+        size_t n = build_dfstatus_poll(program, BRANCH_JNZ, DFSTATUS_FIFOEMP);
+
+        g_test_message("parked DFSTATUS wait and %s", names[mode]);
+        start_program(qts, program, n);
+        check_poll_parked(qts);
+        if (mode == 0) {
+            qtest_writeb(qts, REG_BASE + 0x87, 0x06);
+            g_assert_false(sequencer_waiting(qts));
+            sequencer_settle(qts);
+            g_assert_false(sequencer_waiting(qts));
+            event_first_fifo_byte(qts);
+            resume_program(qts, 2);
+            check_poll_exited(qts);
+        } else if (mode == 1) {
+            qtest_writeb(qts, REG_BASE + 0x87, 0x06);
+            qtest_writeb(qts, REG_BASE + 0x60, 0x04);
+            g_assert_false(sequencer_waiting(qts));
+            event_first_fifo_byte(qts);
+            qtest_writeb(qts, REG_BASE + 0x87, 0x02);
+            wait_paused(qts);
+            g_assert_false(sequencer_waiting(qts));
+            g_assert_cmphex(qtest_readb(qts, REG_BASE + 0x62), ==, 1);
+            qtest_writeb(qts, REG_BASE + 0x60, 0x00);
+            resume_program(qts, 2);
+            check_poll_exited(qts);
+        } else if (mode == 2) {
+            qtest_writeb(qts, REG_BASE + 0x87, 0x04);
+            qtest_writeb(qts, REG_BASE + 0x60, 0x91);
+            g_assert_false(sequencer_waiting(qts));
+            sequencer_settle(qts);
+            g_assert_false(sequencer_waiting(qts));
+            event_first_fifo_byte(qts);
+            start_program(qts, program, n);
+            check_poll_exited(qts);
+        } else {
+            if (mode == 3) {
+                qtest_writeb(qts, REG_BASE + 0x87, 0x01);
+            } else {
+                qtest_system_reset(qts);
+            }
+            g_assert_false(sequencer_waiting(qts));
+            sequencer_settle(qts);
+            g_assert_false(sequencer_waiting(qts));
+            if (mode == 4) {
+                config_writel(qts, 0x14, REG_BASE);
+                config_writew(qts, 0x04, PCI_COMMAND_MEMORY_MASTER);
+            }
+            /* The reset FIFO is empty again, so the same poll parks. */
+            start_program(qts, program, n);
+            check_poll_parked(qts);
+            event_first_fifo_byte(qts);
+            check_poll_exited(qts);
+        }
+        qtest_quit(qts);
+    }
+}
+
+static void test_dfstatus_park_migrates(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-park-XXXXXX", NULL);
+    g_autofree char *socket_path = g_build_filename(dir, "migrate.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket_path);
+    QTestState *from = start_aic();
+    QTestState *to = qtest_init(
+        "-M pc -m 128M -nodefaults -S -incoming defer "
+        "-device aic7880,id=hba,bus=pci.0,addr=04.0");
+    int64_t source_time;
+    uint8_t status;
+
+    /* HDMAEN is clear, so the poll may be saved while the wait is parked. */
+    start_dfstatus_poll(from, BRANCH_JNZ, DFSTATUS_FIFOEMP);
+    check_poll_parked(from);
+    status = qtest_readb(from, REG_BASE + 0x94);
+    sequencer_settle(from);
+    g_assert_true(sequencer_waiting(from));
+    source_time = qtest_clock_step(from, 1);
+    qtest_qmp_assert_success(from, "{'execute':'stop'}");
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration(to, "completed");
+    /* The save woke the source, so its timer is due at the saved time. */
+    qtest_clock_set(to, source_time);
+    qtest_clock_timers(to, true);
+    sgi_migrate_resume(to);
+    sequencer_settle(to);
+    g_assert_true(sequencer_waiting(to));
+    g_assert_cmphex(qtest_readb(to, REG_BASE + 0x94), ==, status);
+    sequencer_settle(to);
+    g_assert_true(sequencer_waiting(to));
+    event_first_fifo_byte(to);
+    check_poll_exited(to);
+    qtest_quit(to);
+    qtest_quit(from);
+    unlink(socket_path);
+    g_rmdir(dir);
+}
+
+static void test_dfstatus_park_refused_save(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("aic7880-park-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "state", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s", path);
+    QTestState *qts = start_aic();
+
+    /* HDMAEN with HCNT and no bus master: the save is refused (EBUSY). */
+    config_writew(qts, 0x04, PCI_COMMAND_MEMORY_ONLY);
+    event_memory_dma(qts);
+    start_dfstatus_poll(qts, BRANCH_JZ, DFSTATUS_HDONE);
+    check_poll_parked(qts);
+    qtest_qmp_assert_success(qts,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration(qts, "failed");
+    g_assert_true(sequencer_waiting(qts));
+    sequencer_settle(qts);
+    g_assert_true(sequencer_waiting(qts));
+    config_writew(qts, 0x04, PCI_COMMAND_MEMORY_MASTER);
+    check_poll_exited(qts);
+    qtest_quit(qts);
+    unlink(path);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -15216,6 +15840,32 @@ int main(int argc, char **argv)
                    test_sequencer_clocked_keeps_pc);
     qtest_add_func("aic7880/sequencer-clocked-migrates",
                    test_sequencer_clocked_migrates);
+    qtest_add_func("aic7880/dfstatus-park-engages",
+                   test_dfstatus_park_engages);
+    qtest_add_func("aic7880/dfstatus-park-unparkable-reference",
+                   test_dfstatus_park_unparkable_reference);
+    qtest_add_func("aic7880/dfstatus-park-wakes-on-bus-master",
+                   test_dfstatus_park_wakes_on_bus_master);
+    qtest_add_func("aic7880/dfstatus-park-two-instruction-loop",
+                   test_dfstatus_park_two_instruction_loop);
+    qtest_add_func("aic7880/dfstatus-park-wakes-on-backend-transfer",
+                   test_dfstatus_park_wakes_on_backend_transfer);
+    qtest_add_func("aic7880/dfstatus-park-negative-controls",
+                   test_dfstatus_park_negative_controls);
+    qtest_add_func("aic7880/dfstatus-park-stale-status-recomputes",
+                   test_dfstatus_park_stale_status_recomputes);
+    qtest_add_func("aic7880/dfstatus-park-matches-clocked-reference",
+                   test_dfstatus_park_matches_clocked_reference);
+    qtest_add_func("aic7880/dfstatus-park-clocked-reference-never-waits",
+                   test_dfstatus_park_clocked_reference_never_waits);
+    qtest_add_func("aic7880/dfstatus-park-indirect-source",
+                   test_dfstatus_park_indirect_source);
+    qtest_add_func("aic7880/dfstatus-park-lifecycle",
+                   test_dfstatus_park_lifecycle);
+    qtest_add_func("aic7880/dfstatus-park-migrates",
+                   test_dfstatus_park_migrates);
+    qtest_add_func("aic7880/dfstatus-park-refused-save",
+                   test_dfstatus_park_refused_save);
     qtest_add_func("aic7880/old-branch-high-address",
                    test_old_branch_high_address);
     qtest_add_func("aic7880/sequencer-interrupt-code",
