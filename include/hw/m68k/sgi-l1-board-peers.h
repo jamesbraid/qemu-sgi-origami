@@ -10,6 +10,9 @@
 
 #include "hw/i2c/i2c.h"
 
+/* The management USB controller's 64 KiB window, a sysbus device. */
+#define TYPE_SGI_L1_USB_WINDOW "sgi-l1-usb-window"
+
 /*
  * Fit the C-brick's bus select expander, the expanders on segments 0 to 3
  * and the node monitors on @bus. A device on a non-zero segment answers only

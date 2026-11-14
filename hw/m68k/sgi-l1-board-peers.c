@@ -12,11 +12,13 @@
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
+#include "qemu/units.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "monitor/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
+#include "hw/core/sysbus.h"
 #include "hw/i2c/i2c-wire.h"
 #include "hw/m68k/sgi-l1-board-peers.h"
 #include "migration/vmstate.h"
@@ -303,6 +305,112 @@ static void monitor_class_init(ObjectClass *oc, const void *data)
     RESETTABLE_CLASS(oc)->phases.hold = monitor_reset_hold;
 }
 
+/*
+ * The management USB controller's window at chip select 3. The firmware's
+ * probe writes the scratch register, reads the revision and writes and reads
+ * back even values; those two registers are modelled and every other offset
+ * is logged and reads zero.
+ */
+#define USB_WINDOW_SIZE     (64 * KiB)
+#define USB_REVISION_REG    0x18
+#define USB_SCRATCH_REG     0x1b
+/* Of the three revisions the firmware passes quietly, the newest. */
+#define USB_REVISION        0x13
+
+OBJECT_DECLARE_SIMPLE_TYPE(USBWindow, SGI_L1_USB_WINDOW)
+
+struct USBWindow {
+    SysBusDevice parent_obj;
+
+    MemoryRegion mmio;
+    uint8_t scratch;
+};
+
+static uint64_t usb_window_read(void *opaque, hwaddr addr, unsigned size)
+{
+    USBWindow *u = opaque;
+    uint8_t val = 0;
+
+    switch (addr) {
+    case USB_REVISION_REG:
+        val = USB_REVISION;
+        break;
+    case USB_SCRATCH_REG:
+        val = u->scratch;
+        break;
+    default:
+        qemu_log_mask(LOG_UNIMP, "usb-controller-slot0: read of offset 0x%"
+                      HWADDR_PRIx " is not modelled, reads zero\n", addr);
+        return 0;
+    }
+    trace_sgi_l1_usb_read(addr, val);
+    return val;
+}
+
+static void usb_window_write(void *opaque, hwaddr addr, uint64_t val,
+                             unsigned size)
+{
+    USBWindow *u = opaque;
+
+    switch (addr) {
+    case USB_REVISION_REG:
+        qemu_log_mask(LOG_GUEST_ERROR, "usb-controller-slot0: write to the "
+                      "read-only revision register, ignored\n");
+        return;
+    case USB_SCRATCH_REG:
+        u->scratch = val;
+        trace_sgi_l1_usb_write(addr, val);
+        return;
+    default:
+        qemu_log_mask(LOG_UNIMP, "usb-controller-slot0: write of offset 0x%"
+                      HWADDR_PRIx " = 0x%" PRIx64 " is not modelled, "
+                      "ignored\n", addr, val);
+    }
+}
+
+static const MemoryRegionOps usb_window_ops = {
+    .read = usb_window_read,
+    .write = usb_window_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 4,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 1,
+};
+
+static void usb_window_init(Object *obj)
+{
+    USBWindow *u = SGI_L1_USB_WINDOW(obj);
+
+    memory_region_init_io(&u->mmio, obj, &usb_window_ops, u,
+                          "usb-controller-slot0", USB_WINDOW_SIZE);
+    sysbus_init_mmio(SYS_BUS_DEVICE(obj), &u->mmio);
+}
+
+static void usb_window_reset_hold(Object *obj, ResetType type)
+{
+    SGI_L1_USB_WINDOW(obj)->scratch = 0;
+}
+
+static const VMStateDescription vmstate_usb_window = {
+    .name = TYPE_SGI_L1_USB_WINDOW,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(scratch, USBWindow),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void usb_window_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    dc->desc = "SGI L1 board management USB controller window";
+    dc->vmsd = &vmstate_usb_window;
+    RESETTABLE_CLASS(oc)->phases.hold = usb_window_reset_hold;
+}
+
 static const TypeInfo peer_types[] = {
     {
         .name          = TYPE_SGI_L1_SEGMENT_TARGET,
@@ -326,6 +434,13 @@ static const TypeInfo peer_types[] = {
         .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
         .instance_size = sizeof(EnvMonitor),
         .class_init    = monitor_class_init,
+    },
+    {
+        .name          = TYPE_SGI_L1_USB_WINDOW,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(USBWindow),
+        .instance_init = usb_window_init,
+        .class_init    = usb_window_class_init,
     },
     {
         .name          = TYPE_SGI_L1_BUS_SELECT,

@@ -922,7 +922,11 @@ leaves the select alone, that segments 4 to 13 hold nothing, and each
 expander's wire address, segment, reset value and input bits, from the
 firmware's table written out in the test, and that each node monitor starts
 at zero, takes the firmware's initialisation writes and reads them back, and
-keeps its register pointer between reads without stepping it.
+keeps its register pointer between reads without stepping it. The USB
+window test programs chip select 3 from test-owned code, then checks the
+firmware probe's reads and writes: the revision at ``0x18``, the scratch
+register at ``0x1b`` holding ``0xb5`` and every even value to ``0xfc``, the
+revision refusing a write, and any other offset logging and reading zero.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.
