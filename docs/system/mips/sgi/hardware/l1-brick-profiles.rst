@@ -559,3 +559,82 @@ What the model chooses, and the limit of each choice:
   brick request then goes to it in the C-brick's request form, because the
   addressing of a Cx-brick's four I/O ports is unknown. Without a peer an
   attached-brick destination answers the router's error reply.
+
+.. _sgi-l1-router-role:
+
+Router role
+===========
+
+The R-brick and the Cx-brick keep a router role in the controller's settings
+(setting ``0x3c``, bits 7:4 of byte ``+0x17`` of the first settings record).
+The model keeps the four-bit value as ``router-role``, which any writer can
+set to any value, and shows it with the ``router`` command (also ``rtr``).
+
+.. list-table::
+   :header-rows: 1
+   :widths: 40 20 40
+
+   * - Fact
+     - Rating
+     - Basis
+   * - The legal values are ``0xf`` ordinary, ``0xe`` meta and ``0xc``
+       repeater. The console offers the three words ``ordinary`` or
+       ``ord``, ``meta`` and ``repeater`` or ``rep`` and cannot store
+       anything else. A bare ``router`` prints ``<series>: router type is
+       <role>``, or ``router type is unknown (0x..)`` for an illegal value,
+       and a change prints ``router type changed, effective on power up or
+       reset``. The series word comes from persistent setting ``0x3d``,
+       bits 2:1 of byte ``+0x17`` of the first settings record, so only
+       ``NEW``, ``UNDECIDED``, ``3400 Series`` and ``3800 Series`` (0 to 3)
+       can be read back, each padded to eleven characters; the image's
+       ``INVALID`` is unreachable through it. The model keeps the setting as
+       the ``router-series`` property, 0 by default, which any writer can set
+       and which migrates; no command sets it, and who writes it in the
+       image is *unknown*. Two service mode lines come first in the image
+       while the service flag (setting ``0x3e``) and an expiry time are set;
+       the model prints neither. The model offers the command on the
+       R-brick and the Cx-brick; the image also offers it on other brick
+       types the model does not have.
+     - software expectation for the values, the command and its texts;
+       approximation for the missing service lines
+     - :src:`l1-firmware-1.44.0-mips router console command`
+   * - A role never written reads as ordinary.
+     - software expectation
+     - :src:`l1-firmware-1.44.0-mips router role start-up check`
+   * - Any other stored value is replaced by ``0xf``, and stored back, both
+       when the R-brick's router is released from reset and in the start-up
+       record initialiser, which runs on the R-brick and on the Cx-brick
+       (personality ``6``). The model's ``router-role`` is repaired at the
+       same two points.
+     - software expectation
+     - :src:`l1-firmware-1.44.0-mips router role start-up check`
+   * - The role reaches bits 7:4 of the ROUTER CONTROL expander only when the
+       R-brick releases its router, whose cold-start byte is ``0xf1``. A
+       ``router`` change reaches the stored value alone: it takes effect at
+       the next release and never writes the pins. A hold writes nothing.
+       The model keeps only bits 7:4 of that byte, as ``router-control``,
+       with the low nibble held at ``0x1`` where the image's other bits
+       move during the release sequence; it is written at every release the
+       model performs, among them ``reset``, ``power up`` and the power-up
+       at start with ``auto-power``. Which router input each bit reaches,
+       and the polarity, is *unknown*, so the byte drives nothing.
+     - software expectation for the release; unknown for the pins
+     - :src:`l1-firmware-1.44.0-base R-brick release routine`; the same routine is in :src:`l1-firmware-1.44.0-mips R-brick release routine`
+   * - The start-up initialiser copies the validated nibble into word
+       ``+0x2c`` of the controller's own table entry, which the L2 receives
+       whole in the configuration reply. That word is the start-up copy: a
+       later ``router`` change reaches it at the next controller start. The
+       model's R-brick has no rack and slot to name itself with, so it
+       offers no table entry; the Cx-brick's entry carries the word.
+     - software expectation for the copy; inferred that nothing else reads it
+     - :src:`l1-firmware-1.44.0-mips router role start-up check`
+   * - Metarouter levels (the values ``0xa``, ``0x6`` and ``0x2`` that
+       another L1 package stores) are illegal here and become ``0xf``.
+     - software expectation
+     - :src:`l1-firmware-1.44.0-mips router role start-up check`
+
+The role, the table-entry word and the byte last written to the router
+control expander migrate in the ``sgi-l1/controls`` section, with the
+Cx-brick's node-disable mask once that exists. The section is sent only when
+one of them differs from a cold start, so the stream of a default controller
+of any profile carries none and still loads into a binary without it.

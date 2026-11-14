@@ -2332,6 +2332,20 @@ firmware:
       image: payload
       sha256: 3c8a7aa93eb38502289cf0c2921ea91e6800228005bd8abd67425ce615f7b364
       container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
+  l1-firmware-1.44.0-mips:
+    title: "L1 system controller firmware, MIPS 2MB image"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Origin 3000 C-brick and Origin 3900 Cx-brick L1 controllers"
+    version: "1.44"
+    banner: "1.44.0, label MIPS 2MB image"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (the MIPS 2MB package)"
+      image: payload
+      sha256: ac81f501f01c6789e756ab1f5ec69fadb1e4c04225511d541340831686e04e70
+      container_sha256: c355c542554a41b23b69dca4c201c566e8352e8f9fb870d2365c74cdd8ab0c0f
   ip32-prom-4.18:
     title: "IP32 PROM"
     publisher: Silicon Graphics

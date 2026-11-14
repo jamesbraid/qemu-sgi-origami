@@ -1328,6 +1328,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 ``l1-firmware-1.44.0-base``
    *L1 system controller firmware, Base 1MB image*. Silicon Graphics. Firmware, cited by address. For Origin 3000 C-, I- and R-brick L1 controllers. Version 1.44. Banner ``1.44.0, built 2006-07-17 18:19:54, label Base 1MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (the flash body of the Base 1MB image range, 982,376 bytes at file offset 0x68). Hashed as the payload image. SHA-256 ``3c8a7aa93eb38502289cf0c2921ea91e6800228005bd8abd67425ce615f7b364``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-l1-firmware-1-44-0-mips:
+
+``l1-firmware-1.44.0-mips``
+   *L1 system controller firmware, MIPS 2MB image*. Silicon Graphics. Firmware, cited by address. For Origin 3000 C-brick and Origin 3900 Cx-brick L1 controllers. Version 1.44. Banner ``1.44.0, label MIPS 2MB image``. Found on IRIX 6.5.30 installation media, composite L1 firmware file l1.bin (the MIPS 2MB package). Hashed as the payload image. SHA-256 ``ac81f501f01c6789e756ab1f5ec69fadb1e4c04225511d541340831686e04e70``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
 .. _sgi-ref-sonic-dsp-programs-5-0:
 
 ``sonic-dsp-programs-5.0``
