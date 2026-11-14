@@ -339,6 +339,8 @@ option('cloop', type: 'feature', value: 'auto',
        description: 'cloop image format support')
 option('dmg', type: 'feature', value: 'auto',
        description: 'dmg image format support')
+option('chd', type: 'feature', value: 'auto',
+       description: 'chd image format support')
 option('qcow1', type: 'feature', value: 'auto',
        description: 'qcow1 image format support')
 option('vdi', type: 'feature', value: 'auto',

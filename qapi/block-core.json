@@ -3340,6 +3340,7 @@
 ##
 { 'enum': 'BlockdevDriver',
   'data': [ 'blkdebug', 'blklogwrites', 'blkreplay', 'blkverify', 'bochs',
+            { 'name': 'chd', 'if': 'CONFIG_CHD' },
             'cloop', 'compress', 'copy-before-write', 'copy-on-read', 'dmg',
             'file', 'snapshot-access', 'ftp', 'ftps',
             {'name': 'host_cdrom', 'if': 'HAVE_HOST_BLOCK_DEVICE' },
@@ -3493,6 +3494,21 @@
 ##
 { 'struct': 'BlockdevOptionsGenericFormat',
   'data': { 'file': 'BlockdevRef' } }
+
+##
+# @BlockdevOptionsChd:
+#
+# Driver specific block device options for CHD (MAME "compressed hunks
+# of data") hard disk images.
+#
+# @cache-size: bytes of decoded hunks to keep.  Default: 32 MiB
+#
+# Since: 11.1
+##
+{ 'struct': 'BlockdevOptionsChd',
+  'base': 'BlockdevOptionsGenericFormat',
+  'data': { '*cache-size': 'size' },
+  'if': 'CONFIG_CHD' }
 
 ##
 # @BlockdevOptionsLUKS:
@@ -4839,6 +4855,7 @@
       'blkverify':  'BlockdevOptionsBlkverify',
       'blkreplay':  'BlockdevOptionsBlkreplay',
       'bochs':      'BlockdevOptionsGenericFormat',
+      'chd':        { 'type': 'BlockdevOptionsChd', 'if': 'CONFIG_CHD' },
       'cloop':      'BlockdevOptionsGenericFormat',
       'compress':   'BlockdevOptionsGenericFormat',
       'copy-before-write':'BlockdevOptionsCbw',

@@ -4608,6 +4608,14 @@ L: qemu-block@nongnu.org
 S: Supported
 F: block/bochs.c
 
+chd
+M: James Braid <jamesb@loreland.org>
+S: Maintained
+F: block/chd.c
+F: subprojects/libchdman.wrap
+F: subprojects/packagefiles/libchdman/
+F: tests/qemu-iotests/tests/chd*
+
 cloop
 M: Stefan Hajnoczi <stefanha@redhat.com>
 L: qemu-block@nongnu.org

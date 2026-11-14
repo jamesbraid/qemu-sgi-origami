@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+#
+# MAME's CHD core (BSD-3-Clause), as vendored by the libchdman-rs crate: an
+# unmodified subset of MAME 0.289 (src/lib/util chd*.cpp and its codecs, plus
+# the bundled lzma, zstd, flac, utf8proc and zlib). The crate is the same
+# source the iris emulator links, so the two read and write CHDs with one
+# implementation. Only the crate's own meson-less build is replaced, by
+# packagefiles/libchdman/meson.build.
+[wrap-file]
+directory = libchdman-rs-0.289.5
+source_url = https://crates.io/api/v1/crates/libchdman-rs/0.289.5/download
+source_filename = libchdman-rs-0.289.5.tar.gz
+source_hash = f4647b31e0ded90f488f0925af908e37a913bda3ff57393758a5184ab9c186d5
+patch_directory = libchdman
+
+[provide]
+dependency_names = libchdman

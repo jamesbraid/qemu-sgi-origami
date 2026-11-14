@@ -10,6 +10,9 @@ endif
 
 qemu_iotests_binaries = [qemu_img, qemu_io, qemu_nbd, qsd]
 qemu_iotests_env = {'PYTHON': python.full_path()}
+if libchdman.found()
+  qemu_iotests_binaries += chd_fixture
+endif
 # If altering this definition, also update docs/devel/testing/main.rst
 # section on 'check-block' targets to reflect the changes
 qemu_iotests_drivers = {

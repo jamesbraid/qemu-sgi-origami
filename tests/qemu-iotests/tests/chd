@@ -1,0 +1,177 @@
+#!/usr/bin/env python3
+# group: rw quick
+#
+# Test the chd block driver: hard disk images in MAME's CHD container.
+#
+# The images are made at test time by chd-fixture, which compresses a raw
+# file with MAME's own CHD code, so the tree holds no binary blobs.
+#
+# SPDX-License-Identifier: BSD-3-Clause
+
+import glob
+import json
+import os
+import random
+import re
+import subprocess
+
+import iotests
+from iotests import qemu_img, qemu_io
+
+# 8 cylinders of the 16-head, 63-sector geometry chd-fixture records, so the
+# size is a whole number of 4 KiB hunks.
+RAW_SIZE = 8 * 16 * 63 * 512
+HUNK = 4096
+
+CODECS = ['lzma', 'zlib', 'huff', 'flac', 'zstd', 'none',
+          'lzma,zlib,huff,flac']
+
+raw_img = os.path.join(iotests.test_dir, 'raw.img')
+chd_img = os.path.join(iotests.test_dir, 'test.chd')
+
+
+def fixture_prog():
+    env = os.environ.get('CHD_FIXTURE_PROG')
+    if env:
+        return env
+    build = os.path.dirname(os.path.abspath(iotests.qemu_img_args[0]))
+    found = glob.glob(os.path.join(build, 'subprojects', 'libchdman*',
+                                   'chd-fixture'))
+    return found[0] if found else None
+
+
+def fixture(*args):
+    return subprocess.run([fixture_prog(), *args], text=True, check=True,
+                          stdout=subprocess.PIPE,
+                          stderr=subprocess.STDOUT).stdout.strip()
+
+
+def make_raw(path):
+    """Hunks of every kind: zero, repeated bytes, text, noise."""
+    rnd = random.Random(1234)
+    words = [b'alpha ', b'bravo ', b'charlie ', b'delta ', b'echo ']
+    data = bytearray()
+    for n in range(RAW_SIZE // HUNK):
+        kind = n % 5
+        if kind == 0:
+            hunk = bytes(HUNK)
+        elif kind == 1:
+            hunk = bytes([n & 0xff]) * HUNK
+        elif kind == 2:
+            hunk = bytearray()
+            while len(hunk) < HUNK:
+                hunk += rnd.choice(words)
+            hunk = bytes(hunk[:HUNK])
+        elif kind == 3:
+            hunk = bytes(rnd.getrandbits(8) for _ in range(HUNK))
+        else:
+            hunk = bytes(rnd.choice(b'\x00\x01\x02\x03')
+                         for _ in range(HUNK))
+        data += hunk
+    with open(path, 'wb') as f:
+        f.write(data)
+
+
+def remove(*paths):
+    for p in paths:
+        try:
+            os.remove(p)
+        except FileNotFoundError:
+            pass
+
+
+def hexdump(output):
+    """The data lines of a read -v, without its timing line."""
+    return [ln for ln in output.splitlines() if re.match('[0-9a-f]{8}:', ln)]
+
+
+def info():
+    out = qemu_img('info', '--output=json', '-f', 'chd', chd_img).stdout
+    return json.loads(out)
+
+
+def compare():
+    """Does the CHD read the same as the raw image?"""
+    return qemu_img('compare', '-f', 'raw', '-F', 'chd', raw_img, chd_img,
+                    check=False).returncode == 0
+
+
+class ChdTestCase(iotests.QMPTestCase):
+    def setUp(self):
+        make_raw(raw_img)
+
+    def tearDown(self):
+        remove(raw_img, chd_img)
+
+
+class TestRead(ChdTestCase):
+    def test_every_codec_reads_as_raw(self):
+        for codecs in CODECS:
+            with self.subTest(codecs=codecs):
+                fixture('create', chd_img, raw_img, codecs)
+                self.assertTrue(compare())
+                self.assertEqual(info()['virtual-size'], RAW_SIZE)
+
+    def test_unaligned_reads_across_hunks(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        for offset, length in [(1, 511), (HUNK - 7, 15), (3 * HUNK + 512,
+                               5 * HUNK + 1024), (RAW_SIZE - 1024, 1024)]:
+            cmd = f'read -v {offset} {length}'
+            want = qemu_io('-f', 'raw', '-c', cmd, raw_img).stdout
+            got = qemu_io('-r', '-f', 'chd', '-c', cmd, chd_img).stdout
+            self.assertEqual(hexdump(want), hexdump(got))
+
+    def test_hunk_is_reported_as_cluster_size(self):
+        fixture('create', chd_img, raw_img, 'zlib', str(2 * HUNK))
+        self.assertEqual(info()['cluster-size'], 2 * HUNK)
+        self.assertTrue(compare())
+
+    def test_writing_is_refused(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        res = qemu_io('-f', 'chd', '-c', 'write 0 512', chd_img, check=False)
+        self.assertNotEqual(res.returncode, 0)
+
+    def test_corrupt_hunk_is_an_io_error(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        # the hunks follow the metadata, which follows the 124-byte v5 header
+        with open(chd_img, 'r+b') as f:
+            header = f.read(124)
+            meta = int.from_bytes(header[48:56], 'big')
+            f.seek(meta + 4)
+            meta_len = int.from_bytes(f.read(4), 'big') & 0xffffff
+            f.seek(meta + 16 + meta_len + 16)
+            f.write(b'\xa5' * 64)
+        res = qemu_io('-r', '-f', 'chd', '-c', f'read 0 {RAW_SIZE}', chd_img,
+                      check=False)
+        self.assertIn('Input/output error', res.stdout)
+
+    def test_damaged_header_is_an_error_not_a_crash(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        for offset, length in [(60, 4), (56, 4), (40, 8), (32, 8)]:
+            with self.subTest(offset=offset):
+                with open(chd_img, 'r+b') as f:
+                    f.seek(offset)
+                    saved = f.read(length)
+                    f.seek(offset)
+                    f.write(bytes(length) if offset in (56, 60)
+                            else b'\xff' * length)
+                res = qemu_img('info', '-f', 'chd', chd_img, check=False)
+                self.assertEqual(res.returncode, 1)
+                with open(chd_img, 'r+b') as f:
+                    f.seek(offset)
+                    f.write(saved)
+
+    def test_not_a_hard_disk_is_refused(self):
+        remove(chd_img)
+        with open(chd_img, 'wb') as f:
+            f.write(b'MComprHD' + bytes(4096))
+        res = qemu_img('info', '-f', 'chd', chd_img, check=False)
+        self.assertNotEqual(res.returncode, 0)
+
+
+if __name__ == '__main__':
+    if fixture_prog() is None or not os.access(fixture_prog(), os.X_OK):
+        iotests.notrun('chd-fixture is not built (configure --enable-chd and '
+                      'build the chd-fixture target)')
+    iotests.main(supported_fmts=['raw'], supported_protocols=['file'],
+                 required_fmts=['chd'])

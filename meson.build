@@ -82,7 +82,7 @@ python = import('python').find_installation()
 
 cc = meson.get_compiler('c')
 all_languages = ['c']
-enable_cpp = host_os == 'windows' or get_option('plugins')
+enable_cpp = host_os == 'windows' or get_option('plugins') or get_option('chd').allowed()
 if enable_cpp and add_languages('cpp', required: false, native: false)
   all_languages += ['cpp']
   cxx = meson.get_compiler('cpp')
@@ -1297,6 +1297,21 @@ if not get_option('slirp').auto() or have_system
   endif
 endif
 
+# MAME's CHD core, a C++ library (subprojects/libchdman.wrap), for block/chd.c.
+libchdman = not_found
+chd_fixture = not_found
+if get_option('chd').allowed() and have_block
+  if 'cpp' in all_languages
+    libchdman_proj = subproject('libchdman', required: get_option('chd'),
+                                default_options: ['default_library=static'])
+    if libchdman_proj.found()
+      libchdman = libchdman_proj.get_variable('libchdman_dep')
+      chd_fixture = libchdman_proj.get_variable('chd_fixture')
+    endif
+  elif get_option('chd').enabled()
+    error('CHD support needs a C++ compiler')
+  endif
+endif
 enable_passt = get_option('passt') \
   .require(host_os == 'linux', error_message: 'passt is supported only on Linux') \
   .require(gio.found(), error_message: 'passt requires gio') \
@@ -2494,6 +2509,7 @@ endif
 config_host_data.set('CONFIG_PIXMAN', pixman.found())
 config_host_data.set('CONFIG_PASST', enable_passt)
 config_host_data.set('CONFIG_SLIRP', slirp.found())
+config_host_data.set('CONFIG_CHD', libchdman.found())
 config_host_data.set('CONFIG_SNAPPY', snappy.found())
 config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
 if have_tcg
@@ -4859,6 +4875,7 @@ if have_block
   summary_info += {'bochs support':     get_option('bochs').allowed()}
   summary_info += {'cloop support':     get_option('cloop').allowed()}
   summary_info += {'dmg support':       get_option('dmg').allowed()}
+  summary_info += {'chd support':       libchdman}
   summary_info += {'qcow v1 support':   get_option('qcow1').allowed()}
   summary_info += {'vdi support':       get_option('vdi').allowed()}
   summary_info += {'vhdx support':      get_option('vhdx').allowed()}
