@@ -454,6 +454,7 @@ include/hw/rtc/ds1685.h
 include/hw/rtc/m48t35-ip27.h
 include/hw/rtc/m48t35.h
 include/hw/scsi/qlogic-isp.h
+packaging/configure-flags.json
 qapi/misc-mips.json
 qapi/sgi-machines.json
 scripts/check-qtest-registered.py
