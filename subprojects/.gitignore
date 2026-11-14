@@ -13,6 +13,7 @@
 /foreign-*
 /glib-sys-*
 /libc-*
+/libchdman-rs-*
 /probe-*
 /proc-macro*
 /quote-*
