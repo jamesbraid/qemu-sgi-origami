@@ -829,6 +829,25 @@ expectation* and not a statement about a board:
   type ``C (IP35)``, ``[1MB flash]`` and the record's serial. The firmware
   then registers the C-brick's monitors and expanders, and each call to one
   that is not fitted reports no acknowledge; polling repeats those reports.
+- With a C-brick record and ``board-peers=on`` the same run reaches the
+  prompt with every no-acknowledge report gone for the display expander, the
+  processor module presence expander, the three node monitors, the two port
+  controls, the connection mode write, the fan, supply and temperature set-up
+  of the node and the interrupt-driven rescans of the COM, PORT, POWER and
+  FAN expanders and of the node monitors. The management USB probe passes
+  and the controller is registered. Four things remain: the memory module
+  records are probed and not acknowledged, silently; the processor module 0
+  monitors (wire ``0x5c`` and ``0x5e`` on segment 4) are initialised and
+  polled and not acknowledged, because the firmware does not disable them
+  when the module is absent; the display driver, which starts now that its
+  expander answers, calls wire address ``0xf0`` (and reads ``0xf1``) and is
+  not acknowledged, so it prints its reset and write errors; and the USB
+  controller's other registers are written and polled as logged
+  unimplemented accesses. ``power`` prints the supplies at ``0.000V`` with
+  the firmware's default margin values where the empty bus printed an error
+  code for each; ``env`` still reports that monitoring is enabled but not
+  running, as the empty bus did. Whether that is the processor module
+  monitors is *unknown*.
 - With an I-brick's ``POWER`` and ``LOGIC`` records the type stays unknown
   (prompt ``---?---L1>``, ``brick`` prints ``Unknown``), with the serial and
   the source read as NVRAM.
@@ -927,6 +946,10 @@ window test programs chip select 3 from test-owned code, then checks the
 firmware probe's reads and writes: the revision at ``0x18``, the scratch
 register at ``0x1b`` holding ``0xb5`` and every even value to ``0xfc``, the
 revision refusing a write, and any other offset logging and reading zero.
+The functional test boots the C-brick with ``board-peers`` and checks which
+reports are gone, which remain, that the supply table reads, and that the only
+addresses the firmware calls without an acknowledge are the memory module
+records, the processor module 0 monitors and the display driver.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.
