@@ -10619,6 +10619,28 @@ static void sgi_machine_node_reset_reach(void *opaque, SN1NodeState *origin,
 }
 
 /*
+ * A Cx-brick L1's per-node reset pulse restarts that node's Bedrock alone,
+ * where its "node-reset" pulse reaches every node of the brick.
+ */
+typedef struct SGIBoardReset {
+    SGIMachineState *machine;
+    SN1NodeState *node;
+} SGIBoardReset;
+
+static void sgi_machine_board_reset(void *opaque, int n, int level)
+{
+    SGIBoardReset *reset = opaque;
+    g_autoptr(GPtrArray) bedrocks = NULL;
+
+    if (!level) {
+        return;
+    }
+    bedrocks = g_ptr_array_new();
+    g_ptr_array_add(bedrocks, reset->node->bedrock);
+    sgi_machine_node_reset_reach(reset->machine, reset->node, bedrocks);
+}
+
+/*
  * Each node's supply follows its brick's L1: the L1's "node-power" output is
  * the node's "power" input. A Cx-brick's L1 serves several nodes, so its one
  * line is split to them. The L1 settled its level at realize, before the node
@@ -10677,6 +10699,14 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
             if (peer == node) {
                 qdev_connect_gpio_out_named(l1, "node-reset", 0,
                     qdev_get_gpio_in_named(DEVICE(peer), "reset", 0));
+            }
+            if (peer->l1_link < SGI_L1_CX_BOARDS) {
+                SGIBoardReset *reset = g_new0(SGIBoardReset, 1);
+
+                reset->machine = s;
+                reset->node = peer;
+                qdev_connect_gpio_out_named(l1, "board-reset", peer->l1_link,
+                    qemu_allocate_irq(sgi_machine_board_reset, reset, 0));
             }
             qemu_set_irq(power, SGI_L1(l1)->node_power);
         }

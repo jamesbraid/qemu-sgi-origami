@@ -218,6 +218,9 @@ struct SGIL1State {
     qemu_irq soft_reset_out;
     /* One line per node board served; only a Cx-brick serves several. */
     qemu_irq nmi_out[SGI_L1_CX_BOARDS];
+    /* A Cx-brick's per-node reset and soft reset pulses. */
+    qemu_irq board_reset_out[SGI_L1_CX_BOARDS];
+    qemu_irq board_soft_reset_out[SGI_L1_CX_BOARDS];
     QEMUBH *power_up_bh;
     int32_t revision_major;
     int32_t revision_minor;
@@ -354,6 +357,10 @@ struct SGIL1State {
      * expander. Only the Cx-brick and the R-brick use them.
      */
     uint8_t router_role;
+    /* Cx-brick: bit n set disables node n (persistent setting 0x70). */
+    uint8_t node_disable;
+    /* C-brick: bit n set disables processor n, a to d (settings 0x58+). */
+    uint8_t cpu_disable;
     uint8_t router_entry;
     uint8_t router_control;
     /* Setting 0x3d, bits 2:1 of byte +0x17: the series word, 0 to 3. */

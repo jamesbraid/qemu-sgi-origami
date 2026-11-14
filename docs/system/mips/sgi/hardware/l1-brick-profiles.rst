@@ -471,8 +471,11 @@ fitted Cx-brick uses is *unknown*, and each ``0x2001`` is logged as such.
    * - ``select filter on`` passes only the selected target's output.
      - established at brick level; inferred for a board inside a brick
      - :src:`007-4653-001 p. 115`.
-   * - ``power``, ``reset`` and ``nmi`` act on the whole brick.
-     - inferred
+   * - ``power`` acts on the whole brick; ``reset``, ``softreset`` and ``nmi``
+       act on the whole brick or on one node, as described in
+       :ref:`sgi-l1-node-control`.
+     - inferred for the manual's units; software expectation for the node
+       commands
      - Every printed unit is the brick (:src:`007-4653-001 p. 58, 108, 113`).
    * - How the four Bedrocks reach the L1, the integers a Cx-brick uses on
        the wire for the twenty names, its type character and its record
@@ -502,12 +505,14 @@ What the model chooses, and the limit of each choice:
   junk bus console UART:UART_TIMEOUT``, or for a processor subchannel
   ``no response from 001c07 Junk bus CPU2B system not responding``
   (:src:`007-4653-001 p. 115, 141`), and stays in L1 mode.
-- Power, reset and NMI requests from any window, and from the prompt, act on
-  every board at once and log one entry. The machine's own reset carries
-  them out, so the router is reset with the rest, where the profile's
-  contract keeps the router's state; per-board power and reset are not
-  offered. ``nmi`` pulses one ``nmi`` line per board, and only boards with
-  processors are wired to them.
+- Power requests from any window, and from the prompt, act on every board
+  at once and log one entry; per-board power is not offered. A reset, soft
+  reset or NMI reaches every present, enabled node, or the one node a
+  command names (:ref:`sgi-l1-node-control`). The machine's own reset
+  carries out a brick-wide ``reset``, so the router is reset with the rest,
+  where the profile's contract keeps the router's state. ``nmi`` pulses one
+  ``nmi`` line per node, and only boards with processors are wired to
+  them.
 - Request ``0x0006`` follows the 38-entry component table of the L1
   firmware's Cx-brick personality: component 0 the power entry module's
   inlet board, 1 the router board, then a node board at 2, 11, 20 and 29,
@@ -638,3 +643,152 @@ control expander migrate in the ``sgi-l1/controls`` section, with the
 Cx-brick's node-disable mask once that exists. The section is sent only when
 one of them differs from a cold start, so the stream of a default controller
 of any profile carries none and still loads into a binary without it.
+
+.. _sgi-l1-node-control:
+
+Cx-brick node control
+=====================
+
+The Cx-brick L1 (personality ``6``) holds one reset, soft reset and NMI line
+for each node, where the C-brick's one control block serves both of its
+nodes. The commands below are those of the personality's per-node hooks
+(*software expectation* throughout, from a reading of the L1 firmware 1.44.0
+package that holds both personalities: :src:`l1-firmware-1.44.0-mips
+compute-brick node reset and disable`). Which expander bit each hook drives
+and which :term:`Bedrock` input it reaches is *unknown*, so the model keeps
+only the pulses.
+
+.. list-table::
+   :header-rows: 1
+   :widths: 30 70
+
+   * - Command
+     - Model
+   * - ``reset``, ``reset hold``, ``0x2001``
+     - Brick-wide: the node-reset pulse that reaches every node of the brick
+       when none is disabled. With a node disabled, each present, enabled
+       node gets its own ``board-reset`` pulse and the disabled one is
+       skipped. The machine joins ``board-reset`` to that node's Bedrock
+       alone; that join has no machine-level test.
+   * - ``reset <n>``
+     - The node's own ``board-reset`` pulse, a disabled node's too: the
+       image's handler bypasses the iterator that skips disabled nodes. The
+       image holds the node and leaves it held, where the model's hold is
+       the pulse, an *approximation*. The handler takes 0 to 4 although the
+       node count is 4. Index 4 addresses a fifth node record, which is
+       record 0 of the next variant of a static table (identical to record 0
+       of any variant except for one byte that differs between variants 7
+       and 8) and so names node 0's expanders and type setting, and a fifth type byte one past the
+       four-byte type table, in RAM that nothing was found to write. The
+       hold compares that byte with setting ``0x56`` and, only when a
+       margin reset then succeeds, stores it there; it then drives node 0's
+       reset lines (on the last variant, lines chosen by index 0). Which
+       variant a brick selects comes from a character code whose source was
+       not traced. The reading is a *software expectation* for the table layout
+       and the hold's reads; the effect, a second hold of node 0 that may
+       overwrite its stored type with 0, is *inferred*. The model does
+       nothing for index 4 and logs it, an *approximation*. Above 4 it
+       prints ``ERROR: invalid NODE index N.`` An absent node does nothing.
+   * - ``softreset``, ``softreset <n>``, ``nmi``, ``nmi <n>``
+     - Brick-wide: every present, enabled node in turn. With a number: that
+       node alone. A number of 4 or more prints ``ERROR: Node:invalid node
+       number`` (code -4201), an absent node ``ERROR: Node:node not
+       present`` (-4204) and a disabled one ``ERROR: Node:node disabled``
+       (-4203). The texts and codes are a *software expectation* of the
+       image's error table; which text a node that is both absent and
+       marked disabled gets was not followed, so the model reports it absent
+       (*approximation*). A soft reset is a pulse on that
+       node's ``board-soft-reset`` line, whose ten-tick width the model does
+       not keep, and an NMI is a pulse on its ``nmi`` line, cleared then set
+       in the image.
+   * - ``node d``, ``node e``, ``node <n> d``, ``node <n> e``
+     - Set or clear bit ``n`` of the persistent node-disable setting, or the
+       bit of every present node when no number is given. Refused while the
+       brick is powered with ``ERROR: Node:power must be down to
+       enable/disable NODEs`` (-4202), checked before the index, then with
+       the two node errors above. No line is driven. A disabled node is
+       skipped by a brick-wide ``reset``, ``softreset`` and ``nmi``. Only
+       this argument order parses in the image: ``node d <n>`` matches no
+       row and prints ``INFO: command not supported on this brick type``,
+       as the model does. Bare ``node`` and ``node status`` print a status
+       table the model does not offer; it logs and prints nothing. The
+       model keeps the bits across a controller restart and migrates them.
+   * - Exit status
+     - The -1 that each refused command returns is the model's choice, an
+       *approximation*: the image's codes are the ones above and its
+       console prints the texts.
+
+The model keeps the node-disable mask as the ``node-disable`` property, a
+writable 8-bit value that any writer can set; it accepts bits above the four
+nodes. Every use, the brick-wide reset path and the test of whether the
+``sgi-l1/controls`` migration section is sent included, reads it through the
+fitted boards, so those bits do nothing: a brick with only such bits set
+takes the brick-wide reset and sends no section. No source says what a
+stray bit means, so this is the model's choice, an *approximation* (the tests
+``sgi-l1-cxbrick/node/disable-mask`` and ``sgi-l1-o3k/migration/stray-disable-bits``
+check it).
+``sn1/cross-node/cx-node-reset/*`` sets the property on an Origin 3900
+machine, where ``reset <n>`` and a brick-wide ``reset`` are checked to
+restart only the intended boards.
+
+The firmware's node-disable hook drives no line, so a disabled node's power-up
+is not changed by it: the model leaves power alone. What the setting does to
+the scan list the firmware builds at release, which shows a disabled node as
+state 0, and what state a skipped node's reset lines are left in, are
+*unknown*. The firmware's ``Node Disabled`` progress line belongs to a
+different brick type (``7``), which the model does not have, and to no
+Cx-brick.
+
+On a C-brick (types ``C`` in packages 0 and 2) no hook reads a node number:
+``softreset <n>`` is ``softreset`` and ``nmi <n>`` is ``nmi``, one pulse of
+one control line for the brick, and ``reset <n>`` and the ``node`` family are
+refused with ``INFO: command not supported on this brick type``. The C-brick
+has no node disable. The model's peer link joins C-bricks only:
+``l1_peer_fault()`` in ``hw/misc/sgi-l1.c`` refuses a Cx-brick at either end
+with ``L1 cxbrick profile models no peer link``, and
+``sgi-l1-cxbrick/no-peer`` checks that refusal. The two callers of
+``l1_peer_reset()`` are the ``* reset`` broadcast, which acts through that
+link, and the I-brick and R-brick ``reset``, so the function never pulses a Cx
+peer's node-reset line and needs no disabled-node skip.
+
+The C-brick's one per-part disable is ``cpu d`` and ``cpu e``, for every
+processor or one letter ``a`` to ``d`` (*software expectation*). The command is
+refused with ``ERROR: CPU:power must be down to enable/disable CPUs``
+(code -2402) unless every supply is off, and success prints nothing. The
+image checks, in order: the brick class, the processor count, the parse of
+the word, the supply state, the index against the count (-2401, ``invalid cpu
+number``), the presence of the disable hook (-2400, ``cpu commands are not
+supported on this brick type``), the hook, and only then the stored bit; with
+no word, each present processor goes through the last three. That order was
+read instruction by instruction in the Origin 300 package, and the helpers
+carry the same constants in packages 0 and 2 without a line-by-line
+comparison, so it is a *software expectation* with the equality for packages
+0 and 2 *inferred*. The model's order is the word, then the supply, and it
+has the four processors a to d, so the bound and the hook never fail. A bad word prints the
+image's ``ERROR: invalid CPU (valid format is ...)`` line; the digit form is
+refused as a bad word, *inferred*. The choice is one bit per processor of the
+persistent settings, which the board initialisation applies again to each
+processor; the model keeps the mask across a controller restart and migrates
+it, and that the image runs the initialisation at every controller start is
+*inferred*. The processor-module power bits it drives are not modelled, so the
+mask drives nothing. The ``cpu`` status table is not modelled.
+
+None of these commands, nor ``node d`` and ``node e``, reaches the routine
+that sends a power-state notice or any other event, so the L2 learns of none
+of them (*software expectation*, from the call structure; whether an L2
+learns of a disabled node some other way is *unknown*). A brick-wide ``reset``
+can send other events in the image, the console subchannel notice when a
+nonzero subchannel was selected and the margin event when a module type
+changed; the model sends neither, an *approximation*.
+
+The Origin 3900 catalogue seats node board ``n`` on router port ``n`` + 2,
+a model choice (*inferred*). The L1's table of router port records is
+ordered ``PORT A``, ``INT N1``, ``INT N2``, ``INT N0``, ``INT N3``,
+``PORT F``, ``PORT G``, ``PORT H``, with one-bit masks that fit "position
+``k`` is router port ``k``"; the external names then land on ports 1, 6, 7
+and 8, which agree with the connector labels for NUMAlink ports 1, 8, 7 and
+6 at A, H, G and F (:src:`007-4572-001 p. 11`, printed page). That puts node
+1 on port 2, node 2 on 3, node 0 on 4 and node 3 on 5. The order is
+*inferred* from the mask pattern and the labels and is not stated by any
+source; it agrees with the catalogue for node 3 only. The L1 model uses
+neither.

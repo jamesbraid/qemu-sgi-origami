@@ -3932,6 +3932,68 @@ static void test_l1_reset_restarts_its_node(const void *data)
 }
 
 /*
+ * The four node boards of an Origin 3900 Cx-brick share one L1. Its per-node
+ * reset reaches the named board's Bedrock alone, a disabled node is skipped
+ * by a brick-wide reset, and "reset <n>" restarts a disabled node all the
+ * same (software expectation, l1-brick-profiles.rst). The node-disable mask
+ * is set through the property that any writer may set, as the console
+ * refuses to disable a node while the brick is powered.
+ */
+#define ORIGIN3900_ARGS "-M origin3000,topology=origin3900-ip53,nodes=4 " \
+                        "-cpu R16000 -smp 16 -m 8192"
+
+typedef struct CxResetCase {
+    const char *command;
+    unsigned disabled;
+    unsigned halted_nodes;
+} CxResetCase;
+
+static const CxResetCase cx_reset_one = { "reset 2", 0, 1u << 2 };
+static const CxResetCase cx_reset_one_disabled = { "reset 1", 1u << 1,
+                                                   1u << 1 };
+static const CxResetCase cx_reset_skips_disabled = { "reset", 1u << 1,
+                                                     0xd };
+
+static void test_cx_node_reset_reaches_its_bedrock(const void *data)
+{
+    const CxResetCase *c = data;
+    g_autofree char *prom = create_counter_prom(PROM_SIZE);
+    g_autofree char *quoted = g_shell_quote(prom);
+    g_autofree char *line = g_strdup_printf("\024%s\r\024power check\r",
+                                            c->command);
+    int fds[2];
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+    g_assert_cmpint(socketpair(AF_UNIX, SOCK_STREAM, 0, fds), ==, 0);
+    qts = qtest_initf(ORIGIN3900_ARGS " -bios %s -nodefaults -display none "
+                      "-no-shutdown -chardev socket,id=cb,fd=%d "
+                      "-serial chardev:cb -global "
+                      "sgi-sn1-node.x-test-start-delay-ms=%d",
+                      quoted, fds[1], RESTART_DELAY_MS);
+    close(fds[1]);
+    for (unsigned node = 0; node < 4; node++) {
+        g_assert_cmphex(halted_cpus(qts, node), ==, 0);
+    }
+    if (c->disabled) {
+        qtest_qmp_assert_success(qts, "{'execute':'qom-set','arguments':"
+            "{'path':'/machine/module0/l1','property':'node-disable',"
+            "'value':%u}}", c->disabled);
+    }
+    l1_console(qts, fds[0], line, "power appears on");
+    for (unsigned node = 0; node < 4; node++) {
+        g_assert_cmphex(halted_cpus(qts, node), ==,
+                        ((c->halted_nodes >> node) & 1) ? BRICK_CPUS : 0);
+    }
+    close(fds[0]);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(prom), ==, 0);
+}
+
+/*
  * An L1 does not restart a node whose brick is off: its reset is refused
  * with the supply down, and the brick that is on can still be reset without
  * switching the other on. That brick's reset reaches every powered compute
@@ -4666,6 +4728,14 @@ int main(int argc, char **argv)
                         &l1_reset_both, test_l1_reset_restarts_its_node);
     qtest_add_func("sn1/cross-node/l1-reset-request-restarts-its-node",
                    test_l1_reset_request_restarts_its_node);
+    qtest_add_data_func("sn1/cross-node/cx-node-reset/one",
+                        &cx_reset_one, test_cx_node_reset_reaches_its_bedrock);
+    qtest_add_data_func("sn1/cross-node/cx-node-reset/one-disabled",
+                        &cx_reset_one_disabled,
+                        test_cx_node_reset_reaches_its_bedrock);
+    qtest_add_data_func("sn1/cross-node/cx-node-reset/skips-disabled",
+                        &cx_reset_skips_disabled,
+                        test_cx_node_reset_reaches_its_bedrock);
     qtest_add_func("sn1/cross-node/l1-reset-leaves-an-off-brick-off",
                    test_l1_reset_leaves_an_off_brick_off);
     qtest_add_func("sn1/cross-node/l1-reset-restarts-a-counting-node",
