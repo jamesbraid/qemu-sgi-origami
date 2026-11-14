@@ -330,6 +330,19 @@ reads ``RSR`` as ``0x20`` afterwards. A timeout without that option
 raises the level 7 interrupt. The reset pin pulse the chip drives is not
 connected, an *approximation*.
 
+On the chip the watchdog counts system clocks, the clock the core runs from,
+and its period is that count divided by the system frequency
+(:src:`nxp-mcf5206eum-1 p. 8-15`, *established*). The model's watchdog and
+timers count QEMU's virtual clock. Without ``-icount`` that clock follows
+the host's clock, including time in which the host does not run the core,
+so a host stall that spans the rest of the watchdog period times the
+watchdog out and resets the board although the core missed no service it
+would have made, an *approximation*. With ``-icount`` a host stall of the
+vCPU does not advance the virtual clock while the core is running; an idle
+core can still let the clock move on toward the next timer deadline in real
+time. Runs that must not depend on host load use ``-icount``; the board's
+functional test runs with ``-icount shift=10,align=off``.
+
 The model implements no register of the DRAM controller, the parallel port
 or the DMA channels: a read returns zero and a write is dropped, and each is
 logged with ``LOG_UNIMP``. The firmware writes the DRAM controller registers
