@@ -477,8 +477,8 @@ void sonic_hdsp_update_irq(SonicHDSPState *h)
     bool pin, nmi, x6 = false;
     uint8_t xint = 0;
 
-    pin = (oisr_eff(h) & ~h->oimr & OISR_PIN_MASK) ||
-          ((h->glue_intreq & 0x1f) && h->glue_enable[0] && h->glue_enable[1]);
+    /* The DSP request byte is polled by the host, never a level on INTA. */
+    pin = oisr_eff(h) & ~h->oimr & OISR_PIN_MASK;
     /* Pin 0 means the function uses no interrupt pin: nothing to drive. */
     pin = pin && atu_cfg(h)[PCI_INTERRUPT_PIN] >= 1 &&
           atu_cfg(h)[PCI_INTERRUPT_PIN] <= PCI_NUM_PINS;

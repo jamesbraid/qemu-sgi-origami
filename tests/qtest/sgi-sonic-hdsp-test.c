@@ -1490,6 +1490,40 @@ static void test_dsp_timer_dma(void)
 }
 
 /*
+ * A DSP's request reads back in the glue's request byte but never raises the
+ * card's PCI pin, even with both enables set; clearing it drops the byte.
+ */
+#define GLUE_ENABLE0_BYTE   (0x6000000 + 0x48003)
+#define GLUE_ENABLE1_BYTE   (0x6000000 + 0x50003)
+
+static void test_glue_request_leaves_pin(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x20] = { 0 };
+    unsigned i = 0;
+
+    PUT_QQ(prog, i, X_TCSR0, 0x002800);             /* DIR and DO: request */
+    prog[i++] = JCLR_PP(2, X_DSR);
+    prog[i++] = 0x102;
+    PUT_QQ(prog, i, X_TCSR0, 0x000800);             /* DO cleared */
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 2);
+    dsp_boot(&c, 2, 0x100, prog, i);
+    qtest_clock_step(c.qts, 500 * 1000);
+    g_assert_cmphex(rdb(&c, 0x6000000 + 0x28003), ==, 0x04);
+    wrb(&c, GLUE_ENABLE0_BYTE, 1);
+    wrb(&c, GLUE_ENABLE1_BYTE, 1);
+    g_assert_cmphex(rdb(&c, GLUE_ENABLE0_BYTE), ==, 1);
+    g_assert_false(bridge_pin(&c));                 /* polled, not a level */
+    hp_write(&c, 2, HP_DATA, 1);                    /* the DSP clears bit 13 */
+    qtest_clock_step(c.qts, 500 * 1000);
+    g_assert_cmphex(rdb(&c, 0x6000000 + 0x28003), ==, 0);
+    card_quit(&c);
+}
+
+/*
  * The interrupt-out line: timer 0 in GPIO mode with DIR set drives its pin
  * from the data output bit (TCSR bit 13), which sets DSP n's bit in the
  * glue's interrupt-request byte; clearing the bit, or resetting the DSP,
@@ -2827,6 +2861,8 @@ int main(int argc, char **argv)
                    test_dsp_dma_counter_mode_b);
     qtest_add_func("/sgi-sonic-hdsp/dsp/dma-mode101-interrupt",
                    test_dsp_dma_mode101_interrupt);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/glue-request-leaves-pin",
+                   test_glue_request_leaves_pin);
     qtest_add_func("/sgi-sonic-hdsp/dsp/hinta-to-xint4",
                    test_dsp_hinta_to_xint4);
     qtest_add_func("/sgi-sonic-hdsp/timer1-terminal-count",
