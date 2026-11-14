@@ -1275,3 +1275,6 @@ scripts/sgi_model/settings_doc.py
 scripts/tests/test_sgi_model_settings_doc.py
 docs/system/mips/sgi/settings.rst
 scripts/tests/test_sgi_docs_publish_workflow.py
+hw/m68k/sgi-l1-board.c
+hw/m68k/mcf5206e.c
+include/hw/m68k/mcf5206e.h

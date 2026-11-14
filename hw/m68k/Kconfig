@@ -54,3 +54,13 @@ config CF_CORE_TEST
     default y if TEST_DEVICES
     depends on M68K
     select COLDFIRE
+
+config SGI_L1_BOARD
+    bool
+    default y
+    depends on M68K
+    select COLDFIRE
+    select M48T59
+    select OR_IRQ
+    select SERIAL_MM
+    select UNIMP
