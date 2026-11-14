@@ -336,6 +336,19 @@ static bool aic7880_seq_local_read(uint8_t reg)
     case REG_QINCNT:
     case REG_DFCNTRL:
         return true;
+    case REG_DFSTATUS:
+        /*
+         * A DFSTATUS read recomputes DFSTATUS, SSTAT0.DMADONE and the
+         * request latch from host_fifo_len, host_fifo_read, DSPCISTATUS,
+         * DFCNTRL, HCNT, error_pending and the previous status.  The
+         * recomputation reaches a fixpoint after one read, reads no time
+         * or non-event state and consumes nothing.  No locally executed
+         * instruction writes any of those inputs, and every other writer
+         * is an external boundary that invalidates a parked wait or stops
+         * the sequencer.  Any future timer or deferred completion that
+         * changes one of these inputs must call aic7880_seq_invalidate().
+         */
+        return true;
     default:
         return false;
     }
@@ -3622,6 +3635,11 @@ static char *aic7880_test_selection_get(Object *obj, Error **errp)
                             s->selection_wide);
 }
 
+static bool aic7880_test_sequencer_waiting_get(Object *obj, Error **errp)
+{
+    return AIC7880(obj)->seq_waiting;
+}
+
 static void aic7880_realize(PCIDevice *pci, Error **errp)
 {
     AIC7880State *s = AIC7880(pci);
@@ -3679,6 +3697,8 @@ static void aic7880_realize(PCIDevice *pci, Error **errp)
                                 aic7880_test_selection_get, NULL);
         object_property_add_str(OBJECT(s), "x-test-pci-error", NULL,
                                 aic7880_test_pci_error_set);
+        object_property_add_bool(OBJECT(s), "x-test-sequencer-waiting",
+                                 aic7880_test_sequencer_waiting_get, NULL);
     }
     s->seq_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                 aic7880_seq_timer_cb, s);
