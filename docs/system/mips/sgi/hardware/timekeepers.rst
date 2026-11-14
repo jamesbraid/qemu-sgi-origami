@@ -91,6 +91,11 @@ Parts and placement
      - ``m48t35``
      - 32 KiB at IOC3 BAR offset ``0x80000``
      - 1968
+   * - Onyx 3000, Origin 3200, Origin 3400, Origin 3800, Onyx 3400 with InfiniteReality3, Origin 3900
+     - IOC3 on the I-brick's IO7 (:ref:`sgi-bricks-ibrick`)
+     - ``m48t35``
+     - 32 KiB; the offset is not stated here
+     - 1968
    * - Origin 350, Onyx 350, Tezro, Onyx4 host
      - IOC4 byte bus
      - ``ds1744``
@@ -266,8 +271,10 @@ OpenBSD uses 1968 on IP35, so 2026 reads ``0x58`` there (OpenBSD
 ``sys/arch/sgi/dev/dsrtc.c``), *software expectation*. A model presenting
 calendar digits would make OpenBSD report the mid-1990s on an IP27 machine,
 with nothing else looking wrong. The base is the ``year-base`` property:
-1970 by default, 1968 for Origin 300 and Fuel. Any other value is refused at
-realize.
+1970 by default, and 1968 on every M48T35 topology in the catalogue that sets
+one: Fuel, Origin 300, and the I-brick IO7 of the Onyx 3000, Origin 3200,
+Origin 3400, Origin 3800, Onyx 3400 with InfiniteReality3 and Origin 3900.
+Any other value is refused at realize.
 
 The part corrects for months of 28 to 31 days and states its leap-year
 correction as valid until 2100 :src:`st-m48t35-rev-10 p. 8`, *established*.
