@@ -1353,7 +1353,14 @@ Retrace period
 When the guest enables the display, the model derives the retrace period from
 VC3 register 0's frame table and the DAC PLL: one frame is the sum of each line
 sequence's durations (bits 14:8 of each first halfword) times its repeat count,
-in VC3 clocks at half the pixel clock. The pixel clock is ``33 MHz * (4 * (v +
+in VC3 clocks at half the pixel clock. A line sequence is a run of entries: bit
+15 of an entry's first halfword ends the line, bits 14:8 are the duration, and
+bit 7 set marks a one-halfword entry. With bit 7 clear the entry has a second
+halfword, which the walk always takes, and the line ends only when both
+halfwords have bit 15 set. Each part is *inferred* from the timing tables IRIX
+ships; the iris emulator's ``VC3::frame_clocks`` (on its ``discreet-integration``
+branch) walks the same format and corroborates it, though it is not independent
+evidence of the hardware. The pixel clock is ``33 MHz * (4 * (v +
 2) + cntl[7:6]) / ((r + 2) * 2^cntl[5:4] * 2^cntl[2])`` from DAC registers
 ``0x0c``, ``0x0f`` and ``0x09``. For the stock 1280x1024 60 Hz timing this
 gives 894,600 clocks at 53.625 MHz, about 59.943 Hz. The walk, the clock ratio
