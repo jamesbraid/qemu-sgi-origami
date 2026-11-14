@@ -229,6 +229,30 @@ int chd_shim_open(ChdShimFile **out, const ChdShimIO *io, void *opaque,
     });
 }
 
+int chd_shim_create_diff(ChdShimFile **out, const ChdShimIO *io, void *opaque,
+                         ChdShimFile *parent)
+{
+    *out = nullptr;
+    return guard([&] {
+        auto f = std::make_unique<ChdShimFile>();
+        const chd_codec_type none[4] = { CHD_CODEC_NONE, CHD_CODEC_NONE,
+                                         CHD_CODEC_NONE, CHD_CODEC_NONE };
+        util::random_read_write::ptr file =
+            std::make_unique<CallbackIO>(*io, opaque);
+        int err = to_err(f->chd.create(std::move(file),
+                                       parent->chd.logical_bytes(),
+                                       parent->chd.hunk_bytes(), none,
+                                       parent->chd));
+        if (!err) {
+            err = to_err(f->chd.clone_all_metadata(parent->chd));
+        }
+        if (!err) {
+            *out = f.release();
+        }
+        return err;
+    });
+}
+
 void chd_shim_close(ChdShimFile *f)
 {
     guard([&] {
@@ -288,10 +312,34 @@ int chd_shim_read_hunk(ChdShimFile *f, uint32_t hunk, void *buf)
     return guard([&] { return to_err(f->chd.read_hunk(hunk, buf)); });
 }
 
+int chd_shim_write_hunk(ChdShimFile *f, uint32_t hunk, const void *buf)
+{
+    return guard([&] { return to_err(f->chd.write_hunk(hunk, buf)); });
+}
+
 int chd_shim_read_bytes(ChdShimFile *f, uint64_t offset, void *buf,
                         uint32_t len)
 {
     return guard([&] { return to_err(f->chd.read_bytes(offset, buf, len)); });
+}
+
+int chd_shim_write_bytes(ChdShimFile *f, uint64_t offset, const void *buf,
+                         uint32_t len)
+{
+    return guard([&] { return to_err(f->chd.write_bytes(offset, buf, len)); });
+}
+
+int chd_shim_hunk_info(ChdShimFile *f, uint32_t hunk, uint32_t *compressor,
+                       uint32_t *compbytes)
+{
+    return guard([&] {
+        chd_codec_type type = 0;
+        uint32_t bytes = 0;
+        int err = to_err(f->chd.hunk_info(hunk, type, bytes));
+        *compressor = type;
+        *compbytes = bytes;
+        return err;
+    });
 }
 
 int chd_shim_create_from_raw(const char *out, const char *raw,

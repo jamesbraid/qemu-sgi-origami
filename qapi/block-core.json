@@ -3501,13 +3501,21 @@
 # Driver specific block device options for CHD (MAME "compressed hunks
 # of data") hard disk images.
 #
+# A compressed image is never written: guest writes go to an
+# uncompressed "<image>.diff.chd" file beside it, which is attached
+# again, also read-only, whenever the image is opened.  An
+# uncompressed image is written in place.
+#
+# @overlay: write to the ".diff.chd" file also for an uncompressed
+#     image, leaving the image untouched.  Default: off
+#
 # @cache-size: bytes of decoded hunks to keep.  Default: 32 MiB
 #
 # Since: 11.1
 ##
 { 'struct': 'BlockdevOptionsChd',
   'base': 'BlockdevOptionsGenericFormat',
-  'data': { '*cache-size': 'size' },
+  'data': { '*overlay': 'bool', '*cache-size': 'size' },
   'if': 'CONFIG_CHD' }
 
 ##
