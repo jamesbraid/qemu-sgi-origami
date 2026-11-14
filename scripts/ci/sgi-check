@@ -39,6 +39,9 @@ QTEST_DURATIONS = SOURCE / 'scripts/ci/qtest-durations.txt'
 CONFIGURE_ARGS = [
     '--target-list=mips64-softmmu', '--disable-docs', '--enable-tests',
     '--enable-hmp', '--enable-slirp', '--enable-debug-tcg', '--enable-opengl',
+    # The CHD block driver's iotest skips without it, and a skipped test
+    # would pass, so make a missing C++ compiler or wrap a configure error.
+    '--enable-chd',
     # The image's gdb, so gdbstub functional cases run rather than skip.
     '--gdb=/usr/bin/gdb-multiarch',
 ]
@@ -50,7 +53,7 @@ CONFIGURE_ARGS = [
 WINDOWS_CONFIGURE_ARGS = [
     '--cross-prefix=x86_64-w64-mingw32-', '--target-list=mips64-softmmu',
     '--disable-docs', '--disable-gtk', '--disable-cocoa', '--enable-sdl',
-    '--enable-vnc', '--enable-slirp',
+    '--enable-vnc', '--enable-slirp', '--enable-chd',
 ]
 WINDOWS_MESON_OPTIONS = [
     '-Dc_args=-DBUILDING_LIBSLIRP', '-Dcurl=disabled', '-Dgnutls=disabled',
@@ -59,7 +62,10 @@ WINDOWS_MESON_OPTIONS = [
     '-Dvde=disabled', '-Dspice=disabled', '-Dopengl=disabled',
     '-Dvirglrenderer=disabled',
 ]
-WINDOWS_TARGETS = ['qemu-system-mips64.exe', 'qemu-img.exe']
+# chd-fixture builds the CHD iotest's images; the iotests do not run on
+# Windows, but compiling it checks the MinGW build of the CHD library.
+WINDOWS_TARGETS = ['qemu-system-mips64.exe', 'qemu-img.exe',
+                   'subprojects/libchdman-rs-0.289.5/chd-fixture.exe']
 
 # The sgi_model contract suites. They need PyYAML and jsonschema, which
 # pythondeps.toml lists as the sgi-model group, but no QEMU binary.
@@ -605,6 +611,38 @@ GENERATED_ROM_FUNCTIONAL = [
 ]
 
 
+# The CHD block driver's iotest runs when a change edits the driver, the
+# library it wraps or the test; the full run has no iotests, so nothing else
+# would run it before a land.
+CHD_IOTEST = 'io-raw-chd'
+CHD_IOTEST_PATHS = ('block/chd', 'subprojects/libchdman',
+                    'subprojects/packagefiles/libchdman',
+                    'tests/qemu-iotests/tests/chd')
+
+
+def chd_iotest_edited(paths):
+    """Say whether any edited path is part of the CHD driver or its test."""
+    return any(path.startswith(CHD_IOTEST_PATHS) for path in paths)
+
+
+def select_chd_iotest(base):
+    """Return the CHD iotest's name if the change edits the driver, or [].
+
+    Like select_qtests, compare against the merge base, and select nothing
+    without a base so a developer's local run stays quick.
+    """
+    if not base:
+        return []
+    fork = merge_base(base)
+    if not fork:
+        sys.exit(f'no merge base between {base} and HEAD, so the changed '
+                 'files are unknown; fetch more history')
+    paths = output(['git', '-C', SOURCE, 'diff', '--name-only', fork,
+                    'HEAD', '--', 'block', 'subprojects',
+                    'tests/qemu-iotests/tests']).splitlines()
+    return [CHD_IOTEST] if chd_iotest_edited(paths) else []
+
+
 def smoke(args):
     """The pull-request check: build, then only what the change edits.
 
@@ -646,6 +684,16 @@ def smoke(args):
     else:
         print('no qtest source changed; the full run runs every qtest',
               flush=True)
+
+    iotests = select_chd_iotest(args.base)
+    if iotests:
+        # The iotest is in the slow block suite, which the quick setup
+        # leaves out, so run it under the thorough setup that names it.
+        names = build.path / 'chd-iotest.txt'
+        names.write_text('\n'.join(iotests) + '\n', encoding='utf-8')
+        expected = build.path / 'expected-chd-iotest.txt'
+        build.list_meson_tests(expected, '--names-from', names)
+        build.meson_test('smoke-chd-iotest', iotests, expected)
 
     for target, logbase, module, test_class in GENERATED_ROM_FUNCTIONAL:
         expected = build.path / f'expected-{logbase}.txt'
