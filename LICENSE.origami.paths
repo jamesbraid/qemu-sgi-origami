@@ -454,7 +454,14 @@ include/hw/rtc/ds1685.h
 include/hw/rtc/m48t35-ip27.h
 include/hw/rtc/m48t35.h
 include/hw/scsi/qlogic-isp.h
+packaging/README.md
 packaging/configure-flags.json
+packaging/debian-bookworm.docker
+packaging/sgi-package.py
+packaging/test_sgi_package.py
+packaging/triplets/arm64-osx-origami.cmake
+packaging/triplets/x64-mingw-origami.cmake
+packaging/vcpkg.json
 qapi/misc-mips.json
 qapi/sgi-machines.json
 scripts/check-qtest-registered.py

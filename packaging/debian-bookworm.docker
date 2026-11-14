@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Build environment for the Linux release archive. Debian 12 supplies the
+# oldest glibc (2.36) the archive's binaries need on a host, so the archive
+# runs on anything at least that new. Debian 12's own Python is too old for
+# QEMU's configure, so the Python image, built on Debian 12, supplies 3.12.
+# vcpkg builds GLib, pixman and SDL 2 statically; the X11, Wayland, ALSA,
+# PulseAudio and udev headers are for the host libraries that stay dynamic.
+# libslirp is left out on purpose so QEMU builds its patched bundled copy.
+FROM docker.io/library/python:3.12-slim-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        autoconf autoconf-archive automake bison build-essential ca-certificates \
+        cmake curl flex git libasound2-dev libdecor-0-dev libegl-dev libgl-dev \
+        libpulse-dev libtool libudev-dev libwayland-dev libx11-dev libxcursor-dev \
+        libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev \
+        libxss-dev ninja-build pkg-config tar unzip zip \
+ && rm -rf /var/lib/apt/lists/*
