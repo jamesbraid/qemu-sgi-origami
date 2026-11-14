@@ -9,7 +9,9 @@
  * with one slot completed per buffer, the status ring and its interrupts, the
  * board's timestamp counter, and
  * the VBOB message channel with genlock reporting. It runs no FPGA image and
- * moves no video payload.
+ * moves no video payload, except over an optional loopback cable fitted
+ * between a VBOB output jack and an input jack, which copies each completed
+ * output frame to the input pipe's next completed buffer.
  *
  * Every behaviour, and every value the hardware does not state, is in
  * docs/system/mips/sgi/hardware/xt-digvid.rst. The page rates each fact and
@@ -157,6 +159,8 @@ OBJECT_DECLARE_TYPE(DM2State, DM2Class, SGI_XT_DIGVID)
 #define VBOB_MSG_BYTES          24
 #define VBOB_RXQ                8
 #define VBOB_INPUT_SLOTS        6
+/* The digital input slots a cable can end on: the first four. */
+#define VBOB_CABLE_SLOTS        4
 #define SIDES                   2
 #define SIDE_HD                 0
 #define SIDE_SD                 1
@@ -406,6 +410,12 @@ typedef struct DM2Vbob {
     uint8_t output_override;
     uint8_t input_timings[VBOB_INPUT_SLOTS];
     uint8_t present;
+    /*
+     * The coax cables fitted from an output jack to an input slot: for input
+     * slot n (HD in 1, HD in 2, SD in 1, SD in 2), 0 for none, else the
+     * output jack plus one (HD out 1, HD out 2, SD out 1, SD out 2).
+     */
+    uint8_t cable[VBOB_CABLE_SLOTS];
     /* The state the host sets over the control channel. */
     uint8_t tv_standard;
     /* Genlock source of each side, HD then SD. */
@@ -457,6 +467,9 @@ struct DM2State {
     uint32_t gif[GIF_SLOTS];
     DM2Pipe pipe[PIPE_COUNT];
     DM2Vbob vbob;
+    /* The last frame the output pipe sent, held for a cabled input. */
+    uint8_t *loop_frame;
+    uint32_t loop_len;
 
     /* The one-wire record's barcode, built per slot. */
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
@@ -880,9 +893,73 @@ static int64_t dm2_field_period_ns(DM2State *s)
 #define INPUT_SLOT_HD   0
 #define INPUT_SLOT_SD   2
 
+static uint8_t dm2_side_output(DM2State *s, unsigned side);
+
+/* The side of the output jack a cable starts at (jack plus one). */
+static unsigned dm2_cable_side(uint8_t cable)
+{
+    return cable > 2 ? SIDE_SD : SIDE_HD;
+}
+
+/*
+ * "Genlock and lock reporting", the cable: a fitted cable carries its
+ * output jack's timing, so the input slot has a signal when that output's
+ * side has a timing and none otherwise. A slot without a cable is the
+ * properties'.
+ */
+static bool dm2_slot_present(DM2State *s, unsigned slot)
+{
+    DM2Vbob *v = &s->vbob;
+
+    if (slot < VBOB_CABLE_SLOTS && v->cable[slot]) {
+        return dm2_side_output(s, dm2_cable_side(v->cable[slot])) != 0;
+    }
+    return v->present & BIT(slot);
+}
+
+static uint8_t dm2_slot_timing(DM2State *s, unsigned slot)
+{
+    DM2Vbob *v = &s->vbob;
+
+    if (!dm2_slot_present(s, slot)) {
+        return TIMING_NONE;
+    }
+    if (slot < VBOB_CABLE_SLOTS && v->cable[slot]) {
+        return dm2_side_output(s, dm2_cable_side(v->cable[slot]));
+    }
+    return v->input_timings[slot];
+}
+
 static bool dm2_input_present(DM2State *s)
 {
-    return s->vbob.present & (BIT(INPUT_SLOT_HD) | BIT(INPUT_SLOT_SD));
+    return dm2_slot_present(s, INPUT_SLOT_HD) ||
+           dm2_slot_present(s, INPUT_SLOT_SD);
+}
+
+/* Whether a cable ends at an input slot, and one starts on the output side. */
+static bool dm2_cabled_input(DM2State *s)
+{
+    for (unsigned i = 0; i < VBOB_CABLE_SLOTS; i++) {
+        if (s->vbob.cable[i]) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool dm2_cabled_output(DM2State *s)
+{
+    DM2Vbob *v = &s->vbob;
+    /* The side the output drives: the override's, else the latest record's. */
+    unsigned side = v->output_override ? dm2_code_side(v->output_override) :
+                                         v->active_side;
+
+    for (unsigned i = 0; i < VBOB_CABLE_SLOTS; i++) {
+        if (v->cable[i] && dm2_cable_side(v->cable[i]) == side) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static uint32_t dm2_enable_reg(DM2State *s, unsigned p)
@@ -967,6 +1044,90 @@ static unsigned dm2_buffer_fields(DM2State *s)
     return 1;
 }
 
+/*
+ * Bytes mapped from a board address to the end of its slot window or the
+ * first invalid page. The driver invalidates the page after a buffer, so
+ * the run is the buffer rounded up to a page.
+ */
+static uint32_t dm2_mapped_run(DM2State *s, uint32_t addr, uint32_t end)
+{
+    uint32_t n = 0;
+
+    while (addr < end && dm2_map_valid(s, addr)) {
+        uint32_t next = MIN(((addr >> MAP_PAGE_SHIFT) + 1) << MAP_PAGE_SHIFT,
+                            end);
+
+        n += next - addr;
+        addr = next;
+    }
+    return n;
+}
+
+/* Move bytes between a board address range, known mapped, and the buffer. */
+static bool dm2_move(DM2State *s, uint32_t addr, uint8_t *buf, uint32_t len,
+                     bool to_host)
+{
+    while (len) {
+        uint32_t n = MIN(len, (1u << MAP_PAGE_SHIFT) -
+                              (addr & ((1u << MAP_PAGE_SHIFT) - 1)));
+        hwaddr host, packet;
+        MemTxResult res;
+
+        if (!dm2_translate(s, addr, &host) || !dm2_packet(s, host, &packet)) {
+            return false;
+        }
+        res = address_space_rw(&s->fabric_as, packet, MEMTXATTRS_UNSPECIFIED,
+                               buf, n, to_host);
+        if (res != MEMTX_OK) {
+            qemu_log_mask(LOG_GUEST_ERROR, TYPE_SGI_XT_DIGVID ": video DMA "
+                          "at host 0x%" HWADDR_PRIx " failed\n", host);
+            return false;
+        }
+        addr += n;
+        buf += n;
+        len -= n;
+    }
+    return true;
+}
+
+/*
+ * "The data transfer", the cable: a completed output slot's bytes, from its
+ * first start address to the end of its mapped buffer, are what the output
+ * jack sends. The copy is raw, as if the packers and converters were the
+ * identity.
+ */
+static void dm2_loop_capture(DM2State *s, unsigned slot)
+{
+    uint32_t base = SLOT_WINDOW_OUT + slot * SLOT_WINDOW;
+    uint32_t addr = base + (s->gif[GIF_IDX(0x80001c)] & START_MASK);
+    uint32_t len;
+
+    s->loop_len = 0;
+    if (!dm2_cabled_output(s)) {
+        return;
+    }
+    len = dm2_mapped_run(s, addr, base + SLOT_WINDOW);
+    s->loop_frame = g_realloc(s->loop_frame, MAX(len, 1));
+    if (dm2_move(s, addr, s->loop_frame, len, false)) {
+        s->loop_len = len;
+    }
+}
+
+/* A completed input slot receives the frame the cable carried, once. */
+static void dm2_loop_deliver(DM2State *s, unsigned slot)
+{
+    uint32_t base = slot * SLOT_WINDOW;
+    uint32_t addr = base + (s->gif[GIF_IDX(0x800044)] & START_MASK);
+    uint32_t len;
+
+    if (!s->loop_len || !dm2_cabled_input(s)) {
+        return;
+    }
+    len = MIN(s->loop_len, dm2_mapped_run(s, addr, base + SLOT_WINDOW));
+    s->loop_len = 0;
+    dm2_move(s, addr, s->loop_frame, len, true);
+}
+
 static void dm2_field_tick(DM2State *s, unsigned p)
 {
     DM2Pipe *pp = &s->pipe[p];
@@ -987,8 +1148,16 @@ static void dm2_field_tick(DM2State *s, unsigned p)
         memmove(pp->queue, pp->queue + 1, --pp->queued);
         pp->armed &= ~BIT(slot);
         /* An invalid page raises the error and aborts the slot. */
-        flags |= dm2_slot_start_page(s, p, slot) ?
-                 RING_FLAG_SLOT_DONE(slot) : RING_FLAG_SLOT_ABORTED(slot);
+        if (dm2_slot_start_page(s, p, slot)) {
+            flags |= RING_FLAG_SLOT_DONE(slot);
+            if (p == PIPE_OUT) {
+                dm2_loop_capture(s, slot);
+            } else {
+                dm2_loop_deliver(s, slot);
+            }
+        } else {
+            flags |= RING_FLAG_SLOT_ABORTED(slot);
+        }
         /* Flag 1 tracks the parity flag of the previous field entry. */
         if (fields == 2 && prev_parity) {
             flags |= RING_FLAG_ONE;
@@ -1139,9 +1308,9 @@ static bool dm2_side_lock(DM2State *s, unsigned side, uint8_t *code)
         return true;
     }
     slot = dm2_reference_slot(side, source);
-    ref = v->input_timings[slot];
+    ref = dm2_slot_timing(s, slot);
     *code = TIMING_NONE;
-    if (!(v->present & BIT(slot)) || !out) {
+    if (!dm2_slot_present(s, slot) || !out) {
         return false;
     }
     if (side == SIDE_SD ? ref != out :
@@ -1155,10 +1324,8 @@ static bool dm2_side_lock(DM2State *s, unsigned side, uint8_t *code)
 /* The detected input timing of the HD and SD input slots. */
 static void dm2_input_codes(DM2State *s, uint8_t codes[2])
 {
-    codes[0] = s->vbob.present & BIT(INPUT_SLOT_HD) ?
-               s->vbob.input_timings[INPUT_SLOT_HD] : TIMING_NONE;
-    codes[1] = s->vbob.present & BIT(INPUT_SLOT_SD) ?
-               s->vbob.input_timings[INPUT_SLOT_SD] : TIMING_NONE;
+    codes[0] = dm2_slot_timing(s, INPUT_SLOT_HD);
+    codes[1] = dm2_slot_timing(s, INPUT_SLOT_SD);
 }
 
 /* Put the frame in the receive buffer and tell the frame's pipe. */
@@ -1380,8 +1547,7 @@ static void dm2_vbob_message(DM2State *s, const uint8_t *m)
             reply.bytes[0] = 9;
             reply.bytes[2] = MSG_NOTIFY_INPUT;
             for (unsigned i = 0; i < VBOB_INPUT_SLOTS; i++) {
-                reply.bytes[4 + i] = v->present & BIT(i) ?
-                                     v->input_timings[i] : TIMING_NONE;
+                reply.bytes[4 + i] = dm2_slot_timing(s, i);
             }
             replied = true;
         }
@@ -1916,6 +2082,8 @@ static void dm2_unrealize(DeviceState *dev)
         s->pipe[p].field_timer = s->pipe[p].poll_timer = NULL;
     }
     address_space_destroy(&s->fabric_as);
+    g_free(s->loop_frame);
+    s->loop_frame = NULL;
 }
 
 /*
@@ -1962,6 +2130,8 @@ static void dm2_reset_hold(Object *obj, ResetType type)
     memcpy(s->vbob.input_timings, saved.input_timings,
            sizeof(s->vbob.input_timings));
     s->vbob.present = saved.present;
+    memcpy(s->vbob.cable, saved.cable, sizeof(s->vbob.cable));
+    s->loop_len = 0;
     dm2_vbob_sync_reported(s);
 }
 
@@ -2051,6 +2221,75 @@ static void dm2_set_inputs(Object *obj, Visitor *v, const char *name,
     for (unsigned i = 0; i < VBOB_INPUT_SLOTS; i++) {
         s->vbob.input_timings[i] = value >> (8 * i);
     }
+    dm2_prop_apply(s);
+}
+
+/*
+ * The cables, "output:input" pairs joined by "+" (a comma would end the
+ * -device option): outputs hd-out1,
+ * hd-out2, sd-out1, sd-out2 and inputs hd-in1, hd-in2, sd-in1, sd-in2, the
+ * VBOB's coax jacks.
+ */
+static const char *const cable_outs[] = {
+    "hd-out1", "hd-out2", "sd-out1", "sd-out2",
+};
+static const char *const cable_ins[] = {
+    "hd-in1", "hd-in2", "sd-in1", "sd-in2",
+};
+
+static int cable_find(const char *const *names, const char *name)
+{
+    for (unsigned i = 0; i < VBOB_CABLE_SLOTS; i++) {
+        if (!strcmp(names[i], name)) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static char *dm2_get_loopback(Object *obj, Error **errp)
+{
+    DM2State *s = SGI_XT_DIGVID(obj);
+    GString *out = g_string_new("");
+
+    for (unsigned i = 0; i < VBOB_CABLE_SLOTS; i++) {
+        if (s->vbob.cable[i]) {
+            g_string_append_printf(out, "%s%s:%s", out->len ? "+" : "",
+                                   cable_outs[s->vbob.cable[i] - 1],
+                                   cable_ins[i]);
+        }
+    }
+    return g_string_free(out, false);
+}
+
+static void dm2_set_loopback(Object *obj, const char *value, Error **errp)
+{
+    DM2State *s = SGI_XT_DIGVID(obj);
+    uint8_t cable[VBOB_CABLE_SLOTS] = { 0 };
+    g_auto(GStrv) pairs = g_strsplit(value, "+", -1);
+
+    for (char **pair = pairs; *pair; pair++) {
+        g_auto(GStrv) ends = g_strsplit(*pair, ":", -1);
+        int out, in;
+
+        if (g_strv_length(ends) != 2) {
+            out = in = -1;
+        } else {
+            out = cable_find(cable_outs, ends[0]);
+            in = cable_find(cable_ins, ends[1]);
+        }
+        if (out < 0 || in < 0) {
+            error_setg(errp, "x-vbob-loopback takes output:input pairs, "
+                       "such as sd-out1:sd-in1; got '%s'", *pair);
+            return;
+        }
+        if (cable[in]) {
+            error_setg(errp, "x-vbob-loopback: %s has two cables", ends[1]);
+            return;
+        }
+        cable[in] = out + 1;
+    }
+    memcpy(s->vbob.cable, cable, sizeof(cable));
     dm2_prop_apply(s);
 }
 
@@ -2166,6 +2405,7 @@ static const VMStateDescription vmstate_dm2_vbob = {
         VMSTATE_UINT8(output_override, DM2Vbob),
         VMSTATE_UINT8_ARRAY(input_timings, DM2Vbob, VBOB_INPUT_SLOTS),
         VMSTATE_UINT8(present, DM2Vbob),
+        VMSTATE_UINT8_ARRAY(cable, DM2Vbob, VBOB_CABLE_SLOTS),
         VMSTATE_UINT8(tv_standard, DM2Vbob),
         VMSTATE_UINT8_ARRAY(source, DM2Vbob, SIDES),
         VMSTATE_UINT8_2DARRAY(record, DM2Vbob, SIDES, VBOB_MSG_BYTES),
@@ -2260,6 +2500,12 @@ static void dm2_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "x-vbob-input-timings",
         "Detected input timing wire code of each of the six jack slots, "
         "slot 0 in the low byte; 1 is none");
+    object_class_property_add_str(oc, "x-vbob-loopback", dm2_get_loopback,
+                                  dm2_set_loopback);
+    object_class_property_set_description(oc, "x-vbob-loopback",
+        "Coax cables fitted from an output jack to an input jack, as "
+        "output:input pairs joined by +, such as sd-out1:sd-in1; the "
+        "input then sees the output's timing and its frames");
     object_class_property_add(oc, "x-vbob-present", "uint8", dm2_get_present,
                               dm2_set_present, NULL, NULL);
     object_class_property_set_description(oc, "x-vbob-present",

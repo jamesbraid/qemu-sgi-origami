@@ -1757,6 +1757,278 @@ static void test_migration_vbob(void)
     g_assert_cmpint(rmdir(dir), ==, 0);
 }
 
+/* ---- The loopback cable ---- */
+
+/* Read a get's reply for the input-signal slots (message 0x27). */
+static void vbob_input_slots(uint8_t slots[6])
+{
+    uint8_t f[24];
+
+    vbob_message(0, 0x27, false, NULL, 2);
+    g_assert_cmphex(ring_pop(0), ==, F_VALID | F_TX);
+    g_assert_cmphex(ring_pop(0), ==, F_VALID | F_RX);
+    vbob_frame(f);
+    g_assert_cmpuint(f[2], ==, 0xa7);
+    memcpy(slots, f + 4, 6);
+    vbob_release();
+}
+
+/*
+ * Collect every entry flag of both rings until no link-receive frame is
+ * left, as the driver's consumer would.
+ */
+static void vbob_collect(uint32_t seen[2])
+{
+    for (unsigned i = 0; i < 8; i++) {
+        bool rx = false;
+
+        for (unsigned p = 0; p < 2; p++) {
+            uint32_t flags;
+
+            while ((flags = ring_pop(p))) {
+                seen[p] |= flags;
+                rx |= flags & F_RX;
+            }
+        }
+        if (!rx) {
+            return;
+        }
+        vbob_release();
+    }
+}
+
+/*
+ * "Genlock and lock reporting", the cable: with a cable from SD out 1 to SD
+ * in 1, that input slot reports the SD output's timing once a timing record
+ * is set, with the input-change notification; no other slot does. Without a
+ * cable the slot holds none, however the output is timed.
+ */
+static void test_vbob_loopback_signal(void)
+{
+    uint8_t slots[6];
+    uint32_t seen[2] = { 0, 0 };
+
+    vbob_setup("-global sgi-xt-digvid.x-vbob-loopback=sd-out1:sd-in1");
+    /* The cable is fitted but the output has no timing yet. */
+    vbob_input_slots(slots);
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmpuint(slots[i], ==, 1);
+    }
+    vbob_message(0, 0x22, true, record_525, 18);
+    vbob_collect(seen);
+    g_assert_cmphex(seen[1] & (F_INPUT_CHANGE | F_INPUT_OFF), ==,
+                    F_INPUT_CHANGE);
+    vbob_input_slots(slots);
+    g_assert_cmpuint(slots[2], ==, 3);
+    for (unsigned i = 0; i < 6; i++) {
+        if (i != 2) {
+            g_assert_cmpuint(slots[i], ==, 1);
+        }
+    }
+    qtest_quit(qts);
+
+    /* HD out 2 to HD in 2 carries an HD output's timing to slot 1. */
+    vbob_setup("-global sgi-xt-digvid.x-vbob-loopback=hd-out2:hd-in2 "
+               "-global sgi-xt-digvid.x-vbob-output-timing=7");
+    vbob_input_slots(slots);
+    g_assert_cmpuint(slots[0], ==, 1);
+    g_assert_cmpuint(slots[1], ==, 7);
+    qtest_quit(qts);
+
+    /* No cable: the output's timing alone gives the input nothing. */
+    vbob_setup("-global sgi-xt-digvid.x-vbob-output-timing=3");
+    vbob_message(0, 0x22, true, record_525, 18);
+    vbob_collect(seen);
+    vbob_input_slots(slots);
+    for (unsigned i = 0; i < 6; i++) {
+        g_assert_cmpuint(slots[i], ==, 1);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A cable ties the input to the output's genlock too: SD out 1 locked to
+ * the reference on SD in 1, which carries its own output, is locked.
+ */
+static void test_vbob_loopback_genlock(void)
+{
+    const uint8_t sd_in1[] = { 0x09 };
+    uint8_t f[24];
+
+    vbob_setup("-global sgi-xt-digvid.x-vbob-loopback=sd-out1:sd-in1");
+    vbob_message(0, 0x22, true, record_525, 18);
+    vbob_drain();
+    vbob_message(0, 0x21, true, sd_in1, 3);
+    vbob_drain();
+    vbob_get_sync(f);
+    g_assert_cmpuint(f[3] & 3, ==, 3);
+    g_assert_cmpuint(f[5], ==, 3);
+    qtest_quit(qts);
+}
+
+/* The property takes output:input pairs and reads them back. */
+static void test_vbob_loopback_property(void)
+{
+    QDict *reply;
+
+    start("");
+    qtest_qmp_assert_success(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback',"
+        "'value':'sd-out2:sd-in2+hd-out1:hd-in1'}}", PATH);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback'}}", PATH);
+    /* Read back in input order. */
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==,
+                    "hd-out1:hd-in1+sd-out2:sd-in2");
+    qobject_unref(reply);
+    /* A bad name and two cables on one input are refused, changing nothing. */
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback','value':'sd-out1:sd-in9'}}", PATH);
+    g_assert_true(qdict_haskey(reply, "error"));
+    qobject_unref(reply);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback',"
+        "'value':'sd-out1:sd-in1+sd-out2:sd-in1'}}", PATH);
+    g_assert_true(qdict_haskey(reply, "error"));
+    qobject_unref(reply);
+    /* An empty segment is an error too. */
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-set','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback','value':'sd-out1:sd-in1+'}}", PATH);
+    g_assert_true(qdict_haskey(reply, "error"));
+    qobject_unref(reply);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback'}}", PATH);
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==,
+                    "hd-out1:hd-in1+sd-out2:sd-in2");
+    qtest_quit(qts);
+}
+
+/* A recognisable byte pattern. */
+static uint8_t pat(uint32_t i)
+{
+    return (uint8_t)(i * 7 + (i >> 8) + 1);
+}
+
+/*
+ * "The data transfer", the cable: the frame of a completed output slot, from
+ * its start address to the end of its mapped buffer, lands in the next
+ * completed input slot, which reports DONE, the frame's parity flags and a
+ * board timestamp one field apart from the entry before it. The copy stops at
+ * the shorter buffer and leaves the bytes before the start address alone.
+ * Without the cable, or with a signal that is not the output's, the buffer
+ * keeps its content.
+ */
+static void test_dma_loopback_data(void)
+{
+    enum { LEN = 0x2000 };
+    static const char *const modes[] = {
+        /* Cabled, and not cabled with an unrelated present signal. */
+        "-global sgi-xt-digvid.x-vbob-loopback=sd-out1:sd-in1 "
+        "-global sgi-xt-digvid.x-vbob-output-timing=3",
+        "-global sgi-xt-digvid.x-vbob-present=4 "
+        "-global sgi-xt-digvid.x-vbob-input-timings=0x010101030101 "
+        "-global sgi-xt-digvid.x-vbob-output-timing=3",
+    };
+
+    for (unsigned mode = 0; mode < G_N_ELEMENTS(modes); mode++) {
+        uint8_t frame[LEN], got[LEN + 16], sentinel[16];
+        uint32_t flags;
+
+        g_test_message("mode %u", mode);
+        for (unsigned i = 0; i < LEN; i++) {
+            frame[i] = pat(i);
+        }
+        memset(sentinel, 0x5a, sizeof(sentinel));
+        start(modes[mode]);
+        set_gif_loaded();
+        map_pages();
+        program_interrupts(0x20100);
+        /* Output slot 1 starts 0x1000 into its page, 12 KiB to its end. */
+        qtest_memwrite(qts, SLOT0_HOST + 0x1000, frame, LEN);
+        /* Input slot 2 starts 0x2000: 8 KiB to its page's end. */
+        qtest_memwrite(qts, SLOT1_HOST + 0x2000 - 8, sentinel, 8);
+        qtest_memwrite(qts, SLOT1_HOST + 0x2000, sentinel, 16);
+        arm_out(1, 0x1000);
+        qtest_clock_step(qts, 2 * FIELD_NS);
+        g_assert_cmphex(ring_flags(0, 1) & F_DONE(1), ==, F_DONE(1));
+        arm_in(2, 0x2000);
+        qtest_clock_step(qts, 2 * FIELD_NS);
+        if (mode == 0) {
+            uint32_t w0_field = ring_word0(1, 0), w0_done = ring_word0(1, 1);
+            uint64_t ns = (uint64_t)ust_ticks(w0_field, w0_done) * UST_TICK_NS;
+
+            flags = ring_pop(1);
+            g_assert_cmphex(flags, ==, F_VALID | F_FIELD | F_PARITY);
+            flags = ring_pop(1);
+            g_assert_cmphex(flags, ==,
+                            F_VALID | F_FIELD | F_ONE | F_DONE(2));
+            g_assert_cmpuint(ns, >, FIELD_NS - UST_TICK_NS);
+            g_assert_cmpuint(ns, <, FIELD_NS + UST_TICK_NS);
+            qtest_memread(qts, SLOT1_HOST + 0x2000 - 8, got, 8);
+            g_assert_cmpmem(got, 8, sentinel, 8);
+            qtest_memread(qts, SLOT1_HOST + 0x2000, got, LEN);
+            g_assert_cmpmem(got, LEN, frame, LEN);
+            /* The frame is delivered once: the next completion adds none. */
+            qtest_memwrite(qts, SLOT1_HOST + 0x2000, sentinel, 16);
+            wr(CTL_IN, 0x4 | 0xa040 | 0x10000);
+            qtest_clock_step(qts, 2 * FIELD_NS);
+            qtest_memread(qts, SLOT1_HOST + 0x2000, got, 16);
+            g_assert_cmpmem(got, 16, sentinel, 16);
+        } else {
+            /* The slot completes as before, without the frame. */
+            g_assert_cmphex(ring_flags(1, 1) & F_DONE(2), ==, F_DONE(2));
+            qtest_memread(qts, SLOT1_HOST + 0x2000, got, 16);
+            g_assert_cmpmem(got, 16, sentinel, 16);
+        }
+        qtest_quit(qts);
+    }
+}
+
+/*
+ * A cable survives migration: the destination is started without one and
+ * takes it from the stream.
+ */
+static void test_migration_loopback(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *uri = NULL;
+    g_autofree char *dest = NULL;
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *file = NULL;
+    GError *err = NULL;
+    QDict *reply;
+    QTestState *from;
+
+    dir = g_dir_make_tmp("octane-xt-digvid-lmigrate-XXXXXX", &err);
+    g_assert_no_error(err);
+    file = g_strdup_printf("%s/migrate.bin", dir);
+    uri = g_strdup_printf("file:%s", file);
+    start("-global sgi-xt-digvid.x-vbob-loopback=sd-out1:sd-in1");
+    from = qts;
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest = g_strdup_printf(MEMTX_TEST_DEVICE "-M octane2 -m 256 -cpu "
+                           OCTANE2_CPU " -bios %s -S -display none -vga none "
+                           "-device sgi-xt-digvid,slot=widget-10,id=dm2 "
+                           "-incoming %s", quoted, uri);
+    qts = qtest_init(dest);
+    sgi_migrate_resume(qts);
+    reply = qtest_qmp(qts,
+        "{'execute':'qom-get','arguments':{'path':%s,"
+        "'property':'x-vbob-loopback'}}", PATH);
+    g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "sd-out1:sd-in1");
+    qobject_unref(reply);
+    qtest_quit(qts);
+    g_assert_cmpint(unlink(file), ==, 0);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 /*
  * "Receive": a frame the host cannot be told of must not strand the buffer.
  * Frames queued behind a held one are dropped while the ring page is
@@ -1964,6 +2236,11 @@ int main(int argc, char **argv)
         { "vbob-nibbles", test_vbob_nibbles },
         { "vbob-timing-rows", test_vbob_timing_rows },
         { "vbob-routing", test_vbob_routing },
+        { "vbob-loopback-signal", test_vbob_loopback_signal },
+        { "vbob-loopback-genlock", test_vbob_loopback_genlock },
+        { "vbob-loopback-property", test_vbob_loopback_property },
+        { "dma-loopback-data", test_dma_loopback_data },
+        { "migration-loopback", test_migration_loopback },
         { "vbob-rx-unmapped-ring", test_vbob_rx_unmapped_ring },
         { "migration-vbob", test_migration_vbob },
         { "reset", test_reset },
