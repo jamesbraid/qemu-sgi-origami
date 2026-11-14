@@ -58,7 +58,7 @@ configuration.
      - Image
      - Clock record
    * - M48T35 Timekeeper
-     - Origin 200, Origin 2000, Onyx2, Origin 300, Origin 3000 family, Fuel
+     - Origin 200, Origin 2000, Onyx2, Origin 300, Origin 3000 family, Onyx 3000, Fuel
      - ``nvram<N>``, 32,768 bytes
      - ``nvram<N>-clock``, 16 bytes, magic ``M48TREF1``
    * - DS1744 Timekeeper
@@ -84,9 +84,12 @@ and the part of every machine (:ref:`sgi-timekeepers-parts`,
 :ref:`sgi-timekeepers-m48t35-stores`, :ref:`sgi-timekeepers-ds1742`,
 :doc:`hardware/ds1685`).
 
-The M48T35 year cell is two BCD digits counted from the machine's year base,
-1970 on the IP27 machines and 1968 on the Origin 300 and Fuel
-(*software expectation*, :ref:`sgi-timekeepers-m48t35-calendar`). The same
+The M48T35 year cell is two BCD digits counted from the machine's year base
+(*software expectation*, :ref:`sgi-timekeepers-m48t35-calendar`). The base is
+1970 on the IP27 machines, which set none, and 1968 on every M48T35 topology
+in ``hw/mips/sgi/sgi-machines.json`` that sets one: Fuel, Origin 300, Onyx
+3000, Origin 3200, Origin 3400, Origin 3800, Onyx 3400 with InfiniteReality3,
+and the Origin 3900 in its IP53, IP59 and memory-node profiles. The same
 calendar reads ``0x56`` for 2026 on one and ``0x58`` on the other, so a store
 moved between machines of different bases changes its date. The vectors below
 are the base-1970 ones.
@@ -199,7 +202,7 @@ a marker offset is checked unchanged.
      - Hours ``1``, weekday ``5``, date ``1``, month ``1``, year ``26``;
        instant 1,780,315,200 and counter ``10 c7 55 69 00 00 00 00``
        (1,767,229,200)
-   * - DS1744
+   * - DS1742 geometry (bare ``ds1742`` device, 2 KiB)
      - Last eight bytes of the 2 KiB window: century ``20``, seconds ``00``,
        minutes ``00``, hours ``23``, weekday ``04``, date ``31``, month
        ``12``, year ``25``, in BCD
@@ -207,9 +210,10 @@ a marker offset is checked unchanged.
      - Hours ``01``, weekday ``05``, date ``01``, month ``01``, year ``26``;
        instant within a minute of the host's wall clock
 
-The DS1744 vector is in a 2 KiB window because the test builds the bare
-device. The IP53 window is 32,768 bytes and the clock is its last eight
-bytes. The weekday of the DS1744 model carries flag bits in its top two
+The DS1742 geometry vector is in a 2 KiB window because the test builds the
+bare ``ds1742`` device. The 32 KiB DS1744 offset ``0x7ff8``, where the IP53
+products' clock sits, is not exercised by this vector. The weekday of the
+DS1744 model carries flag bits in its top two
 (:ref:`sgi-timekeepers-ds1742`); a reader masks it with ``0x07``.
 
 .. _sgi-interchange-identity:
@@ -285,10 +289,13 @@ published catalogue, ``prom/index.json`` on ``origami-dist.irix.fans``, which
 every consumer treats as the only manifest. It is a JSON object with
 ``base_url``, ``format`` (1) and ``proms``, a list of rows. A row has
 ``board``, ``version``, ``rev``, ``part``, ``banner``, ``kind`` (``shipped``
-or ``dumped``), ``from``, ``name``, ``url``, ``size`` and ``sha256``. A
-row is identified by ``name`` or ``sha256``; ``board`` and ``version`` do not,
-since some pairs have two images. A consumer picks a row, downloads ``url``
-and checks ``size`` and ``sha256`` before use. The catalogue describes
+or ``dumped``), ``from``, ``name``, ``url``, ``size`` and ``sha256``; a held
+row, described below, has no ``url``. A row is identified by ``name`` or
+``sha256``; ``board`` and ``version`` do not, since some pairs have two
+images. A consumer picks a row, downloads ``url``
+and checks ``size`` and ``sha256`` before use. A row with ``"publish": false``
+is held: its image is not uploaded yet, so it has no ``url``, and a consumer
+skips it. Published rows carry no ``publish`` field. The catalogue describes
 published files, not hardware, so these rules carry no rating. A consumer
 that pins one image by its hash is conforming. The catalogue does not say which version a machine
 offers, so each consumer names one.
@@ -360,9 +367,11 @@ Stream network framing
 Both emulators can join an Ethernet frame stream over a TCP or Unix socket.
 In QEMU this is ``-netdev stream``. The framing is one 32-bit big-endian
 length followed by the frame, with no frame check sequence. Either side may
-be the client or the server. A launcher can start QEMU as the client
-(``server=off``) with ``reconnect-ms=1000`` against a switch that listens, as
-iris does, which retries every second, so a side that starts first waits.
+be the client or the server. In a pairing with iris, iris is the client: it
+retries the connection once a second until QEMU, started with ``server=on``,
+is listening, and it connects again if the peer goes away, so a side that
+starts first waits. QEMU can be the retrying client too, with ``server=off``
+and ``reconnect-ms=1000``; QEMU refuses ``reconnect-ms`` in server mode.
 
 QEMU's receive buffer holds one frame of up to 69,632 bytes
 (``NET_BUFSIZE``). A sender should keep frames within 1,518 bytes, the
@@ -393,15 +402,29 @@ Tests
 =====
 
 - ``tests/qtest/sgi-store-format-test.c`` builds the vectors above at test
-  time, with no committed fixture: the M48T35 and DS1685 images and records
-  through an Origin 200, and the DS1744 on a bare device. Each case opens the
-  pair, reads the calendar a guest would, exits the emulator and checks the
-  saved image and record byte for byte: magic, length, instant, counter and
-  an untouched marker byte. It also covers a record of the wrong magic.
-- ``tests/qtest/ds1742-test.c``, ``tests/qtest/sn0-ds1685-test.c`` and
-  ``tests/qtest/sn0-ioc3-test.c`` hold the other restore rules: a missing
-  or short record, a stopped clock, an elapsed time that is negative or out of
-  range, the DS1685 new-image rule and cells that are not a valid date.
+  time, with no committed fixture. The M48T35 runs on the Origin 200's own
+  :term:`IOC3`. The DS1685 runs on an Origin 200 with a second IOC3, added
+  with ``ds1685-drive`` naming the image drive; the clock record is the drive
+  named ``<image drive>-clock``. The DS1742 geometry case is a bare
+  ``ds1742`` device with a 2 KiB image. Each case opens the pair, reads the
+  calendar a guest would, exits the emulator and checks the saved image and
+  record byte for byte: magic, length, instant, counter and an untouched
+  marker byte. Each part also has a case with a record of the wrong magic.
+- ``tests/qtest/sn0-ds1685-test.c`` covers the DS1685 restore rules beyond
+  those vectors: no reference drive, a wrong magic, a negative elapsed time (a
+  record instant 20 seconds after the ``-rtc`` base, which adds nothing), a
+  stopped clock, a new image whose first 320 bytes are zero, and an invalid
+  calendar. No test reaches the overflow rule, where the sum of the record
+  and the elapsed time leaves the representable range.
+- ``tests/qtest/sn0-ioc3-test.c`` covers the M48T35 restore rules: no
+  reference drive, a reference drive never written, the stop bit, a never
+  saved image and an impossible month. An empty reference drive is refused
+  at realize; the test tries no other size. No test gives the M48T35 a
+  negative or out-of-range elapsed time.
+- ``tests/qtest/ds1742-test.c`` covers the DS1742 calendar, invalid dates, the
+  DS1744 geometry and backed reopen, the fallback from an invalid saved
+  calendar to the RTC seed, and the fresh-seed year range. It has no test of
+  a negative or out-of-range elapsed time.
 - ``tests/unit/test-sgi-board-identity.c`` pins the identity vectors.
 - ``tests/qemu-iotests/tests/chd`` pins the diff, the fold and the markers. No
   test opens a CD-ROM CHD to see it refused.
