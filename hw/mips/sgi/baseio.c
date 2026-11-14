@@ -1258,7 +1258,7 @@ static void baseio_instance_init(Object *obj)
      * own identity properties should carry (see the header comment).
      */
     object_property_add_str(obj, "part", baseio_get_part, baseio_set_part);
-    object_property_add(obj, "revision", "uint32", baseio_get_revision,
+    object_property_add(obj, "revision", "uint32", NULL, baseio_get_revision,
                         baseio_set_revision, NULL, NULL);
 }
 

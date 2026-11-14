@@ -1227,7 +1227,8 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
         g_autofree char *name = g_strdup_printf("bank%u-size",
                                                 (unsigned)bank);
 
-        object_class_property_add(oc, name, "uint64", octane_get_bank_size,
+        object_class_property_add(oc, name, "uint64", NULL,
+                                  octane_get_bank_size,
                                   octane_set_bank_size, NULL, (void *)bank);
         object_class_property_set_description(oc, name,
             "Capacity of this HEART bank in bytes; setting any bank "
@@ -1282,7 +1283,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
                                   octane_set_topology);
     object_class_property_set_description(oc, "topology",
         "Catalogue topology to build (query-sgi-machines lists them)");
-    object_class_property_add(oc, "nodes", "uint32", octane_get_nodes,
+    object_class_property_add(oc, "nodes", "uint32", NULL, octane_get_nodes,
                               octane_set_nodes, NULL, NULL);
     object_class_property_set_description(oc, "nodes",
         "Node boards to fit: 1, the one HEART node board");

@@ -146,10 +146,11 @@ static void test_head_init(Object *obj)
 {
     SGIPIGfxTestHeadState *s = SGI_PI_GFX_TEST_HEAD(obj);
 
-    object_property_add(obj, "return", "uint32", NULL, test_head_return,
+    object_property_add(obj, "return", "uint32", NULL, NULL, test_head_return,
                         NULL, NULL);
-    object_property_add(obj, "owe", "int32", NULL, test_head_owe, NULL, NULL);
-    object_property_add(obj, "repay", "uint32", NULL, test_head_repay,
+    object_property_add(obj, "owe", "int32", NULL,
+                        NULL, test_head_owe, NULL, NULL);
+    object_property_add(obj, "repay", "uint32", NULL, NULL, test_head_repay,
                         NULL, NULL);
     object_property_add_uint32_ptr(obj, "taken", &s->taken,
                                    OBJ_PROP_FLAG_READ);

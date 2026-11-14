@@ -134,22 +134,24 @@ static void test_init(Object *obj)
                                     OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint64_ptr(obj, "port", &s->port,
                                     OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "register", "uint64", test_get, test_set,
+    object_property_add(obj, "register", "uint64", NULL, test_get, test_set,
                          NULL, NULL);
-    object_property_add(obj, "exchange", "uint64", test_get, test_set,
+    object_property_add(obj, "exchange", "uint64", NULL, test_get, test_set,
                          NULL, NULL);
-    object_property_add(obj, "link", "uint64", NULL, test_set, NULL, NULL);
-    object_property_add(obj, "histogram-receive", "uint64", NULL, test_set,
+    object_property_add(obj, "link", "uint64", NULL,
+                        NULL, test_set, NULL, NULL);
+    object_property_add(obj, "histogram-receive", "uint64", NULL,
+                        NULL, test_set,
                         NULL, NULL);
-    object_property_add(obj, "histogram-receive-repeat", "uint64", NULL,
+    object_property_add(obj, "histogram-receive-repeat", "uint64", NULL, NULL,
                         test_set, NULL, NULL);
-    object_property_add(obj, "histogram-send", "uint64", NULL, test_set,
+    object_property_add(obj, "histogram-send", "uint64", NULL, NULL, test_set,
                         NULL, NULL);
-    object_property_add(obj, "histogram-send-repeat", "uint64", NULL,
+    object_property_add(obj, "histogram-send-repeat", "uint64", NULL, NULL,
                         test_set, NULL, NULL);
-    object_property_add(obj, "port-errors", "uint64", NULL, test_set,
+    object_property_add(obj, "port-errors", "uint64", NULL, NULL, test_set,
                          NULL, NULL);
-    object_property_add(obj, "diagnostic", "uint64", test_get, NULL,
+    object_property_add(obj, "diagnostic", "uint64", NULL, test_get, NULL,
                          NULL, NULL);
 }
 

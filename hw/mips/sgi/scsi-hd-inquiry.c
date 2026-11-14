@@ -243,18 +243,19 @@ static void inquiry_instance_init(Object *obj)
 
     g_hash_table_insert(inquiry_settings, obj, s);
 
-    prop = object_property_add(obj, "inquiry-vendor-specific", "str",
+    prop = object_property_add(obj, "inquiry-vendor-specific", "str", NULL,
                                inquiry_get_vendor_specific,
                                inquiry_set_vendor_specific, NULL, s);
     object_property_set_description(obj, prop->name,
         "INQUIRY bytes 36 to 55: up to 20 ASCII characters, NUL filled, "
         "or hex: and up to 20 bytes as hex digits, NUL padded");
     prop = object_property_add(obj, "inquiry-peripheral-qualifier", "uint8",
+                               NULL,
                                inquiry_get_u8, inquiry_set_qualifier, NULL,
                                &s->qualifier);
     object_property_set_description(obj, prop->name,
         "INQUIRY byte 0 bits 7:5, the peripheral qualifier (default 0)");
-    prop = object_property_add(obj, "inquiry-peripheral-type", "uint8",
+    prop = object_property_add(obj, "inquiry-peripheral-type", "uint8", NULL,
                                inquiry_get_u8, inquiry_set_type, NULL,
                                &s->type);
     object_property_set_description(obj, prop->name,

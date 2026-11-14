@@ -34,7 +34,7 @@ static void test_set(Object *obj, Visitor *v, const char *name,
 
 static void test_init(Object *obj)
 {
-    object_property_add(obj, "port-errors", "uint64", NULL, test_set,
+    object_property_add(obj, "port-errors", "uint64", NULL, NULL, test_set,
                         NULL, NULL);
 }
 

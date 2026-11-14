@@ -353,7 +353,7 @@ void sgi_board_identity_class_add_properties(ObjectClass *oc,
 
     c->inputs_offset = inputs_offset;
     c->hostids = hostids;
-    object_class_property_add(oc, "emu-id", "uint32",
+    object_class_property_add(oc, "emu-id", "uint32", NULL,
                               sgi_board_emu_id_get_visit,
                               sgi_board_emu_id_set_visit, NULL, c);
     object_class_property_set_description(oc, "emu-id",
@@ -363,7 +363,7 @@ void sgi_board_identity_class_add_properties(ObjectClass *oc,
     if (!hostids) {
         return;
     }
-    object_class_property_add(oc, "serial", "str",
+    object_class_property_add(oc, "serial", "str", NULL,
                               sgi_board_serial_get_visit,
                               sgi_board_serial_set_visit, NULL, c);
     object_class_property_set_description(oc, "serial",
@@ -373,14 +373,14 @@ void sgi_board_identity_class_add_properties(ObjectClass *oc,
         "each character. The Origin 2000 and Onyx2 take a module serial that "
         "must start with K, for example K0017299, padded on the left with K "
         "to 10 characters");
-    object_class_property_add(oc, "hostid", "str",
+    object_class_property_add(oc, "hostid", "str", NULL,
                               sgi_board_hostid_get_visit,
                               sgi_board_hostid_set_visit, NULL, c);
     object_class_property_set_description(oc, "hostid",
         "The system id as 8 hex digits; on the Octane, Origin 200 and Fuel "
         "also 6 digits, the low 24 bits with the leading 69 implied. Read "
         "back, the id of the first node or module once the machine is built");
-    object_class_property_add(oc, "hostids", "str",
+    object_class_property_add(oc, "hostids", "str", NULL,
                               sgi_board_hostids_get_visit, NULL, NULL, c);
     object_class_property_set_description(oc, "hostids",
         "Every system id the guest can print, as 8 hex digits each, separated "
@@ -390,7 +390,7 @@ void sgi_board_identity_class_add_properties(ObjectClass *oc,
 void sgi_board_mac_class_add_property(ObjectClass *oc, size_t offset,
                                       const char *description)
 {
-    object_class_property_add(oc, "mac", "str", sgi_board_mac_get_visit,
+    object_class_property_add(oc, "mac", "str", NULL, sgi_board_mac_get_visit,
                               sgi_board_mac_set_visit, NULL,
                               (void *)(uintptr_t)offset);
     object_class_property_set_description(oc, "mac", description);

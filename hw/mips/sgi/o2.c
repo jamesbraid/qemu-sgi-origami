@@ -2387,7 +2387,7 @@ static void o2_add_test_properties(Object *obj)
     object_property_add_bool(obj, "gbe11-registers",
                              o2_get_gbe11_registers,
                              o2_set_gbe11_registers);
-    object_property_add(obj, "gbe-external-ttl-hz", "uint64",
+    object_property_add(obj, "gbe-external-ttl-hz", "uint64", NULL,
                         o2_get_gbe_external_ttl_hz,
                         o2_set_gbe_external_ttl_hz, NULL, NULL);
     object_property_set_description(obj, "gbe-external-ttl-hz",
@@ -2397,7 +2397,7 @@ static void o2_add_test_properties(Object *obj)
                              o2_set_gbe_one_tile_diagnostic);
     object_property_add_bool(obj, "phy-ics1890",
                              o2_get_phy_ics1890, o2_set_phy_ics1890);
-    object_property_add(obj, "phy-address", "uint8",
+    object_property_add(obj, "phy-address", "uint8", NULL,
                         o2_get_phy_address, o2_set_phy_address,
                         NULL, NULL);
     object_property_add_bool(obj, "aic-pci-diagnostic",
@@ -2507,15 +2507,15 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "password-clear-input",
         "Raw external password-clear input (0 or 1); required with rom-image; "
         "omission without ROM selects synthetic zero");
-    object_class_property_add(oc, "cpu-clock-hz", "uint64",
+    object_class_property_add(oc, "cpu-clock-hz", "uint64", NULL,
                               o2_get_cpu_clock_hz, NULL, NULL, NULL);
-    object_class_property_add(oc, "rom-size", "uint32",
+    object_class_property_add(oc, "rom-size", "uint32", NULL,
                               o2_get_rom_uint32, o2_set_rom_uint32,
                               NULL, NULL);
-    object_class_property_add(oc, "rom-offset", "uint32",
+    object_class_property_add(oc, "rom-offset", "uint32", NULL,
                               o2_get_rom_uint32, o2_set_rom_uint32,
                               NULL, NULL);
-    object_class_property_add(oc, "rom-pad-byte", "uint16",
+    object_class_property_add(oc, "rom-pad-byte", "uint16", NULL,
                               o2_get_rom_pad_byte, o2_set_rom_pad_byte,
                               NULL, NULL);
     mc->desc = "SGI O2 (IP32), R10000 195 MHz";

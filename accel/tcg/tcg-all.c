@@ -316,7 +316,7 @@ static void tcg_accel_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "tb-size",
         "TCG translation block cache size");
 
-    object_class_property_add(oc, "rr-kick-period-ns", "uint64",
+    object_class_property_add(oc, "rr-kick-period-ns", "uint64", NULL,
         tcg_get_rr_kick_period, tcg_set_rr_kick_period,
         NULL, NULL);
     object_class_property_set_description(oc, "rr-kick-period-ns",

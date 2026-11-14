@@ -15227,9 +15227,9 @@ static void odyssey_instance_init(Object *obj)
                                  OBJ_PROP_FLAG_READWRITE);
     object_property_add_bool(obj, "x-test-work-pending",
                              odyssey_test_get_work_pending, NULL);
-    object_property_add(obj, "x-test-work-waiting", "uint32",
+    object_property_add(obj, "x-test-work-waiting", "uint32", NULL,
                         odyssey_test_get_work_waiting, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-unlocked-draws", "uint32",
+    object_property_add(obj, "x-test-unlocked-draws", "uint32", NULL,
                         odyssey_test_get_unlocked_draws, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
@@ -15242,12 +15242,13 @@ static void odyssey_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-read-word", &s->read_word,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "x-test-pixel", "uint32", odyssey_test_get_pixel,
+    object_property_add(obj, "x-test-pixel", "uint32", NULL,
+                        odyssey_test_get_pixel,
                         odyssey_test_set_pixel, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-count",
                                    &s->test_pixel_count,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-pixel-row", "str",
+    object_property_add(obj, "x-test-pixel-row", "str", NULL,
                         odyssey_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-mesa-draws",
                                    &s->mesa_counts.committed,
@@ -15277,23 +15278,23 @@ static void odyssey_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-sync-timeout",
                                    &s->sync_timeout, OBJ_PROP_FLAG_READ);
     /* Synthetic model DID byte; this says nothing about physical WID rules. */
-    object_property_add(obj, "x-test-did", "uint32", odyssey_test_get_did,
+    object_property_add(obj, "x-test-did", "uint32", NULL, odyssey_test_get_did,
                         odyssey_test_set_did, NULL, NULL);
-    object_property_add(obj, "x-test-overlay", "uint32",
+    object_property_add(obj, "x-test-overlay", "uint32", NULL,
                         odyssey_test_get_overlay, odyssey_test_set_overlay,
                         NULL, NULL);
-    object_property_add(obj, "x-test-rgba-readable", "bool",
+    object_property_add(obj, "x-test-rgba-readable", "bool", NULL,
                         odyssey_test_get_rgba_readable, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-display-pixel", "uint32",
+    object_property_add(obj, "x-test-display-pixel", "uint32", NULL,
                         odyssey_test_get_display_pixel, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-object-base",
                                    &s->test_object_base,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-object-texel", "uint32",
+    object_property_add(obj, "x-test-object-texel", "uint32", NULL,
                         odyssey_test_get_object_texel, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-object-count", &s->obj_count,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "x-test-fire-retrace", "bool", NULL,
+    object_property_add(obj, "x-test-fire-retrace", "bool", NULL, NULL,
                         odyssey_test_fire_retrace, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,

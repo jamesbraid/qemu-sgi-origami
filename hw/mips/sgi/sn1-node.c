@@ -4038,7 +4038,7 @@ static void sn1_node_instance_init(Object *obj)
 {
     SN1NodeState *node = SN1_NODE(obj);
 
-    object_property_add(obj, "halted-cpus", "uint32",
+    object_property_add(obj, "halted-cpus", "uint32", NULL,
                         sn1_node_get_halted_cpus, NULL, NULL, NULL);
     node->cpuclk = qdev_init_clock_in(DEVICE(obj), "cpu-refclk", NULL, NULL,
                                       0);

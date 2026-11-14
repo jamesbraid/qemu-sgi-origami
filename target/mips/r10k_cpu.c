@@ -378,7 +378,7 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
     }
     if (mips_r10k_prid_property(def->name)) {
         object_class_property_add(oc, mips_r10k_prid_property(def->name),
-                                  "uint32", mips_r10k_prid_get,
+                                  "uint32", NULL, mips_r10k_prid_get,
                                   mips_r10k_prid_set, NULL,
                                   (void *)(uintptr_t)
                                   ((def->CP0_PRid >> 8) & 0xff));
@@ -387,7 +387,7 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
      * Every part takes its board's mode bits; the R10000 and R14000 check
      * the cache geometry they select when set, the others at realize.
      */
-    object_class_property_add(oc, "reset-mode", "uint32",
+    object_class_property_add(oc, "reset-mode", "uint32", NULL,
                               mips_r10k_reset_mode_get,
                               mips_r10k_reset_mode_set, NULL,
                               (!strcmp(def->name, "R10000") ||
@@ -403,6 +403,7 @@ void mips_r10k_cpu_class_init(ObjectClass *oc, const void *data)
             "Common R12000 or bounded NEC VR12000A interface; no ECC detector");
         for (uintptr_t i = 0; i < R12000_PROFILE_FIELDS; i++) {
             object_class_property_add(oc, r12000_property_names[i], "uint32",
+                                      NULL,
                                       mips_r12000_property_get,
                                       mips_r12000_property_set,
                                       NULL, (void *)i);

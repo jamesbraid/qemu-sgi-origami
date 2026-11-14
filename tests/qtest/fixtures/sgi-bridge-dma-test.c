@@ -456,7 +456,7 @@ static void sgi_bridge_dma_test_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "test-read-data", &s->read_data,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "test-command", "uint32", NULL,
+    object_property_add(obj, "test-command", "uint32", NULL, NULL,
                         sgi_bridge_dma_test_command, NULL, NULL);
     object_property_add_bool(obj, "test-master-enable",
                              sgi_bridge_dma_test_master_get,

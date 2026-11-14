@@ -514,9 +514,11 @@ static void mbus_realize(DeviceState *dev, Error **errp)
         return;
     }
     sysbus_init_irq(SYS_BUS_DEVICE(dev), &s->irq);
-    object_property_add(OBJECT(dev), "scl-low-ns", "int", mbus_get_phase_ns,
+    object_property_add(OBJECT(dev), "scl-low-ns", "int", NULL,
+                        mbus_get_phase_ns,
                         NULL, NULL, &s->low_ns);
-    object_property_add(OBJECT(dev), "scl-high-ns", "int", mbus_get_phase_ns,
+    object_property_add(OBJECT(dev), "scl-high-ns", "int", NULL,
+                        mbus_get_phase_ns,
                         NULL, NULL, &s->high_ns);
     s->bus = i2c_init_bus_type(TYPE_I2C_WIRE, dev, "mbus");
     if (i2c_bus_enable_wire(s->bus, 1, NULL, NULL, errp)) {

@@ -2222,9 +2222,9 @@ static void bedrock_init(Object *obj)
      */
     object_property_add_str(obj, "x-test-withhold-scratch1", NULL,
                             bedrock_test_withhold_scratch1);
-    object_property_add(obj, "x-test-release-scratch1", "uint32", NULL,
+    object_property_add(obj, "x-test-release-scratch1", "uint32", NULL, NULL,
                         bedrock_test_release_scratch1, NULL, NULL);
-    object_property_add(obj, "x-test-refuse-vector-read", "uint64", NULL,
+    object_property_add(obj, "x-test-refuse-vector-read", "uint64", NULL, NULL,
                         bedrock_test_refuse_vector_read, NULL, NULL);
     object_property_add_link(obj, "net-cable", TYPE_SGI_NET_CABLE,
                              (Object **)&s->net_cable,

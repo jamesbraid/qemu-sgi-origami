@@ -162,12 +162,15 @@ static void crime_test_class_init(ObjectClass *oc, const void *data)
     dc->vmsd = &crime_test_vmstate;
     dc->desc = "Synthetic CRIME error latch fixture";
     device_class_set_props(dc, crime_test_properties);
-    object_class_property_add(oc, "line-sample", "uint64", crime_test_line_get,
+    object_class_property_add(oc, "line-sample", "uint64", NULL,
+                              crime_test_line_get,
                                crime_test_line_set, NULL, NULL);
-    object_class_property_add(oc, "line-area", "uint64", crime_test_line_get,
+    object_class_property_add(oc, "line-area", "uint64", NULL,
+                              crime_test_line_get,
                                NULL, NULL, NULL);
     for (unsigned i = 0; i < ARRAY_SIZE(properties); i++) {
-        object_class_property_add(oc, properties[i], "uint64", crime_test_get,
+        object_class_property_add(oc, properties[i], "uint64", NULL,
+                                  crime_test_get,
                                    crime_test_set, NULL, NULL);
     }
 }

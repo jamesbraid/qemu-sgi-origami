@@ -19,6 +19,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/irq.h"
 #include "qapi/error.h"
+#include "qapi/qapi-type-infos-sgi-machines.h"
 #include "qapi/qapi-types-sgi-machines.h"
 #include "qapi/qapi-visit-sgi-machines.h"
 #include "migration/vmstate.h"
@@ -292,7 +293,7 @@ static void pic_profile_set(Object *obj, Visitor *v, const char *name,
 static const PropertyInfo qdev_prop_sgi_pic_profile = {
     .type = "SGIModelPicCompatibilityProfile",
     .description = "PIC compatibility profile",
-    .enum_table = &SGIModelPicCompatibilityProfile_lookup,
+    .qapi_type = &SGIModelPicCompatibilityProfile_type_info,
     .get = pic_profile_get,
     .set = pic_profile_set,
 };

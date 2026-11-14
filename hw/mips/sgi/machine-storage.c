@@ -81,7 +81,7 @@ void sgi_storage_class_add_property(ObjectClass *oc, size_t offset,
 {
     g_autofree char *description = sgi_storage_description(name);
 
-    object_class_property_add(oc, name, "str", sgi_storage_class_get,
+    object_class_property_add(oc, name, "str", NULL, sgi_storage_class_get,
                               sgi_storage_class_set, NULL,
                               (void *)(uintptr_t)offset);
     object_class_property_set_description(oc, name, description);

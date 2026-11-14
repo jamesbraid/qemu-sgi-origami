@@ -5058,7 +5058,7 @@ static void crime_init(Object *obj)
                              (Object **)&s->decoded_carrier,
                              crime_check_decoded_carrier,
                              OBJ_PROP_LINK_STRONG);
-    object_property_add(obj, "decoded-base", "uint64",
+    object_property_add(obj, "decoded-base", "uint64", NULL,
                         crime_get_decoded_base, crime_set_decoded_base,
                         NULL, NULL);
     object_property_add_bool(obj, "reset-low-ram-approx",

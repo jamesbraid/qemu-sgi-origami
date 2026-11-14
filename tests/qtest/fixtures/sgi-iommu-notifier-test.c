@@ -57,7 +57,7 @@ static void notifier_init(Object *obj)
     object_property_add_link(obj, "iommu", TYPE_IOMMU_MEMORY_REGION,
                              (Object **)&s->iommu,
                              qdev_prop_allow_set_link_before_realize, 0);
-    object_property_add(obj, "result", "int32", notifier_get_result,
+    object_property_add(obj, "result", "int32", NULL, notifier_get_result,
                         NULL, NULL, NULL);
 }
 

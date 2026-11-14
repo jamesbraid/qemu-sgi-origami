@@ -1287,10 +1287,10 @@ static void sgi_ioc3_build(PCIDevice *dev, Error **errp)
     }
 
     if (s->board->lightbar) {
-        object_property_add(OBJECT(dev), "lightbar-white", "bool",
+        object_property_add(OBJECT(dev), "lightbar-white", "bool", NULL,
                             sgi_ioc3_get_lightbar, NULL, NULL,
                             (void *)(uintptr_t)SGI_IOC3_LIGHTBAR_WHITE);
-        object_property_add(OBJECT(dev), "lightbar-red", "bool",
+        object_property_add(OBJECT(dev), "lightbar-red", "bool", NULL,
                             sgi_ioc3_get_lightbar, NULL, NULL,
                             (void *)(uintptr_t)SGI_IOC3_LIGHTBAR_RED);
     }

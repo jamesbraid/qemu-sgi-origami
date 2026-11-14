@@ -204,9 +204,11 @@ static void option_fixture_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
 
-    object_class_property_add(oc, "offset", "uint64", option_fixture_offset,
+    object_class_property_add(oc, "offset", "uint64", NULL,
+                              option_fixture_offset,
                               option_fixture_offset, NULL, NULL);
-    object_class_property_add(oc, "value", "uint64", option_fixture_get_value,
+    object_class_property_add(oc, "value", "uint64", NULL,
+                              option_fixture_get_value,
                               option_fixture_set_value, NULL, NULL);
     dc->realize = option_fixture_realize;
     dc->user_creatable = true;

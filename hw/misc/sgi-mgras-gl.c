@@ -1472,7 +1472,7 @@ static void mgras_gl_init_fallbacks(SGIMgrasState *s)
                                        &s->gl_mesa_fallbacks[i],
                                        OBJ_PROP_FLAG_READ);
     }
-    object_property_add(OBJECT(s), "x-mesa-fallbacks", "uint64",
+    object_property_add(OBJECT(s), "x-mesa-fallbacks", "uint64", NULL,
                         mgras_gl_get_fallbacks, NULL, NULL, NULL);
 }
 
@@ -1480,10 +1480,11 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
 {
     mgras_gl_init_fallbacks(s);
     object_property_add(OBJECT(s), "x-mesa-fallback-unavailable", "uint32",
+                        NULL,
                         mgras_gl_get_unavailable, NULL, NULL, NULL);
-    object_property_add(OBJECT(s), "x-test-render-validated", "uint32",
+    object_property_add(OBJECT(s), "x-test-render-validated", "uint32", NULL,
                         mgras_gl_test_get_validated, NULL, NULL, NULL);
-    object_property_add(OBJECT(s), "x-test-gl-draw-error", "uint32",
+    object_property_add(OBJECT(s), "x-test-gl-draw-error", "uint32", NULL,
                         mgras_gl_test_get_draw_error, NULL, NULL, NULL);
     object_property_add_uint64_ptr(OBJECT(s), "x-test-render-snapshots",
                                    &s->gl_render_snapshots, OBJ_PROP_FLAG_READ);
@@ -1501,9 +1502,10 @@ void sgi_mgras_gl_init(SGIMgrasState *s)
                                    "x-test-render-inject-commit-failure",
                                    &s->gl_render_inject_commit_failure,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(OBJECT(s), "x-test-render-failed", "uint32",
+    object_property_add(OBJECT(s), "x-test-render-failed", "uint32", NULL,
                         mgras_gl_test_get_failed, NULL, NULL, NULL);
     object_property_add(OBJECT(s), "x-test-render-resource-pixel", "uint32",
+                        NULL,
                         mgras_gl_test_get_resource,
                         mgras_gl_test_set_resource, NULL, NULL);
     for (int i = 0; i < SGI_MGRAS_GL_CONTEXTS; i++) {

@@ -159,9 +159,10 @@ static void test_init(Object *obj)
     object_property_add_uint64_ptr(obj, "warm-reset-taken",
                                     &s->warm_reset_taken,
                                     OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "warm-reset", "uint64", NULL,
+    object_property_add(obj, "warm-reset", "uint64", NULL, NULL,
                         test_set_warm_reset, NULL, NULL);
-    object_property_add(obj, "route", "uint64", test_route, NULL, NULL, NULL);
+    object_property_add(obj, "route", "uint64", NULL,
+                        test_route, NULL, NULL, NULL);
 }
 
 static void test_class_init(ObjectClass *oc, const void *data)

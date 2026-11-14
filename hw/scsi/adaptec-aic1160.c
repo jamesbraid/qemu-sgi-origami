@@ -1532,13 +1532,13 @@ static void aic1160_get_running(Object *obj, Visitor *v, const char *name,
 
 static void aic1160_instance_init(Object *obj)
 {
-    object_property_add(obj, "x-raise-status", "uint16", NULL,
+    object_property_add(obj, "x-raise-status", "uint16", NULL, NULL,
                         aic1160_set_raise_status, NULL, NULL);
-    object_property_add(obj, "x-loop-event", "uint8", NULL,
+    object_property_add(obj, "x-loop-event", "uint8", NULL, NULL,
                         aic1160_set_loop_event, NULL, NULL);
-    object_property_add(obj, "x-words-loaded", "uint32",
+    object_property_add(obj, "x-words-loaded", "uint32", NULL,
                         aic1160_get_words_loaded, NULL, NULL, NULL);
-    object_property_add(obj, "x-sequencer-running", "bool",
+    object_property_add(obj, "x-sequencer-running", "bool", NULL,
                         aic1160_get_running, NULL, NULL, NULL);
 }
 

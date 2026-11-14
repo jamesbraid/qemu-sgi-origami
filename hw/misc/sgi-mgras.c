@@ -2942,26 +2942,27 @@ static void mgras_instance_init(Object *obj)
 
     qdev_init_gpio_in_named(DEVICE(obj), mgras_link_reset, "link-reset", 1);
     sgi_mgras_gl_init(s);
-    object_property_add(obj, "x-test-line-phase", "uint32",
+    object_property_add(obj, "x-test-line-phase", "uint32", NULL,
                         mgras_test_get_line_phase, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-depth-stencil", "uint32",
+    object_property_add(obj, "x-test-depth-stencil", "uint32", NULL,
                         mgras_test_get_depth_stencil, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-back-pixel", "uint32",
+    object_property_add(obj, "x-test-back-pixel", "uint32", NULL,
                         mgras_test_get_back_pixel, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-slot-pixel", "uint32",
+    object_property_add(obj, "x-test-slot-pixel", "uint32", NULL,
                         mgras_test_get_slot_pixel, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-slot", &s->test_slot,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-polygon-contexts", "uint32",
+    object_property_add(obj, "x-test-polygon-contexts", "uint32", NULL,
                         mgras_test_get_polygon_contexts, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-polygon-vertices", "uint64",
+    object_property_add(obj, "x-test-polygon-vertices", "uint64", NULL,
                         mgras_test_get_polygon_vertices, NULL, NULL, NULL);
 
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-pixel", "uint32", mgras_test_get_pixel,
+    object_property_add(obj, "x-test-pixel", "uint32", NULL,
+                        mgras_test_get_pixel,
                         NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-count",
                                    &s->test_pixel_count,
@@ -2975,15 +2976,16 @@ static void mgras_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_bool(obj, "x-test-work-pending",
                              mgras_test_get_work_pending, NULL);
-    object_property_add(obj, "x-test-pixel-row", "str",
+    object_property_add(obj, "x-test-pixel-row", "str", NULL,
                         mgras_test_get_pixel_row, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-display-pixel", "uint32",
+    object_property_add(obj, "x-test-display-pixel", "uint32", NULL,
                         mgras_test_get_display_pixel, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-wid", "uint32", mgras_test_get_wid,
+    object_property_add(obj, "x-test-wid", "uint32", NULL, mgras_test_get_wid,
                         NULL, NULL, NULL);
-    object_property_add(obj, "x-test-format", "uint32", mgras_test_get_format,
+    object_property_add(obj, "x-test-format", "uint32", NULL,
+                        mgras_test_get_format,
                         NULL, NULL, NULL);
-    object_property_add(obj, "x-test-overlay", "uint32",
+    object_property_add(obj, "x-test-overlay", "uint32", NULL,
                         mgras_test_get_overlay, NULL, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-last-interrupt-addr",
                                    &s->test_last_interrupt_addr,
@@ -3020,13 +3022,13 @@ static void mgras_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-dma-map-slot",
                                    &s->test_dma_map_slot,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-dma-map-base", "uint64",
+    object_property_add(obj, "x-test-dma-map-base", "uint64", NULL,
                         mgras_test_get_dma_map_base, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-dma-map-count", "uint32",
+    object_property_add(obj, "x-test-dma-map-count", "uint32", NULL,
                         mgras_test_get_dma_map_count, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-dma-map-width", "uint32",
+    object_property_add(obj, "x-test-dma-map-width", "uint32", NULL,
                         mgras_test_get_dma_map_width, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-dma-map-control", "uint32",
+    object_property_add(obj, "x-test-dma-map-control", "uint32", NULL,
                         mgras_test_get_dma_map_control, NULL, NULL, NULL);
 }
 

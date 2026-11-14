@@ -34,6 +34,17 @@ static const QEnumLookup dma_view_lookup = {
     .array = (const char *const[]) { "crime-1.5", "legacy-software" },
     .size = 2,
 };
+
+/*
+ * QAPI enum names cannot contain the dot in the legacy "crime-1.5" value.
+ * Advertise its string wire type while retaining the original enum lookup.
+ */
+static const QAPITypeInfo dma_view_type_info = {
+    .name = "GBEDMAView",
+    .masked_name = "str",
+    .lookup = &dma_view_lookup,
+};
+
 #define FREEZE BIT(31)
 #define FIELDS 0xffffffu
 #define GBE_RGB_MASK 0xffffff00u
@@ -1254,7 +1265,7 @@ static void dma_view_property(Object *obj, Visitor *v, const char *name,
 static const PropertyInfo prop_dma_view = {
     .type = "GBEDMAView",
     .description = "GBE read-DMA address domain",
-    .enum_table = &dma_view_lookup,
+    .qapi_type = &dma_view_type_info,
     .get = dma_view_property,
     .set = dma_view_property,
 };

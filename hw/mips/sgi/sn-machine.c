@@ -8355,7 +8355,7 @@ static bool sgi_machine_build_io_assemblies(SGIMachineState *s,
         g_autofree char *name =
             g_strdup_printf("l1-association%u-reachable", index);
 
-        object_property_add(OBJECT(s), name, "bool",
+        object_property_add(OBJECT(s), name, "bool", NULL,
                             sgi_machine_get_association,
                             sgi_machine_set_association, NULL,
                             &s->query_associations[index]);
@@ -12203,7 +12203,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "an unrecognized name (including 'help') reports every topology "
         "this product accepts.");
 
-    object_class_property_add(oc, "nodes", "uint32", sgi_machine_get_nodes,
+    object_class_property_add(oc, "nodes", "uint32", NULL,
+                              sgi_machine_get_nodes,
                               sgi_machine_set_nodes, NULL, NULL);
     object_class_property_set_description(oc, "nodes",
         "How many node boards the chassis fits, in the order SGI fills "
@@ -12263,14 +12264,14 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Answer selected Origin 300 L1 brick, version and serial all guest "
         "queries with marked synthetic values. Off by default.");
 
-    object_class_property_add(oc, "elsc-dip-switches", "uint8",
+    object_class_property_add(oc, "elsc-dip-switches", "uint8", NULL,
                               sgi_machine_get_elsc_dip_switches,
                               sgi_machine_set_elsc_dip_switches, NULL, NULL);
     object_class_property_set_description(oc, "elsc-dip-switches",
         "Set the eight physical ELSC DIP switches as asserted bits. The "
         "controller reports their active-low wire value to firmware.");
 
-    object_class_property_add(oc, "module-start-delay", "uint32",
+    object_class_property_add(oc, "module-start-delay", "uint32", NULL,
                               sgi_machine_get_module_start_delay,
                               sgi_machine_set_module_start_delay, NULL, NULL);
     object_class_property_set_description(oc, "module-start-delay",
@@ -12283,21 +12284,21 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "controller's power-up with no wait, and starts an Origin 200 "
         "module powered.");
 
-    object_class_property_add(oc, "board-id-word", "uint64",
+    object_class_property_add(oc, "board-id-word", "uint64", NULL,
                               sgi_machine_get_board_id_word,
                               sgi_machine_set_board_id_word, NULL, NULL);
     object_class_property_set_description(oc, "board-id-word",
         "Override the catalogue's 64-bit board-identification word for "
         "every Bedrock node. The product's catalogue mask still applies.");
 
-    object_class_property_add(oc, "ioc3-subsystem-id", "uint16",
+    object_class_property_add(oc, "ioc3-subsystem-id", "uint16", NULL,
                               sgi_machine_get_ioc3_subsystem_id,
                               sgi_machine_set_ioc3_subsystem_id, NULL, NULL);
     object_class_property_set_description(oc, "ioc3-subsystem-id",
         "Override the catalogue's IOC3 board key, which selects the "
         "IOC3's sub-device population, for every Bedrock I/O board.");
 
-    object_class_property_add(oc, "l1-type-code", "uint8",
+    object_class_property_add(oc, "l1-type-code", "uint8", NULL,
                               sgi_machine_get_l1_type_code,
                               sgi_machine_set_l1_type_code, NULL, NULL);
     object_class_property_set_description(oc, "l1-type-code",
@@ -12312,7 +12313,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "major.minor.patch, for every node L1 and every Origin 3000 I-brick, "
         "N-brick and V-brick L1.");
 
-    object_class_property_add(oc, "bedrock-revision", "uint8",
+    object_class_property_add(oc, "bedrock-revision", "uint8", NULL,
                               sgi_machine_get_bedrock_revision,
                               sgi_machine_set_bedrock_revision, NULL, NULL);
     object_class_property_set_description(oc, "bedrock-revision",
@@ -12345,7 +12346,7 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         const SGIMachineIdentityRecords *records =
             &sgi_machine_identity_records[i];
 
-        object_class_property_add(oc, records->name, "strList",
+        object_class_property_add(oc, records->name, "strList", NULL,
                                   sgi_machine_get_identity_records,
                                   sgi_machine_set_identity_records, NULL,
                                   (void *)records);

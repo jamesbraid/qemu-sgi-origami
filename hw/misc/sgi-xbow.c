@@ -2286,7 +2286,7 @@ static void sgi_xbow_instance_init(Object *obj)
                                  (Object **)&s->legacy_target[link],
                                  qdev_prop_allow_set_link_before_realize, 0);
     }
-    object_property_add(obj, "links-alive", "uint16",
+    object_property_add(obj, "links-alive", "uint16", NULL,
                         sgi_xbow_get_links_alive, sgi_xbow_set_links_alive,
                         NULL, NULL);
 }

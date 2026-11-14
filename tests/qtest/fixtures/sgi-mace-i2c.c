@@ -222,7 +222,7 @@ static void endpoint_init(Object *obj)
     MACEI2CTest *s = MACE_I2C_TEST(obj);
 
     s->profile_available = true;
-    object_property_add(obj, "bus-owner", "uint32", endpoint_bus_owner,
+    object_property_add(obj, "bus-owner", "uint32", NULL, endpoint_bus_owner,
                          NULL, NULL, NULL);
     object_property_add_bool(obj, "bus-address-valid", endpoint_bus_address,
                               NULL);

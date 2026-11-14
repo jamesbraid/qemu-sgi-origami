@@ -703,7 +703,7 @@ void sgi_xio_board_class_set_identity(ObjectClass *oc,
     object_class_property_set_description(oc, "board-part",
         "The part number the board's own one-wire identity record stores, "
         "twelve characters. Fixed once realized.");
-    object_class_property_add(oc, "other-identity-parts", "strList",
+    object_class_property_add(oc, "other-identity-parts", "strList", NULL,
                               sgi_xio_board_get_other_identity_parts,
                               sgi_xio_board_set_other_identity_parts,
                               NULL, NULL);

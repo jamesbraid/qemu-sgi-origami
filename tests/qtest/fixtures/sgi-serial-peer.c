@@ -75,14 +75,15 @@ static bool peer_tx_blocked(Object *obj, Error **errp)
 static void peer_init(Object *obj)
 {
     object_property_add_bool(obj, "transmit-blocked", peer_tx_blocked, NULL);
-    object_property_add(obj, "receive", "uint64", NULL, peer_set, NULL, NULL);
-    object_property_add(obj, "line-errors", "uint64", NULL, peer_set,
+    object_property_add(obj, "receive", "uint64", NULL,
+                        NULL, peer_set, NULL, NULL);
+    object_property_add(obj, "line-errors", "uint64", NULL, NULL, peer_set,
                         NULL, NULL);
-    object_property_add(obj, "modem-status", "uint64", NULL, peer_set,
+    object_property_add(obj, "modem-status", "uint64", NULL, NULL, peer_set,
                         NULL, NULL);
-    object_property_add(obj, "modem-status-and-advance", "uint64", NULL,
+    object_property_add(obj, "modem-status-and-advance", "uint64", NULL, NULL,
                         peer_set, NULL, NULL);
-    object_property_add(obj, "modem-transient-pause", "uint64", NULL,
+    object_property_add(obj, "modem-transient-pause", "uint64", NULL, NULL,
                         peer_set, NULL, NULL);
 }
 

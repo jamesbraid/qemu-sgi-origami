@@ -2146,18 +2146,19 @@ static void dm2_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "x-test-gif-loaded",
         "Host-only qtest: report the GIF configured without its load; set "
         "at run time, since machine reset clears it");
-    object_class_property_add(oc, "x-vbob-output-timing", "uint8",
+    object_class_property_add(oc, "x-vbob-output-timing", "uint8", NULL,
                               dm2_get_output_timing, dm2_set_output_timing,
                               NULL, NULL);
     object_class_property_set_description(oc, "x-vbob-output-timing",
         "Wire code (3 to 17) that overrides the output timing the virtual "
         "VBOB takes from the host's timing record; 0 for no override");
-    object_class_property_add(oc, "x-vbob-input-timings", "uint64",
+    object_class_property_add(oc, "x-vbob-input-timings", "uint64", NULL,
                               dm2_get_inputs, dm2_set_inputs, NULL, NULL);
     object_class_property_set_description(oc, "x-vbob-input-timings",
         "Detected input timing wire code of each of the six jack slots, "
         "slot 0 in the low byte; 1 is none");
-    object_class_property_add(oc, "x-vbob-present", "uint8", dm2_get_present,
+    object_class_property_add(oc, "x-vbob-present", "uint8", NULL,
+                              dm2_get_present,
                               dm2_set_present, NULL, NULL);
     object_class_property_set_description(oc, "x-vbob-present",
         "A signal is present on input slot n of the six, bit n; slots 0 and "

@@ -21579,13 +21579,13 @@ static void sgi_kona_instance_init(Object *obj)
     qdev_init_gpio_in_named(DEVICE(obj), sgi_kona_link_reset, "link-reset", 1);
     sgi_kona_texture_init(&s->textures);
     s->context_current = SGI_KONA_CONTEXT_NONE;
-    object_property_add(obj, "x-record-mark", "uint32", NULL,
+    object_property_add(obj, "x-record-mark", "uint32", NULL, NULL,
                         sgi_kona_set_record_mark, NULL, NULL);
-    object_property_add(obj, "x-test-context-digest", "str",
+    object_property_add(obj, "x-test-context-digest", "str", NULL,
                         sgi_kona_test_get_context_digest, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-context-current", "int32",
+    object_property_add(obj, "x-test-context-current", "int32", NULL,
                         sgi_kona_test_get_context_current, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-context-error", "str",
+    object_property_add(obj, "x-test-context-error", "str", NULL,
                         sgi_kona_test_get_context_error, NULL, NULL, NULL);
     object_property_add_bool(obj, "x-test-context-alloc-fail",
                              sgi_kona_test_get_context_alloc_fail,
@@ -21597,9 +21597,9 @@ static void sgi_kona_instance_init(Object *obj)
 
     object_property_add_uint32_ptr(obj, "x-test-gl-data-have", &s->gl_data_have,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "x-test-gl-data-word", "uint32",
+    object_property_add(obj, "x-test-gl-data-word", "uint32", NULL,
                         sgi_kona_test_get_gl_data_word, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-gl-data-words", "str",
+    object_property_add(obj, "x-test-gl-data-words", "str", NULL,
                         sgi_kona_test_get_gl_data_words, NULL, NULL, NULL);
     /*
      * Display-list work in slices of x-test-slice-words list words rather
@@ -21614,38 +21614,38 @@ static void sgi_kona_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-texture-pixel", "uint32",
+    object_property_add(obj, "x-test-texture-pixel", "uint32", NULL,
                         sgi_kona_test_get_texture_pixel, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-texture-curve", "number",
+    object_property_add(obj, "x-test-texture-curve", "number", NULL,
                         sgi_kona_test_get_texture_curve, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-texture-curve-valid", "bool",
+    object_property_add(obj, "x-test-texture-curve-valid", "bool", NULL,
                         sgi_kona_test_get_texture_curve_valid,
                         NULL, NULL, NULL);
-    object_property_add(obj, "x-test-pixel", "uint32",
+    object_property_add(obj, "x-test-pixel", "uint32", NULL,
                         sgi_kona_test_get_pixel, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-pixel-row", "str",
+    object_property_add(obj, "x-test-pixel-row", "str", NULL,
                         sgi_kona_test_get_pixel_row, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-plane", &s->test_plane,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-plane-word", "uint32",
+    object_property_add(obj, "x-test-plane-word", "uint32", NULL,
                         sgi_kona_test_get_plane_word, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-config-block", "str",
+    object_property_add(obj, "x-test-config-block", "str", NULL,
                         sgi_kona_test_get_config_block, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-pixel-count",
                                    &s->test_pixel_count,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-plane-row", "str",
+    object_property_add(obj, "x-test-plane-row", "str", NULL,
                         sgi_kona_test_get_plane_row, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-plane-select", "uint64",
+    object_property_add(obj, "x-test-plane-select", "uint64", NULL,
                         NULL, sgi_kona_test_set_plane_select, NULL, NULL);
-    object_property_add(obj, "x-test-plane-digest", "str",
+    object_property_add(obj, "x-test-plane-digest", "str", NULL,
                         sgi_kona_test_get_plane_digest, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-plane-count",
                                    &s->test_plane_count,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-plane-digests", "str",
+    object_property_add(obj, "x-test-plane-digests", "str", NULL,
                         sgi_kona_test_get_plane_digests, NULL, NULL, NULL);
-    object_property_add(obj, "x-test-mesa-front-generation", "uint64",
+    object_property_add(obj, "x-test-mesa-front-generation", "uint64", NULL,
                         sgi_kona_test_get_mesa_front_generation,
                         NULL, NULL, NULL);
     object_property_add_bool(obj, "x-test-mesa-failed",
@@ -21654,26 +21654,26 @@ static void sgi_kona_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-gamma-addr",
                                    &s->test_gamma_addr,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-gamma", "uint32",
+    object_property_add(obj, "x-test-gamma", "uint32", NULL,
                         sgi_kona_test_get_gamma, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-gc-index", &s->test_gc_index,
                                    OBJ_PROP_FLAG_READWRITE);
-    object_property_add(obj, "x-test-gc", "uint32", sgi_kona_test_get_gc,
+    object_property_add(obj, "x-test-gc", "uint32", NULL, sgi_kona_test_get_gc,
                         NULL, NULL, NULL);
-    object_property_add(obj, "x-test-gpu-fail-draw", "uint32", NULL,
+    object_property_add(obj, "x-test-gpu-fail-draw", "uint32", NULL, NULL,
                         sgi_kona_test_set_renderer_failure, NULL, NULL);
-    object_property_add(obj, "x-test-gpu-fail-create", "uint32", NULL,
+    object_property_add(obj, "x-test-gpu-fail-create", "uint32", NULL, NULL,
                         sgi_kona_test_set_renderer_create_failure,
                         NULL, NULL);
     object_property_add_bool(obj, "x-test-gpu-skew-legacy", NULL,
                              sgi_kona_test_set_renderer_skew);
-    object_property_add(obj, "x-test-gpu-fail-hold", "uint32", NULL,
+    object_property_add(obj, "x-test-gpu-fail-hold", "uint32", NULL, NULL,
                         sgi_kona_test_set_renderer_fail_hold, NULL, NULL);
     object_property_add_uint64_ptr(obj, "x-test-gpu-requests",
                                    &s->renderer_requests, OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-gpu-draws", &s->renderer_draws,
                                    OBJ_PROP_FLAG_READ);
-    object_property_add(obj, "x-test-gpu-fallbacks", "uint64",
+    object_property_add(obj, "x-test-gpu-fallbacks", "uint64", NULL,
                         sgi_kona_test_get_gpu_fallbacks, NULL, NULL, NULL);
     for (unsigned i = SGI_RENDER_REFUSAL_NONE + 1; i < SGI_KONA_FALLBACK__MAX;
          i++) {
