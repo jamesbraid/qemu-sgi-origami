@@ -63,6 +63,8 @@ class SgiL1Board(QemuSystemTest):
         self.vm.set_console()
         self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log,
                          '-trace', 'mcf5206e_mbus*')
+        # Instruction counting keeps host stalls out of the watchdog's count.
+        self.vm.add_args('-icount', 'shift=10,align=off')
         self.vm.launch()
 
         # With no node and nothing on the two-wire bus, nothing acknowledges
@@ -100,6 +102,7 @@ class SgiL1Board(QemuSystemTest):
                          'node-board-revision=00')
         self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log,
                          '-trace', 'mcf5206e_mbus*')
+        self.vm.add_args('-icount', 'shift=10,align=off')
         self.vm.launch()
 
         # The record is read and accepted: neither the unset-serial alert
