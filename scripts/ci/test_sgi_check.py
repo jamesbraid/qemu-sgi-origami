@@ -101,6 +101,39 @@ class RegisterTestSelection(unittest.TestCase):
         self.assertFalse(edited('hw/misc/sgi-heart.c'))
 
 
+class ChdIotestSelection(unittest.TestCase):
+    def test_the_driver_its_library_and_its_test_select_it(self):
+        edited = sgi_check.chd_iotest_edited
+        self.assertTrue(edited(['block/chd.c']))
+        self.assertTrue(edited(['subprojects/libchdman.wrap']))
+        self.assertTrue(edited(
+            ['subprojects/packagefiles/libchdman/qemu-chd-shim.cpp']))
+        self.assertTrue(edited(['tests/qemu-iotests/tests/chd.out']))
+        self.assertTrue(edited(['hw/misc/sgi-heart.c', 'block/chd.c']))
+
+    def test_other_block_and_test_files_select_nothing(self):
+        edited = sgi_check.chd_iotest_edited
+        self.assertFalse(edited([]))
+        self.assertFalse(edited(['block/qcow2.c', 'block/meson.build']))
+        self.assertFalse(edited(['subprojects/libslirp.wrap']))
+        self.assertFalse(edited(['tests/qemu-iotests/tests/backup-discard']))
+        self.assertFalse(edited(['tests/qtest/sgi-heart-test.c']))
+
+    def test_no_base_selects_nothing(self):
+        self.assertEqual(sgi_check.select_chd_iotest(None), [])
+
+    def test_a_change_to_the_driver_selects_the_registered_test(self):
+        with mock.patch.object(sgi_check, 'merge_base', return_value='abc'), \
+                mock.patch.object(sgi_check, 'output',
+                                  return_value='block/chd.c\n'):
+            self.assertEqual(sgi_check.select_chd_iotest('origin/x'),
+                             [sgi_check.CHD_IOTEST])
+        with mock.patch.object(sgi_check, 'merge_base', return_value='abc'), \
+                mock.patch.object(sgi_check, 'output',
+                                  return_value='block/qcow2.c\n'):
+            self.assertEqual(sgi_check.select_chd_iotest('origin/x'), [])
+
+
 class QtestShards(unittest.TestCase):
     DURATIONS = {'a': 600, 'b': 300, 'c': 300, 'd': 100, 'e': 50}
 
@@ -867,15 +900,19 @@ class WindowsMode(unittest.TestCase):
         self.assertEqual(calls[0], [sgi_check.SOURCE / 'configure',
                                     *sgi_check.WINDOWS_CONFIGURE_ARGS])
         self.assertIn('--cross-prefix=x86_64-w64-mingw32-', calls[0])
+        self.assertIn('--enable-chd', calls[0])
         self.assertEqual(calls[1], [build / 'pyvenv/bin/meson', 'configure',
                                     *sgi_check.WINDOWS_MESON_OPTIONS, build])
         self.assertEqual(calls[2], ['ninja', '-C', build,
-                                    'qemu-system-mips64.exe', 'qemu-img.exe'])
+                                    *sgi_check.WINDOWS_TARGETS])
+        self.assertIn('qemu-img.exe', calls[2])
+        self.assertIn('subprojects/libchdman-rs-0.289.5/chd-fixture.exe',
+                      calls[2])
 
     def test_configured_directory_is_only_built(self):
         build, calls = self.calls(configured=True)
         self.assertEqual(calls, [['ninja', '-C', build,
-                                  'qemu-system-mips64.exe', 'qemu-img.exe']])
+                                  *sgi_check.WINDOWS_TARGETS]])
 
     def test_default_directory_is_build_windows(self):
         with mock.patch.object(sgi_check, 'windows') as windows:
