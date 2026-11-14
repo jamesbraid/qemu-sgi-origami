@@ -85,6 +85,43 @@ class SgiL1Board(QemuSystemTest):
         self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa8 nack 1', text)
         self.assertNotIn('nack 0', text)
 
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_l1_board_cbrick_identity(self):
+        flash = self.flash_image()
+        log = os.path.join(self.workdir, 'l1-board-cbrick.log')
+
+        # A C-brick's node board record, with the name that the firmware's
+        # name table maps to a C-brick, on the identity address. The part and
+        # revision are the model's placeholders.
+        self.set_machine('sgi-l1-board')
+        self.vm.set_console()
+        self.vm.add_args('-machine', 'sgi-l1-board,brick-type=cbrick,'
+                         'node-board-name=IP35,node-board-part=NOTOBSERVED0,'
+                         'node-board-revision=00')
+        self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log,
+                         '-trace', 'mcf5206e_mbus*')
+        self.vm.launch()
+
+        # The record is read and accepted: neither the unset-serial alert
+        # nor an EEPROM probe alert is printed before the banner.
+        wait_for_console_pattern(self, 'SGI SN1 L1 Controller',
+                                 failure_message='Serial Number not set')
+        wait_for_console_pattern(self, 'c---L1>')
+        exec_command_and_wait_for_pattern(
+            self, 'brick',
+            'type: C (IP35) [1MB flash], serial:EMUN00, source: EEPROM')
+        exec_command_and_wait_for_pattern(self, 'version',
+                                          'L1 1.44.0 (Image B)')
+        self.vm.shutdown()
+
+        with open(log, encoding='utf-8') as logfile:
+            text = logfile.read()
+        # The identity address answers; the first part of the registration
+        # that nothing on the bus answers is the display expander.
+        self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa4 nack 0', text)
+        self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa5 nack 0', text)
+        self.assertIn('mcf5206e_mbus_byte tx 1 byte 0x41 nack 1', text)
+
 
 if __name__ == '__main__':
     QemuSystemTest.main()

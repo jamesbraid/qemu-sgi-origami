@@ -302,10 +302,16 @@ static void flash_free(Flash *f)
     g_free(f->dir);
 }
 
+static QTestState *start_machine(const Flash *f, const char *machine,
+                                 const char *extra)
+{
+    return qtest_initf("-machine %s -bios %s -accel tcg -S %s",
+                       machine, f->path, extra);
+}
+
 static QTestState *start(const Flash *f, const char *extra)
 {
-    return qtest_initf("-machine sgi-l1-board -bios %s -accel tcg -S %s",
-                       f->path, extra);
+    return start_machine(f, "sgi-l1-board", extra);
 }
 
 static void go(QTestState *qts)
@@ -1490,6 +1496,183 @@ static void test_mbus_wide_access(void)
     flash_free(&f);
 }
 
+/*
+ * The identity EEPROMs. Each test reads a part at the address the firmware
+ * calls, through the controller, the way the firmware does: calling byte,
+ * word address, repeated START, calling byte with the read bit, then bytes.
+ * The expectations come from the record layout (an eight-byte common header
+ * whose bytes 2 and 3 give the chassis and board areas' offsets in eight-byte
+ * units, areas that sum to zero and whose second byte counts eight-byte units)
+ * and from the names the test gives, not from the model's own bytes.
+ */
+#define EEPROM_READ_MAX 256
+
+static bool eeprom_read(QTestState *qts, uint8_t call, uint8_t *buf, size_t n)
+{
+    uint8_t sr;
+    size_t i;
+
+    g_assert_cmpuint(n, >=, 2);
+    mbus_enable(qts);
+    mbus_start_write(qts);
+    sr = mbus_send(qts, call);
+    if (sr & MBSR_RXAK) {
+        mbus_stop(qts);
+        return false;
+    }
+    g_assert_cmphex(mbus_send(qts, 0x00) & MBSR_RXAK, ==, 0);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_MTX |
+                     MBCR_RSTA);
+    g_assert_cmphex(mbus_send(qts, call | 1) & MBSR_RXAK, ==, 0);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA);
+    mb_rd(qts, MBDR);
+    for (i = 0; i < n; i++) {
+        mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+        mb_wr(qts, MBSR, 0);
+        if (i == n - 1) {
+            mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN);
+        } else if (i == n - 2) {
+            mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_TXAK);
+        }
+        buf[i] = mb_rd(qts, MBDR);
+    }
+    mbus_wait(qts, MBSR_MBB, 0);
+    return true;
+}
+
+static uint8_t sum_bytes(const uint8_t *p, size_t n)
+{
+    uint8_t sum = 0;
+
+    while (n--) {
+        sum += *p++;
+    }
+    return sum;
+}
+
+/* Find an ASCII field (type 3, length in the low six bits) holding @text. */
+static bool has_text_field(const uint8_t *area, size_t len, const char *text)
+{
+    size_t n = strlen(text);
+    size_t i;
+
+    for (i = 0; i + 1 + n <= len; i++) {
+        if (area[i] == (0xc0 | n) && !memcmp(area + i + 1, text, n)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Check one board image and return its board area for name checks. */
+static const uint8_t *check_image(const uint8_t *img, size_t *board_len)
+{
+    size_t chassis = img[2] * 8, board = img[3] * 8;
+
+    g_assert_cmphex(sum_bytes(img, 8), ==, 0);
+    g_assert_cmpuint(img[0], !=, 0);
+    g_assert_cmpuint(chassis, ==, 8);
+    g_assert_cmpuint(board, >, chassis);
+    g_assert_cmphex(sum_bytes(img + chassis, img[chassis + 1] * 8), ==, 0);
+    *board_len = img[board + 1] * 8;
+    g_assert_cmpuint(*board_len, >, 0);
+    g_assert_cmphex(sum_bytes(img + board, *board_len), ==, 0);
+    g_assert_cmpuint(board + *board_len, <=, EEPROM_READ_MAX);
+    return img + board;
+}
+
+static QTestState *board_start(Flash *f, const char *machine,
+                               const char *extra)
+{
+    Asm a = { };
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    finish(&a);
+    *f = flash_build(&a, NULL, NULL);
+    qts = start_machine(f, machine, extra);
+    go(qts);
+    wait_for(qts, DONE, 1);
+    return qts;
+}
+
+/* A C-brick: the node board's record at 0xa4 and nothing else on segment 0. */
+static void test_identity_cbrick(void)
+{
+    uint8_t img[EEPROM_READ_MAX];
+    const uint8_t *board;
+    size_t board_len;
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board,brick-type=cbrick,"
+                                  "node-board-name=TESTNODE,"
+                                  "node-board-part=TESTPART0,"
+                                  "node-board-revision=7", "");
+
+    g_assert_true(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    board = check_image(img, &board_len);
+    g_assert_true(has_text_field(board, board_len, "TESTNODE"));
+    g_assert_true(has_text_field(board, board_len, "TESTPART0"));
+    g_assert_true(has_text_field(board, board_len, "7"));
+    g_assert_true(has_text_field(board, board_len, "SYNTHETIC"));
+    /* The processor modules' records sit behind a bus segment: not fitted. */
+    g_assert_false(eeprom_read(qts, 0xa8, img, 8));
+    g_assert_false(eeprom_read(qts, 0xa0, img, 8));
+    quit_all(qts, &f);
+}
+
+/* An I-brick: the power board at 0xa4 and the logic board at 0xa8. */
+static void test_identity_ibrick(void)
+{
+    uint8_t img[EEPROM_READ_MAX];
+    const uint8_t *board;
+    size_t board_len;
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board,brick-type=ibrick,"
+                                  "mac=00:00:5e:00:53:01", "");
+
+    g_assert_true(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    board = check_image(img, &board_len);
+    g_assert_true(has_text_field(board, board_len, "POWER"));
+    g_assert_true(eeprom_read(qts, 0xa8, img, sizeof(img)));
+    board = check_image(img, &board_len);
+    g_assert_true(has_text_field(board, board_len, "LOGIC"));
+    g_assert_true(has_text_field(board, board_len, "00005E005301"));
+    quit_all(qts, &f);
+}
+
+/* With no brick type, no identity part is fitted. */
+static void test_identity_none(void)
+{
+    uint8_t img[8];
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board", "");
+
+    g_assert_false(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    g_assert_false(eeprom_read(qts, 0xa8, img, sizeof(img)));
+    quit_all(qts, &f);
+}
+
+/* The identity parts keep what the host writes, as the part's pins allow. */
+static void test_identity_write(void)
+{
+    uint8_t img[EEPROM_READ_MAX], again[EEPROM_READ_MAX];
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board,brick-type=cbrick", "");
+
+    g_assert_true(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    mbus_enable(qts);
+    mbus_start_write(qts);
+    g_assert_cmphex(mbus_send(qts, 0xa4) & MBSR_RXAK, ==, 0);
+    mbus_send(qts, 0xf0);
+    mbus_send(qts, 0x5a);
+    mbus_stop(qts);
+    g_assert_true(eeprom_read(qts, 0xa4, again, sizeof(again)));
+    g_assert_cmphex(again[0xf0], ==, 0x5a);
+    g_assert_cmpuint(img[0xf0], !=, 0x5a);
+    quit_all(qts, &f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1530,6 +1713,10 @@ int main(int argc, char **argv)
                    test_mbus_bits_before_enable);
     qtest_add_func("sgi-l1-board/mbus-divider", test_mbus_divider);
     qtest_add_func("sgi-l1-board/mbus-wide-access", test_mbus_wide_access);
+    qtest_add_func("sgi-l1-board/identity-cbrick", test_identity_cbrick);
+    qtest_add_func("sgi-l1-board/identity-ibrick", test_identity_ibrick);
+    qtest_add_func("sgi-l1-board/identity-none", test_identity_none);
+    qtest_add_func("sgi-l1-board/identity-write", test_identity_write);
 
     return g_test_run();
 }

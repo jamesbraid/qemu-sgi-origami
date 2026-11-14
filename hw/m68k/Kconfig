@@ -62,6 +62,7 @@ config SGI_L1_BOARD
     select AT24C
     select COLDFIRE
     select I2C_WIRE
+    select SGI_L1_IDENTITY
     select M48T59
     select OR_IRQ
     select SERIAL_MM

@@ -1,5 +1,5 @@
 /*
- * Synthetic L1 identity areas.
+ * Synthetic L1 identity areas and board EEPROM images.
  *
  * SPDX-License-Identifier: BSD-3-Clause
  */
@@ -7,7 +7,10 @@
 #ifndef HW_MISC_SGI_L1_IDENTITY_H
 #define HW_MISC_SGI_L1_IDENTITY_H
 
+#include "qapi/error.h"
+
 #define SGI_L1_IA_EOF 0xc1
+#define SGI_L1_IDENTITY_HEADER_SIZE 8
 
 typedef struct SGIL1CPUContext {
     uint32_t mode_word;
@@ -30,5 +33,10 @@ GByteArray *sgi_l1_identity_board_area(const char *name, const char *part,
                                        unsigned int index,
                                        const char *serial_text,
                                        const SGIL1CPUContext *cpu_context);
+
+/* The two areas in one EEPROM image of @size bytes, or NULL with @errp set. */
+uint8_t *sgi_l1_identity_board_image(const GByteArray *chassis,
+                                     const GByteArray *board, size_t size,
+                                     Error **errp);
 
 #endif
