@@ -10,7 +10,7 @@
 
 #include "hw/i2c/i2c.h"
 
-/* Fit the bus select and expanders on @bus. */
+/* Fit the bus select, expanders and node monitors on @bus. */
 void sgi_l1_cbrick_peers_fit(I2CBus *bus);
 
 #endif

@@ -25,6 +25,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SegmentTarget, SGI_L1_SEGMENT_TARGET)
 #define TYPE_SGI_L1_EXPANDER "sgi-l1-expander"
 OBJECT_DECLARE_SIMPLE_TYPE(Expander, SGI_L1_EXPANDER)
 
+#define TYPE_SGI_L1_MONITOR "sgi-l1-monitor"
+OBJECT_DECLARE_SIMPLE_TYPE(EnvMonitor, SGI_L1_MONITOR)
+
 #define TYPE_SGI_L1_BUS_SELECT "sgi-l1-bus-select"
 OBJECT_DECLARE_SIMPLE_TYPE(BusSelect, SGI_L1_BUS_SELECT)
 
@@ -50,6 +53,15 @@ struct Expander {
 
 struct BusSelect {
     Expander parent_obj;
+};
+
+/* A monitor: 256 registers behind a pointer byte; a read returns *pointer. */
+struct EnvMonitor {
+    SegmentTarget parent_obj;
+
+    uint8_t regs[256];
+    uint8_t pointer;
+    bool have_pointer;
 };
 
 /* Bits 7-4 low enable segments 2-5; bit 3 low and bits 2:0 give 6-13. */
@@ -202,6 +214,79 @@ static void bus_select_class_init(ObjectClass *oc, const void *data)
                               bus_select_get_segments, NULL, NULL, NULL);
 }
 
+static int monitor_event(I2CSlave *s, enum i2c_event event)
+{
+    EnvMonitor *m = SGI_L1_MONITOR(s);
+
+    /* A repeated START keeps the pointer: a read finds its register by it. */
+    if (event == I2C_START_SEND || event == I2C_FINISH) {
+        m->have_pointer = false;
+    }
+    return segment_target_event(s, event);
+}
+
+static int monitor_send(I2CSlave *s, uint8_t data)
+{
+    EnvMonitor *m = SGI_L1_MONITOR(s);
+
+    if (!m->have_pointer) {
+        m->pointer = data;
+        m->have_pointer = true;
+        return 0;
+    }
+    m->regs[m->pointer] = data;
+    trace_sgi_l1_monitor_write(s->address << 1,
+                               SGI_L1_SEGMENT_TARGET(s)->segment,
+                               m->pointer, data);
+    return 0;
+}
+
+static uint8_t monitor_recv(I2CSlave *s)
+{
+    EnvMonitor *m = SGI_L1_MONITOR(s);
+    uint8_t val = m->regs[m->pointer];
+
+    trace_sgi_l1_monitor_read(s->address << 1,
+                              SGI_L1_SEGMENT_TARGET(s)->segment,
+                              m->pointer, val);
+    return val;
+}
+
+static void monitor_reset_hold(Object *obj, ResetType type)
+{
+    EnvMonitor *m = SGI_L1_MONITOR(obj);
+
+    memset(m->regs, 0, sizeof(m->regs));
+    m->pointer = 0;
+    m->have_pointer = false;
+}
+
+static const VMStateDescription vmstate_monitor = {
+    .name = TYPE_SGI_L1_MONITOR,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj.parent_obj, EnvMonitor),
+        VMSTATE_UINT8_ARRAY(regs, EnvMonitor, 256),
+        VMSTATE_UINT8(pointer, EnvMonitor),
+        VMSTATE_BOOL(have_pointer, EnvMonitor),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void monitor_class_init(ObjectClass *oc, const void *data)
+{
+    I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    sc->event = monitor_event;
+    sc->send = monitor_send;
+    sc->recv = monitor_recv;
+    dc->desc = "SGI L1 board voltage and temperature monitor";
+    dc->vmsd = &vmstate_monitor;
+    RESETTABLE_CLASS(oc)->phases.hold = monitor_reset_hold;
+}
+
 static const TypeInfo peer_types[] = {
     {
         .name          = TYPE_SGI_L1_SEGMENT_TARGET,
@@ -219,6 +304,12 @@ static const TypeInfo peer_types[] = {
         .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
         .instance_size = sizeof(Expander),
         .class_init    = expander_class_init,
+    },
+    {
+        .name          = TYPE_SGI_L1_MONITOR,
+        .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
+        .instance_size = sizeof(EnvMonitor),
+        .class_init    = monitor_class_init,
     },
     {
         .name          = TYPE_SGI_L1_BUS_SELECT,
@@ -250,6 +341,9 @@ static const struct {
     { 0x4c, 3, 0x40 },  /* fan control */
 };
 
+/* The node monitors, all on segment 2. */
+static const uint8_t monitors[] = { 0x58, 0x5a, 0x5c };
+
 void sgi_l1_cbrick_peers_fit(I2CBus *bus)
 {
     I2CSlave *sel = i2c_slave_new(TYPE_SGI_L1_BUS_SELECT, SELECT_ADDR7);
@@ -267,5 +361,13 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus)
         object_property_set_link(OBJECT(e), "bus-select", OBJECT(sel),
                                  &error_abort);
         i2c_slave_realize_and_unref(e, bus, &error_abort);
+    }
+    for (i = 0; i < ARRAY_SIZE(monitors); i++) {
+        I2CSlave *m = i2c_slave_new(TYPE_SGI_L1_MONITOR, monitors[i] >> 1);
+
+        qdev_prop_set_uint8(DEVICE(m), "segment", 2);
+        object_property_set_link(OBJECT(m), "bus-select", OBJECT(sel),
+                                 &error_abort);
+        i2c_slave_realize_and_unref(m, bus, &error_abort);
     }
 }
