@@ -66,6 +66,14 @@ const char *chd_shim_strerror(int err);
 int chd_shim_open(ChdShimFile **out, const ChdShimIO *io, void *opaque,
                   bool writable, ChdShimFile *parent);
 
+/*
+ * Create a CHD that stores only what differs from parent: uncompressed, with
+ * the parent's size and hunk size, and with the parent's metadata copied in
+ * (MAME's create does not). The new file is open for writing.
+ */
+int chd_shim_create_diff(ChdShimFile **out, const ChdShimIO *io, void *opaque,
+                         ChdShimFile *parent);
+
 void chd_shim_close(ChdShimFile *f);
 
 void chd_shim_get_info(ChdShimFile *f, ChdShimInfo *info);
@@ -73,9 +81,18 @@ int chd_shim_hd_geometry(ChdShimFile *f, uint32_t *cylinders, uint32_t *heads,
                          uint32_t *sectors, uint32_t *bytes_per_sector);
 
 int chd_shim_read_hunk(ChdShimFile *f, uint32_t hunk, void *buf);
-/* Byte-granular read, across hunks. */
+int chd_shim_write_hunk(ChdShimFile *f, uint32_t hunk, const void *buf);
+/* Byte-granular access; a write that covers part of a hunk reads the rest. */
 int chd_shim_read_bytes(ChdShimFile *f, uint64_t offset, void *buf,
                         uint32_t len);
+int chd_shim_write_bytes(ChdShimFile *f, uint64_t offset, const void *buf,
+                         uint32_t len);
+/*
+ * compressor is the hunk's codec FourCC, or MAME's pseudo codec for a
+ * stored/self/parent hunk; compbytes is 0 for a hunk the file does not hold.
+ */
+int chd_shim_hunk_info(ChdShimFile *f, uint32_t hunk, uint32_t *compressor,
+                       uint32_t *compbytes);
 
 /*
  * Compress the raw hard disk image raw into a new CHD at out (UTF-8 paths),

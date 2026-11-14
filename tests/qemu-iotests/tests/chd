@@ -9,10 +9,12 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
 import glob
+import hashlib
 import json
 import os
 import random
 import re
+import shutil
 import subprocess
 
 import iotests
@@ -28,6 +30,8 @@ CODECS = ['lzma', 'zlib', 'huff', 'flac', 'zstd', 'none',
 
 raw_img = os.path.join(iotests.test_dir, 'raw.img')
 chd_img = os.path.join(iotests.test_dir, 'test.chd')
+diff_img = chd_img + '.diff.chd'
+expected_img = os.path.join(iotests.test_dir, 'expected.img')
 
 
 def fixture_prog():
@@ -85,15 +89,40 @@ def hexdump(output):
     return [ln for ln in output.splitlines() if re.match('[0-9a-f]{8}:', ln)]
 
 
+def corrupt_first_hunks(path):
+    """Overwrite compressed bytes of the first hunks."""
+    # the hunks follow the metadata, which follows the 124-byte v5 header
+    with open(path, 'r+b') as f:
+        header = f.read(124)
+        meta = int.from_bytes(header[48:56], 'big')
+        f.seek(meta + 4)
+        meta_len = int.from_bytes(f.read(4), 'big') & 0xffffff
+        f.seek(meta + 16 + meta_len + 16)
+        f.write(b'\xa5' * 64)
+
+
 def info():
     out = qemu_img('info', '--output=json', '-f', 'chd', chd_img).stdout
     return json.loads(out)
 
 
-def compare():
-    """Does the CHD read the same as the raw image?"""
-    return qemu_img('compare', '-f', 'raw', '-F', 'chd', raw_img, chd_img,
+def compare(expected=raw_img):
+    """Does the CHD read the same as the expected raw image?"""
+    return qemu_img('compare', '-f', 'raw', '-F', 'chd', expected, chd_img,
                     check=False).returncode == 0
+
+
+def digest(path):
+    with open(path, 'rb') as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
+def write(target_fmt, path, *cmds):
+    """Run the same qemu-io write commands on a CHD and its raw twin."""
+    args = []
+    for cmd in cmds:
+        args += ['-c', cmd]
+    return qemu_io('-f', target_fmt, *args, path)
 
 
 class ChdTestCase(iotests.QMPTestCase):
@@ -101,7 +130,7 @@ class ChdTestCase(iotests.QMPTestCase):
         make_raw(raw_img)
 
     def tearDown(self):
-        remove(raw_img, chd_img)
+        remove(raw_img, chd_img, diff_img, expected_img)
 
 
 class TestRead(ChdTestCase):
@@ -126,21 +155,9 @@ class TestRead(ChdTestCase):
         self.assertEqual(info()['cluster-size'], 2 * HUNK)
         self.assertTrue(compare())
 
-    def test_writing_is_refused(self):
-        fixture('create', chd_img, raw_img, 'lzma')
-        res = qemu_io('-f', 'chd', '-c', 'write 0 512', chd_img, check=False)
-        self.assertNotEqual(res.returncode, 0)
-
     def test_corrupt_hunk_is_an_io_error(self):
         fixture('create', chd_img, raw_img, 'lzma')
-        # the hunks follow the metadata, which follows the 124-byte v5 header
-        with open(chd_img, 'r+b') as f:
-            header = f.read(124)
-            meta = int.from_bytes(header[48:56], 'big')
-            f.seek(meta + 4)
-            meta_len = int.from_bytes(f.read(4), 'big') & 0xffffff
-            f.seek(meta + 16 + meta_len + 16)
-            f.write(b'\xa5' * 64)
+        corrupt_first_hunks(chd_img)
         res = qemu_io('-r', '-f', 'chd', '-c', f'read 0 {RAW_SIZE}', chd_img,
                       check=False)
         self.assertIn('Input/output error', res.stdout)
@@ -167,6 +184,111 @@ class TestRead(ChdTestCase):
             f.write(b'MComprHD' + bytes(4096))
         res = qemu_img('info', '-f', 'chd', chd_img, check=False)
         self.assertNotEqual(res.returncode, 0)
+
+
+class TestWrite(ChdTestCase):
+    # Writes over each kind of hunk, across hunk boundaries and unaligned,
+    # ending in a write that appends nothing new.
+    WRITES = ['write -P 0x5a 0 512', 'write -P 0xa5 1000 20000',
+              f'write -P 0x33 {HUNK * 7 + 512} {HUNK * 3}',
+              f'write -P 0x77 {RAW_SIZE - 512} 512']
+
+    def expect(self, *cmds):
+        shutil.copyfile(raw_img, expected_img)
+        write('raw', expected_img, *cmds)
+
+    def test_uncompressed_is_written_in_place(self):
+        fixture('create', chd_img, raw_img, 'none')
+        before = info()
+        cmds = self.WRITES + [f'write -z {HUNK * 3} {HUNK}']
+        write('chd', chd_img, *cmds)
+        self.expect(*cmds)
+        self.assertFalse(os.path.exists(diff_img))
+        self.assertTrue(compare(expected_img))
+        self.assertEqual(before['virtual-size'], info()['virtual-size'])
+
+    def test_compressed_writes_go_to_a_diff(self):
+        fixture('create', chd_img, raw_img, 'lzma,zlib,huff,flac')
+        base = digest(chd_img)
+        write('chd', chd_img, *self.WRITES[:2])
+        self.assertEqual(base, digest(chd_img))
+        self.assertTrue(os.path.exists(diff_img))
+        self.expect(*self.WRITES[:2])
+        self.assertTrue(compare(expected_img))
+
+        # a second session attaches the diff and adds to it
+        write('chd', chd_img, *self.WRITES[2:])
+        self.assertEqual(base, digest(chd_img))
+        self.expect(*self.WRITES)
+        self.assertTrue(compare(expected_img))
+
+    def test_read_only_open_sees_the_diff(self):
+        fixture('create', chd_img, raw_img, 'zlib')
+        write('chd', chd_img, *self.WRITES)
+        self.expect(*self.WRITES)
+        res = qemu_img('compare', '-f', 'raw', '-F', 'chd', expected_img,
+                       chd_img, check=False)
+        self.assertEqual(res.returncode, 0)
+        self.assertFalse(
+            qemu_img('compare', '-f', 'raw', '-F', 'chd', raw_img, chd_img,
+                     check=False).returncode == 0)
+
+    def test_info_with_a_diff_present(self):
+        # qemu-img info opens without I/O, which a data-only child inherits
+        fixture('create', chd_img, raw_img, 'lzma')
+        write('chd', chd_img, 'write -P 7 0 4096')
+        self.assertEqual(info()['virtual-size'], RAW_SIZE)
+
+    def test_symlinked_image_keeps_its_diff_beside_the_target(self):
+        real_dir = os.path.join(iotests.test_dir, 'chd-real')
+        real = os.path.join(real_dir, 'real.chd')
+        os.makedirs(real_dir, exist_ok=True)
+        try:
+            fixture('create', real, raw_img, 'lzma')
+            os.symlink(real, chd_img)
+            write('chd', chd_img, 'write -P 7 0 4096')
+            self.assertTrue(os.path.exists(real + '.diff.chd'))
+            self.assertFalse(os.path.exists(diff_img))
+        finally:
+            shutil.rmtree(real_dir)
+
+    def test_overlay_diffs_an_image_that_has_a_sha1(self):
+        fixture('create', chd_img, raw_img, 'zstd')
+        base = digest(chd_img)
+        res = qemu_io('--image-opts', '-c', 'write -P 0x11 0 4096',
+                      f'driver=chd,overlay=on,file.filename={chd_img}')
+        self.assertEqual(res.returncode, 0)
+        self.assertEqual(base, digest(chd_img))
+        self.assertTrue(os.path.exists(diff_img))
+
+    def test_diff_needs_a_sha1_to_name_its_parent(self):
+        fixture('create', chd_img, raw_img, 'none')
+        self.assertIn('sha1 none', fixture('info', chd_img))
+        res = qemu_io('--image-opts', '-c', 'write 0 512',
+                      f'driver=chd,overlay=on,file.filename={chd_img}',
+                      check=False)
+        self.assertNotEqual(res.returncode, 0)
+        self.assertIn('SHA-1', res.stdout)
+        self.assertFalse(os.path.exists(diff_img))
+
+    def test_zeroes_written_over_data_stay_zero(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        # hunk 3 holds noise: zero all of it, then part of hunk 4 and a range
+        # across two later hunks
+        cmds = [f'write -z {3 * HUNK} {HUNK}',
+                f'write -z {4 * HUNK + 100} 300',
+                f'write -z {11 * HUNK - 200} 400']
+        write('chd', chd_img, *cmds)
+        self.expect(*cmds)
+        self.assertTrue(compare(expected_img))
+
+    def test_corrupt_hunk_is_an_io_error_in_a_diff_too(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        write('chd', chd_img, 'write -P 0x42 0 512')
+        corrupt_first_hunks(chd_img)
+        res = qemu_io('-r', '-f', 'chd', '-c', f'read 0 {RAW_SIZE}', chd_img,
+                      check=False)
+        self.assertIn('Input/output error', res.stdout)
 
 
 if __name__ == '__main__':
