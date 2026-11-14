@@ -1282,3 +1282,5 @@ tests/qtest/sgi-l1-board-test.c
 tests/functional/m68k/test_sgi_l1_board.py
 hw/m68k/mcf5206e-mbus.c
 include/hw/m68k/mcf5206e-mbus.h
+hw/misc/sgi-l1-identity.c
+include/hw/misc/sgi-l1-identity.h

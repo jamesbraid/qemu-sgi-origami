@@ -375,9 +375,13 @@ config SGI_ODYSSEY
     select SGI_PI_GFX
     select SGI_XIO_BOARD
 
+config SGI_L1_IDENTITY
+    bool
+
 config SGI_L1
     bool
     default y if SGI_DEVICES
+    select SGI_L1_IDENTITY
 
 config SGI_PBAY
     bool
