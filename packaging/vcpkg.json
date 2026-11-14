@@ -1,0 +1,19 @@
+{
+  "$comment": "C libraries linked into QEMU. packaging/vcpkg-commit pins their versions.",
+  "name": "qemu-sgi-origami",
+  "dependencies": [
+    "glib",
+    "pixman",
+    {
+      "name": "sdl2",
+      "default-features": false,
+      "features": [
+        { "name": "wayland", "platform": "linux" },
+        { "name": "x11", "platform": "linux" }
+      ]
+    }
+  ],
+  "vcpkg-configuration": {
+    "overlay-triplets": ["triplets"]
+  }
+}
