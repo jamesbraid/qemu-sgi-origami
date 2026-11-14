@@ -1,0 +1,238 @@
+{
+  "dist": "https://origami-dist.irix.fans/",
+  "objects": {
+    "ip27-disk": {
+      "path": "irix/6.5.30/ip27-headless-3037f762.chd",
+      "sha256": "3037f7626de8f2e5b9433d0fb3750a8b65fb2577e82acfc0f8997c17d3875c9c"
+    },
+    "ip35-disk": {
+      "path": "irix/6.5.30/ip35-4b73944b.chd",
+      "sha256": "4b73944bd30566e3316b9a936af2f52e766edec2bad70914d10a82c43ab71632"
+    },
+    "ip32-disk": {
+      "path": "irix/6.5.30/o2-34c49a43.chd",
+      "sha256": "34c49a43a794e1391f36eab2cb6e10115dbbbe39e5b4a2d0cc6512d47ff235fc"
+    },
+    "ip27-prom": {
+      "path": "prom/ip27prom-6.156.img",
+      "sha256": "0dbd5d5f7027e380383ce81523e1f614d58343ca82e07ec48bb4740b287eba0e"
+    },
+    "ip35-prom": {
+      "path": "prom/ip35prom-6.210.img",
+      "sha256": "d74b4b7ef9c11c66692019db9af698104595be7a0573a86feae8a83441921318"
+    },
+    "ip32-prom": {
+      "path": "prom/ip32prom-4.18.image",
+      "sha256": "11230c353cb14fcc50ede286df228e169e32fc9e5a2206276ae29c259fafb23c"
+    },
+    "ip27-io-prom": {
+      "path": "prom/io6prom-6.156.img",
+      "sha256": "024d2f28b526933e8f00d964fefdfcd9b0e873d504a43d9307099579e2b59ae9"
+    }
+  },
+  "families": [
+    {
+      "id": "ip27",
+      "title": "IP27 (Origin 200, Origin 2000, Onyx2)",
+      "disk": "ip27-disk",
+      "prom": "ip27-prom",
+      "hinv": [
+        "^\\d+ \\d+ MHZ IP27 Processors?$",
+        "^CPU: MIPS R10000 Processor",
+        "^  Disk drive: unit 1 on SCSI controller 0$",
+        "^Integral Fast Ethernet: ef0,"
+      ],
+      "io_prom": "ip27-io-prom"
+    },
+    {
+      "id": "ip35",
+      "title": "IP35 (Tezro, Fuel, Origin 300, Origin 3200, Origin 3900, Onyx 350)",
+      "disk": "ip35-disk",
+      "prom": "ip35-prom",
+      "hinv": [
+        "^\\d+ \\d+ MHZ IP35 Processors?$|^Processor \\d+: \\d+ MHZ IP35",
+        "^  Disk drive: unit 1 on SCSI controller 0$"
+      ]
+    },
+    {
+      "id": "ip32",
+      "title": "IP32 (O2)",
+      "disk": "ip32-disk",
+      "prom": "ip32-prom",
+      "hinv": [
+        "^1 195 MHZ IP32 Processor$",
+        "^FLASH PROM version 4\\.18$",
+        "^  Disk drive: unit 1 on SCSI controller 0$",
+        "^Integral Ethernet: ec0,"
+      ]
+    }
+  ],
+  "boots": [
+    {
+      "id": "origin200",
+      "family": "ip27",
+      "title": "Origin 200",
+      "machine": "origin200,topology=origin200,nodes=1",
+      "smp": 1,
+      "memory": 256,
+      "scsi_bus": "scsi.0",
+      "representative": true,
+      "hinv": [
+        "^1 180 MHZ IP27 Processor$",
+        "^Main memory size: 256 Mbytes$",
+        "^Origin 200 base I/O, module 1 slot 1$"
+      ]
+    },
+    {
+      "id": "origin2000",
+      "family": "ip27",
+      "title": "Origin 2000",
+      "machine": "origin2000,topology=origin2000-deskside,nodes=1",
+      "smp": 2,
+      "memory": 256,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 180 MHZ IP27 Processors?$",
+        "^Main memory size: 256 Mbytes$",
+        "^Origin BASEIO board, module 1 slot 1",
+        "!^Iris Audio Processor:"
+      ],
+      "io_prom": true
+    },
+    {
+      "id": "onyx2",
+      "family": "ip27",
+      "title": "Onyx2",
+      "machine": "onyx2,topology=onyx2-deskside,nodes=1",
+      "smp": 2,
+      "memory": 256,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 180 MHZ IP27 Processors?$",
+        "^Main memory size: 256 Mbytes$",
+        "^Origin BASEIO board, module 1 slot 1",
+        "^Iris Audio Processor:"
+      ],
+      "io_prom": true
+    },
+    {
+      "id": "fuel",
+      "family": "ip35",
+      "title": "Fuel",
+      "machine": "fuel,topology=fuel,nodes=1",
+      "smp": 1,
+      "memory": 512,
+      "scsi_bus": "scsi.0",
+      "representative": true,
+      "hinv": [
+        "^1 500 MHZ IP35 Processor$",
+        "^CPU: MIPS R14000 Processor",
+        "^Main memory size: 512 Mbytes$",
+        "^USB controller: type OHCI$"
+      ]
+    },
+    {
+      "id": "origin300",
+      "family": "ip35",
+      "title": "Origin 300",
+      "machine": "origin300,topology=origin300,nodes=1",
+      "smp": 2,
+      "memory": 512,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^(\\d+ 500 MHZ IP35 Processors?|Processor \\d+: 500 MHZ IP35)",
+        "^CPU: MIPS R14000 Processor",
+        "^Main memory size: 512 Mbytes$",
+        "^IOC3/IOC4 external interrupts: 1$"
+      ]
+    },
+    {
+      "id": "tezro",
+      "family": "ip35",
+      "title": "Tezro",
+      "machine": "tezro,topology=tezro-ip53,nodes=1",
+      "smp": 2,
+      "memory": 4096,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 700 MHZ IP35 Processors?$",
+        "^CPU: MIPS R16000 Processor",
+        "^Main memory size: 4096 Mbytes$",
+        "^Integral Gigabit Ethernet: tg0,"
+      ]
+    },
+    {
+      "id": "origin3200",
+      "family": "ip35",
+      "title": "Origin 3200",
+      "machine": "origin3000,topology=origin3200,nodes=2",
+      "smp": 8,
+      "memory": 8192,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 400 MHZ IP35 Processors?$",
+        "^CPU: MIPS R12000 Processor",
+        "^Main memory size: 8192 Mbytes$",
+        "Fibre Channel QL2200$"
+      ],
+      "device_options": "port_wwn=0x2100000000000001,wwn=0x2000000000000001"
+    },
+    {
+      "id": "origin3900",
+      "family": "ip35",
+      "title": "Origin 3900",
+      "machine": "origin3000,topology=origin3900-ip53,nodes=4",
+      "smp": 16,
+      "memory": 8192,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 700 MHZ IP35 Processors?$",
+        "^CPU: MIPS R16000 Processor",
+        "^Main memory size: 8192 Mbytes$",
+        "Fibre Channel QL2200$"
+      ],
+      "cpu": "R16000",
+      "device_options": "port_wwn=0x2100000000000001,wwn=0x2000000000000001"
+    },
+    {
+      "id": "onyx350",
+      "family": "ip35",
+      "title": "Onyx 350",
+      "machine": "onyx350,topology=onyx350-ip53,nodes=1",
+      "smp": 4,
+      "memory": 8192,
+      "scsi_bus": "scsi.0",
+      "hinv": [
+        "^\\d+ 800 MHZ IP35 Processors?$",
+        "^CPU: MIPS R16000 Processor",
+        "^Main memory size: 8192 Mbytes$",
+        "^Integral Gigabit Ethernet: tg0,"
+      ]
+    },
+    {
+      "id": "o2",
+      "family": "ip32",
+      "title": "O2",
+      "machine": "o2",
+      "smp": 1,
+      "memory": 1024,
+      "scsi_bus": "aic0.0",
+      "prom_installer": "o2",
+      "machine_options": "rom-image={flash},rom-size=524288,rom-offset=0,rom-pad-byte=255,rom-at29c040a-protection=disabled,rom-at29c040a-lower-lock=unlocked,rom-at29c040a-upper-lock=unlocked,password-clear-input=0",
+      "accel": "tcg,thread=single",
+      "icount": "shift=3,align=off,sleep=off",
+      "representative": true,
+      "hinv": [
+        "^CPU: MIPS R10000 Processor",
+        "^Main memory size: 1024 Mbytes$",
+        "^CRM graphics installed$"
+      ]
+    }
+  ],
+  "skipped": [
+    {
+      "id": "octane",
+      "reason": "No IP30 IRIX disk is published in the catalogue yet, so there is nothing to boot. Add the Octane and Octane2 here when an IP30 CHD appears."
+    }
+  ]
+}

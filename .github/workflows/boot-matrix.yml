@@ -1,0 +1,272 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Boot IRIX on every SGI machine family from the release archives and check
+# that hinv reports the machine.
+#
+# The archives are the ones release.yml builds with packaging/sgi-package.py,
+# so this tests the programs people download, with plain qemu-system-mips64
+# arguments and no launcher. Firmware and disks come from the public catalogue
+# and are checked against its SHA256SUMS. scripts/ci/sgi-boot-matrix.json
+# lists the boots and what each hinv must contain; the Octane is listed there
+# as skipped, with the reason.
+#
+# This runs on github.com only. Forgejo reads this directory too, so every job
+# carries the same guard as the other release workflows.
+#
+#   release tag      release.yml finished on an sgi-origami-* tag: boot its
+#                    archives
+#   nightly          boot the archives of the sgi-origami head, if it moved
+#                    since the last successful run of this workflow; the head's
+#                    archives are the latest release.yml run for that commit,
+#                    or one this workflow starts through its manual trigger
+#   manual dispatch  the same, without the skip
+#
+# release.yml is not changed or called: this workflow downloads its artifacts.
+name: Boot IRIX per SGI machine family from the release archives (Linux, macOS, Windows)
+
+on:
+  workflow_run:
+    workflows: ["Build and release QEMU archives (Linux, Windows, macOS)"]
+    types: [completed]
+  schedule:
+    - cron: "41 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  # Per trigger and ref, so a release.yml run that boots nothing cannot replace
+  # the pending boot of a release tag.
+  group: boot-matrix-${{ github.event_name }}-${{ github.event.workflow_run.head_branch || github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  plan:
+    name: Find the release archives to boot
+    # A completed release.yml run that is not a release tag build has nothing
+    # to boot, so it skips here instead of queueing behind a real run.
+    if: ${{ github.server_url == 'https://github.com' && (github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' && startsWith(github.event.workflow_run.head_branch, 'sgi-origami-'))) }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+    permissions:
+      contents: read
+      actions: write
+    outputs:
+      boot: ${{ steps.plan.outputs.boot }}
+      sha: ${{ steps.plan.outputs.sha }}
+      archives: ${{ steps.plan.outputs.archives }}
+      linux: ${{ steps.matrix.outputs.linux }}
+      macos: ${{ steps.matrix.outputs.macos }}
+      windows: ${{ steps.matrix.outputs.windows }}
+    steps:
+      - name: decide what to boot
+        id: plan
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          RUN_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          RUN_EVENT: ${{ github.event.workflow_run.event }}
+          RUN_BRANCH: ${{ github.event.workflow_run.head_branch }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+        run: |
+          set -eu
+          RELEASE="Build and release QEMU archives (Linux, Windows, macOS)"
+          boot=false
+          if [ "$EVENT" = workflow_run ]; then
+            # Only a release tag; the packaging checks release.yml also runs on
+            # branch pushes and weekly build the archives but release nothing.
+            case "$RUN_BRANCH" in
+              sgi-origami-*)
+                if [ "$RUN_CONCLUSION" = success ] && [ "$RUN_EVENT" = push ]; then
+                  boot=true; sha=$RUN_SHA; archives=$RUN_ID
+                fi ;;
+            esac
+          else
+            sha=$(gh api "repos/$GH_REPO/commits/sgi-origami" --jq .sha)
+            # A scheduled run's head is the default branch, which is sgi-origami
+            # on the public mirror, so its head sha is the commit it booted.
+            last=$(gh run list --workflow boot-matrix.yml --status success --limit 100 \
+                     --json headSha,event --jq '[.[]|select(.event=="schedule")][0].headSha // ""' || true)
+            if [ "$EVENT" = schedule ] && [ "$last" = "$sha" ]; then
+              echo "sgi-origami has not moved since the last successful run ($sha)"
+            else
+              boot=true
+              archives=$(gh run list --workflow release.yml --commit "$sha" --status success \
+                           --json databaseId --jq '.[0].databaseId // ""' || true)
+              if [ -z "$archives" ]; then
+                echo "no successful release.yml run for $sha; starting one"
+                # A minute of slack for clock skew between this runner and GitHub.
+                started=$(date -u -d '1 minute ago' +%Y-%m-%dT%H:%M:%SZ)
+                gh workflow run release.yml --ref sgi-origami
+                for _ in $(seq 1 30); do
+                  found=$(gh run list --workflow release.yml --event workflow_dispatch \
+                            --branch sgi-origami --json databaseId,headSha,createdAt \
+                            --jq "[.[]|select(.createdAt>=\"$started\")][0]|if . then \"\\(.databaseId) \\(.headSha)\" else \"\" end" || true)
+                  [ -n "$found" ] && break
+                  sleep 10
+                done
+                [ -n "$found" ] || { echo "release.yml did not start"; exit 1; }
+                archives=${found% *}
+                # What it built is what gets booted, even if the branch moved.
+                sha=${found#* }
+                gh run watch "$archives" --exit-status --interval 60
+              fi
+            fi
+          fi
+          echo "boot=$boot" >> "$GITHUB_OUTPUT"
+          echo "sha=${sha:-}" >> "$GITHUB_OUTPUT"
+          echo "archives=${archives:-}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        if: ${{ steps.plan.outputs.boot == 'true' }}
+        with:
+          ref: ${{ steps.plan.outputs.sha }}
+          fetch-depth: 1
+      - name: list the boots per OS
+        id: matrix
+        if: ${{ steps.plan.outputs.boot == 'true' }}
+        run: |
+          set -eu
+          python3 scripts/ci/sgi-boot-matrix.py check
+          for os in linux macos windows; do
+            echo "$os=$(python3 scripts/ci/sgi-boot-matrix.py matrix --os $os)" >> "$GITHUB_OUTPUT"
+          done
+
+  linux:
+    name: IRIX boots to login and hinv matches (Linux, ${{ matrix.title }})
+    needs: plan
+    if: ${{ github.server_url == 'https://github.com' && needs.plan.outputs.boot == 'true' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.linux || '{"include":[]}') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 1
+      - name: install the libraries the archive leaves to the host
+        # The same set release.yml's bare-container check installs.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-6 libasound2t64 libpulse0 libudev1 libx11-xcb1 libxcb1 \
+            libxkbcommon0 libwayland-client0 libwayland-cursor0 libwayland-egl1
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-linux-x86_64
+          path: in
+          run-id: ${{ needs.plan.outputs.archives }}
+          github-token: ${{ github.token }}
+      - name: boot ${{ matrix.id }} and check hinv
+        run: |
+          python3 scripts/ci/sgi-boot-matrix.py boot --id "${{ matrix.id }}" \
+            --archive in/sgi-origami-*-linux-x86_64.tar.gz \
+            --work "$RUNNER_TEMP/boot" --results results.json
+      - name: summarise
+        if: always()
+        run: python3 scripts/ci/sgi-boot-matrix.py summary results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-linux-${{ matrix.id }}
+          path: |
+            results.json
+            ${{ runner.temp }}/boot/evidence
+          if-no-files-found: ignore
+          retention-days: 14
+
+  macos:
+    name: IRIX boots to login and hinv matches (macOS, ${{ matrix.title }})
+    needs: plan
+    if: ${{ github.server_url == 'https://github.com' && needs.plan.outputs.boot == 'true' }}
+    runs-on: macos-15
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.macos || '{"include":[]}') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 1
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-macos-arm64
+          path: in
+          run-id: ${{ needs.plan.outputs.archives }}
+          github-token: ${{ github.token }}
+      - name: boot ${{ matrix.id }} and check hinv
+        run: |
+          python3 scripts/ci/sgi-boot-matrix.py boot --id "${{ matrix.id }}" \
+            --archive in/sgi-origami-*-macos-arm64.tar.gz \
+            --work "$RUNNER_TEMP/boot" --results results.json
+      - name: summarise
+        if: always()
+        run: python3 scripts/ci/sgi-boot-matrix.py summary results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-macos-${{ matrix.id }}
+          path: |
+            results.json
+            ${{ runner.temp }}/boot/evidence
+          if-no-files-found: ignore
+          retention-days: 14
+
+  windows:
+    name: IRIX boots to login and hinv matches (Windows, ${{ matrix.title }})
+    needs: plan
+    if: ${{ github.server_url == 'https://github.com' && needs.plan.outputs.boot == 'true' }}
+    runs-on: windows-latest
+    timeout-minutes: 180
+    permissions:
+      contents: read
+      actions: read
+    defaults:
+      run:
+        shell: bash
+    env:
+      PYTHONUTF8: "1"
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.windows || '{"include":[]}') }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 1
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          name: archive-windows-x86_64
+          path: in
+          run-id: ${{ needs.plan.outputs.archives }}
+          github-token: ${{ github.token }}
+      - name: boot ${{ matrix.id }} and check hinv
+        run: |
+          python scripts/ci/sgi-boot-matrix.py boot --id "${{ matrix.id }}" \
+            --archive in/sgi-origami-*-windows-x86_64.zip \
+            --work "$RUNNER_TEMP/boot" --results results.json
+      - name: summarise
+        if: always()
+        run: python scripts/ci/sgi-boot-matrix.py summary results.json >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: boot-windows-${{ matrix.id }}
+          path: |
+            results.json
+            ${{ runner.temp }}/boot/evidence
+          if-no-files-found: ignore
+          retention-days: 14
