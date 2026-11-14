@@ -74,9 +74,9 @@
 #define SGI_L1_L2_CONFIG_REPLY_KIND    7
 #define SGI_L1_L2_RECORD_SIZE   0x70
 #define SGI_L1_L2_RECORD_TEXT   0x64   /* the serial text within a record */
-/* The module table: own entries 0-4, port 1 peer 5-9, port 2 peer 10-14. */
+/* The module table of ten records: own entries 0-4, port 1 peer 5-9. */
 #define SGI_L1_TABLE_GROUP      5
-#define SGI_L1_TABLE_GROUPS     3
+#define SGI_L1_TABLE_GROUPS     2
 
 /* Packet classes. */
 #define SGI_L1_L2_CLASS_REQUEST  0

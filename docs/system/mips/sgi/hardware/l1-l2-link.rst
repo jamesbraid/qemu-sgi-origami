@@ -374,13 +374,27 @@ copy is an *approximation*.
 The source word is ``(identity << 12) | 0x0e`` with the identity the rack
 in bits 15:6 and the bay in bits 5:0; that these are the controller's own
 settings is *inferred*. The records come from the controller's module table
-of fifteen entries of 0x70 bytes: its own entries at 0 to 4, the entries
-learned from the peer on serial port 1 at 5 to 9 and from port 2 at 10 to 14
-(*software expectation* for the stores; the naming is *inferred*). An entry is listed
-when its word at +0x60 is nonzero (*software expectation*), and a group of five whose
-first entry's string at +0x40 repeats an earlier group's is left out
-(*software expectation* for the omission; that the L2 is the consumer of the
-entries learned from a peer is *inferred*). The index array holds each
+of ten entries of 0x70 bytes: its own entries at 0 to 4 and the entries
+learned from the peer on serial port 1 at 5 to 9 (*software expectation* for
+the size and the stores; the naming is *inferred*). The reply walks those ten
+positions and no more. A group that arrives on serial port 2 is stored by
+the firmware at position 10, which starts at the end of the table: the
+firmware writes past it, to an effect that is *unknown* and has no contract
+a host could observe. The model keeps nothing for port 2 and lists nothing
+above position 9, an *approximation*. The peer-link initialiser opens port
+1 and port 9 on types ``C``, ``0``, ``4``, ``7``, ``8`` and ``Q``, port 1 and
+ports 9 to 12 on type ``6`` (the Cx-brick), and ports 1 and 2 on ``%``,
+``5``, ``O`` and ``!``; so the C-brick and the Cx-brick never write position
+10 (*software expectation*, with the step that a port that is not opened
+receives no frame *inferred*). The model has none of the types that open port
+2, so the port 2 store is unreachable by construction, and so is the cut
+at eight records. An entry is listed when its word at +0x60 is nonzero
+(*software expectation*). A peer group is left out when the name of its first
+entry, at +0x40, equals the name of any record already listed, its own
+group's included; the head and the four after it are skipped, so with ten
+positions only position 5 can start such a group (*software expectation*;
+that the L2 is the consumer of the entries learned from a peer is
+*inferred*). The index array holds each
 listed entry's table index. A record has a nonzero word at +0x00, the rack
 in the word at +0x08 and the bay in the word at +0x0c, big endian
 (*software expectation* as the fields the L2 routes by); the word at +0x60 is 1, an
@@ -410,7 +424,9 @@ payload, so it is 1 on both blobs of this single-segment reply
 (*software expectation*: the L1's own reader returns nothing for a data descriptor
 whose segment byte is 0). A reply of more than eight records would continue
 into a second segment whose descriptors carry 2 (*inferred*); the model's
-table never reaches that size. The reply follows the sheets' reading of the
+table never reaches that size. Ten records of 0x70 bytes would not fit the
+link's 1024-byte segment either, so the model's reply is limited to eight
+records and logs the rest as unimplemented, an *approximation*. The reply follows one reading of the
 1.44.0 package for one controller type and is not claimed to reproduce a
 real L1's.
 
