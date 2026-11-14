@@ -354,8 +354,17 @@ static void l1_board_init(MachineState *machine)
     }
 
     /* CS3 and CS5: management USB controller slots. CS6 and CS7 are unused. */
-    l1_board_unimp_window(mcf5206e_sim_cs_window(b->sim, CS_USB0),
-                          "usb-controller-slot0", 64 * KiB);
+    if (lm->board_peers) {
+        DeviceState *usb = qdev_new(TYPE_SGI_L1_USB_WINDOW);
+
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(usb), &error_fatal);
+        memory_region_add_subregion(mcf5206e_sim_cs_window(b->sim, CS_USB0), 0,
+                                    sysbus_mmio_get_region(SYS_BUS_DEVICE(usb),
+                                                           0));
+    } else {
+        l1_board_unimp_window(mcf5206e_sim_cs_window(b->sim, CS_USB0),
+                              "usb-controller-slot0", 64 * KiB);
+    }
     l1_board_unimp_window(mcf5206e_sim_cs_window(b->sim, CS_USB1),
                           "cs5-device", 64 * KiB);
 

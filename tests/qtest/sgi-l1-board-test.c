@@ -2130,6 +2130,70 @@ static void test_peers_monitor_reset(void)
     quit_all(qts, &f);
 }
 
+/* The USB window, driven as the firmware's probe does. */
+#define USB_BASE        0x40000000u
+
+static void test_peers_usb(void)
+{
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *extra = NULL;
+    int v;
+
+    prologue(&a);
+    mbar_on(&a);
+    cs_setup(&a, 3, 0x4000, 0, 0x0953);
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    log_path = g_build_filename(f.dir, "log.txt", NULL);
+    extra = g_strdup_printf("-d unimp,guest_errors -D %s", log_path);
+    qts = start_machine(&f, PEERS_CBRICK, extra);
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    /* The probe: write 0xb5 to the scratch register, read the revision. */
+    qtest_writeb(qts, USB_BASE + 0x1b, 0xb5);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x18), ==, 0x13);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x18), ==, 0x13);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1b), ==, 0xb5);
+    /* Then each even value from 0 to 0xfc must read back. */
+    for (v = 0; v <= 0xfc; v += 2) {
+        qtest_writeb(qts, USB_BASE + 0x1b, v);
+        g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1b), ==, v);
+    }
+    /* The revision is read-only. */
+    qtest_writeb(qts, USB_BASE + 0x18, 0x81);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x18), ==, 0x13);
+    /*
+     * Wider accesses split into bytes, big-endian: the revision, two
+     * unmodelled bytes and the scratch register make one longword.
+     */
+    qtest_writeb(qts, USB_BASE + 0x1b, 0xb5);
+    g_assert_cmphex(qtest_readl(qts, USB_BASE + 0x18), ==, 0x130000b5);
+    g_assert_cmphex(qtest_readw(qts, USB_BASE + 0x1a), ==, 0x00b5);
+    qtest_writew(qts, USB_BASE + 0x1a, 0x1234);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1b), ==, 0x34);
+    qtest_writel(qts, USB_BASE + 0x18, 0x11223355);
+    g_assert_cmphex(qtest_readl(qts, USB_BASE + 0x18), ==, 0x13000055);
+    /* Anything else is unmodelled, reads zero and is logged. */
+    qtest_writeb(qts, USB_BASE + 0x11, 0x55);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x11), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x19), ==, 0);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "usb-controller-slot0: write of offset "
+                                 "0x11 = 0x55"));
+    g_assert_nonnull(strstr(log, "usb-controller-slot0: read of offset "
+                                 "0x19"));
+    g_assert_nonnull(strstr(log, "read-only revision register"));
+    g_unlink(log_path);
+    flash_free(&f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2187,6 +2251,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/peers-reset", test_peers_reset);
     qtest_add_func("sgi-l1-board/peers-expanders", test_peers_expanders);
     qtest_add_func("sgi-l1-board/peers-monitors", test_peers_monitors);
+    qtest_add_func("sgi-l1-board/peers-usb", test_peers_usb);
 
 
     qtest_add_func("sgi-l1-board/peers-monitor-reset",
