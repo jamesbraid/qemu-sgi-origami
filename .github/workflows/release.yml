@@ -1,0 +1,222 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Build the SGI release archives for Linux, Windows and macOS with
+# packaging/sgi-package.py, and publish them as a GitHub Release.
+#
+# This runs on github.com only, which holds the public mirror. Forgejo reads
+# this directory too, so every job carries the same guard as the other
+# workflows, inverted.
+#
+#   tag sgi-origami-*     build all three, then publish a Release; the Release
+#                         is created as a draft and published only once the
+#                         archives and checksums are attached
+#   push to sgi-origami   packaging check: build all three, publish nothing
+#   weekly                same check, to catch drift in the runners' tools
+#   manual dispatch       same check, on the chosen ref
+name: Build and release QEMU archives (Linux, Windows, macOS)
+
+on:
+  push:
+    # GitHub applies the paths filter to branch pushes only; a tag push
+    # ignores it, so a tag always starts a release build.
+    tags: ["sgi-origami-*"]
+    branches: [sgi-origami]
+    paths:
+      - "packaging/**"
+      - ".github/workflows/release.yml"
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Set only for a tag push; the other runs build development archives.
+  RELEASE_TAG: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sgi-origami-') && github.ref_name || '' }}
+
+jobs:
+  linux:
+    name: Build Linux archive
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: build-package/vcpkg-binary-cache
+          key: vcpkg-linux-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/debian-bookworm.docker') }}
+      - name: build the packaging image
+        run: docker build -t sgi-package -f packaging/debian-bookworm.docker packaging
+      - name: build the archive
+        run: |
+          mkdir -p build-package
+          docker run --rm -e RELEASE_TAG -v "$PWD":/src -w /src sgi-package sh -ec '
+            git config --global --add safe.directory /src
+            python3 packaging/sgi-package.py ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
+          ' sh
+      - name: run the archive in a bare container
+        # Only the libraries the archive documents as the host's to provide
+        # are installed, so a missing bundled library shows up here.
+        run: |
+          archive=$(ls build-package/dist/*.tar.gz)
+          mkdir unpacked
+          tar -xzf "$archive" -C unpacked
+          docker run --rm -v "$PWD/unpacked":/sgi:ro debian:bookworm-slim sh -ec '
+            apt-get update -qq
+            apt-get install -y -qq --no-install-recommends \
+                libx11-6 libasound2 libpulse0 libudev1 libx11-xcb1 libxcb1 \
+                libxkbcommon0 libwayland-client0 libwayland-cursor0 libwayland-egl1 >/dev/null
+            /sgi/bin/qemu-system-mips64 --version
+            /sgi/bin/qemu-img --version
+            /sgi/bin/qemu-system-mips64 -M help | tee /tmp/machines
+            grep -qw octane2 /tmp/machines
+          '
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-linux-x86_64
+          path: build-package/dist/*
+          if-no-files-found: error
+
+  windows:
+    name: Build Windows archive
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      # The runner's Git converts line endings, which breaks configure.
+      - run: git config --global core.autocrlf false
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git base-devel curl zip unzip tar
+            mingw-w64-x86_64-toolchain mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
+            mingw-w64-x86_64-cmake
+      - name: cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: build-package/vcpkg-binary-cache
+          key: vcpkg-windows-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/x64-mingw-origami.cmake') }}
+      - name: build the archive
+        shell: msys2 {0}
+        run: |
+          git config --global --add safe.directory '*'
+          python packaging/sgi-package.py ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
+      - name: run the archive with the MinGW toolchain off PATH
+        # This step's PowerShell has none of MSYS2 on PATH, so a DLL the
+        # archive should have bundled is not found.
+        shell: pwsh
+        run: |
+          $archive = Get-ChildItem build-package/dist/*.zip | Select-Object -First 1
+          Expand-Archive -Path $archive.FullName -DestinationPath unpacked
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $bin = Join-Path $PWD 'unpacked\bin'
+          & "$bin\qemu-system-mips64.exe" --version
+          if ($LASTEXITCODE) { throw "qemu-system-mips64 --version: $LASTEXITCODE" }
+          & "$bin\qemu-img.exe" --version
+          if ($LASTEXITCODE) { throw "qemu-img --version: $LASTEXITCODE" }
+          $machines = & "$bin\qemu-system-mips64.exe" -M help
+          if ($LASTEXITCODE) { throw "-M help: $LASTEXITCODE" }
+          $machines
+          if (-not ($machines -match '\boctane2\b')) { throw 'octane2 is not listed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-windows-x86_64
+          path: build-package/dist/*
+          if-no-files-found: error
+
+  macos:
+    name: Build macOS archive
+    if: ${{ github.server_url == 'https://github.com' }}
+    runs-on: macos-15
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+      - name: install build tools
+        run: brew install ninja pkgconf python autoconf automake libtool
+      - name: cache vcpkg binaries
+        uses: actions/cache@v4
+        with:
+          path: build-package/vcpkg-binary-cache
+          key: vcpkg-macos-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/arm64-osx-origami.cmake') }}
+      - name: build the archive
+        run: python3 packaging/sgi-package.py ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
+      - name: run the archive
+        run: |
+          set -e
+          mkdir unpacked
+          tar -xzf build-package/dist/*.tar.gz -C unpacked
+          unpacked/bin/qemu-system-mips64 --version
+          unpacked/bin/qemu-img --version
+          unpacked/bin/qemu-system-mips64 -M help | tee machines.txt
+          grep -qw octane2 machines.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: archive-macos-arm64
+          path: build-package/dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub release
+    # A tag push only. The other triggers stop after the three builds.
+    if: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sgi-origami-') }}
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: archive-*
+          path: archives
+          merge-multiple: true
+      - name: write checksums and release notes
+        run: |
+          set -eu
+          cd archives
+          for f in *; do sha256sum "$f" > "$f.sha256"; done
+          sha256sum -- *.tar.gz *.zip > SHA256SUMS
+          cd ..
+          # Re-fetch the tag: a checkout can leave an annotated tag as a
+          # bare ref, which has no message.
+          git fetch --force origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+          {
+            git for-each-ref --format='%(contents)' "refs/tags/$RELEASE_TAG"
+            if previous=$(git describe --tags --abbrev=0 --match 'sgi-origami-*' \
+                "$RELEASE_TAG^" 2>/dev/null); then
+              printf '\nChanges since %s:\n\n' "$previous"
+              git log --no-merges --format='- %s' "$previous..$RELEASE_TAG"
+            fi
+          } > notes.md
+          cat notes.md
+      - name: create the draft, attach the files, publish
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          # A rerun replaces its own unpublished draft and never a Release.
+          if [ "$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+            gh release delete "$RELEASE_TAG" --yes
+          fi
+          gh release create "$RELEASE_TAG" --draft --verify-tag \
+              --title "$RELEASE_TAG" --notes-file notes.md archives/*
+          gh release edit "$RELEASE_TAG" --draft=false
