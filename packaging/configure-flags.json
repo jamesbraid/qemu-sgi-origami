@@ -1,0 +1,42 @@
+{
+  "comment": "QEMU configure arguments of the SGI release build. sgi-package.py builds the archives with them and scripts/ci/sgi-check compiles the Windows programs with the same list, so a flag edit is compiled on every pull request. The Linux archive builds with Debian 12's GCC 12, which warns (maybe-uninitialized, in hw/coproc/dsp56300/dsp56300-ops.c) where the pull-request compilers do not, and a release must not stop on a compiler's warnings, and the CHD library's C++ runtime is linked statically so the archive does not need the host's libstdc++. The disabled features keep the archive from depending on what else a build machine has installed.",
+  "common": [
+    "--target-list=mips64-softmmu",
+    "--disable-docs",
+    "--disable-gtk",
+    "--disable-cocoa",
+    "--enable-sdl",
+    "--enable-vnc",
+    "--enable-slirp",
+    "--enable-chd",
+    "--disable-curl",
+    "--disable-gnutls",
+    "--disable-gcrypt",
+    "--disable-bzip2",
+    "--disable-zstd",
+    "--disable-libssh",
+    "--disable-libnfs",
+    "--disable-libiscsi",
+    "--disable-rbd",
+    "--disable-vde",
+    "--disable-spice",
+    "--disable-virglrenderer",
+    "--disable-libusb",
+    "--disable-opengl"
+  ],
+  "linux": [
+    "--enable-alsa",
+    "--enable-pa",
+    "--disable-sndio",
+    "--disable-werror",
+    "--extra-ldflags=-static-libstdc++"
+  ],
+  "macos": [
+    "--enable-coreaudio",
+    "--enable-vmnet"
+  ],
+  "windows": [
+    "--enable-dsound",
+    "--extra-cflags=-DBUILDING_LIBSLIRP"
+  ]
+}

@@ -896,18 +896,22 @@ class WindowsMode(unittest.TestCase):
 
     def test_fresh_directory_is_configured_then_built(self):
         build, calls = self.calls(configured=False)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(calls[0], [sgi_check.SOURCE / 'configure',
                                     *sgi_check.WINDOWS_CONFIGURE_ARGS])
         self.assertIn('--cross-prefix=x86_64-w64-mingw32-', calls[0])
         self.assertIn('--enable-chd', calls[0])
-        self.assertEqual(calls[1], [build / 'pyvenv/bin/meson', 'configure',
-                                    *sgi_check.WINDOWS_MESON_OPTIONS, build])
-        self.assertEqual(calls[2], ['ninja', '-C', build,
+        self.assertEqual(calls[1], ['ninja', '-C', build,
                                     *sgi_check.WINDOWS_TARGETS])
-        self.assertIn('qemu-img.exe', calls[2])
+        self.assertIn('qemu-img.exe', calls[1])
         self.assertIn('subprojects/libchdman-rs-0.289.5/chd-fixture.exe',
-                      calls[2])
+                      calls[1])
+
+    def test_flags_are_the_release_builds(self):
+        flags = json.loads((SOURCE / 'packaging/configure-flags.json')
+                           .read_text(encoding='utf-8'))
+        for flag in flags['common'] + flags['windows']:
+            self.assertIn(flag, sgi_check.WINDOWS_CONFIGURE_ARGS)
 
     def test_configured_directory_is_only_built(self):
         build, calls = self.calls(configured=True)
