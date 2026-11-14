@@ -14,6 +14,8 @@
 #include "system/memory.h"
 #include "chardev/char-fe.h"
 #include "target/m68k/cpu.h"
+#include "hw/i2c/i2c.h"
+#include "hw/m68k/mcf5206e-mbus.h"
 
 #define TYPE_MCF5206E_SIM "mcf5206e-sim"
 OBJECT_DECLARE_SIMPLE_TYPE(MCF5206ESIMState, MCF5206E_SIM)
@@ -93,10 +95,14 @@ struct MCF5206ESIMState {
     uint8_t ext_in;
 
     MCF5206ETimer timer[2];
+    MCF5206EMBusState *mbus;
     DeviceState *uart[2];
     uint8_t uivr[2];
     uint8_t uop[2];
 };
+
+/** The M-Bus controller's bus: a board attaches the parts it carries. */
+I2CBus *mcf5206e_sim_mbus(MCF5206ESIMState *s);
 
 /** The window a board adds the devices of chip select @n to. */
 MemoryRegion *mcf5206e_sim_cs_window(MCF5206ESIMState *s, int n);

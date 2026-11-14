@@ -61,12 +61,15 @@ class SgiL1Board(QemuSystemTest):
 
         self.set_machine('sgi-l1-board')
         self.vm.set_console()
-        self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log)
+        self.vm.add_args('-bios', flash, '-d', 'unimp', '-D', log,
+                         '-trace', 'mcf5206e_mbus*')
         self.vm.launch()
 
-        # With no node, no identity EEPROM and no two-wire bus peers, the
-        # firmware reports what it cannot read and still reaches its console.
-        wait_for_console_pattern(self, 'Error probing BOARD 0 EEPROM')
+        # With no node and nothing on the two-wire bus, nothing acknowledges
+        # the firmware's calls: it reports the display expander unreadable
+        # and still reaches its console.
+        wait_for_console_pattern(self, 'Error reading the display I/O '
+                                       'expander, no acknowledge')
         wait_for_console_pattern(self, 'SGI SN1 L1 Controller')
         wait_for_console_pattern(self, 'Firmware Image B: Rev. 1.44.0')
         wait_for_console_pattern(self, 'L1>')
@@ -74,11 +77,13 @@ class SgiL1Board(QemuSystemTest):
                                           'L1 1.44.0 (Image B)')
         self.vm.shutdown()
 
-        # The parts the board does not model were logged, not answered.
+        # The two-wire controller saw the identity EEPROM addresses called
+        # and nothing answered them.
         with open(log, encoding='utf-8') as logfile:
             text = logfile.read()
-        self.assertIn('read of MBSR (MBAR+0x1ec): not modelled', text)
-        self.assertIn('write of MBDR (MBAR+0x1f0)', text)
+        self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa4 nack 1', text)
+        self.assertIn('mcf5206e_mbus_byte tx 1 byte 0xa8 nack 1', text)
+        self.assertNotIn('nack 0', text)
 
 
 if __name__ == '__main__':

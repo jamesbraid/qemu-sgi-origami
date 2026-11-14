@@ -59,7 +59,9 @@ config SGI_L1_BOARD
     bool
     default y
     depends on M68K
+    select AT24C
     select COLDFIRE
+    select I2C_WIRE
     select M48T59
     select OR_IRQ
     select SERIAL_MM

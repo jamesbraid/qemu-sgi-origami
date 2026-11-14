@@ -983,7 +983,7 @@ static void test_unimplemented_logged(void)
     mbar_on(&a);
     cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
     put_w(&a, MBAR_BASE + 0x46, 0x1234);
-    ld_b(&a, MBAR_BASE + 0x1ec, 1);
+    ld_b(&a, MBAR_BASE + 0x1c5, 1);
     st_l(&a, 1, RESULT(0));
     cs_setup(&a, 3, 0x4000, 0, 0x0953);
     ld_b(&a, 0x40000018, 1);
@@ -1004,10 +1004,488 @@ static void test_unimplemented_logged(void)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
     g_assert_nonnull(strstr(log, "write of DCRR (MBAR+0x46) = 0x1234"));
-    g_assert_nonnull(strstr(log, "read of MBSR (MBAR+0x1ec)"));
+    g_assert_nonnull(strstr(log, "read of PPDDR (MBAR+0x1c5)"));
     g_assert_nonnull(strstr(log, "usb-controller-slot0"));
     g_assert_nonnull(strstr(log, "default memory"));
     g_assert_nonnull(strstr(log, "flash command set"));
+    g_unlink(log_path);
+    flash_free(&f);
+}
+
+/*
+ * The two-wire (M-Bus) controller. The flash code only enables the module
+ * block; the test then drives the five registers from the host, with a
+ * stock AT24C EEPROM as the peer, so no expected value comes from the
+ * model. The bus runs in virtual time, which follows the host clock here, so
+ * the test polls with a time limit and asserts no duration.
+ */
+#define MADR            0x1e0
+#define MFDR            0x1e4
+#define MBCR            0x1e8
+#define MBSR            0x1ec
+#define MBDR            0x1f0
+
+#define MBCR_MEN        0x80
+#define MBCR_MIEN       0x40
+#define MBCR_MSTA       0x20
+#define MBCR_MTX        0x10
+#define MBCR_TXAK       0x08
+#define MBCR_RSTA       0x04
+
+#define MBSR_MCF        0x80
+#define MBSR_MBB        0x20
+#define MBSR_MAL        0x10
+#define MBSR_MIF        0x02
+#define MBSR_RXAK       0x01
+
+#define PEER_ADDR7      0x2c
+#define PEER_CALL_W     (PEER_ADDR7 << 1)
+#define PEER_CALL_R     ((PEER_ADDR7 << 1) | 1)
+#define PEER_ARGS       "-device at24c-eeprom,bus=mbus,address=0x2c," \
+                        "rom-size=256"
+
+static uint8_t mb_rd(QTestState *qts, unsigned reg)
+{
+    return qtest_readb(qts, MBAR_BASE + reg);
+}
+
+static void mb_wr(QTestState *qts, unsigned reg, uint8_t val)
+{
+    qtest_writeb(qts, MBAR_BASE + reg, val);
+}
+
+static bool mbus_irq_pending(QTestState *qts)
+{
+    return qtest_readw(qts, MBAR_BASE + IPR) & (1 << 11);
+}
+
+static QTestState *mbus_start(Flash *f, const char *extra)
+{
+    Asm a = { };
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    finish(&a);
+    *f = flash_build(&a, NULL, NULL);
+    qts = start(f, extra);
+    go(qts);
+    wait_for(qts, DONE, 1);
+    return qts;
+}
+
+/* Wait until (MBSR & mask) == value. */
+static void mbus_wait(QTestState *qts, uint8_t mask, uint8_t value)
+{
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+
+    while ((mb_rd(qts, MBSR) & mask) != value) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(200);
+    }
+}
+
+static void mbus_enable(QTestState *qts)
+{
+    mb_wr(qts, MFDR, 0x13);
+    mb_wr(qts, MBCR, MBCR_MEN);
+}
+
+/* Send one byte as master; returns MBSR once MIF sets, MIF then cleared. */
+static uint8_t mbus_send(QTestState *qts, uint8_t byte)
+{
+    uint8_t sr;
+
+    mb_wr(qts, MBDR, byte);
+    mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+    sr = mb_rd(qts, MBSR);
+    mb_wr(qts, MBSR, 0);
+    return sr;
+}
+
+static void mbus_start_write(QTestState *qts)
+{
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_MTX);
+}
+
+static void mbus_stop(QTestState *qts)
+{
+    mb_wr(qts, MBCR, MBCR_MEN);
+    mbus_wait(qts, MBSR_MBB, 0);
+}
+
+/* Reset bytes, field masks and the write rules of the five registers. */
+static void test_mbus_registers(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, "");
+
+    g_assert_cmphex(mb_rd(qts, MADR), ==, 0x00);
+    g_assert_cmphex(mb_rd(qts, MFDR), ==, 0x00);
+    g_assert_cmphex(mb_rd(qts, MBCR), ==, 0x00);
+    g_assert_cmphex(mb_rd(qts, MBSR), ==, 0x81);
+    g_assert_cmphex(mb_rd(qts, MBDR), ==, 0x00);
+    g_assert_false(mbus_irq_pending(qts));
+
+    mb_wr(qts, MFDR, 0x13);
+    g_assert_cmphex(mb_rd(qts, MFDR) & 0x3f, ==, 0x13);
+    mb_wr(qts, MFDR, 0x3f);
+    g_assert_cmphex(mb_rd(qts, MFDR) & 0x3f, ==, 0x3f);
+    mb_wr(qts, MFDR, 0x13);
+
+    /* MIEN and TXAK are plain storage; RSTA never reads back. */
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_TXAK);
+    g_assert_cmphex(mb_rd(qts, MBCR) & 0xfc, ==,
+                    MBCR_MEN | MBCR_MIEN | MBCR_TXAK);
+    mb_wr(qts, MBCR, MBCR_MEN);
+
+    /* Writing the other status bits does nothing. */
+    mb_wr(qts, MBSR, 0x00);
+    g_assert_cmphex(mb_rd(qts, MBSR) & ~MBSR_MIF & ~MBSR_MAL, ==, 0x81);
+    quit_all(qts, &f);
+}
+
+/*
+ * The calling byte is acknowledged by a present peer and not by an absent
+ * address, and the two give different RXAK. The flag and the interrupt come
+ * together, after the byte.
+ */
+static void test_mbus_address_ack(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+    uint8_t sr;
+
+    mbus_enable(qts);
+    mbus_start_write(qts);
+    mb_wr(qts, MBDR, PEER_CALL_W);
+    mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+    sr = mb_rd(qts, MBSR);
+    g_assert_cmphex(sr & (MBSR_MCF | MBSR_MBB | MBSR_MAL | MBSR_MIF |
+                          MBSR_RXAK), ==,
+                    MBSR_MCF | MBSR_MBB | MBSR_MIF);
+    g_assert_true(mbus_irq_pending(qts));
+    mb_wr(qts, MBSR, 0);
+    g_assert_false(mbus_irq_pending(qts));
+    mbus_stop(qts);
+
+    /* An address no part answers. */
+    mbus_start_write(qts);
+    sr = mbus_send(qts, 0xa4);
+    g_assert_cmphex(sr & (MBSR_MCF | MBSR_MAL | MBSR_RXAK), ==,
+                    MBSR_MCF | MBSR_RXAK);
+    mbus_stop(qts);
+    quit_all(qts, &f);
+}
+
+/* MIEN hides the interrupt request without clearing the flag. */
+static void test_mbus_interrupt_enable(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+
+    mbus_enable(qts);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    mb_wr(qts, MBDR, PEER_CALL_W);
+    mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+    g_assert_false(mbus_irq_pending(qts));
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_MTX);
+    g_assert_true(mbus_irq_pending(qts));
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    g_assert_false(mbus_irq_pending(qts));
+    g_assert_true(mb_rd(qts, MBSR) & MBSR_MIF);
+    mb_wr(qts, MBSR, 0);
+    mbus_stop(qts);
+    quit_all(qts, &f);
+}
+
+/*
+ * A multi-byte master write reaches the peer in order, and a repeated START
+ * followed by a two-byte read returns what the peer holds: every data byte
+ * is acknowledged and the calling byte of the second transfer is not
+ * mistaken for data.
+ */
+static void test_mbus_write_and_read(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+    uint8_t sr, first, second;
+
+    mbus_enable(qts);
+    mbus_start_write(qts);
+    sr = mbus_send(qts, PEER_CALL_W);
+    g_assert_cmphex(sr & MBSR_RXAK, ==, 0);
+    sr = mbus_send(qts, 0x10);
+    g_assert_cmphex(sr & MBSR_RXAK, ==, 0);
+    sr = mbus_send(qts, 0xa5);
+    g_assert_cmphex(sr & MBSR_RXAK, ==, 0);
+    sr = mbus_send(qts, 0x5a);
+    g_assert_cmphex(sr & (MBSR_RXAK | MBSR_MCF), ==, MBSR_MCF);
+    mbus_stop(qts);
+
+    /* Set the peer's pointer, then repeat START to read two bytes. */
+    mbus_start_write(qts);
+    mbus_send(qts, PEER_CALL_W);
+    mbus_send(qts, 0x10);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_MTX |
+                     MBCR_RSTA);
+    g_assert_cmphex(mb_rd(qts, MBCR) & MBCR_RSTA, ==, 0);
+    sr = mbus_send(qts, PEER_CALL_R);
+    g_assert_cmphex(sr & MBSR_RXAK, ==, 0);
+
+    /* Receive: clear MTX, a read of MBDR starts the first byte. */
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA);
+    mb_rd(qts, MBDR);
+    mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+    mb_wr(qts, MBSR, 0);
+    /* The next is the last: NACK it, and the read returns the first. */
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_TXAK);
+    first = mb_rd(qts, MBDR);
+    mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+    mb_wr(qts, MBSR, 0);
+    /* STOP before reading the last byte. */
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN);
+    second = mb_rd(qts, MBDR);
+    g_assert_cmphex(first, ==, 0xa5);
+    g_assert_cmphex(second, ==, 0x5a);
+    mbus_wait(qts, MBSR_MBB, 0);
+    quit_all(qts, &f);
+}
+
+/* A repeated START asked for by a module that is not the master. */
+static void test_mbus_arbitration_loss(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+
+    mbus_enable(qts);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_RSTA);
+    g_assert_cmphex(mb_rd(qts, MBSR) & (MBSR_MAL | MBSR_MIF), ==,
+                    MBSR_MAL | MBSR_MIF);
+    g_assert_cmphex(mb_rd(qts, MBCR) & MBCR_MSTA, ==, 0);
+    g_assert_true(mbus_irq_pending(qts));
+    /* MAL and MIF clear independently, by a written zero each. */
+    mb_wr(qts, MBSR, MBSR_MAL);
+    g_assert_cmphex(mb_rd(qts, MBSR) & (MBSR_MAL | MBSR_MIF), ==, MBSR_MAL);
+    mb_wr(qts, MBSR, 0);
+    g_assert_cmphex(mb_rd(qts, MBSR) & (MBSR_MAL | MBSR_MIF), ==, 0);
+    g_assert_false(mbus_irq_pending(qts));
+    /* The other way round: a zero in MAL only. */
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_RSTA);
+    mb_wr(qts, MBSR, MBSR_MIF);
+    g_assert_cmphex(mb_rd(qts, MBSR) & (MBSR_MAL | MBSR_MIF), ==, MBSR_MIF);
+    mb_wr(qts, MBSR, 0);
+    quit_all(qts, &f);
+}
+
+/*
+ * A module clock of 100 kHz makes the slowest divider a clock cycle of 38 ms,
+ * so two stores in a row land within one cycle however the host schedules
+ * the guest.
+ */
+#define SLOW_CLOCK      " -global mcf5206e-sim.clock-hz=100000"
+
+/*
+ * A STOP asked for while a byte is on the bus waits for the end of that
+ * byte. The guest writes the byte and clears MSTA with two stores in a row,
+ * and records MBSR after them; the host then expects the bus to go idle
+ * without another write. At the slowest divider a byte lasts a third of a
+ * second, and MCF clear in the recorded MBSR shows the byte was still
+ * on the bus when the STOP was asked for.
+ */
+static void test_mbus_stop_mid_byte(void)
+{
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    put_b(&a, MBAR_BASE + MFDR, 0x1f);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    put_b(&a, MBAR_BASE + MBDR, PEER_CALL_W);
+    poll_bits(&a, MBAR_BASE + MBSR, MBSR_MIF, true);
+    put_b(&a, MBAR_BASE + MBSR, 0);
+    put_b(&a, MBAR_BASE + MBDR, 0x10);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN | MBCR_MTX);
+    ld_b(&a, MBAR_BASE + MBSR, 2);
+    st_l(&a, 2, RESULT(0));
+    poll_bits(&a, MBAR_BASE + MBSR, MBSR_MIF, true);
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    qts = start(&f, PEER_ARGS SLOW_CLOCK);
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    g_assert_cmphex(qtest_readl(qts, RESULT(0)) & (MBSR_MCF | MBSR_MBB), ==,
+                    MBSR_MBB);
+    mbus_wait(qts, MBSR_MBB, 0);
+    quit_all(qts, &f);
+}
+
+/*
+ * A START asked for while the bus is still busy loses arbitration and clears
+ * MSTA, which the write had just set. The guest starts a transfer, asks for
+ * the STOP and, before the STOP has finished, sets MSTA again.
+ */
+static void test_mbus_busy_start_loss(void)
+{
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    put_b(&a, MBAR_BASE + MFDR, 0x1f);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    poll_bits(&a, MBAR_BASE + MBSR, MBSR_MBB, true);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN | MBCR_MTX);
+    put_b(&a, MBAR_BASE + MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    ld_b(&a, MBAR_BASE + MBCR, 2);
+    st_l(&a, 2, RESULT(0));
+    ld_b(&a, MBAR_BASE + MBSR, 2);
+    st_l(&a, 2, RESULT(1));
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    qts = start(&f, PEER_ARGS SLOW_CLOCK);
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    g_assert_cmphex(qtest_readl(qts, RESULT(0)) & MBCR_MSTA, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, RESULT(1)) & (MBSR_MAL | MBSR_MIF), ==,
+                    MBSR_MAL | MBSR_MIF);
+    quit_all(qts, &f);
+}
+
+/*
+ * No MBCR bit but MEN has an effect while MEN is clear, though the bits read
+ * back. Setting MEN afterwards is the 0 to 1 edge of MSTA that starts the
+ * transfer.
+ */
+static void test_mbus_bits_before_enable(void)
+{
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+
+    mb_wr(qts, MFDR, 0x13);
+    mb_wr(qts, MBCR, MBCR_MSTA | MBCR_MTX);
+    g_assert_cmphex(mb_rd(qts, MBCR), ==, MBCR_MSTA | MBCR_MTX);
+    g_assert_cmphex(mb_rd(qts, MBSR) & (MBSR_MBB | MBSR_MAL), ==, 0);
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+    mbus_wait(qts, MBSR_MBB, MBSR_MBB);
+    quit_all(qts, &f);
+}
+
+/* The path of the M-Bus controller, from the QOM tree's indentation. */
+static char *mbus_qom_path(QTestState *qts)
+{
+    g_autofree char *tree = qtest_hmp(qts, "info qom-tree");
+    g_auto(GStrv) lines = g_strsplit(tree, "\n", -1);
+    char *parts[32] = { };
+    char *found = NULL;
+
+    for (char **l = lines; *l && !found; l++) {
+        const char *name = *l + strspn(*l, " ");
+        unsigned depth = (name - *l) / 2;
+
+        if (name[0] != '/') {
+            continue;
+        }
+        g_assert_cmpuint(depth, <, G_N_ELEMENTS(parts));
+        g_free(parts[depth]);
+        parts[depth] = g_strndup(name, strcspn(name, " "));
+        if (strstr(name, "(mcf5206e-mbus)")) {
+            GString *path = g_string_new(NULL);
+
+            for (unsigned d = 0; d <= depth; d++) {
+                g_string_append(path, parts[d]);
+            }
+            found = g_string_free(path, false);
+        }
+    }
+    for (unsigned d = 0; d < G_N_ELEMENTS(parts); d++) {
+        g_free(parts[d]);
+    }
+    g_assert_nonnull(found);
+    return found;
+}
+
+static int64_t mbus_phase_ns(QTestState *qts, const char *path,
+                             const char *name)
+{
+    QDict *rsp = qtest_qmp(qts, "{ 'execute': 'qom-get', 'arguments': {"
+                           " 'path': %s, 'property': %s } }", path, name);
+    int64_t ns;
+
+    g_assert(qdict_haskey(rsp, "return"));
+    ns = qdict_get_int(rsp, "return");
+    qobject_unref(rsp);
+    return ns;
+}
+
+/*
+ * The divider selector indexes a table, and each clock phase is half the
+ * period rounded up. The controller reports the phases it computed, so no
+ * host time is involved. The divisors are the manual's (0x00 is 28, 0x07 68,
+ * 0x13 480, 0x20 20, 0x3f 2048) and the module clock is the board's 48 MHz.
+ */
+static void test_mbus_divider(void)
+{
+    static const struct { uint8_t mfdr; uint32_t divisor; } cases[] = {
+        { 0x00, 28 }, { 0x07, 68 }, { 0x13, 480 }, { 0x20, 20 },
+        { 0x3f, 2048 },
+    };
+    Flash f;
+    QTestState *qts = mbus_start(&f, PEER_ARGS);
+    g_autofree char *path = mbus_qom_path(qts);
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        int64_t half = DIV_ROUND_UP((uint64_t)cases[i].divisor * 1000000000ull,
+                                    2 * 48000000ull);
+
+        mb_wr(qts, MBCR, 0);
+        mb_wr(qts, MFDR, cases[i].mfdr);
+        mb_wr(qts, MBCR, MBCR_MEN);
+        mb_wr(qts, MBCR, MBCR_MEN | MBCR_MSTA | MBCR_MTX);
+        g_assert_cmpint(mbus_phase_ns(qts, path, "scl-low-ns"), ==, half);
+        g_assert_cmpint(mbus_phase_ns(qts, path, "scl-high-ns"), ==, half);
+    }
+    quit_all(qts, &f);
+}
+
+/* Wider and misaligned accesses over the registers are refused and logged. */
+static void test_mbus_wide_access(void)
+{
+    Asm a = { };
+    Flash f;
+    g_autofree char *log_path = NULL;
+    g_autofree char *log = NULL;
+    g_autofree char *extra = NULL;
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    log_path = g_build_filename(f.dir, "log.txt", NULL);
+    extra = g_strdup_printf("-d guest_errors -D %s", log_path);
+    qts = start(&f, extra);
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    mbus_enable(qts);
+    g_assert_cmphex(qtest_readw(qts, MBAR_BASE + MBCR), ==, 0);
+    qtest_writew(qts, MBAR_BASE + MBCR, 0xe0e0);
+    qtest_writel(qts, MBAR_BASE + MFDR, 0x3f3f3f3f);
+    g_assert_cmphex(mb_rd(qts, MBCR), ==, MBCR_MEN);
+    g_assert_cmphex(mb_rd(qts, MFDR) & 0x3f, ==, 0x13);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
+    g_assert_nonnull(strstr(log, "over the M-Bus MBCR"));
+    g_assert_nonnull(strstr(log, "over the M-Bus MFDR"));
     g_unlink(log_path);
     flash_free(&f);
 }
@@ -1036,6 +1514,22 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/quad-uart", test_quad_uart);
     qtest_add_func("sgi-l1-board/unimplemented-logged",
                    test_unimplemented_logged);
+    qtest_add_func("sgi-l1-board/mbus-registers", test_mbus_registers);
+    qtest_add_func("sgi-l1-board/mbus-address-ack", test_mbus_address_ack);
+    qtest_add_func("sgi-l1-board/mbus-interrupt-enable",
+                   test_mbus_interrupt_enable);
+    qtest_add_func("sgi-l1-board/mbus-write-and-read",
+                   test_mbus_write_and_read);
+    qtest_add_func("sgi-l1-board/mbus-arbitration-loss",
+                   test_mbus_arbitration_loss);
+    qtest_add_func("sgi-l1-board/mbus-stop-mid-byte",
+                   test_mbus_stop_mid_byte);
+    qtest_add_func("sgi-l1-board/mbus-busy-start-loss",
+                   test_mbus_busy_start_loss);
+    qtest_add_func("sgi-l1-board/mbus-bits-before-enable",
+                   test_mbus_bits_before_enable);
+    qtest_add_func("sgi-l1-board/mbus-divider", test_mbus_divider);
+    qtest_add_func("sgi-l1-board/mbus-wide-access", test_mbus_wide_access);
 
     return g_test_run();
 }
