@@ -920,7 +920,7 @@ static bool r10k_system_request(CPUMIPSState *env, R10KSystemRequest request,
  * exception, so an address that does not translate, or translates
  * uncached, is simply dropped.
  */
-void helper_r10k_prefetch(CPUMIPSState *env, target_ulong addr, uint32_t hint)
+void HELPER(r10k_prefetch)(CPUMIPSState *env, target_ulong addr, uint32_t hint)
 {
     MMUAccessType access = hint & 1 ? MMU_DATA_STORE : MMU_DATA_LOAD;
     MemTxAttrs attrs = {};

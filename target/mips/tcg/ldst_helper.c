@@ -32,9 +32,9 @@
 #include "exec/tlb-flags.h"
 #include "exec/target_page.h"
 
-target_ulong helper_store_transaction(CPUMIPSState *env, target_ulong value,
-                                      target_ulong addr, uint32_t mem_idx,
-                                      uint32_t size)
+target_ulong HELPER(store_transaction)(CPUMIPSState *env, target_ulong value,
+                                       target_ulong addr, uint32_t mem_idx,
+                                       uint32_t size)
 {
     CPUTLBEntryFull *full;
     MIPSCPU *cpu = env_archcpu(env);

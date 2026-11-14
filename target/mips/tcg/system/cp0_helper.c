@@ -698,7 +698,7 @@ void HELPER(mtc0_entrylo0)(CPUMIPSState *env, target_ulong arg1)
      * uncached attribute in the top two bits.
      */
     if (env->cfg.mtc0_entrylo_moves_64_bits) {
-        helper_dmtc0_entrylo0(env, arg1);
+        HELPER(dmtc0_entrylo0)(env, arg1);
         return;
     }
 #endif
@@ -904,7 +904,7 @@ void HELPER(mtc0_entrylo1)(CPUMIPSState *env, target_ulong arg1)
 #if defined(TARGET_MIPS64)
     /* All sixty-four bits, as for EntryLo0. */
     if (env->cfg.mtc0_entrylo_moves_64_bits) {
-        helper_dmtc0_entrylo1(env, arg1);
+        HELPER(dmtc0_entrylo1)(env, arg1);
         return;
     }
 #endif
