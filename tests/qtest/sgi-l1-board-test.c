@@ -1707,6 +1707,330 @@ static void test_identity_write(void)
     quit_all(qts, &f);
 }
 
+/* Wire addresses, segments, select bytes and masks are the board page's. */
+#define PEERS_CBRICK    "sgi-l1-board,brick-type=cbrick,node-board-name=IP35," \
+                        "node-board-part=TESTPART0,node-board-revision=7," \
+                        "board-peers=on"
+#define SEL_WIRE        0x4e
+
+/* Write @nw bytes, then repeated START and read @nr; false on a NAK. */
+static bool bus_txn(QTestState *qts, uint8_t call, const uint8_t *wr,
+                    size_t nw, uint8_t *rd, size_t nr)
+{
+    size_t i;
+
+    mbus_enable(qts);
+    mbus_start_write(qts);
+    if (nw || !nr) {
+        if (mbus_send(qts, call) & MBSR_RXAK) {
+            mbus_stop(qts);
+            return false;
+        }
+        for (i = 0; i < nw; i++) {
+            if (mbus_send(qts, wr[i]) & MBSR_RXAK) {
+                mbus_stop(qts);
+                return false;
+            }
+        }
+        if (!nr) {
+            mbus_stop(qts);
+            return true;
+        }
+        mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_MTX |
+                         MBCR_RSTA);
+    }
+    if (mbus_send(qts, call | 1) & MBSR_RXAK) {
+        mbus_stop(qts);
+        return false;
+    }
+    mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA |
+                     (nr == 1 ? MBCR_TXAK : 0));
+    mb_rd(qts, MBDR);
+    for (i = 0; i < nr; i++) {
+        mbus_wait(qts, MBSR_MIF, MBSR_MIF);
+        mb_wr(qts, MBSR, 0);
+        if (i == nr - 1) {
+            mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN);
+        } else if (i == nr - 2) {
+            mb_wr(qts, MBCR, MBCR_MEN | MBCR_MIEN | MBCR_MSTA | MBCR_TXAK);
+        }
+        rd[i] = mb_rd(qts, MBDR);
+    }
+    mbus_wait(qts, MBSR_MBB, 0);
+    return true;
+}
+
+/* A byte-wide expander has no register byte: one byte out, one byte in. */
+static bool byte_write(QTestState *qts, uint8_t call, uint8_t val)
+{
+    return bus_txn(qts, call, &val, 1, NULL, 0);
+}
+
+static bool byte_read(QTestState *qts, uint8_t call, uint8_t *val)
+{
+    return bus_txn(qts, call, NULL, 0, val, 1);
+}
+
+static void select_segment(QTestState *qts, uint8_t sel)
+{
+    g_assert_true(byte_write(qts, SEL_WIRE, sel));
+}
+
+/* Does the device at @call answer, on whatever segment is enabled? */
+static bool answers(QTestState *qts, uint8_t call)
+{
+    uint8_t v;
+
+    return byte_read(qts, call | 1, &v);
+}
+
+static const struct {
+    const char *name;
+    uint8_t wire;
+    uint8_t sel;        /* select byte for the segment; 0 for segment 0 */
+    uint8_t mask;       /* input bits */
+} peer_expanders[] = {
+    { "display control", 0x40, 0x00, 0x0f },
+    { "LED0 low", 0x42, 0x78, 0xff },
+    { "LED0 high", 0x44, 0x78, 0xff },
+    { "LED1 low", 0x46, 0x78, 0xff },
+    { "LED1 high", 0x48, 0x78, 0xff },
+    { "COM control", 0x4c, 0x78, 0xf1 },
+    { "Bedrock control 1", 0x42, 0xb8, 0x00 },
+    { "Bedrock control 2", 0x44, 0xb8, 0x00 },
+    { "port control", 0x46, 0xb8, 0x55 },
+    { "power control", 0x48, 0xb8, 0xde },
+    { "PIMM presence", 0x4a, 0xb8, 0xff },
+    { "fan control", 0x4c, 0xb8, 0x40 },
+};
+
+/* Without board-peers a C-brick's bus carries only the identity part. */
+static void test_peers_default_unfitted(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board,brick-type=cbrick", "");
+    uint8_t v;
+
+    g_assert_false(byte_read(qts, SEL_WIRE | 1, &v));
+    g_assert_false(byte_read(qts, 0x40 | 1, &v));
+    quit_all(qts, &f);
+}
+
+/* board-peers is for the C-brick: the machine refuses to start without. */
+static void test_peers_need_cbrick(void)
+{
+    const char *bin = qtest_qemu_binary(NULL);
+    const char *argv[] = { bin, "-machine", "sgi-l1-board,board-peers=on",
+                           "-display", "none", "-S", NULL };
+    g_autoptr(GString) err = g_string_new(NULL);
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+    GError *gerr = NULL;
+    GPid pid;
+    int errfd, status = 0;
+    char buf[256];
+    ssize_t n;
+
+    g_assert_true(g_spawn_async_with_pipes(NULL, (char **)argv, NULL,
+                                           G_SPAWN_DO_NOT_REAP_CHILD, NULL,
+                                           NULL, &pid, NULL, NULL, &errfd,
+                                           &gerr));
+    g_assert_no_error(gerr);
+    /* A machine that starts instead of refusing never exits under -S. */
+    while (waitpid(pid, &status, WNOHANG) == 0) {
+        if (g_get_monotonic_time() > end) {
+            kill(pid, SIGKILL);
+            waitpid(pid, &status, 0);
+            close(errfd);
+            g_test_message("board-peers without a C-brick was accepted");
+            g_assert_not_reached();
+        }
+        g_usleep(10000);
+    }
+    while ((n = read(errfd, buf, sizeof(buf))) > 0) {
+        g_string_append_len(err, buf, n);
+    }
+    close(errfd);
+    g_assert_true(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), !=, 0);
+    g_assert_nonnull(strstr(err->str, "board-peers needs brick-type=cbrick"));
+}
+
+/* The select expander switches segments 2 to 13 and leaves segment 0. */
+static void test_peers_bus_select(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+    int i;
+
+    /* Powered up, the select reads all ones: every segment is off. */
+    g_assert_true(byte_read(qts, SEL_WIRE | 1, &v));
+    g_assert_cmphex(v, ==, 0xff);
+    g_assert_false(answers(qts, 0x42));
+    g_assert_false(answers(qts, 0x4a));
+    /* Segment 0 needs no select. */
+    g_assert_true(answers(qts, 0x40));
+
+    /* Segment 2: the LED and COM expanders. */
+    select_segment(qts, 0x78);
+    g_assert_true(byte_read(qts, SEL_WIRE | 1, &v));
+    g_assert_cmphex(v, ==, 0x78);
+    g_assert_true(answers(qts, 0x42));
+    g_assert_false(answers(qts, 0x4a));
+    /* Same wire address, different part: 0x42 is all inputs on segment 2. */
+    g_assert_true(byte_write(qts, 0x42, 0x00));
+    g_assert_true(byte_read(qts, 0x43, &v));
+    g_assert_cmphex(v, ==, 0xff);
+
+    /* Segment 3: 0x42 is Bedrock control 1, with no inputs. */
+    select_segment(qts, 0xb8);
+    g_assert_true(answers(qts, 0x4a));
+    g_assert_true(byte_write(qts, 0x42, 0x00));
+    g_assert_true(byte_read(qts, 0x43, &v));
+    g_assert_cmphex(v, ==, 0x00);
+
+    /* A segment 0 access writes no select byte: segment 3 stays on. */
+    g_assert_true(answers(qts, 0x40));
+    g_assert_true(answers(qts, 0x4a));
+
+    /* Segments 4 to 13 hold nothing: no device answers on any of them. */
+    for (i = 0; i < 10; i++) {
+        static const uint8_t sels[] = { 0xd8, 0xe8, 0xf0, 0xf1, 0xf2, 0xf3,
+                                        0xf4, 0xf5, 0xf6, 0xf7 };
+
+        select_segment(qts, sels[i]);
+        g_assert_false(answers(qts, 0x42));
+        g_assert_false(answers(qts, 0x4a));
+        g_assert_false(answers(qts, 0xa0));
+    }
+
+    /* The write of 0xff switches every segment off again. */
+    select_segment(qts, 0xff);
+    g_assert_false(answers(qts, 0x4a));
+    quit_all(qts, &f);
+}
+
+#define SELECT_PATH     "/machine/peripheral/l1-bus-select"
+
+/* The segments the select expander enables now, bit n for segment n. */
+static uint64_t enabled_segments(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                           "{'path': %s, 'property': 'enabled-segments'}}",
+                           SELECT_PATH);
+    uint64_t mask;
+
+    g_assert_true(qdict_haskey(rsp, "return"));
+    mask = qdict_get_int(rsp, "return");
+    qobject_unref(rsp);
+    return mask;
+}
+
+/* Which segments each select byte enables: the board page's decode. */
+static void test_peers_select_decode(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    int b;
+
+    g_assert_cmphex(enabled_segments(qts), ==, 0);
+    select_segment(qts, 0x78);
+    g_assert_cmphex(enabled_segments(qts), ==, 1u << 2);
+    select_segment(qts, 0xb8);
+    g_assert_cmphex(enabled_segments(qts), ==, 1u << 3);
+    select_segment(qts, 0xd8);
+    g_assert_cmphex(enabled_segments(qts), ==, 1u << 4);
+    select_segment(qts, 0xe8);
+    g_assert_cmphex(enabled_segments(qts), ==, 1u << 5);
+    /* Bit 3 low enables the eight-way selector; bits 2 to 0 steer it. */
+    for (b = 0xf0; b <= 0xf7; b++) {
+        select_segment(qts, b);
+        g_assert_cmphex(enabled_segments(qts), ==, 1u << (6 + (b & 7)));
+    }
+    /* With bit 3 high the selector is off whatever bits 2 to 0 hold. */
+    for (b = 0xf8; b <= 0xff; b++) {
+        select_segment(qts, b);
+        g_assert_cmphex(enabled_segments(qts), ==, 0);
+    }
+    quit_all(qts, &f);
+}
+
+/* Two segments on at once: the device fitted last answers a shared address. */
+static void test_peers_multi_segment(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+
+    select_segment(qts, 0x38);
+    g_assert_cmphex(enabled_segments(qts), ==, (1u << 2) | (1u << 3));
+    /* 0x42 is on segment 2 (inputs 0xff) and on segment 3 (no inputs). */
+    g_assert_true(byte_write(qts, 0x42, 0x00));
+    g_assert_true(byte_read(qts, 0x43, &v));
+    g_assert_cmphex(v, ==, 0x00);
+    /* 0x4a is on segment 3 only and still answers. */
+    g_assert_true(answers(qts, 0x4a));
+    quit_all(qts, &f);
+}
+
+/* A system reset returns the peers to power-up: select off, latches 0xff. */
+static void test_peers_reset(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+
+    select_segment(qts, 0xb8);
+    g_assert_true(byte_write(qts, 0x42, 0x00));
+    g_assert_true(byte_read(qts, 0x43, &v));
+    g_assert_cmphex(v, ==, 0x00);
+    g_assert_cmphex(enabled_segments(qts), !=, 0);
+
+    /* The guest restarts and finishes again once it has run its setup. */
+    qtest_writel(qts, DONE, 0);
+    qtest_system_reset(qts);
+    wait_for(qts, DONE, 1);
+
+    g_assert_true(byte_read(qts, SEL_WIRE | 1, &v));
+    g_assert_cmphex(v, ==, 0xff);
+    g_assert_cmphex(enabled_segments(qts), ==, 0);
+    select_segment(qts, 0xb8);
+    g_assert_true(byte_read(qts, 0x43, &v));
+    g_assert_cmphex(v, ==, 0xff);
+    quit_all(qts, &f);
+}
+
+/* Each expander: latch from 0xff, a write read back with its inputs set. */
+static void test_peers_expanders(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+    size_t i;
+
+    for (i = 0; i < ARRAY_SIZE(peer_expanders); i++) {
+        uint8_t wire = peer_expanders[i].wire;
+        uint8_t mask = peer_expanders[i].mask;
+
+        g_test_message("%s", peer_expanders[i].name);
+        if (peer_expanders[i].sel) {
+            select_segment(qts, peer_expanders[i].sel);
+        }
+        g_assert_true(byte_read(qts, wire | 1, &v));
+        g_assert_cmphex(v, ==, 0xff);
+        g_assert_true(byte_write(qts, wire, 0x00));
+        g_assert_true(byte_read(qts, wire | 1, &v));
+        g_assert_cmphex(v, ==, mask);
+        g_assert_true(byte_write(qts, wire, 0xa5 | mask));
+        g_assert_true(byte_read(qts, wire | 1, &v));
+        g_assert_cmphex(v, ==, 0xa5 | mask);
+        g_assert_true(byte_write(qts, wire, 0x5a));
+        g_assert_true(byte_read(qts, wire | 1, &v));
+        g_assert_cmphex(v, ==, 0x5a | mask);
+    }
+    quit_all(qts, &f);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -1753,6 +2077,17 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/identity-ibrick", test_identity_ibrick);
     qtest_add_func("sgi-l1-board/identity-none", test_identity_none);
     qtest_add_func("sgi-l1-board/identity-write", test_identity_write);
+    qtest_add_func("sgi-l1-board/peers-default-unfitted",
+                   test_peers_default_unfitted);
+    qtest_add_func("sgi-l1-board/peers-need-cbrick", test_peers_need_cbrick);
+    qtest_add_func("sgi-l1-board/peers-bus-select", test_peers_bus_select);
+    qtest_add_func("sgi-l1-board/peers-select-decode",
+                   test_peers_select_decode);
+    qtest_add_func("sgi-l1-board/peers-multi-segment",
+                   test_peers_multi_segment);
+    qtest_add_func("sgi-l1-board/peers-reset", test_peers_reset);
+    qtest_add_func("sgi-l1-board/peers-expanders", test_peers_expanders);
+
 
     return g_test_run();
 }

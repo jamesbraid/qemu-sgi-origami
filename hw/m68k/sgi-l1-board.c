@@ -25,6 +25,7 @@
 #include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/m68k/mcf5206e.h"
+#include "hw/m68k/sgi-l1-board-peers.h"
 #include "hw/misc/sgi-l1-identity.h"
 #include "hw/nvram/eeprom_at24c.h"
 #include "net/util.h"
@@ -72,6 +73,8 @@ struct L1BoardMachine {
     char *mac;
 
     struct L1Board *board;
+    /* Fit the C-brick's polled devices; needs brick-type=cbrick. */
+    bool board_peers;
 };
 
 typedef struct L1Board {
@@ -278,6 +281,16 @@ static void l1_board_identity(L1BoardMachine *m, I2CBus *bus, Error **errp)
     }
 }
 
+static bool l1_board_get_board_peers(Object *obj, Error **errp)
+{
+    return L1_BOARD_MACHINE(obj)->board_peers;
+}
+
+static void l1_board_set_board_peers(Object *obj, bool value, Error **errp)
+{
+    L1_BOARD_MACHINE(obj)->board_peers = value;
+}
+
 static void l1_board_init(MachineState *machine)
 {
     L1BoardMachine *lm = L1_BOARD_MACHINE(machine);
@@ -309,6 +322,12 @@ static void l1_board_init(MachineState *machine)
     sysbus_realize_and_unref(SYS_BUS_DEVICE(sim_dev), &error_fatal);
     b->sim = MCF5206E_SIM(sim_dev);
     l1_board_identity(lm, mcf5206e_sim_mbus(b->sim), &error_fatal);
+    if (lm->board_peers) {
+        if (!lm->brick_type || strcmp(lm->brick_type, "cbrick")) {
+            error_setg(&error_fatal, "board-peers needs brick-type=cbrick");
+        }
+        sgi_l1_cbrick_peers_fit(mcf5206e_sim_mbus(b->sim));
+    }
 
     /* CS1: clock RAM. */
     {
@@ -405,6 +424,13 @@ static void l1_board_class_init(ObjectClass *oc, const void *data)
         "C-brick node board part number, as the behavioural L1 takes it");
     object_class_property_set_description(oc, "node-board-revision",
         "C-brick node board revision, as the behavioural L1 takes it");
+    object_class_property_add_bool(oc, "board-peers",
+                                   l1_board_get_board_peers,
+                                   l1_board_set_board_peers);
+    object_class_property_set_description(oc, "board-peers",
+        "Fit the C-brick's bus select, expanders and monitors on the "
+        "two-wire bus and the management USB controller's registers; "
+        "needs brick-type=cbrick");
     object_class_property_add_str(oc, "mac", l1_board_get_mac,
                                   l1_board_set_mac);
     object_class_property_set_description(oc, "mac",

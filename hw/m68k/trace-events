@@ -5,3 +5,7 @@ mcf5206e_mbus_start(bool repeated) "repeated %d"
 mcf5206e_mbus_byte(bool tx, uint8_t byte, bool nack) "tx %d byte 0x%02x nack %d"
 mcf5206e_mbus_stop(void) ""
 mcf5206e_mbus_lost(void) ""
+
+# sgi-l1-board-peers.c
+sgi_l1_expander_write(uint8_t wire, uint8_t segment, uint8_t value) "wire 0x%02x segment %u write 0x%02x"
+sgi_l1_expander_read(uint8_t wire, uint8_t segment, uint8_t value) "wire 0x%02x segment %u read 0x%02x"

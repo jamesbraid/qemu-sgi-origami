@@ -930,7 +930,12 @@ flash image and checks the global chip select, the chip-select windows, the
 interrupt controller, the timers, the watchdog and the four-channel UART.
 The same test reads the two-wire controller from the host against a stock
 AT24C EEPROM and an address nothing answers, and each identity part through the
-controller, checking the record layout and the names given.
+controller, checking the record layout and the names given. With
+``board-peers`` it checks, through the controller, that the select expander
+reads all ones at power-up and switches segments, that a segment 0 access
+leaves the select alone, that segments 4 to 13 hold nothing, and each
+expander's wire address, segment, reset value and input bits, from the
+firmware's table written out in the test.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.
