@@ -379,7 +379,10 @@ static int64_t mgras_vt_line_clocks(SGIMgrasState *s, uint16_t addr,
         (*budget)--;
         clocks += MGRAS_VT_DURATION(first);
         if (!(first & MGRAS_VT_SINGLE)) {
-            end = end && (s->vc3_sram[addr++ & mask] & MGRAS_VT_END);
+            /* Read the second halfword even when the line cannot end here. */
+            uint16_t second = s->vc3_sram[addr++ & mask];
+
+            end = end && (second & MGRAS_VT_END);
         }
         if (end) {
             return clocks;

@@ -280,6 +280,25 @@ static void test_retrace_short_frame_runs_stock_period(void)
                             retrace_vector);
 }
 
+/* A pair's second halfword is not an entry: 127 + 78 = 205 clocks a line, not 215. */
+static void test_retrace_period_pair_entry_then_end(void)
+{
+    const unsigned int retrace_vector = 54;
+    static const MgrasFrameTime t = { 4000 * (127 + 78), 53625000 };
+    static const uint16_t line[] = { 127 << 8, 10 << 8, 0x8080 | (78 << 8) };
+    static const uint16_t frame[] = { 0x0040, 4000, 0x0000, 0 };
+
+    mgras_reset();
+    mgras_dac_reg_write(qts, 0x0c, 2);
+    mgras_dac_reg_write(qts, 0x0f, 4);
+    mgras_dac_reg_write(qts, 0x09, 0x91);
+    mgras_vc3_sram_load(qts, 0x0040, line, ARRAY_SIZE(line));
+    mgras_vc3_sram_load(qts, 0x0060, frame, ARRAY_SIZE(frame));
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x00, 0x0060));
+    mgras_retrace_to_hub_on(qts, retrace_vector);
+    mgras_expect_retraces(qts, &t, 1, 3, retrace_vector);
+}
+
 /*
  * The general line as the IRIX 6.5.30 kernel wires it: the board initialization
  * routine enables 0x3008a200, and the attach routine puts the general vector in
@@ -721,6 +740,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/retrace-short-frame-runs-stock-period",
         test_retrace_short_frame_runs_stock_period, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/retrace-period-pair-entry-then-end",
+        test_retrace_period_pair_entry_then_end, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/irq-enable-set-and-clear-ports",
         test_irq_enable_set_and_clear_ports, true);
