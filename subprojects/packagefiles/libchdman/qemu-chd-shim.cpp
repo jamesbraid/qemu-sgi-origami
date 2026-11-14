@@ -144,6 +144,34 @@ private:
     std::uint64_t m_pos = 0;
 };
 
+/*
+ * Feeds chd_file_compressor from a CHD that is already open (the merged
+ * view of a base and its diff).
+ */
+class FlattenSource : public chd_file_compressor {
+public:
+    explicit FlattenSource(chd_file &src) : m_src(src) {}
+
+protected:
+    uint32_t read_data(void *dest, uint64_t offset, uint32_t length) override
+    {
+        uint64_t total = m_src.logical_bytes();
+        uint32_t n = offset >= total ? 0
+                     : (uint32_t)std::min<uint64_t>(length, total - offset);
+        if (n && m_src.read_bytes(offset, dest, n)) {
+            return 0;
+        }
+        /*
+         * MAME hands out whole hunks; the tail past the logical size is zeroes.
+         */
+        std::memset((uint8_t *)dest + n, 0, length - n);
+        return length;
+    }
+
+private:
+    chd_file &m_src;
+};
+
 /* Feeds chd_file_compressor from a raw file. */
 class RawSource : public chd_file_compressor {
 public:
@@ -329,6 +357,18 @@ int chd_shim_write_bytes(ChdShimFile *f, uint64_t offset, const void *buf,
     return guard([&] { return to_err(f->chd.write_bytes(offset, buf, len)); });
 }
 
+int chd_shim_sha1_of(const char *path, uint8_t sha1[20])
+{
+    return guard([&] {
+        chd_file c;
+        int err = to_err(c.open(path, false));
+        if (!err) {
+            std::memcpy(sha1, c.sha1().m_raw, 20);
+        }
+        return err;
+    });
+}
+
 int chd_shim_hunk_info(ChdShimFile *f, uint32_t hunk, uint32_t *compressor,
                        uint32_t *compbytes)
 {
@@ -375,6 +415,41 @@ int chd_shim_create_from_raw(const char *out, const char *raw,
         }
         std::fclose(f);
         return err;
+    });
+}
+
+int chd_shim_flatten(const char *base, const char *diff, const char *out,
+                     ChdShimProgress progress, int (*cancel)(void *opaque),
+                     void *opaque)
+{
+    return guard([&] {
+        chd_file parent;
+        chd_file child;
+        int err = to_err(parent.open(base, false));
+        if (!err) {
+            err = to_err(child.open(diff, false, &parent));
+        }
+        if (err) {
+            return err;
+        }
+
+        FlattenSource comp(child);
+        chd_codec_type codecs[4];
+        for (int i = 0; i < 4; i++) {
+            codecs[i] = parent.compression(i);
+        }
+        err = to_err(comp.create(out, parent.logical_bytes(),
+                                 parent.hunk_bytes(), parent.unit_bytes(),
+                                 codecs));
+        if (!err) {
+            err = to_err(comp.clone_all_metadata(parent));
+        }
+        if (err) {
+            return err;
+        }
+
+        return run_compressor(comp, parent.logical_bytes(), progress,
+                              cancel, opaque);
     });
 }
 

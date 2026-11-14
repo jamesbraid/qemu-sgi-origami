@@ -8,7 +8,7 @@
  *   chd-fixture info FILE.chd
  *
  * CODEC is lzma, zlib, huff, flac, zstd or none. info prints the version,
- * the hunk size, the codecs, and whether the file records a SHA-1.
+ * the hunk size, the codecs, and the SHA-1 the file records, or "none".
  */
 #include <inttypes.h>
 #include <stdio.h>
@@ -128,7 +128,15 @@ static int cmd_info(char **argv)
                    c & 0xff);
         }
     }
-    printf(" sha1 %s\n", memcmp(info.sha1, zero, 20) ? "recorded" : "none");
+    if (memcmp(info.sha1, zero, 20)) {
+        printf(" sha1 ");
+        for (int i = 0; i < 20; i++) {
+            printf("%02x", info.sha1[i]);
+        }
+        printf("\n");
+    } else {
+        printf(" sha1 none\n");
+    }
     chd_shim_close(chd);
     fclose(f);
     return 0;

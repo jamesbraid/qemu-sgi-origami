@@ -125,12 +125,22 @@ def write(target_fmt, path, *cmds):
     return qemu_io('-f', target_fmt, *args, path)
 
 
+def write_overlay(path, *cmds):
+    """Write to a CHD with overlay=on, which keeps the diff after exit."""
+    args = []
+    for cmd in cmds:
+        args += ['-c', cmd]
+    return qemu_io('--image-opts', *args,
+                   f'driver=chd,overlay=on,file.filename={path}')
+
+
 class ChdTestCase(iotests.QMPTestCase):
     def setUp(self):
         make_raw(raw_img)
 
     def tearDown(self):
-        remove(raw_img, chd_img, diff_img, expected_img)
+        remove(raw_img, chd_img, diff_img, diff_img + '.folding',
+               chd_img + '.synctmp.chd', expected_img)
 
 
 class TestRead(ChdTestCase):
@@ -210,21 +220,21 @@ class TestWrite(ChdTestCase):
     def test_compressed_writes_go_to_a_diff(self):
         fixture('create', chd_img, raw_img, 'lzma,zlib,huff,flac')
         base = digest(chd_img)
-        write('chd', chd_img, *self.WRITES[:2])
+        write_overlay(chd_img, *self.WRITES[:2])
         self.assertEqual(base, digest(chd_img))
         self.assertTrue(os.path.exists(diff_img))
         self.expect(*self.WRITES[:2])
         self.assertTrue(compare(expected_img))
 
         # a second session attaches the diff and adds to it
-        write('chd', chd_img, *self.WRITES[2:])
+        write_overlay(chd_img, *self.WRITES[2:])
         self.assertEqual(base, digest(chd_img))
         self.expect(*self.WRITES)
         self.assertTrue(compare(expected_img))
 
     def test_read_only_open_sees_the_diff(self):
         fixture('create', chd_img, raw_img, 'zlib')
-        write('chd', chd_img, *self.WRITES)
+        write_overlay(chd_img, *self.WRITES)
         self.expect(*self.WRITES)
         res = qemu_img('compare', '-f', 'raw', '-F', 'chd', expected_img,
                        chd_img, check=False)
@@ -236,7 +246,7 @@ class TestWrite(ChdTestCase):
     def test_info_with_a_diff_present(self):
         # qemu-img info opens without I/O, which a data-only child inherits
         fixture('create', chd_img, raw_img, 'lzma')
-        write('chd', chd_img, 'write -P 7 0 4096')
+        write_overlay(chd_img, 'write -P 7 0 4096')
         self.assertEqual(info()['virtual-size'], RAW_SIZE)
 
     def test_symlinked_image_keeps_its_diff_beside_the_target(self):
@@ -246,7 +256,7 @@ class TestWrite(ChdTestCase):
         try:
             fixture('create', real, raw_img, 'lzma')
             os.symlink(real, chd_img)
-            write('chd', chd_img, 'write -P 7 0 4096')
+            write_overlay(chd_img, 'write -P 7 0 4096')
             self.assertTrue(os.path.exists(real + '.diff.chd'))
             self.assertFalse(os.path.exists(diff_img))
         finally:
@@ -284,11 +294,134 @@ class TestWrite(ChdTestCase):
 
     def test_corrupt_hunk_is_an_io_error_in_a_diff_too(self):
         fixture('create', chd_img, raw_img, 'lzma')
-        write('chd', chd_img, 'write -P 0x42 0 512')
+        write_overlay(chd_img, 'write -P 0x42 0 512')
         corrupt_first_hunks(chd_img)
         res = qemu_io('-r', '-f', 'chd', '-c', f'read 0 {RAW_SIZE}', chd_img,
                       check=False)
         self.assertIn('Input/output error', res.stdout)
+
+
+class TestFold(ChdTestCase):
+    WRITES = ['write -P 0x5a 0 512', 'write -P 0xa5 1000 20000',
+              f'write -z {3 * HUNK} {HUNK}',
+              f'write -P 0x77 {RAW_SIZE - 512} 512']
+
+    def expect(self, *cmds):
+        shutil.copyfile(raw_img, expected_img)
+        write('raw', expected_img, *cmds)
+
+    def leftovers(self):
+        return [p for p in (diff_img, diff_img + '.folding',
+                            chd_img + '.synctmp.chd', diff_img + '.new')
+                if os.path.exists(p)]
+
+    def test_clean_exit_folds_the_diff_with_the_same_codecs(self):
+        for codecs in ['lzma', 'zlib', 'huff', 'flac', 'zstd',
+                       'lzma,zlib,huff,flac']:
+            with self.subTest(codecs=codecs):
+                fixture('create', chd_img, raw_img, codecs)
+                before = fixture('info', chd_img).split(' sha1 ')[0]
+                write('chd', chd_img, *self.WRITES)
+                self.assertEqual(self.leftovers(), [])
+                self.assertEqual(fixture('info', chd_img).split(' sha1 ')[0],
+                                 before)
+                self.expect(*self.WRITES)
+                self.assertTrue(compare(expected_img))
+                self.assertNotIn('sha1 none', fixture('info', chd_img))
+
+    def test_overlay_keeps_the_diff(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        base = digest(chd_img)
+        write_overlay(chd_img, 'write -P 0x11 0 4096')
+        self.assertEqual(base, digest(chd_img))
+        self.assertEqual(self.leftovers(), [diff_img])
+        # another session adds to it, and still does not fold
+        write_overlay(chd_img, 'write -P 0x22 4096 4096')
+        self.assertEqual(base, digest(chd_img))
+        self.expect('write -P 0x11 0 4096', 'write -P 0x22 4096 4096')
+        self.assertTrue(compare(expected_img))
+
+    def test_session_that_wrote_nothing_leaves_no_diff(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        base = digest(chd_img)
+        qemu_io('-f', 'chd', '-c', 'read 0 4096', chd_img)
+        self.assertEqual(base, digest(chd_img))
+        self.assertEqual(self.leftovers(), [])
+
+    def test_read_only_session_does_not_fold(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        write_overlay(chd_img, 'write -P 0x11 0 4096')
+        base = digest(chd_img)
+        qemu_io('-r', '-f', 'chd', '-c', 'read 0 4096', chd_img)
+        self.assertEqual(base, digest(chd_img))
+        self.assertEqual(self.leftovers(), [diff_img])
+
+    def test_fold_that_died_after_the_rename(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        write_overlay(chd_img, 'write -P 0x11 0 4096')
+        # the marker holds the SHA-1 of the image the fold put in place; if
+        # the image already has it, the diff is already part of the image
+        sha1 = fixture('info', chd_img).split(' sha1 ')[1]
+        with open(diff_img + '.folding', 'wb') as f:
+            f.write(bytes.fromhex(sha1))
+        # a read-only open cannot finish the fold, but must not attach the
+        # diff: it no longer names this image as its parent
+        self.assertTrue(compare())
+        self.assertEqual(info()['virtual-size'], RAW_SIZE)
+        self.assertEqual(self.leftovers(), [diff_img, diff_img + '.folding'])
+        qemu_io('-f', 'chd', '-c', 'read 0 512', chd_img)
+        self.assertEqual(self.leftovers(), [])
+        self.assertTrue(compare())      # the guest's write is not there
+
+    def test_fold_that_died_before_the_rename(self):
+        fixture('create', chd_img, raw_img, 'lzma')
+        write_overlay(chd_img, 'write -P 0x11 0 4096')
+        with open(diff_img + '.folding', 'wb') as f:
+            f.write(bytes(20))
+        # the diff is still good: it is attached, and the open folds it
+        qemu_io('-f', 'chd', '-c', 'read 0 512', chd_img)
+        self.assertEqual(self.leftovers(), [])
+        self.expect('write -P 0x11 0 4096')
+        self.assertTrue(compare(expected_img))
+
+    def test_symlinked_image_is_folded_in_its_target(self):
+        real_dir = os.path.join(iotests.test_dir, 'chd-real')
+        real = os.path.join(real_dir, 'real.chd')
+        os.makedirs(real_dir, exist_ok=True)
+        try:
+            fixture('create', real, raw_img, 'lzma')
+            os.symlink(real, chd_img)
+            write('chd', chd_img, 'write -P 7 0 4096')
+            self.assertTrue(os.path.islink(chd_img))
+            self.assertEqual(os.listdir(real_dir), ['real.chd'])
+            self.expect('write -P 7 0 4096')
+            self.assertTrue(compare(expected_img))
+        finally:
+            shutil.rmtree(real_dir)
+
+    def test_one_image_closed_twice_is_folded_once(self):
+        self.make('lzma')
+        res = qemu_io('-f', 'chd', '-c', 'write -P 1 0 4096', '-c', 'close',
+                      '-c', f'open -o driver=chd,file.filename={chd_img}',
+                      '-c', 'write -P 2 4096 4096', '-c', 'close', chd_img)
+        self.assertNotIn('could not', res.stdout)
+        self.assertEqual(self.leftovers(), [])
+        self.expect('write -P 1 0 4096', 'write -P 2 4096 4096')
+        self.assertTrue(compare(expected_img))
+
+    def test_overlay_session_cancels_an_earlier_sessions_fold(self):
+        self.make('lzma')
+        base = digest(chd_img)
+        qemu_io('-f', 'chd', '-c', 'write -P 1 0 4096', '-c', 'close', '-c',
+                f'open -o driver=chd,overlay=on,file.filename={chd_img}',
+                '-c', 'write -P 2 4096 4096', '-c', 'close', chd_img)
+        self.assertEqual(base, digest(chd_img))
+        self.assertEqual(self.leftovers(), [diff_img])
+        self.expect('write -P 1 0 4096', 'write -P 2 4096 4096')
+        self.assertTrue(compare(expected_img))
+
+    def make(self, codecs):
+        fixture('create', chd_img, raw_img, codecs)
 
 
 if __name__ == '__main__':
