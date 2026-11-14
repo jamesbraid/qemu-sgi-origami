@@ -1511,7 +1511,8 @@ first start address, and transfers no payload bytes, an *approximation*.
 A single-field path, which no register tells the model apart, completes a
 slot per two fields too, so it runs at half the rate the driver expects,
 an *approximation*. Output frames are discarded and input buffers keep their
-previous content. What a slot transfer reads and writes would be settled
+previous content, unless a loopback cable is fitted
+(:ref:`sgi-xt-digvid-loopback`). What a slot transfer reads and writes would be settled
 by decoding the raster registers against the manual's packing tables
 (:src:`007-4317-001 5`, :src:`007-4317-001 6`). The field period is taken
 from the timing record the virtual VBOB last received
@@ -2372,10 +2373,57 @@ The virtual endpoint's behaviour, an *approximation* throughout:
   output pipe runs from the internal timing, an output path with an
   external source stays unlocked, and the input pipe produces no field
   interrupts.
+- A loopback cable gives an input slot a signal from an output jack
+  (:ref:`sgi-xt-digvid-loopback`).
 
 The real VBOB's reply layouts beyond the bytes the library reads, its lock
 time and its notification rules are *unknown*. The VBOB's own firmware (not
 shipped) would settle them; the flashing protocol is not supported.
+
+.. _sgi-xt-digvid-loopback:
+
+Loopback cable
+--------------
+
+The shipped confidence script loops each of the VBOB's output jacks to the
+input jack with the same number with coax ("Ports and routing"), and its
+standard-definition loopback test fails with a signal-lost error on a
+board with no input signal. The cable is a fact about the physical world, so
+the model makes it a property of the box, off by default: ``x-vbob-loopback``
+takes ``output:input`` pairs joined by ``+`` (a comma would end
+the ``-device`` option), with the outputs ``hd-out1``,
+``hd-out2``, ``sd-out1`` and ``sd-out2`` and the inputs ``hd-in1``, ``hd-in2``,
+``sd-in1`` and ``sd-in2`` (input-signal slots 0 to 3, "Replies and status").
+An input takes one cable; an output may feed several. The whole mechanism is
+an *approximation*: nothing states what the box does with a cable, and the
+rest of this section is the model's choice.
+
+- Timing. A cabled input slot has a signal when the cable's output side (HD
+  or SD) has a timing, from the latest timing record or the
+  ``x-vbob-output-timing`` override, and the slot then reports that output
+  timing code. Without a timing it reports none. A cable replaces the
+  ``x-vbob-present`` and ``x-vbob-input-timings`` values of its slot, as a
+  jack holds one cable. The same slot value feeds the sync-state and
+  input-signal replies, the ``0xa7`` notification and genlock, so an output
+  whose reference source is the jack it is cabled to reports locked.
+- Frames. The input pipe's field interrupts, slot completion, board timestamp
+  and parity are those of any input with a signal, at the output timing's
+  field rate ("The data transfer"). When an output slot completes and the
+  output side is cabled, the model reads that slot's bytes, from its first
+  start address to the end of its mapped buffer (the driver invalidates the
+  page after a buffer, "Map RAM"), and keeps them as the cable's frame. When
+  an input slot completes and a frame is held, the model writes it from that
+  slot's first start address, for as many bytes as both buffers map, and
+  drops it. The frame is delivered once; with none held the slot completes
+  and its buffer keeps its content.
+- What is not modelled. The copy is raw: the packers, unpackers and colour
+  converters are taken as the identity, so a frame comes back only as
+  faithfully as the two paths' packings match. The extent is the mapped run,
+  a page multiple, not the raster's size. Routing messages and the HD
+  graphics inputs are not consulted: any cable carries the output pipe, and
+  the cable's side is the side of the latest timing record or the override.
+  The cables are migrated with the rest of the box's state; the held frame
+  is not, so a migration may lose one frame.
 
 Ports and routing
 -----------------
@@ -2610,7 +2658,8 @@ merely approximate.
   all behind the FPGA images, and no shipped software states them. The
   model completes DMA slots without payload, so a guest that captures
   video gets unchanged buffers, and one that plays back loses the
-  frames.
+  frames. The one exception is a loopback cable, which copies the output
+  bytes raw (:ref:`sgi-xt-digvid-loopback`).
 - **The VBOB side of the link.** The messages the module sends are
   covered, but the VBOB's replies beyond the bytes the module reads, its
   lock behaviour and the meaning of the port codes are in the VBOB's
@@ -2637,6 +2686,9 @@ frames and status flags a change calls for:
   six input-signal slots, slot 0 (the HD input) in the low byte; 1 for none.
 - ``x-vbob-present``: bit ``n`` says a signal is present in slot ``n``.
   Slots 0 and 2 are the HD and SD inputs of the input pipe.
+- ``x-vbob-loopback``: coax cables from output jacks to input jacks,
+  ``sd-out1:sd-in1`` and so on; empty by default
+  (:ref:`sgi-xt-digvid-loopback`).
 
 ``x-test-gif-loaded`` is host-only: it reports the GIF configured without
 the 1.4 million clock pairs of its load, so tests of the register file do
