@@ -50,6 +50,8 @@
 /* ESSI. */
 #define CRA_WL_SHIFT        19
 #define CRA_DC_SHIFT        12
+#define CRA_PSR             (1u << 11)
+#define CRA_PM_MASK         0xff
 #define CRB_REIE            (1u << 23)
 #define CRB_TEIE            (1u << 22)
 #define CRB_RIE             (1u << 19)
@@ -59,6 +61,7 @@
 #define CRB_TE1             (1u << 15)
 #define CRB_TE2             (1u << 14)
 #define CRB_MOD             (1u << 13)
+#define CRB_SCKD            (1u << 5)
 #define SSISR_RDF           (1u << 7)
 #define SSISR_TDE           (1u << 6)
 #define SSISR_ROE           (1u << 5)
@@ -89,6 +92,7 @@
 #define DSP_SLICE_NS        (100 * 1000)
 #define DSP_MAX_CATCHUP_NS  (2 * 1000 * 1000)
 #define DSP_MAX_FRAMES_PER_SLICE 64
+#define DSP_MAX_SLOTS_PER_SLICE 20000
 
 /* A per-slice, per-slot or per-word condition would flood the log. */
 #define LOG_UNIMP_ONCE(...) \
@@ -288,12 +292,12 @@ static uint32_t essi_te(const SonicDspEssi *e)
 
 /* Where a word an ESSI shifts out goes, and where its input comes from. */
 static void essi_link_tx(SonicHDSPDSPState *s, unsigned essi, uint32_t word,
-                         unsigned wl)
+                         unsigned wl, int slot)
 {
     SonicHDSPState *h = s->hub;
 
     if (s->index == 2 && essi == 0 && h->box) {
-        sonic_ada8824_tx(h->box, word, wl);
+        sonic_ada8824_tx(h->box, word, wl, slot);
     } else if (essi == 1 && h->essi1_chain &&
                s->index + 1 < SONIC_HDSP_NUM_DSP) {
         SonicDspEssi *peer = &h->dsp[s->index + 1]->essi[1];
@@ -361,7 +365,8 @@ static void essi_slot(SonicHDSPDSPState *s, unsigned n, unsigned slot)
                 LOG_UNIMP_ONCE("sgi-sonic-hdsp: ESSI transmitters 1 and 2 "
                                "are not modelled\n");
             }
-            essi_link_tx(s, n, (e->tx[0] >> (24 - wl)) & ((1u << wl) - 1), wl);
+            essi_link_tx(s, n, (e->tx[0] >> (24 - wl)) & ((1u << wl) - 1), wl,
+                         network ? (int)slot : -1);
             e->tx_written = 0;
             e->ssisr |= SSISR_TDE;
         }
@@ -389,18 +394,91 @@ static void essi_frame(SonicHDSPDSPState *s)
 {
     for (unsigned n = 0; n < SONIC_DSP_NESSI; n++) {
         SonicDspEssi *e = &s->essi[n];
-        unsigned slots = 1;
 
         if (!essi_te(e) && !(e->crb & CRB_RE)) {
             continue;
         }
         if (e->crb & CRB_MOD) {
-            slots = ((e->cra >> CRA_DC_SHIFT) & 0x1f) + 1;
+            continue;       /* network mode runs slot by slot, essi_slot_due */
         }
-        for (unsigned slot = 0; slot < slots; slot++) {
-            essi_slot(s, n, slot);
+        essi_slot(s, n, 0);
+    }
+}
+
+/* Network mode: DC+1 slots a frame, TFS/RFS in slot 0 (UM 7.3). */
+static bool essi_net(const SonicDspEssi *e)
+{
+    return (e->crb & CRB_MOD) && (essi_te(e) || (e->crb & CRB_RE));
+}
+
+static int64_t essi_slot_ns(const SonicHDSPState *h, const SonicDspEssi *e)
+{
+    unsigned slots = ((e->cra >> CRA_DC_SHIFT) & 0x1f) + 1;
+    int64_t ns;
+
+    if (e->crb & CRB_SCKD) {
+        unsigned div = 2 * ((e->cra & CRA_PM_MASK) + 1) *
+                       ((e->cra & CRA_PSR) ? 1 : 8);
+
+        ns = muldiv64((uint64_t)essi_wl(e) * div, NANOSECONDS_PER_SECOND,
+                      h->dsp_clock);
+    } else {
+        ns = muldiv64(1, NANOSECONDS_PER_SECOND,
+                      (uint64_t)h->sample_rate * slots);
+    }
+    return MAX(ns, 1);
+}
+
+/* The earliest start of a network port's next slot (arming new ones at @t). */
+static int64_t essi_next_slot(SonicHDSPState *h, int64_t t)
+{
+    int64_t next = INT64_MAX;
+
+    for (unsigned n = 0; n < SONIC_HDSP_NUM_DSP; n++) {
+        SonicHDSPDSPState *s = h->dsp[n];
+
+        for (unsigned k = 0; s && k < SONIC_DSP_NESSI; k++) {
+            SonicDspEssi *e = &s->essi[k];
+
+            if (s->in_reset || s->boot != SONIC_DSP_BOOT_RUN ||
+                !essi_net(e)) {
+                e->slot_armed = 0;
+                continue;
+            }
+            if (!e->slot_armed) {
+                e->slot_armed = 1;
+                e->slot_idx = 0;
+                e->slot_next = t + essi_slot_ns(h, e);
+            }
+            next = MIN(next, e->slot_next);
         }
     }
+    return next;
+}
+
+/* Start every network slot due by @t; returns how many. */
+static unsigned essi_slots_fire(SonicHDSPState *h, int64_t t)
+{
+    unsigned fired = 0;
+
+    for (unsigned n = 0; n < SONIC_HDSP_NUM_DSP; n++) {
+        SonicHDSPDSPState *s = h->dsp[n];
+
+        for (unsigned k = 0; s && k < SONIC_DSP_NESSI; k++) {
+            SonicDspEssi *e = &s->essi[k];
+
+            while (e->slot_armed && e->slot_next <= t && essi_net(e)) {
+                unsigned slots = ((e->cra >> CRA_DC_SHIFT) & 0x1f) + 1;
+                unsigned idx = e->slot_idx % slots;
+
+                e->slot_idx = (idx + 1) % slots;
+                e->slot_next += essi_slot_ns(h, e);
+                essi_slot(s, k, idx);
+                fired++;
+            }
+        }
+    }
+    return fired;
 }
 
 /* Port C data (UM p. 7-33); ESSI0's PC1 reads high, its driver is unknown. */
@@ -1450,6 +1528,10 @@ static int dsp_post_load(void *opaque, int version_id)
         }
     }
     s->dma_busy = 0;
+    /* Network-mode slot timing is runtime state: start the ports over. */
+    for (unsigned n = 0; n < SONIC_DSP_NESSI; n++) {
+        s->essi[n].slot_armed = 0;
+    }
     /* The board's own load ran first and saw this DSP still in reset. */
     if (!s->in_reset && s->hub && s->hub->dsp_timer &&
         !timer_pending(s->hub->dsp_timer)) {
@@ -1669,17 +1751,29 @@ static void dsp_advance(SonicHDSPState *h, int64_t now)
 {
     int64_t t = MAX(h->dsp_last_ns, now - DSP_MAX_CATCHUP_NS);
     int64_t next_frame;
-    unsigned ticks = 0;
+    unsigned ticks = 0, slots = 0;
 
     while (t < now) {
-        int64_t t1;
+        int64_t t1, slot_t;
 
         next_frame = frame_time(h, h->frame_count + 1);
-        t1 = MIN(now, MAX(next_frame, t));
+        slot_t = essi_next_slot(h, t);
+        t1 = MIN(MIN(now, MAX(next_frame, t)), MAX(slot_t, t));
         if (t1 > t) {
             dsp_run_cores(h, t1 - t);
         }
         t = t1;
+        slots += essi_slots_fire(h, t);
+        if (slots >= DSP_MAX_SLOTS_PER_SLICE) {
+            /* A stall: start the ports over rather than replay the slots. */
+            for (unsigned n = 0; n < SONIC_HDSP_NUM_DSP; n++) {
+                for (unsigned k = 0; h->dsp[n] && k < SONIC_DSP_NESSI; k++) {
+                    h->dsp[n]->essi[k].slot_armed = 0;
+                }
+            }
+            slots = 0;
+            t = now;
+        }
         if (t >= next_frame) {
             h->frame_count++;
             dsp_frame_tick(h);
