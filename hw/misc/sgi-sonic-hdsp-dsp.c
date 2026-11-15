@@ -1144,6 +1144,30 @@ static const DSP56300Ops dsp_ops = {
 /* The host port on the secondary bus                                 */
 /* ------------------------------------------------------------------ */
 
+static void dsp_catch_up_to(SonicHDSPState *h);
+
+/*
+ * Run the cores up to now before a host access, so a bounded poll sees the
+ * DSP.
+ */
+/*
+ * A host-port access crosses the secondary bus: charge the i960 ~10 PCI
+ * clocks.
+ */
+#define DSP_HOSTPORT_ACCESS_NS  300
+
+static void dsp_catch_up(SonicHDSPDSPState *s)
+{
+    SonicHDSPState *h = s->hub;
+
+    if (h->iop_in_slice) {
+        h->cpu.insn_cycles += MAX(1, muldiv64(DSP_HOSTPORT_ACCESS_NS,
+                                              h->iop_clock,
+                                              NANOSECONDS_PER_SECOND));
+    }
+    dsp_catch_up_to(h);
+}
+
 static uint64_t dsp_bar_read(void *opaque, hwaddr off, unsigned size)
 {
     SonicHDSPDSPState *s = opaque;
@@ -1152,6 +1176,7 @@ static uint64_t dsp_bar_read(void *opaque, hwaddr off, unsigned size)
     if (s->in_reset) {
         return UINT32_MAX >> (32 - 8 * size);
     }
+    dsp_catch_up(s);
     switch (off & ~3) {
     case 0x10:
         v = s->hctr;
@@ -1190,6 +1215,7 @@ static void dsp_bar_write(void *opaque, hwaddr off, uint64_t val,
     if (s->in_reset) {
         return;
     }
+    dsp_catch_up(s);
     switch (off & ~3) {
     case 0x10:
         s->hctr = val;
@@ -1577,10 +1603,9 @@ static bool dsp_any_out_of_reset(SonicHDSPState *h)
     return false;
 }
 
-static void dsp_slice(void *opaque)
+/* Run the DSPs up to @now, which may be ahead of the virtual clock. */
+static void dsp_advance(SonicHDSPState *h, int64_t now)
 {
-    SonicHDSPState *h = opaque;
-    int64_t now = now_ns();
     int64_t t = MAX(h->dsp_last_ns, now - DSP_MAX_CATCHUP_NS);
     int64_t next_frame;
     unsigned ticks = 0;
@@ -1606,9 +1631,24 @@ static void dsp_slice(void *opaque)
             }
         }
     }
-    h->dsp_last_ns = now;
+    h->dsp_last_ns = MAX(h->dsp_last_ns, now);
+}
+
+static void dsp_slice(void *opaque)
+{
+    SonicHDSPState *h = opaque;
+    int64_t now = now_ns();
+
+    dsp_advance(h, now);
     if (dsp_any_out_of_reset(h)) {
         timer_mod(h->dsp_timer, now + DSP_SLICE_NS);
+    }
+}
+
+static void dsp_catch_up_to(SonicHDSPState *h)
+{
+    if (h->dsp_timer && timer_pending(h->dsp_timer)) {
+        dsp_advance(h, sonic_hdsp_local_ns(h));
     }
 }
 

@@ -1546,6 +1546,18 @@ own structure, not a measured fact.
      - *established* for the bits, *software expectation* for the waits
      - :src:`nxp-dsp56301um-4 p. 6-57`,
        :src:`sonic-hdsp-module-1.0` (the three wait routines).
+   * - The i960 runs its slices at one instant of the virtual clock, so its
+       own polling of a DSP (the module's block writer polls HTRQ with a
+       bounded count) would spend a whole slice with the DSPs frozen and
+       time out. The DSPs are brought up to the i960's local time, the
+       slice's start plus the cycles it has used, before every access to
+       their host ports, and each access costs the i960 300 ns, about ten
+       clocks of the 33 MHz secondary bus, so the DSP's few instructions to
+       answer a command have run by the next read of its status. The 300 ns
+       is a round figure, not a measurement.
+     - *approximation*
+     - Not a hardware fact: the cure for the model's slice time. A bus
+       measurement of a host-port read would settle the cost.
    * - HCTR bits 9:8 are HTF, the transmit data transfer format, and bits
        12:11 are HRF, the receive format. The module writes ``0x900`` after
        a reset, which is HTF = 1 and HRF = 1: 24-bit words in both
@@ -2618,6 +2630,7 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - the 256K words of external memory at ``0x400000`` read back through Y
   what X wrote and nothing is backed past them, and the 2K words at
   ``0xfff000`` are one RAM that DSP 1 reads back from what DSP 0 wrote;
+- HTRQ reads 1 once a fast DSP has taken a word;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

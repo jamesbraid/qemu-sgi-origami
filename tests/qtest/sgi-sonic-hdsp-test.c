@@ -1954,6 +1954,39 @@ static void test_dsp_ext_sram_xy(void)
     card_quit(&c);
 }
 
+/*
+ * A host that polls HTRQ must see the DSP make progress: the DSP runs for
+ * the time the host spent, not only when its slice timer fires.  Six words
+ * fill the FIFO; a fast DSP has taken some by the time the host reads
+ * HSTR a moment later.
+ */
+static void test_dsp_host_poll_sees_drain(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    unsigned hs;
+    const uint32_t prog[] = {
+        /* 0x100 */ JCLR_PP(2, X_DSR), 0x100,
+        /* 0x102 */ MOVEP_RD(REG_A1, X_DRXR),
+        /* 0x103 */ JMP(0x100),
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
+    qtest_clock_step(c.qts, 500 * 1000);
+    for (unsigned i = 0; i < 6; i++) {
+        px_hp_write(p, 0, HP_DATA, 0x100001 + i);
+    }
+    px_hp_read(p, 0, HP_HSTR);
+    px_hp_read(p, 0, HP_HSTR);
+    hs = px_hp_read(p, 0, HP_HSTR);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[hs] & HSTR_HTRQ, ==, HSTR_HTRQ);
+    g_free(p);
+    card_quit(&c);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2006,6 +2039,8 @@ int main(int argc, char **argv)
                    test_dsp_boot_zero_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/host-poll-sees-drain",
+                   test_dsp_host_poll_sees_drain);
     qtest_add_func("/sgi-sonic-hdsp/sec-config-subword",
                    test_sec_config_subword);
     qtest_add_func("/sgi-sonic-hdsp/system-reset-dsp", test_system_reset_dsp);

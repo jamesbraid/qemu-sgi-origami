@@ -1649,7 +1649,11 @@ static void iop_slice(void *opaque)
         int64_t cycles = muldiv64(MAX(elapsed, SLICE_NS), h->iop_clock,
                                   NANOSECONDS_PER_SECOND);
 
+        h->iop_slice_ns = now;
+        h->iop_slice_cycles = h->cpu.cycles;
+        h->iop_in_slice = true;
         i960_run(&h->cpu, cycles);
+        h->iop_in_slice = false;
     }
     next = (h->cpu.idle_hint || h->cpu.halted || h->cpu.failed) ?
            IDLE_SLICE_NS : SLICE_NS;
@@ -1658,6 +1662,19 @@ static void iop_slice(void *opaque)
         next = MAX(t, 1000);
     }
     timer_mod(h->iop_timer, now + next);
+}
+
+/* Time inside a slice is its start plus the cycles the i960 has used. */
+int64_t sonic_hdsp_local_ns(SonicHDSPState *h)
+{
+    int64_t now = now_ns();
+
+    if (h->iop_in_slice) {
+        now = h->iop_slice_ns + muldiv64(h->cpu.cycles - h->iop_slice_cycles,
+                                         NANOSECONDS_PER_SECOND,
+                                         h->iop_clock);
+    }
+    return now;
 }
 
 void sonic_hdsp_iop_kick(SonicHDSPState *h)
@@ -1858,6 +1875,7 @@ void sonic_hdsp_iop_post_load(SonicHDSPState *h)
     h->fl_busy_until_ns = now + h->mig_busy_left;
     atu_apply_limit(h);
     h->iop_last_ns = now_ns();
+    h->iop_in_slice = false;
     timer_mod(h->iop_timer, h->iop_last_ns + SLICE_NS);
     sonic_hdsp_update_irq(h);
 }

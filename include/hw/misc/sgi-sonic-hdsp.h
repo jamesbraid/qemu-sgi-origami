@@ -177,6 +177,10 @@ struct SonicHDSPState {
     I960State cpu;
     QEMUTimer *iop_timer;
     int64_t iop_last_ns;
+    /* While the i960 runs a slice: where it started, for local time. */
+    int64_t iop_slice_ns;
+    uint64_t iop_slice_cycles;
+    bool iop_in_slice;
     MemoryRegion dram;
     uint8_t *dram_ptr;
     uint8_t flash[SONIC_HDSP_FLASH_SIZE];
@@ -250,6 +254,7 @@ void sonic_hdsp_iop_realize(SonicHDSPState *h, Error **errp);
 void sonic_hdsp_iop_reset(SonicHDSPState *h);
 void sonic_hdsp_iop_unrealize(SonicHDSPState *h);
 void sonic_hdsp_iop_kick(SonicHDSPState *h);
+int64_t sonic_hdsp_local_ns(SonicHDSPState *h);
 bool sonic_hdsp_iop_state_valid(SonicHDSPState *h);
 void sonic_hdsp_iop_pre_save(SonicHDSPState *h);
 void sonic_hdsp_iop_post_load(SonicHDSPState *h);
