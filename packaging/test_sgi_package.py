@@ -119,6 +119,67 @@ bin/qemu-img:
                          ['libz.so.1: libfoo.so.1'])
 
 
+class Licences(unittest.TestCase):
+    def prefix(self, tmp, ports):
+        prefix = Path(tmp) / 'prefix'
+        for port, text in ports.items():
+            (prefix / 'share' / port).mkdir(parents=True)
+            (prefix / 'share' / port / 'copyright').write_text(text)
+        return prefix
+
+    def test_vcpkg_copyright_is_copied_unless_overridden(self):
+        ports = {'gmp': 'vcpkg gmp', 'nettle': 'vcpkg nettle',
+                 'libunistring': 'vcpkg libunistring', 'vcpkg-cmake': 'x'}
+        with tempfile.TemporaryDirectory() as tmp:
+            licences = Path(tmp) / 'licences'
+            licences.mkdir()
+            pkg.copy_library_licences(self.prefix(tmp, ports), licences)
+            self.assertEqual((licences / 'gmp.copyright').read_text(),
+                             'vcpkg gmp')
+            self.assertEqual((licences / 'nettle.copyright').read_bytes(),
+                             (pkg.HERE / 'licenses/nettle.copyright')
+                             .read_bytes())
+            self.assertFalse((licences / 'vcpkg-cmake.copyright').exists())
+
+    def test_override_needs_its_library(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            licences = Path(tmp) / 'licences'
+            licences.mkdir()
+            with self.assertRaises(pkg.PackageError):
+                pkg.copy_library_licences(self.prefix(tmp, {'gmp': 'x'}),
+                                          licences)
+
+    def test_runtime_licences_are_always_shipped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            mingw = Path(tmp) / 'mingw64'
+            runtime = {'libstdc++': ['COPYING3', 'COPYING.RUNTIME'],
+                       'libgcc': ['COPYING3', 'COPYING.RUNTIME'],
+                       'winpthreads': ['COPYING']}
+            for package, texts in runtime.items():
+                (mingw / 'share/licenses' / package).mkdir(parents=True)
+                for text in texts:
+                    (mingw / 'share/licenses' / package / text).write_text(
+                        package + text)
+            licences = Path(tmp) / 'licences'
+            licences.mkdir()
+            pkg.copy_runtime_licences(mingw, ['libgcc_s_seh-1.dll'], licences)
+            self.assertEqual(sorted(p.name for p in licences.iterdir()),
+                             ['libgcc.COPYING.RUNTIME', 'libgcc.COPYING3',
+                              'libstdc++.COPYING.RUNTIME',
+                              'libstdc++.COPYING3', 'winpthreads.COPYING'])
+
+    def test_unknown_runtime_dll_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(pkg.PackageError):
+                pkg.copy_runtime_licences(Path(tmp), ['libfoo-1.dll'],
+                                          Path(tmp))
+
+    def test_runtime_without_texts_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(pkg.PackageError):
+                pkg.copy_runtime_licences(Path(tmp), [], Path(tmp))
+
+
 class Archives(unittest.TestCase):
     def stage(self, tmp):
         stage = Path(tmp) / 'stage'

@@ -30,6 +30,35 @@ the tree's `VERSION` file and `<n>` counts releases on that line. The script
 refuses a tag whose version differs from the tree's. Without `--tag` it
 builds a development archive named after the commit.
 
+### Licences and sources
+
+Every library the archive contains is linked statically, under the licences
+in `licenses/`:
+
+- The vcpkg libraries, at the versions the manifest pins at the commit in
+  `vcpkg-commit`: GLib 2.90.0, pixman 0.46.4, SDL 2.32.10, GnuTLS 3.8.13, with
+  nettle 4.0, GMP 6.3.0, libtasn1 4.19.0, libidn2 2.3.7 and libunistring 1.2
+  under it, and the smaller ones they pull in (zlib, libffi, PCRE2, libpng,
+  gettext). Each library's copyright file is `licenses/<library>.copyright`.
+  Where vcpkg's file leaves out a licence the library is offered under,
+  `packaging/licenses/` holds the replacement (nettle and libunistring).
+- Linux: libstdc++, which the CHD library's C++ links with
+  `-static-libstdc++`. Its texts are `licenses/libstdc++.copyright` and
+  `licenses/libstdc++.GPL-3`.
+- Windows: the MinGW runtime the programs are linked with, libstdc++, libgcc
+  and winpthreads, whose texts are `licenses/libstdc++.*`, `licenses/libgcc.*`
+  and `licenses/winpthreads.COPYING`. A runtime DLL the programs import is
+  also copied into `bin/`.
+
+Sources for each are the upstream tarballs the vcpkg ports download, with
+URLs and SHA-512 checksums in each port's `portfile.cmake` (see
+`https://github.com/microsoft/vcpkg/tree/<vcpkg-commit>/ports/<port>`). GCC's
+source for libstdc++ and libgcc is at https://gcc.gnu.org/mirrors.html. The
+MSYS2 packages
+the Windows build installs are built from the recipes in
+https://github.com/msys2/MINGW-packages, and winpthreads comes from
+`mingw-w64-libraries/winpthreads` in https://github.com/mingw-w64/mingw-w64.
+
 ## Building
 
 GLib, pixman, SDL 2 and GnuTLS (with the nettle, GMP and other libraries

@@ -11,7 +11,8 @@ else, in a fixed layout with no wrapping directory:
                              builds a new machine's storage
     bin/*.dll                Windows only: the MinGW runtime DLLs
     share/qemu/keymaps/      keyboard maps
-    licenses/                QEMU's licences and one file per library built in
+    licenses/                QEMU's licences, one file per library built in,
+                             and on Windows the MinGW runtime's
 
 and is named sgi-origami-<version>-<platform>.tar.gz (Windows: .zip), where
 <version> is the release tag without its sgi-origami- prefix. Without --tag
@@ -346,16 +347,37 @@ def stage(name, build, prefix, stage_dir, strip):
         shutil.copy2(SOURCE / source, licences / target)
     for source, target in used_subproject_licences(build):
         shutil.copy2(source, licences / target)
-    # vcpkg installs a copyright file for each library it built.
-    # Its own build helpers, the vcpkg-* ports, ship nothing.
+    copy_library_licences(prefix, licences)
+
+    if name == 'linux':
+        for source, target in LINUX_RUNTIME_LICENCES:
+            shutil.copy2(source, licences / target)
+    if name == 'windows':
+        origins = copy_windows_dlls(bin_dir, [prefix / 'bin'])
+        copy_runtime_licences(toolchain_prefix(), origins, licences)
+
+
+def copy_library_licences(prefix, licences):
+    """Copy each library's licence texts from vcpkg's install into `licences`.
+
+    vcpkg installs a copyright file for each library it built. Its own build
+    helpers, the vcpkg-* ports, ship nothing. Where a port's file leaves out a
+    licence the library is offered under, packaging/licenses/ replaces it.
+    """
+    ports = set()
     for copyright_file in sorted(glob.glob(str(prefix / 'share/*/copyright'))):
         port = Path(copyright_file).parent.name
         if port.startswith('vcpkg-'):
             continue
-        shutil.copy2(copyright_file, licences / f'{port}.copyright')
-
-    if name == 'windows':
-        copy_windows_dlls(bin_dir, [prefix / 'bin'])
+        ports.add(port)
+        override = HERE / 'licenses' / f'{port}.copyright'
+        source = override if override.exists() else Path(copyright_file)
+        shutil.copy2(source, licences / f'{port}.copyright')
+    for override in sorted((HERE / 'licenses').glob('*.copyright')):
+        port = override.name[:-len('.copyright')]
+        if port not in ports:
+            raise PackageError(f'{override.name} replaces the licence of a '
+                               'library this build did not install')
 
 
 def strip_binary(name, path):
@@ -431,16 +453,34 @@ CRYPTO_DLLS = re.compile(r'^lib(gnutls|nettle|hogweed|gmp|tasn1|idn2|'
                          r'unistring|p11-kit|brotli\w*)-?[\d.]*\.dll$', re.I)
 
 
+# Linux links libstdc++ statically (configure's -static-libstdc++, for the CHD
+# library's C++). Debian's libstdc++-dev package in the build image carries its
+# licence, the GCC runtime exception included, and names GPL-3 by path.
+LINUX_RUNTIME_LICENCES = [
+    ('/usr/share/doc/libstdc++-12-dev/copyright', 'libstdc++.copyright'),
+    ('/usr/share/common-licenses/GPL-3', 'libstdc++.GPL-3'),
+]
+
+# The MinGW runtime libraries, as DLL names and the MSYS2 package each one
+# comes from.
+RUNTIME_PACKAGES = [
+    (re.compile(r'^libstdc\+\+-\d+\.dll$'), 'libstdc++'),
+    (re.compile(r'^libgcc_s_\w+-\d+\.dll$'), 'libgcc'),
+    (re.compile(r'^libwinpthread-\d+\.dll$'), 'winpthreads'),
+]
+
+
 def copy_windows_dlls(bin_dir, extra_dirs):
     """Copy the DLLs the executables need, and theirs in turn, into bin/.
 
     MinGW's thread library, and the C++ runtime when the toolchain's shared
     one is linked, come from the toolchain only as DLLs. They are found on
     PATH, which in an MSYS2 MINGW64 shell starts with the toolchain's bin
-    directory.
+    directory. Return {DLL name: directory it was copied from}.
     """
     search = [Path(d) for d in os.environ.get('PATH', '').split(os.pathsep)
               if d] + [Path(d) for d in extra_dirs]
+    origins = {}
     pending = sorted(bin_dir.glob('*.exe'))
     seen = set()
     while pending:
@@ -459,11 +499,46 @@ def copy_windows_dlls(bin_dir, extra_dirs):
                 candidate = directory / dll
                 if candidate.is_file():
                     shutil.copy2(candidate, bin_dir / dll)
+                    origins[dll] = directory
                     pending.append(bin_dir / dll)
                     break
             else:
                 raise PackageError(f'{path.name} needs {dll}, which is on '
                                    'neither PATH nor in the vcpkg tree')
+    return origins
+
+
+def toolchain_prefix():
+    """The MSYS2 prefix of the MinGW toolchain on PATH, such as .../mingw64."""
+    gcc = shutil.which('gcc')
+    if not gcc:
+        raise PackageError('gcc is not on PATH; build in an MSYS2 MINGW64 '
+                           'shell')
+    return Path(gcc).resolve().parents[1]
+
+
+def copy_runtime_licences(prefix, dlls, licences):
+    """Copy the licence texts of the MinGW runtime packages into `licences`.
+
+    The executables link the runtime statically (configure's --static), so
+    it is in them whether or not a DLL reaches bin/. Each package keeps its
+    texts in share/licenses/<package> under the toolchain's prefix. The check
+    is on DLL names only: a name that matches is accepted, and any other DLL
+    in bin/ is refused, so no DLL ships with an unknown licence.
+    """
+    for dll in dlls:
+        if not any(pattern.match(dll) for pattern, _ in RUNTIME_PACKAGES):
+            raise PackageError(f'{dll} is in bin/ but is no known MinGW '
+                               'runtime library, so its licence is unknown')
+    for _, package in RUNTIME_PACKAGES:
+        directory = prefix / 'share/licenses' / package
+        texts = (sorted(p for p in directory.iterdir() if p.is_file())
+                 if directory.is_dir() else [])
+        if not texts:
+            raise PackageError(f'no licence texts for {package} in '
+                               f'{directory}')
+        for text in texts:
+            shutil.copy2(text, licences / f'{package}.{text.name}')
 
 
 # ---------------------------------------------------------------- archive --
