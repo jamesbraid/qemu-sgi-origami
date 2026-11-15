@@ -14,6 +14,7 @@
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "memtx.h"
+#include "sgi-migrate.h"
 
 #define BOARD       (0x10000000ULL + (10ULL << 24))
 #define RAM         0x20000000ULL
@@ -34,11 +35,19 @@
 #define XG_CONTROL      0x24
 
 #define RING0_HOST      (RAM + 0x100000)
+#define RING1_HOST      (RAM + 0x104000)
+#define IN_HOST         (RAM + 0x600000)
+#define OUT_HOST        (RAM + 0x800000)
+#define CTL_IN          GIF(0x3c)
+#define START_IN        GIF(0x44)
+#define RING_RESET_IN   GIF(0x64)
 #define SLOT0_HOST      (RAM + 0x108000)
 #define IRQ_SINK        (RAM + 0x110000)
 #define MAP_VALID_ENTRY(host)   (0x20000000u | (uint32_t)(((host) >> 14) << 2))
 #define F_VALID         0x1u
 #define F_TX            0x40000u
+#define F_INPUT_OFF     0x4u
+#define F_DONE(k)       (0x100u << (k))
 #define FIELD_NS        16683333    /* 525 timing, 1001/60000 s */
 
 enum { P8, P10, P10L, P10R, PACKINGS };
@@ -46,7 +55,7 @@ static const char *const packing_name[] = { "8", "10", "10in16l", "10in16r" };
 
 static QTestState *qts;
 static char *flash_path;
-static unsigned ring_idx;
+static unsigned ring_idx[2];
 
 static void wr(uint32_t off, uint32_t value)
 {
@@ -69,14 +78,14 @@ static uint32_t ram_l(uint64_t addr)
     return ldl_be_p(b);
 }
 
-static uint32_t ring_pop(void)
+static uint32_t ring_pop(unsigned pipe)
 {
-    uint64_t at = RING0_HOST + ring_idx * 0x80 + 4;
+    uint64_t at = (pipe ? RING1_HOST : RING0_HOST) + ring_idx[pipe] * 0x80 + 4;
     uint32_t flags = ram_l(at);
 
     if (flags & F_VALID) {
         ram_set_l(at, flags & ~F_VALID);
-        ring_idx = (ring_idx + 1) % 16;
+        ring_idx[pipe] = (ring_idx[pipe] + 1) % 16;
     }
     return flags;
 }
@@ -94,7 +103,7 @@ static void send_record(unsigned w, unsigned field_h)
     }
     wr(DOORBELL, 1);
     /* The VBOB acknowledges a set message in the output ring. */
-    g_assert_cmphex(ring_pop(), ==, F_VALID | F_TX);
+    g_assert_cmphex(ring_pop(0), ==, F_VALID | F_TX);
 }
 
 static void start(const char *dm2, const char *extra)
@@ -105,7 +114,7 @@ static void start(const char *dm2, const char *extra)
                       " -bios %s -S -display none -vga none %s "
                       "-device sgi-xt-digvid,slot=widget-10,id=dm2%s%s",
                       quoted, extra, *dm2 ? "," : "", dm2);
-    ring_idx = 0;
+    ring_idx[0] = ring_idx[1] = 0;
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     qtest_qmp_assert_success(qts,
         "{'execute':'qom-set','arguments':{'path':%s,"
@@ -116,6 +125,7 @@ static void start(const char *dm2, const char *extra)
     wr(XG_VECTORS, 0x41 | (0x42u << 9) | (0x43u << 18) | 0x20100);
     wr(XG_CONTROL, 0x4200 | 10 | (8u << 22) | (1u << 17));
     wr(0x108000, MAP_VALID_ENTRY(RING0_HOST));
+    wr(0x109000, MAP_VALID_ENTRY(RING1_HOST));
     wr(MAP(0x1400), MAP_VALID_ENTRY(SLOT0_HOST));
 }
 
@@ -124,12 +134,12 @@ static void play(const uint8_t *mem, size_t len, unsigned fields)
 {
     qtest_memwrite(qts, SLOT0_HOST + 0x1000, mem, len);
     wr(RING_RESET_OUT, 0);
-    ring_idx = 0;
+    ring_idx[0] = 0;
     wr(START_OUT, 0x1000);
     wr(CTL_OUT, (1u << 1) | 0xea040 | 0x10000);
     for (unsigned i = 0; i < fields; i++) {
         qtest_clock_step(qts, FIELD_NS);
-        g_assert_cmphex(ring_pop() & 0x80, ==, 0x80);
+        g_assert_cmphex(ring_pop(0) & 0x80, ==, 0x80);
     }
 }
 
@@ -607,6 +617,425 @@ static void test_no_timing_no_frame(void)
     g_rmdir(dir);
 }
 
+/* ---- The file source ---- */
+
+enum { SD_W = 720, SD_H = 486, SD_PAGES = 43 };
+
+/* Map SD_PAGES pages from a slot's board address to a run of host pages. */
+static void map_run(uint32_t board, uint64_t host)
+{
+    for (unsigned i = 0; i < SD_PAGES; i++) {
+        wr(MAP((board >> 14) + i), MAP_VALID_ENTRY(host + i * 0x4000ULL));
+    }
+}
+
+/* Input slot 1 and output slot 1, both at offset 0, one SD frame each. */
+static void map_sd(void)
+{
+    map_run(0x1000000, IN_HOST);
+    map_run(0x5000000, OUT_HOST);
+}
+
+/* Arm input slot 1 (the first time, start and ring too) and run its frame. */
+static void capture(bool first)
+{
+    if (first) {
+        wr(RING_RESET_IN, 0);
+        ring_idx[1] = 0;
+        wr(START_IN, 0);
+    }
+    wr(CTL_IN, (1u << 1) | 0xa040 | 0x10000);
+    qtest_clock_step(qts, FIELD_NS);
+    qtest_clock_step(qts, FIELD_NS);
+}
+
+static uint8_t *guest_read(uint64_t host, size_t len)
+{
+    uint8_t *b = g_malloc(len);
+
+    qtest_memread(qts, host, b, len);
+    return b;
+}
+
+static uint64_t prop_get(const char *path, const char *prop)
+{
+    QDict *r = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                         "{'path':%s,'property':%s}}", path, prop);
+    uint64_t v = qdict_get_int(r, "return");
+
+    qobject_unref(r);
+    return v;
+}
+
+/* A Y4M file of n SD 8-bit frames, the first starting at seed. */
+static void write_clip(const char *path, unsigned n, unsigned seed)
+{
+    Frame *f0 = frame_new(SD_W, SD_H, 8, seed);
+    GString *file = y4m_header(f0);
+
+    for (unsigned i = 0; i < n; i++) {
+        Frame *f = frame_new(SD_W, SD_H, 8, seed + i);
+
+        y4m_frame(file, f);
+        frame_free(f);
+    }
+    g_assert_true(g_file_set_contents(path, file->str, file->len, NULL));
+    g_string_free(file, true);
+    frame_free(f0);
+}
+
+static void start_source(const char *path, const char *extra,
+                         const char *dm2_extra, const char *machine_extra)
+{
+    /* The timecode's ';' would end a shell command. */
+    g_autofree char *spec = g_strdup_printf(
+        "sgi-video-file-source,id=src,path=%s%s", path, extra);
+    g_autofree char *quoted = g_shell_quote(spec);
+    g_autofree char *dev = g_strdup_printf("-device %s", quoted);
+    g_autofree char *props = g_strdup_printf("in-source=src%s", dm2_extra);
+    g_autofree char *all = g_strdup_printf("%s %s", dev, machine_extra);
+
+    start(props, all);
+    map_sd();
+}
+
+/*
+ * A file's frames arrive in the armed input buffer, in order and byte for
+ * byte in the packing, and the VBOB's input slot shows the file's timing.
+ */
+static void test_source_pattern(void)
+{
+    enum { FRAMES = 3 };
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.y4m", NULL);
+
+    write_clip(path, FRAMES, 5);
+    start_source(path, "", "", "");
+    for (unsigned n = 0; n < FRAMES; n++) {
+        Frame *f = frame_new(SD_W, SD_H, 8, 5 + n);
+        g_autofree uint8_t *want = NULL, *got = NULL;
+        size_t len;
+
+        capture(n == 0);
+        want = frame_pack(f, P8, &len);
+        got = guest_read(IN_HOST, len);
+        g_assert_cmpmem(got, len, want, len);
+        g_assert_cmphex(ring_pop(1) & F_DONE(1), ==, 0);
+        g_assert_cmphex(ring_pop(1) & F_DONE(1), ==, F_DONE(1));
+        frame_free(f);
+    }
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, FRAMES);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "repeated"), ==, 0);
+    qtest_quit(qts);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/*
+ * In lockstep, a source into the input and the same buffers played out to a
+ * sink write the input file back: the output Y4M equals the input. (Lockstep
+ * follows -icount by default, which a qtest cannot combine with its clock.)
+ */
+static void test_source_to_sink_lockstep(void)
+{
+    enum { FRAMES = 12 };
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.y4m", NULL);
+    g_autofree char *out = g_build_filename(dir, "out.y4m", NULL);
+    g_autofree char *sink = g_strdup_printf(
+        "-device sgi-video-file-sink,id=rec,path=%s,lockstep=on", out);
+    g_autofree char *want = NULL, *got = NULL;
+
+    write_clip(path, FRAMES, 9);
+    start_source(path, ",lockstep=on", ",out-sink=rec", sink);
+    send_record(SD_W, SD_H / 2);
+    for (unsigned n = 0; n < FRAMES; n++) {
+        g_autofree uint8_t *buf = NULL;
+        size_t bytes = SD_W * SD_H * 2;
+
+        capture(n == 0);
+        buf = guest_read(IN_HOST, bytes);
+        qtest_memwrite(qts, OUT_HOST, buf, bytes);
+        wr(RING_RESET_OUT, 0);
+        ring_idx[0] = 0;
+        wr(START_OUT, 0);
+        wr(CTL_OUT, (1u << 1) | 0xea040 | 0x10000);
+        qtest_clock_step(qts, FIELD_NS);
+        qtest_clock_step(qts, FIELD_NS);
+    }
+    g_assert_cmpuint(sink_get("frames"), ==, FRAMES);
+    sink_wait(FRAMES);
+    g_assert_cmpuint(sink_get("dropped"), ==, 0);
+    got = file_sha(out);
+    want = file_sha(path);
+    g_assert_cmpstr(got, ==, want);
+    qtest_quit(qts);
+    g_unlink(path);
+    g_unlink(out);
+    g_rmdir(dir);
+}
+
+static void fifo_write(int fd, const void *buf, size_t len)
+{
+    g_assert_cmpint(write(fd, buf, len), ==, len);
+}
+
+static void fifo_frame(int fd, unsigned seed)
+{
+    Frame *f = frame_new(SD_W, SD_H, 8, seed);
+    GString *g = g_string_new(NULL);
+    gsize done = 0;
+
+    y4m_frame(g, f);
+    /* The pipe holds 64 KiB; a blocked write waits for the reader. */
+    while (done < g->len) {
+        ssize_t n = write(fd, g->str + done, g->len - done);
+
+        if (n > 0) {
+            done += n;
+        } else {
+            g_usleep(1000);
+        }
+    }
+    g_string_free(g, true);
+    frame_free(f);
+}
+
+static void wait_queued(unsigned n)
+{
+    for (int i = 0; i < 4000 &&
+         prop_get("/machine/peripheral/src", "queued") != n; i++) {
+        g_usleep(2000);
+    }
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "queued"), ==, n);
+}
+
+/*
+ * A source that cannot keep up repeats the last frame and counts it, and
+ * does not drop or skip: the next frame it gets is the next in the file.
+ */
+static void test_source_repeats_when_behind(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.fifo", NULL);
+    Frame *f0 = frame_new(SD_W, SD_H, 8, 1);
+    GString *h = y4m_header(f0);
+    g_autofree uint8_t *got = NULL, *want = NULL;
+    size_t len;
+    int fd;
+
+    g_assert_cmpint(mkfifo(path, 0600), ==, 0);
+    fd = open(path, O_RDWR | O_NONBLOCK);
+    g_assert_cmpint(fd, >=, 0);
+    fifo_write(fd, h->str, h->len);
+    start_source(path, "", "", "");
+    /* The reader drains what the pipe cannot hold, so these do not block. */
+    fifo_frame(fd, 1);
+    fifo_frame(fd, 2);
+    wait_queued(2);
+    /* Two frames queued, then nothing: 2 delivered, 3 repeated. */
+    for (unsigned n = 0; n < 5; n++) {
+        capture(n == 0);
+    }
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 2);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "repeated"), ==, 3);
+    {
+        Frame *f2 = frame_new(SD_W, SD_H, 8, 2);
+
+        want = frame_pack(f2, P8, &len);
+        frame_free(f2);
+    }
+    got = guest_read(IN_HOST, len);
+    g_assert_cmpmem(got, len, want, len);
+    /* A frame that arrives late is the next one, not a skip ahead. */
+    fifo_frame(fd, 3);
+    wait_queued(1);
+    capture(false);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 3);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "repeated"), ==, 3);
+    qtest_quit(qts);
+    close(fd);
+    g_string_free(h, true);
+    frame_free(f0);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/*
+ * Without loop the signal is lost after the last frame, as a tape that runs
+ * out; with loop the file starts again, and the timecode counts frames with
+ * drop-frame numbering across the minute.
+ */
+static void test_source_end_loop_timecode(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.y4m", NULL);
+    uint32_t seen = 0;
+
+    write_clip(path, 2, 20);
+    start_source(path, "", "", "");
+    for (unsigned n = 0; n < 4; n++) {
+        capture(n == 0);
+        for (int i = 0; i < 4; i++) {
+            seen |= ring_pop(1);
+        }
+    }
+    g_assert_cmphex(seen & F_INPUT_OFF, ==, F_INPUT_OFF);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 2);
+    qtest_quit(qts);
+
+    start_source(path, ",loop=on,timecode=00:00:59;28", "", "");
+    seen = 0;
+    for (unsigned n = 0; n < 5; n++) {
+        Frame *f = frame_new(SD_W, SD_H, 8, 20 + n % 2);
+        g_autofree uint8_t *want = NULL, *got = NULL;
+        size_t len;
+
+        capture(n == 0);
+        for (int i = 0; i < 4; i++) {
+            seen |= ring_pop(1);
+        }
+        want = frame_pack(f, P8, &len);
+        got = guest_read(IN_HOST, len);
+        g_assert_cmpmem(got, len, want, len);
+        frame_free(f);
+    }
+    g_assert_cmphex(seen & F_INPUT_OFF, ==, 0);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 5);
+    {
+        QDict *r = qtest_qmp(qts, "{'execute':'qom-get','arguments':"
+                             "{'path':'/machine/peripheral/src',"
+                             "'property':'timecode-now'}}");
+
+        /* 59;28, 59;29, then the minute drops frames 0 and 1. */
+        g_assert_cmpstr(qdict_get_str(r, "return"), ==, "00:01:00;04");
+        qobject_unref(r);
+    }
+    qtest_quit(qts);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/*
+ * A file that stops short or has a corrupt frame marker gives the frames
+ * before the damage, then the signal is lost: the board does not retry or
+ * wedge. (The model logs the damage; the test checks the behaviour.)
+ */
+static void test_source_damaged_file(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.y4m", NULL);
+    g_autofree char *whole = NULL;
+    gsize len, h, fs = 6 + SD_W * SD_H * 2;
+
+    write_clip(path, 3, 40);
+    g_assert_true(g_file_get_contents(path, &whole, &len, NULL));
+    h = len - 3 * fs;
+    for (unsigned mode = 0; mode < 2; mode++) {
+        uint32_t seen = 0;
+
+        if (mode == 0) {
+            /* Short: the third frame ends in the middle. */
+            g_assert_true(g_file_set_contents(path, whole, len - fs / 2,
+                                              NULL));
+        } else {
+            /* Corrupt: the second frame's marker. */
+            g_autofree char *bad = g_memdup2(whole, len);
+
+            bad[h + fs + 4] = 'X';
+            g_assert_true(g_file_set_contents(path, bad, len, NULL));
+        }
+        start_source(path, "", "", "");
+        for (unsigned n = 0; n < 5; n++) {
+            capture(n == 0);
+            for (int i = 0; i < 4; i++) {
+                seen |= ring_pop(1);
+            }
+        }
+        g_assert_cmphex(seen & F_INPUT_OFF, ==, F_INPUT_OFF);
+        g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==,
+                         mode == 0 ? 2 : 1);
+        qtest_quit(qts);
+    }
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/*
+ * In lockstep a source with no frame to give does not hang the board: it
+ * waits a bounded time, then repeats.
+ */
+static void test_source_lockstep_starved(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.fifo", NULL);
+    Frame *f0 = frame_new(SD_W, SD_H, 8, 1);
+    GString *h = y4m_header(f0);
+    int fd;
+
+    g_assert_cmpint(mkfifo(path, 0600), ==, 0);
+    fd = open(path, O_RDWR | O_NONBLOCK);
+    g_assert_cmpint(fd, >=, 0);
+    fifo_write(fd, h->str, h->len);
+    start_source(path, ",lockstep=on", "", "");
+    capture(true);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 0);
+    g_assert_cmphex(ring_pop(1) & F_DONE(1), ==, 0);
+    g_assert_cmphex(ring_pop(1) & F_DONE(1), ==, F_DONE(1));
+    qtest_quit(qts);
+    close(fd);
+    g_string_free(h, true);
+    frame_free(f0);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/* A restored run seeks the source back to the frame it had reached. */
+static void test_source_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("dm2-video-XXXXXX", NULL);
+    g_autofree char *path = g_build_filename(dir, "in.y4m", NULL);
+    g_autofree char *uri = g_strdup_printf("file:%s/migrate.bin", dir);
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    g_autofree char *dest = NULL;
+    g_autofree uint8_t *want = NULL, *got = NULL;
+    Frame *f = frame_new(SD_W, SD_H, 8, 33 + 3);
+    size_t len;
+    QTestState *from;
+
+    write_clip(path, 6, 33);
+    start_source(path, ",loop=on", "", "");
+    for (unsigned n = 0; n < 3; n++) {
+        capture(n == 0);
+    }
+    from = qts;
+    sgi_migrate_stopped(from, uri);
+    qtest_quit(from);
+    dest = g_strdup_printf(MEMTX_TEST_DEVICE "-M octane2 -m 256 -cpu "
+                           OCTANE2_CPU " -bios %s -S -display none -vga none "
+                           "-device sgi-video-file-source,id=src,path=%s,"
+                           "loop=on -device sgi-xt-digvid,slot=widget-10,"
+                           "id=dm2,in-source=src -incoming %s",
+                           quoted, path, uri);
+    qts = qtest_init(dest);
+    sgi_migrate_resume(qts);
+    g_assert_cmpuint(prop_get("/machine/peripheral/src", "frames"), ==, 3);
+    /* The next completed input slot is the fourth frame of the file. */
+    capture(false);
+    want = frame_pack(f, P8, &len);
+    got = guest_read(IN_HOST, len);
+    g_assert_cmpmem(got, len, want, len);
+    qtest_quit(qts);
+    frame_free(f);
+    g_unlink(path);
+    {
+        g_autofree char *mig = g_strdup_printf("%s/migrate.bin", dir);
+
+        g_unlink(mig);
+    }
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     const uint8_t erased[] = { 0xff, 0xff, 0xff, 0xff };
@@ -633,6 +1062,20 @@ int main(int argc, char **argv)
                    test_sink_lockstep_stuck);
     qtest_add_func("/octane2/xt-digvid-video/no-timing-no-frame",
                    test_no_timing_no_frame);
+    qtest_add_func("/octane2/xt-digvid-video/source-pattern",
+                   test_source_pattern);
+    qtest_add_func("/octane2/xt-digvid-video/source-to-sink-lockstep",
+                   test_source_to_sink_lockstep);
+    qtest_add_func("/octane2/xt-digvid-video/source-repeats-when-behind",
+                   test_source_repeats_when_behind);
+    qtest_add_func("/octane2/xt-digvid-video/source-end-loop-timecode",
+                   test_source_end_loop_timecode);
+    qtest_add_func("/octane2/xt-digvid-video/source-damaged-file",
+                   test_source_damaged_file);
+    qtest_add_func("/octane2/xt-digvid-video/source-lockstep-starved",
+                   test_source_lockstep_starved);
+    qtest_add_func("/octane2/xt-digvid-video/source-migration",
+                   test_source_migration);
     result = g_test_run();
     g_assert_cmpint(unlink(flash_path), ==, 0);
     g_free(flash_path);

@@ -1620,6 +1620,32 @@ the layout of Y4M's ``C422`` or ``C422p10`` by depth.
 The console's picture is not migrated: a restored machine shows nothing
 until its next frame, and a reset blanks the console and clears its size.
 
+The input pipe takes a frame only from an ``in-source`` (or a loopback
+cable's frame). The source's raster and rate stand in for what a VBOB
+would detect. The model maps a source's raster to the row of the module's
+timing table that carries it: 720 by 486 or 487 lines (both are accepted,
+the module's raster being 244 plus 243 lines), interlaced at 29.97 Hz;
+720 by 576 interlaced at 25 Hz; 1080 lines interlaced at 29.97, 30 or
+25 Hz, or progressive at 23.98, 24, 25, 29.97 or 30 Hz; or 720 lines
+progressive at 59.94 or 60 Hz. That a VBOB reports a file's raster this way
+is *unknown*, and so is what it reports for a signal the table does not
+name; the model gives such a source no signal. All of this is an
+*approximation*. The source's slot (HD or SD input) reports that row's
+timing code, so a guest that asked for another standard sees the library's
+mismatch.
+
+Each completed input slot receives the source's next frame, packed per
+``x-packing`` from the slot's first start address for as many lines as the
+mapped run holds, the mirror of the output rule. The input pipe's field
+period and its fields per frame follow the source's frame rate and field
+order, an *approximation* (the page's output rule takes them from the
+timing record). A source that is behind in realtime repeats its last
+frame and counts it (:doc:`../video-io`); with no frame at all yet the slot
+completes with its buffer untouched. A source that reaches the end of its
+file without looping, or fails to read, reports no signal, as an input
+change with the input-off flag, an *approximation* since what the board
+does when its signal ends mid-stream is *unknown*.
+
 .. _sgi-xt-digvid-ring:
 
 Status ring and interrupt acknowledgement
@@ -2699,7 +2725,8 @@ an *approximation*; the last column says what would settle it.
        frame is read from the first start address as rows of the
        ``x-packing`` property's packing (default 8-bit 4:2:2), woven, as
        many rows as the mapped run holds, and shown and written to the
-       sink; an input slot's buffer keeps its content
+       sink; an input slot's buffer takes a linked source's next frame in
+       the same packing, else keeps its content
      - ``x-packing``: no register shows the packing; the driver's
        raster block against a capture of a frame in memory; the second
        start address and the line order against a capture
@@ -2762,10 +2789,11 @@ merely approximate.
 - **The video data path.** The colour-space conversions, lookup
   tables, the packing a stream selects, the placement of a frame in its
   slot and the HDOC and VIF behaviour are all behind the FPGA images, and
-  no shipped software states them. The output pipe moves its payload under
-  the :ref:`sgi-xt-digvid-payload` choices; the input pipe moves none, so a
-  guest that captures video gets unchanged buffers (a loopback cable
-  copies an output frame, :ref:`sgi-xt-digvid-loopback`). The one exception is a loopback cable, which copies the output
+  no shipped software states them. Both pipes move their payload under
+  the :ref:`sgi-xt-digvid-payload` choices when an output sink or an input
+  source is linked; with no source the input pipe moves none, so a guest
+  that captures video gets unchanged buffers (a loopback cable copies an
+  output frame, :ref:`sgi-xt-digvid-loopback`). The one exception is a loopback cable, which copies the output
   bytes raw (:ref:`sgi-xt-digvid-loopback`).
 - **The VBOB side of the link.** The messages the module sends are
   covered, but the VBOB's replies beyond the bytes the module reads, its
@@ -2783,7 +2811,7 @@ ports; widget 13 holds the PCI module alone). The model is
 ``hw/misc/sgi-xt-digvid.c`` and its register-contract tests are
 ``tests/qtest/octane-xt-digvid-test.c``, each check citing the section
 above that it follows; the output payload, console and sink are tested in
-``tests/qtest/octane-xt-digvid-video-test.c`` and the packings in
+``tests/qtest/octane-xt-digvid-video-test.c`` (the source too) and the packings in
 ``tests/unit/test-sgi-video-port.c``. The virtual VBOB's world is three properties,
 settable on the command line and at run time, which send the unrequested
 frames and status flags a change calls for:
@@ -2807,7 +2835,11 @@ The output pipe's picture is a display and, optionally, a file:
   completed;
 - ``out-sink``: a link to an ``sgi-video-file-sink`` device (``-device``, no bus), which writes
   every frame as Y4M (:doc:`../video-io`);
-- ``x-packing``: the memory packing of the output frames
+- ``in-source``: a link to an ``sgi-video-file-source`` device, whose
+  frames the input pipe receives and whose raster and rate set the input
+  signal; it takes precedence over a cable and the two properties above for
+  the slot it feeds;
+- ``x-packing``: the memory packing of the frames of both pipes
   (:ref:`sgi-xt-digvid-payload`).
 
 ``x-test-gif-loaded`` is host-only: it reports the GIF configured without
@@ -2924,8 +2956,9 @@ The page states these as unsupported, each *unknown* or outside scope:
 - Execution of the FPGA images, the video formatters, the colour
   converters, the lookup tables and the LVDS link; the packers and
   unpackers are only the output packings of :ref:`sgi-xt-digvid-payload`.
-- Input payload, 4:4:4 and key (alpha) packings, the reversed component
-  orders, and board audio.
+- 4:4:4 and key (alpha) packings, the reversed component orders, board
+  audio, and the timecode a source carries (counted by the source, never
+  handed to the board).
 - The VBOB's firmware, its flashing protocol and its other front-panel
   inputs and outputs (genlock outputs, RS-422, general-purpose I/O).
 - The diagnostic's second colour converter register layout.

@@ -56,9 +56,29 @@ size_t sgi_video_packed_row_bytes(SGIVideoPacking p, unsigned width);
 void sgi_video_unpack_row(SGIVideoPacking p, const uint8_t *src,
                           SGIVideoFrame *f, unsigned y);
 
+/* A frame of another depth is shifted to the packing's. */
+void sgi_video_pack_row(SGIVideoPacking p, const SGIVideoFrame *f,
+                        unsigned y, uint8_t *dst);
+
 /* "YUV4MPEG2 ..." and its newline; the caller frees it. */
 char *sgi_y4m_header(const SGIVideoFormat *fmt);
+bool sgi_y4m_parse_header(const char *line, SGIVideoFormat *fmt, Error **errp);
 /* "FRAME\n" and the planes (8-bit bytes or 16-bit little endian). */
 size_t sgi_y4m_frame_put(const SGIVideoFrame *f, uint8_t *dst);
+/* A frame marker line is exactly "FRAME"; parameters are not supported. */
+bool sgi_y4m_parse_frame_line(const char *line, Error **errp);
+/* Planes from src, which holds sgi_video_frame_bytes(fmt) bytes. */
+void sgi_y4m_frame_get(SGIVideoFrame *f, const uint8_t *src);
+
+/*
+ * SMPTE timecode of frame n. The nominal rate is the frame rate rounded up
+ * (30 for 30000/1001); drop-frame numbering skips labels 0 and 1 of each
+ * minute but every tenth, at 29.97 and 59.94 only.
+ */
+bool sgi_tc_drop_capable(const SGIVideoFormat *fmt);
+/* "hh:mm:ss:ff", or "hh:mm:ss;ff" for drop-frame; the frame number or -1. */
+int64_t sgi_tc_parse(const char *text, const SGIVideoFormat *fmt, bool *drop);
+void sgi_tc_format(uint64_t frame, const SGIVideoFormat *fmt, bool drop,
+                   char out[12]);
 
 #endif

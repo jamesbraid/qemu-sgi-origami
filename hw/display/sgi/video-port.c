@@ -170,6 +170,57 @@ void sgi_video_unpack_row(SGIVideoPacking p, const uint8_t *src,
     }
 }
 
+static uint16_t scale_depth(uint16_t v, unsigned from, unsigned to)
+{
+    return to >= from ? v << (to - from) : v >> (from - to);
+}
+
+void sgi_video_pack_row(SGIVideoPacking p, const SGIVideoFrame *f,
+                        unsigned y, uint8_t *dst)
+{
+    size_t luma = (size_t)y * f->fmt.width;
+    size_t chroma = (size_t)y * (f->fmt.width / 2);
+    unsigned to = packings[p].depth;
+
+    for (unsigned i = 0; i < f->fmt.width / 2; i++) {
+        uint16_t s[4] = {
+            f->cb[chroma + i], f->y[luma + 2 * i],
+            f->cr[chroma + i], f->y[luma + 2 * i + 1],
+        };
+
+        for (int k = 0; k < 4; k++) {
+            s[k] = scale_depth(s[k], f->fmt.depth, to);
+        }
+        switch (p) {
+        case SGI_PACK_8:
+            for (int k = 0; k < 4; k++) {
+                dst[4 * i + k] = s[k];
+            }
+            break;
+        case SGI_PACK_10: {
+            uint64_t b = ((uint64_t)s[0] << 30) | ((uint64_t)s[1] << 20) |
+                         (s[2] << 10) | s[3];
+
+            for (int k = 0; k < 5; k++) {
+                dst[5 * i + k] = b >> (32 - 8 * k);
+            }
+            break;
+        }
+        case SGI_PACK_10IN16L:
+            /* The six pad bits repeat the sample's top bits. */
+            for (int k = 0; k < 4; k++) {
+                stw_be_p(dst + 8 * i + 2 * k, (s[k] << 6) | (s[k] >> 4));
+            }
+            break;
+        default:
+            for (int k = 0; k < 4; k++) {
+                stw_be_p(dst + 8 * i + 2 * k, s[k]);
+            }
+            break;
+        }
+    }
+}
+
 char *sgi_y4m_header(const SGIVideoFormat *fmt)
 {
     static const char order[] = { 'p', 't', 'b' };
@@ -178,6 +229,53 @@ char *sgi_y4m_header(const SGIVideoFormat *fmt)
                            fmt->width, fmt->height, fmt->rate_num,
                            fmt->rate_den, order[fmt->fields],
                            fmt->depth > 8 ? "p10" : "");
+}
+
+bool sgi_y4m_parse_header(const char *line, SGIVideoFormat *fmt, Error **errp)
+{
+    g_auto(GStrv) tok = g_strsplit(line, " ", -1);
+    SGIVideoFormat f = { .fields = SGI_VIDEO_PROGRESSIVE, .depth = 0 };
+    bool chroma_ok = false;
+
+    if (!tok[0] || strcmp(tok[0], "YUV4MPEG2")) {
+        error_setg(errp, "not a Y4M header");
+        return false;
+    }
+    for (char **t = tok + 1; *t; t++) {
+        char *p = g_strchomp(*t);
+
+        switch (p[0]) {
+        case 'W':
+            f.width = g_ascii_strtoull(p + 1, NULL, 10);
+            break;
+        case 'H':
+            f.height = g_ascii_strtoull(p + 1, NULL, 10);
+            break;
+        case 'F':
+            if (sscanf(p + 1, "%u:%u", &f.rate_num, &f.rate_den) != 2) {
+                f.rate_num = 0;
+            }
+            break;
+        case 'I':
+            f.fields = p[1] == 't' ? SGI_VIDEO_TFF :
+                       p[1] == 'b' ? SGI_VIDEO_BFF : SGI_VIDEO_PROGRESSIVE;
+            break;
+        case 'C':
+            chroma_ok = !strcmp(p + 1, "422") || !strcmp(p + 1, "422p10");
+            f.depth = strcmp(p + 1, "422p10") ? 8 : 10;
+            break;
+        }
+    }
+    if (!chroma_ok) {
+        error_setg(errp, "only 4:2:2 Y4M (C422, C422p10) is supported");
+        return false;
+    }
+    if (!sgi_video_format_valid(&f)) {
+        error_setg(errp, "Y4M header has an unusable raster or rate");
+        return false;
+    }
+    *fmt = f;
+    return true;
 }
 
 size_t sgi_y4m_frame_put(const SGIVideoFrame *f, uint8_t *dst)
@@ -200,4 +298,89 @@ size_t sgi_y4m_frame_put(const SGIVideoFrame *f, uint8_t *dst)
         }
     }
     return p - dst;
+}
+
+bool sgi_y4m_parse_frame_line(const char *line, Error **errp)
+{
+    if (strcmp(line, "FRAME")) {
+        error_setg(errp, "Y4M frame marker is not a plain FRAME line");
+        return false;
+    }
+    return true;
+}
+
+void sgi_y4m_frame_get(SGIVideoFrame *f, const uint8_t *src)
+{
+    size_t luma = (size_t)f->fmt.width * f->fmt.height;
+    uint16_t *plane[3] = { f->y, f->cb, f->cr };
+    size_t count[3] = { luma, luma / 2, luma / 2 };
+
+    for (int k = 0; k < 3; k++) {
+        for (size_t i = 0; i < count[k]; i++) {
+            if (f->fmt.depth > 8) {
+                plane[k][i] = lduw_le_p(src) & 0x3ff;
+                src += 2;
+            } else {
+                plane[k][i] = *src++;
+            }
+        }
+    }
+}
+
+static unsigned tc_nominal(const SGIVideoFormat *fmt)
+{
+    return (fmt->rate_num + fmt->rate_den - 1) / fmt->rate_den;
+}
+
+bool sgi_tc_drop_capable(const SGIVideoFormat *fmt)
+{
+    return fmt->rate_den == 1001 &&
+           (fmt->rate_num == 30000 || fmt->rate_num == 60000);
+}
+
+int64_t sgi_tc_parse(const char *text, const SGIVideoFormat *fmt, bool *drop)
+{
+    unsigned hh, mm, ss, ff, fps = tc_nominal(fmt);
+    char sep;
+
+    if (sscanf(text, "%2u:%2u:%2u%c%2u", &hh, &mm, &ss, &sep, &ff) != 5 ||
+        (sep != ':' && sep != ';') || mm > 59 || ss > 59 || ff >= fps ||
+        hh > 23 || (sep == ';' && !sgi_tc_drop_capable(fmt))) {
+        return -1;
+    }
+    *drop = sep == ';';
+    if (*drop) {
+        unsigned skip = fps / 15, minutes = 60 * hh + mm;
+
+        /* A dropped number is not a valid label. */
+        if (ss == 0 && ff < skip && mm % 10) {
+            return -1;
+        }
+        return ((int64_t)hh * 3600 + mm * 60 + ss) * fps + ff -
+               (int64_t)skip * (minutes - minutes / 10);
+    }
+    return ((int64_t)hh * 3600 + mm * 60 + ss) * fps + ff;
+}
+
+void sgi_tc_format(uint64_t n, const SGIVideoFormat *fmt, bool drop,
+                   char out[12])
+{
+    unsigned fps = tc_nominal(fmt);
+
+    if (drop) {
+        uint64_t per10 = 600ULL * fps - 9 * (fps / 15);
+        uint64_t per_min = 60ULL * fps - fps / 15;
+        uint64_t d = n / per10, m = n % per10;
+
+        n += 9 * (fps / 15) * d;
+        if (m >= fps / 15) {
+            n += (fps / 15) * ((m - fps / 15) / per_min);
+        }
+    }
+    /* Fields are bounded to two digits so the label always fits. */
+    snprintf(out, 12, "%02u:%02u:%02u%c%02u",
+             (unsigned)(n / fps / 3600 % 24) % 100,
+             (unsigned)(n / fps / 60 % 60) % 100,
+             (unsigned)(n / fps % 60) % 100, drop ? ';' : ':',
+             (unsigned)(n % fps) % 100);
 }

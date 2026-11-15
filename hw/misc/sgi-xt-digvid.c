@@ -479,6 +479,10 @@ struct DM2State {
     SGIVideoFrame *out_frame;
     SGIVideoPacking packing;
 
+    /* The input pipe's picture, when a source is linked. */
+    Object *in_source;
+    uint64_t in_pos;
+
     /* The one-wire record's barcode, built per slot. */
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
 };
@@ -910,6 +914,65 @@ static unsigned dm2_cable_side(uint8_t cable)
 }
 
 /*
+ * The wire code of a source's raster, for the rows the module's table
+ * has, or 0 for a raster none of them matches.
+ */
+static uint8_t dm2_source_code(const SGIVideoFormat *f)
+{
+    bool tff = f->fields != SGI_VIDEO_PROGRESSIVE;
+    unsigned n = f->rate_num, d = f->rate_den;
+
+    /* The module's 525 raster is 244 + 243 lines; 486 is the usual count. */
+    if (f->width == 720 && (f->height == 486 || f->height == 487) && tff &&
+        n == 30000 && d == 1001) {
+        return TIMING_525;
+    }
+    if (f->width == 720 && f->height == 576 && tff && n == 25 && d == 1) {
+        return TIMING_625;
+    }
+    if (f->width == 1920 && f->height == 1080) {
+        static const struct {
+            unsigned n, d;
+            bool tff;
+            uint8_t code;
+        } rows[] = {
+            { 30000, 1001, true, 7 }, { 30, 1, true, 8 },
+            { 25, 1, true, 16 }, { 30000, 1001, false, 9 },
+            { 30, 1, false, 10 }, { 25, 1, false, 15 },
+            { 24, 1, false, 12 }, { 24000, 1001, false, 11 },
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(rows); i++) {
+            if (rows[i].n == n && rows[i].d == d && rows[i].tff == tff) {
+                return rows[i].code;
+            }
+        }
+    }
+    if (f->width == 1280 && f->height == 720 && !tff && d != 0) {
+        return n == 60000 && d == 1001 ? 5 : n == 60 && d == 1 ? 6 : 0;
+    }
+    return 0;
+}
+
+/* The input slot a source feeds: HD or SD by its timing's side. */
+static bool dm2_source_slot(DM2State *s, unsigned slot, uint8_t *code)
+{
+    SGIVideoFormat f;
+    uint8_t c;
+
+    if (!s->in_source || !sgi_video_source_signal(s->in_source, &f)) {
+        return false;
+    }
+    c = dm2_source_code(&f);
+    if (!c || slot != (dm2_code_side(c) == SIDE_SD ? INPUT_SLOT_SD :
+                                                     INPUT_SLOT_HD)) {
+        return false;
+    }
+    *code = c;
+    return true;
+}
+
+/*
  * "Genlock and lock reporting", the cable: a fitted cable carries its
  * output jack's timing, so the input slot has a signal when that output's
  * side has a timing and none otherwise. A slot without a cable is the
@@ -918,7 +981,11 @@ static unsigned dm2_cable_side(uint8_t cable)
 static bool dm2_slot_present(DM2State *s, unsigned slot)
 {
     DM2Vbob *v = &s->vbob;
+    uint8_t code;
 
+    if (dm2_source_slot(s, slot, &code)) {
+        return true;
+    }
     if (slot < VBOB_CABLE_SLOTS && v->cable[slot]) {
         return dm2_side_output(s, dm2_cable_side(v->cable[slot])) != 0;
     }
@@ -928,9 +995,13 @@ static bool dm2_slot_present(DM2State *s, unsigned slot)
 static uint8_t dm2_slot_timing(DM2State *s, unsigned slot)
 {
     DM2Vbob *v = &s->vbob;
+    uint8_t code;
 
     if (!dm2_slot_present(s, slot)) {
         return TIMING_NONE;
+    }
+    if (dm2_source_slot(s, slot, &code)) {
+        return code;
     }
     if (slot < VBOB_CABLE_SLOTS && v->cable[slot]) {
         return dm2_side_output(s, dm2_cable_side(v->cable[slot]));
@@ -993,6 +1064,39 @@ static bool dm2_pipe_running(DM2State *s, unsigned p)
     return p == PIPE_OUT || dm2_input_present(s);
 }
 
+/* A linked source sets the input pipe's raster; all else is the VBOB's. */
+static bool dm2_in_format(DM2State *s, unsigned p, SGIVideoFormat *f)
+{
+    return p == PIPE_IN && s->in_source &&
+           sgi_video_source_signal(s->in_source, f) && dm2_source_code(f);
+}
+
+static int64_t dm2_pipe_period_ns(DM2State *s, unsigned p)
+{
+    SGIVideoFormat f;
+
+    if (dm2_in_format(s, p, &f)) {
+        int64_t frame = muldiv64(NANOSECONDS_PER_SECOND, f.rate_den,
+                                 f.rate_num);
+
+        return f.fields == SGI_VIDEO_PROGRESSIVE ? frame : frame / 2;
+    }
+    return dm2_field_period_ns(s);
+}
+
+static unsigned dm2_buffer_fields(DM2State *s);
+static void dm2_vbob_notify(DM2State *s);
+
+static unsigned dm2_pipe_fields(DM2State *s, unsigned p)
+{
+    SGIVideoFormat f;
+
+    if (dm2_in_format(s, p, &f)) {
+        return f.fields == SGI_VIDEO_PROGRESSIVE ? 1 : 2;
+    }
+    return dm2_buffer_fields(s);
+}
+
 static void dm2_pipe_update(DM2State *s, unsigned p)
 {
     DM2Pipe *pp = &s->pipe[p];
@@ -1004,7 +1108,7 @@ static void dm2_pipe_update(DM2State *s, unsigned p)
         if (!timer_pending(pp->field_timer)) {
             int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
             int64_t when = (pp->next_field_ns ? pp->next_field_ns : now) +
-                           dm2_field_period_ns(s);
+                           dm2_pipe_period_ns(s, p);
 
             /* Each field is one period after the last, not after its run. */
             pp->next_field_ns = MAX(when, now);
@@ -1216,13 +1320,44 @@ static const SGIHeadOps dm2_scanout_ops = {
     .resolve_row = dm2_scanout_row,
 };
 
+/*
+ * A completed input slot receives the source's next frame, packed per the
+ * packing property, from its first start address. False when the source has
+ * lost its signal; a source that is merely behind repeats a frame.
+ */
+static bool dm2_in_frame(DM2State *s, unsigned slot)
+{
+    uint32_t base = slot * SLOT_WINDOW;
+    uint32_t addr = base + (s->gif[GIF_IDX(0x800044)] & START_MASK);
+    const SGIVideoFrame *f = sgi_video_source_next(s->in_source);
+    g_autofree uint8_t *buf = NULL;
+    size_t row;
+    unsigned rows;
+
+    if (!f) {
+        SGIVideoFormat fmt;
+
+        return sgi_video_source_signal(s->in_source, &fmt);
+    }
+    row = sgi_video_packed_row_bytes(s->packing, f->fmt.width);
+    rows = MIN(f->fmt.height,
+               dm2_mapped_run(s, addr, base + SLOT_WINDOW) / row);
+    buf = g_malloc(row * MAX(rows, 1));
+    for (unsigned y = 0; y < rows; y++) {
+        sgi_video_pack_row(s->packing, f, y, buf + y * row);
+    }
+    dm2_move(s, addr, buf, row * rows, true);
+    return true;
+}
+
 static void dm2_field_tick(DM2State *s, unsigned p)
 {
     DM2Pipe *pp = &s->pipe[p];
     uint32_t flags = RING_FLAG_FIELD;
     bool prev_parity = pp->field_ints & 1;
-    unsigned fields = dm2_buffer_fields(s);
+    unsigned fields = dm2_pipe_fields(s, p);
     int64_t field_ns = pp->next_field_ns;
+    bool signal_lost = false;
 
     /* "Pipe start, counters and timing": 1 on a stream's first field. */
     if (!(pp->field_ints & 1)) {
@@ -1241,6 +1376,8 @@ static void dm2_field_tick(DM2State *s, unsigned p)
             if (p == PIPE_OUT) {
                 dm2_loop_capture(s, slot);
                 dm2_out_frame(s, slot);
+            } else if (s->in_source) {
+                signal_lost = !dm2_in_frame(s, slot);
             } else {
                 dm2_loop_deliver(s, slot);
             }
@@ -1253,6 +1390,9 @@ static void dm2_field_tick(DM2State *s, unsigned p)
         }
     }
     dm2_ring_post_at(s, p, flags, field_ns);
+    if (signal_lost) {
+        dm2_vbob_notify(s);
+    }
     dm2_pipe_update(s, p);
 }
 
@@ -2543,6 +2683,46 @@ static const VMStateDescription vmstate_dm2_vbob = {
     },
 };
 
+static bool dm2_input_needed(void *opaque)
+{
+    return ((DM2State *)opaque)->in_source;
+}
+
+static int dm2_input_pre_save(void *opaque)
+{
+    DM2State *s = opaque;
+
+    s->in_pos = SGI_VIDEO_SOURCE_GET_CLASS(s->in_source)->position(
+                    s->in_source);
+    return 0;
+}
+
+static int dm2_input_post_load(void *opaque, int version_id)
+{
+    DM2State *s = opaque;
+
+    /* The source of the saved run must be linked here too. */
+    if (!s->in_source) {
+        return -EINVAL;
+    }
+    SGI_VIDEO_SOURCE_GET_CLASS(s->in_source)->seek(s->in_source, s->in_pos);
+    return 0;
+}
+
+/* The source's place in its file, so a restored run carries on from it. */
+static const VMStateDescription vmstate_dm2_input = {
+    .name = TYPE_SGI_XT_DIGVID "/input",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = dm2_input_needed,
+    .pre_save = dm2_input_pre_save,
+    .post_load = dm2_input_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(in_pos, DM2State),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_dm2 = {
     .name = TYPE_SGI_XT_DIGVID,
     .version_id = 1,
@@ -2573,12 +2753,18 @@ static const VMStateDescription vmstate_dm2 = {
         VMSTATE_STRUCT(vbob, DM2State, 1, vmstate_dm2_vbob, DM2Vbob),
         VMSTATE_END_OF_LIST()
     },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_dm2_input,
+        NULL
+    },
 };
 
 static const Property dm2_properties[] = {
     DEFINE_PROP_LINK("fabric", DM2State, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
     DEFINE_PROP_LINK("out-sink", DM2State, out_sink, TYPE_SGI_VIDEO_SINK,
+                     Object *),
+    DEFINE_PROP_LINK("in-source", DM2State, in_source, TYPE_SGI_VIDEO_SOURCE,
                      Object *),
 };
 
