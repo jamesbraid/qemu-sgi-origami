@@ -2166,7 +2166,7 @@ static void exec_mem(I960State *s, uint32_t insn)
             op_fault(s, I960_FS_OP_INVALID_OPERAND);
         }
         memcpy(&s->r[r], w, n * sizeof(uint32_t));
-        s->insn_cycles = 2 + n;
+        s->insn_cycles += 1 + n;
         break;
     }
     case 0x9a: /* stl */
@@ -2177,7 +2177,7 @@ static void exec_mem(I960State *s, uint32_t insn)
         chk_group(s, r, n == 2 ? 2 : 4);
         memcpy(w, &s->r[r], n * sizeof(uint32_t));
         mem_write_group(s, ea, w, n);
-        s->insn_cycles = 2 + n;
+        s->insn_cycles += 1 + n;
         break;
     }
     case 0xc0: /* ldib */
