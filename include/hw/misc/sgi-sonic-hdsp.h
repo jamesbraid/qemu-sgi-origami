@@ -99,6 +99,7 @@ struct SonicHDSPDSPState {
     uint32_t hcvr;
     uint32_t tx_fifo[SONIC_DSP_FIFO_DEPTH];     /* host to DSP */
     uint32_t tx_count;
+    uint32_t unbacked_logged;   /* not migrated: log throttle */
     /* Writes the host made to the full FIFO, held as PCI wait states would. */
     uint32_t tx_hold[SONIC_DSP_HOLD_DEPTH];
     uint32_t tx_hold_count;

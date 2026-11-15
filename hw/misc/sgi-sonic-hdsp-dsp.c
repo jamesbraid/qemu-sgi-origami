@@ -1148,8 +1148,10 @@ static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr)
         addr < DSP_BOOT_ROM + 0xc00) {
         return 0;               /* the ROM's code is the model's own */
     }
-    qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u read of %c:0x%06x\n",
-                  s->index, "XYP"[space], addr);
+    if (s->unbacked_logged++ < 64) {
+        qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u read of %c:0x%06x\n",
+                      s->index, "XYP"[space], addr);
+    }
     return 0;
 }
 
@@ -1171,8 +1173,11 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
         s->hub->io_ram[addr - SONIC_DSP_IO_BASE] = val & 0xffffff;
         return;
     }
-    qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u write of %c:0x%06x = "
-                  "0x%06x\n", s->index, "XYP"[space], addr, val);
+    /* Log the first few off-the-end accesses only. */
+    if (s->unbacked_logged++ < 64) {
+        qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u write of %c:0x%06x "
+                      "= 0x%06x\n", s->index, "XYP"[space], addr, val);
+    }
 }
 
 static const DSP56300Ops dsp_ops = {
