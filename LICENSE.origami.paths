@@ -120,6 +120,8 @@ hw/display/sgi/renderer.c
 hw/display/sgi/scanout.c
 hw/display/sgi/trace-events
 hw/display/sgi/trace.h
+hw/display/sgi/video-file.c
+hw/display/sgi/video-port.c
 hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
 hw/input/psitech-rad4-km.c
@@ -381,6 +383,8 @@ include/hw/display/sgi/head-ops.h
 include/hw/display/sgi/pixel-dma.h
 include/hw/display/sgi/rasterizer.h
 include/hw/display/sgi/scanout.h
+include/hw/display/sgi/video-io.h
+include/hw/display/sgi/video-port.h
 include/hw/display/sgi/x-gc.h
 include/hw/i2c/pcf8584.h
 include/hw/input/psitech-rad4-km.h
@@ -884,6 +888,7 @@ tests/qtest/octane-pci-boards-test.c
 tests/qtest/octane-test.c
 tests/qtest/octane-vpro-test.c
 tests/qtest/octane-xt-digvid-test.c
+tests/qtest/octane-xt-digvid-video-test.c
 tests/qtest/prereq.h
 tests/qtest/psitech-rad1-test.c
 tests/qtest/psitech-rad4-mode0-fixture.h
@@ -1080,6 +1085,7 @@ tests/unit/test-sgi-router.c
 tests/unit/test-sgi-scanout.c
 tests/unit/test-sgi-scanout-stubs.c
 tests/unit/test-sgi-synthetic-serial.c
+tests/unit/test-sgi-video-port.c
 tests/unit/test-sgi-x-gc.c
 tests/unit/test-sn-model.c
 tests/unit/test-sn0-fabric-routed.c

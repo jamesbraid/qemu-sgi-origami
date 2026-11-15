@@ -396,6 +396,7 @@ config SGI_MGRAS
 config SGI_XT_DIGVID
     bool
     select ONEWIRE
+    select SGI_DISPLAY
     select SGI_BRIDGE
     select SGI_XIO_BOARD
 

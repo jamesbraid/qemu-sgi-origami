@@ -305,6 +305,7 @@ if have_system
                      '../../hw/display/sgi/pixel-dma.c',
                      '../../hw/display/sgi/command-fetch.c',
                      migration, io],
+    'test-sgi-video-port': ['../../hw/display/sgi/video-port.c'],
     'test-sgi-scanout': ['../../hw/display/sgi/scanout.c',
                          'test-sgi-scanout-stubs.c',
                          migration, io, pixman, opengl],
