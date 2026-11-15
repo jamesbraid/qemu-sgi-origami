@@ -165,6 +165,11 @@ test_mips64_timeouts = {
   # expected release. BOOT_TIMEOUT_SECONDS in test_irix_installed_boot.py
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
+  # Every consumer of the CD-ROM contract: four PROM boots from IRIX CDs,
+  # an IRIX boot that reads two CDs whole, a miniroot load from a CD and
+  # the OpenBSD installer reading its CD. All seven took 421s when last
+  # measured; 1200 covers a loaded host.
+  'sgi_cdrom' : 1200,
   # Power off the installed IRIX disk on the Origin 200, the two-module
   # Origin 200 and the Origin 2000 and require QEMU to exit with status 0,
   # then reboot the pair and the Origin 2000 to a login prompt. The worst
@@ -365,6 +370,7 @@ tests_mips64_system_thorough = [
   'irix_diag_origin300_torpedo',
   'irix_diag_origin300_4cpu_torpedo',
   'irix_installed_boot',
+  'sgi_cdrom',
   'irix_installed_power',
   'irix_record_replay',
   'irix_origin300_installed_boot',
