@@ -261,14 +261,16 @@ case "${1-}" in
     # also declares the host prerequisites this setup provides, so a qtest
     # that finds one missing fails instead of skipping (tests/qtest/prereq.h).
     # No runner exposes a DRM render node, and the image has no xorrisofs
-    # (cdrom-test only covers upstream boards, none of them SGI), so
-    # QEMU_TEST_UNAVAILABLE names both: the result checker then accepts
-    # those skips and no other.
+    # (cdrom-test only covers upstream boards, none of them SGI), and the
+    # runners give the container no GPU and the image no Vulkan driver, so
+    # the display export's Vulkan case has no device. QEMU_TEST_UNAVAILABLE
+    # names all three: the result checker then accepts those skips and no
+    # other.
     tap_options=()
     if [ "$1" = run-tests ]; then
       tap_options=(--device /dev/net/tun --cap-add NET_ADMIN
                    -e QEMU_TEST_REQUIRE_TAP=1
-                   -e QEMU_TEST_UNAVAILABLE=SGI_RENDER_NODE,XORRISOFS)
+                   -e QEMU_TEST_UNAVAILABLE=SGI_RENDER_NODE,XORRISOFS,VULKAN_EXPORT)
     fi
     shift
     : "${IMAGE_ID:?IMAGE_ID is required}"

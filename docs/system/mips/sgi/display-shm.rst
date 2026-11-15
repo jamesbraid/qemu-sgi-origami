@@ -63,9 +63,9 @@ Enabling it
    * - ``display-shm-gpu=UUID``
      - 32 hex digits, a Vulkan ``deviceUUID``: export scanout memory from
        that adapter, so a viewer on the same adapter imports it without a
-       copy. Absent, or when QEMU cannot export (see `Fallback`_), regions
-       are plain shared memory. A build without a GPU export backend
-       accepts the property, warns and uses shared memory.
+       copy (see `GPU memory`_). Absent, or when QEMU cannot export (see
+       `Fallback`_), regions are plain shared memory. QEMU says at start-up
+       which it is doing; a request it cannot meet warns and is not an error.
 
 The socket is an ``AF_UNIX`` stream socket on Linux, macOS and Windows 10
 and later. QEMU creates it after the machine is built and prints one line
@@ -87,9 +87,11 @@ sides.
    * - Backend
      - Meaning
    * - 1, ``VK_FD``
-     - A Vulkan ``OPAQUE_FD`` (Linux). Not used by this QEMU build.
+     - A Vulkan ``OPAQUE_FD`` (Linux):
+       host-visible device memory QEMU allocated and maps. It is meant for a
+       Vulkan import and cannot be mapped with ``mmap()``; see `GPU memory`_.
    * - 2, ``VK_WIN32``
-     - A Vulkan ``OPAQUE_WIN32`` NT handle. Not used by this build.
+     - A Vulkan ``OPAQUE_WIN32`` NT handle (Windows), the same memory.
    * - 3, ``SHM_FD``
      - A sealed memfd on Linux (``F_SEAL_SHRINK`` and ``F_SEAL_GROW``); a
        Linux kernel without memfd gets the macOS object below, unsealed. On
@@ -123,7 +125,9 @@ Rules:
   arrives with ``WELCOME`` and is never imported by a GPU.
 
 The kinds are: 1, plane store; 2, tables; 3, tile pool (the O2's GBE,
-defined by its own family); 4, cursor image.
+defined by its own family); 4, cursor image. Kinds 1 to 3 are scanout memory
+and the ones QEMU exports on a GPU. The cursor image is 16 KiB of pixels
+that a viewer copies into a texture, so it is always shared memory.
 
 Socket messages
 ===============
@@ -232,7 +236,10 @@ control block's handle.
      - ``version``: 3
    * - 12
      - u32
-     - ``backend`` used for plane, table and tile regions: 1, 2, 3 or 4
+     - ``backend`` used for plane, table and tile regions: 1 or 2 when at
+       least one live region is exported on the GPU, else 3 or 4. A region
+       whose export failed is shared memory in a session that is otherwise
+       GPU, so the ``backend`` of each ``REGION`` is the one to act on.
    * - 16
      - u32
      - ``nheads`` when it was sent; the control block's ``nheads`` is
@@ -242,10 +249,12 @@ control block's handle.
      - ``control_backend``: 3 or 4
    * - 24
      - u8[16]
-     - ``device_uuid`` QEMU exported on, zero for backends 3 and 4
+     - ``device_uuid`` QEMU exported on (the ``display-shm-gpu`` value),
+       zero for backends 3 and 4
    * - 40
      - u8[16]
-     - ``driver_uuid``, zero for backends 3 and 4
+     - ``driver_uuid`` of that adapter, zero for backends 3 and 4. An import
+       works only into the same driver.
    * - 56
      - u64
      - ``control_handle``: the Windows handle value, 0 on POSIX (the
@@ -271,18 +280,19 @@ control block's handle.
      - ``backend``
    * - 20
      - u32
-     - ``memory_type``: Vulkan memory type index (backends 1 and 2), else 0
+     - ``memory_type``: Vulkan memory type index QEMU allocated from
+       (backends 1 and 2), else 0
    * - 24
      - u64
      - ``size``: bytes the planes use, a multiple of 65,536
    * - 32
      - u64
-     - ``alloc_size``: Vulkan ``allocationSize`` (backends 1 and 2), else
-       ``size``
+     - ``alloc_size``: Vulkan ``allocationSize`` QEMU allocated (backends 1
+       and 2), at least ``size``, else ``size``
    * - 40
      - u32
-     - ``flags``: bit 0, dedicated allocation (backends 1 and 2). Bit 1 is
-       reserved for the GPU backends and is 0 here.
+     - ``flags``: bit 0, dedicated allocation (backends 1 and 2): the import
+       must be a dedicated allocation for a buffer. Bit 1 is reserved and 0.
    * - 44
      - u32
      - reserved, 0
@@ -557,20 +567,80 @@ VPro (``sgi-odyssey``); 3, the IMPACT (``sgi-mgras``); 4, the
 InfiniteReality (``sgi-kona``); 5, the O2's GBE; 6, the PsiTech RAD1 and
 RAD4.
 
+GPU memory
+==========
+
+With ``display-shm-gpu=UUID`` QEMU allocates each scanout region (kinds 1 to
+3) as host-visible Vulkan device memory instead of a shared-memory object,
+maps it for the models to write, and passes its handle in ``REGION``. A viewer
+on the same adapter imports the handle into its own Vulkan device and reads
+the pixels with no copy. This is the standard cross-process path, Vulkan
+1.1's opaque external memory with ``VK_KHR_external_memory_fd`` or
+``VK_KHR_external_memory_win32``, and needs nothing from a particular driver.
+
+QEMU does not link Vulkan. It opens the loader (``libvulkan.so.1``,
+``vulkan-1.dll``) when the machine is built and uses about fifteen
+entry points; the environment variable ``QEMU_SGI_VULKAN_LOADER`` names a
+different loader file. It submits no work: its one device exists to own
+memory. Memory for a region is made like this:
+
+- the adapter is the physical device whose ``deviceUUID`` is the property's,
+  at Vulkan 1.1 or later, with the external-memory extension for the host's
+  handle type, and able to export the memory of a storage buffer as that
+  handle (checked once, with ``vkGetPhysicalDeviceExternalBufferProperties``);
+- a buffer of the region's size, usage storage buffer and transfer source,
+  created for export, fixes which memory types are allowed;
+- the memory type is among them, host visible and coherent, because nothing
+  flushes. Cached types are preferred, so QEMU's frequent CPU reads of video
+  memory do not go through a write-combined window, and then types that are
+  not device local, which on a discrete GPU is the PCIe window;
+- the driver may require a dedicated allocation for such a buffer, and
+  ``REGION.flags`` bit 0 says so;
+- QEMU allocates with the export info, maps the whole allocation, zeroes it
+  and takes the handle.
+
+``REGION`` carries ``memory_type`` and ``alloc_size`` from that allocation
+and the viewer imports with them. It creates a buffer for the same handle
+type, allocates with the import info (dedicated, when flagged), binds it and
+reads. Opaque handles are not meant for ``mmap()``, and on NVIDIA's driver
+cannot be mapped that way; a viewer imports into Vulkan or takes the
+fallback. The import works only into the same physical device and driver, so
+a viewer compares ``WELCOME.device_uuid`` and ``driver_uuid`` with its
+adapter's and, when they differ, imports nothing and shows an error rather
+than a picture.
+
+Only scanout memory is exported, never guest RAM. For the xrgb family that
+is the frame: 5 MiB for a 1280 by 1024 head.
+
+macOS has no handle to export and QEMU never uses these backends there; a
+viewer uses Metal on a shared-memory region, which is page aligned and sized
+to 64 KiB.
+
 Fallback
 ========
 
 A viewer always receives plain shared memory when:
 
 - the machine has no ``display-shm-gpu``;
-- QEMU cannot load the GPU API, or runs without the adapter;
-- the adapter's UUID differs from the viewer's ``HELLO.device_uuid``;
+- QEMU cannot load the GPU API, or runs without the adapter (a container
+  that does not pass the GPU in, say), or no adapter has the UUID;
+- the adapter cannot export memory: no external-memory extension, or no
+  host-visible coherent type that can be exported;
 - an export or an import fails.
 
-``WELCOME.backend`` says what QEMU used. With backend 3 or 4 a viewer maps
-each region and copies only the changed lines of the raw planes into its GPU
-buffer, then composes as it would from imported memory. Backend 3 is also
-what a QEMU build without a GPU export backend always uses.
+QEMU does not read ``HELLO.device_uuid``: it exports on the adapter the
+property names whoever connects. A viewer on a different adapter cannot
+import those regions and has no shared-memory copy to fall back to, so it
+must not be paired with a ``display-shm-gpu`` for another adapter. The viewer
+that starts QEMU passes the UUID of its own adapter.
+
+The first three are decided when QEMU starts, which says so in one warning,
+and every region is shared memory. An allocation that fails later, after
+others have succeeded, makes that one region shared memory and leaves the
+rest exported. ``REGION.backend`` is what each region is, and
+``WELCOME.backend`` is 1 or 2 only when at least one is exported. With backend
+3 or 4 a viewer maps each region and copies only the changed lines of the raw
+planes into its GPU buffer, then composes as it would from imported memory.
 
 Input
 =====
@@ -648,10 +718,12 @@ Limits
 - Heads are fixed when the machine starts. Models other than the four
   above that draw through the shared scanout do not publish yet.
 - The cursor is the guest's image, at most 64 by 64.
-- There is no GPU export backend in this build: ``display-shm-gpu`` falls
-  back to shared memory, and Windows and macOS builds are checked by the
-  project's release builds for compiling, not by the qtests below, which
-  run on hosts with POSIX descriptors.
+- The GPU export is tested against NVIDIA's proprietary driver and
+  Mesa's lavapipe on Linux. AMD, Intel and nouveau drivers implement the
+  same interface, and Windows with any adapter, have not been run.
+  Windows and macOS builds are checked by the project's release builds for
+  compiling, not by the qtests below, which run on hosts with POSIX
+  descriptors.
 - No audio.
 
 .. _sgi-display-shm-tests:
@@ -660,7 +732,8 @@ Tests
 =====
 
 ``tests/qtest/sgi-display-shm-test.c`` starts an Octane2 with a graphics
-head and ``display-shm`` and plays a viewer, with no GPU:
+head and ``display-shm`` and plays a viewer. All but one of its tests need no
+GPU:
 
 - the control block and the first messages at their raw offsets, and the
   frame region against ``screendump``;
@@ -675,8 +748,18 @@ head and ``display-shm`` and plays a viewer, with no GPU:
 - a new mode: the replacement region, ``REGION_GONE`` and the layout seqlock;
 - reconnecting, including after a mode change replaced a region, and the
   protocol errors that close the connection;
-- the fallback for ``display-shm-gpu``, and the three properties on every
-  SGI machine type;
+- the fallback for ``display-shm-gpu``, with a UUID no adapter has and with
+  a Vulkan loader that does not exist: shared memory in ``WELCOME`` and every
+  ``REGION``, the Vulkan fields zero;
+- the GPU export, which runs only on a host where Vulkan has a device that
+  can export host-visible memory, and is skipped otherwise (as the
+  unavailable prerequisite ``VULKAN_EXPORT``). For each such
+  device it starts a machine on it and checks ``WELCOME`` and ``REGION``,
+  then runs this binary again as a second process (``--vk-helper``) that
+  imports the frame region's handle into its own Vulkan device, maps it, and
+  checks the frame against ``screendump`` before and after the VPro model
+  draws a pixel. ``SGI_DISPLAY_VK_TEST_UUID`` limits it to one device;
+- the three properties on every SGI machine type;
 - keys, buttons and relative and absolute motion arriving at the
   Octane2's keyboard and mouse controller, in batches with their acks, a
   held key released when the viewer drops, and the closed loop answering

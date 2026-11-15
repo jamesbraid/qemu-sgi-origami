@@ -6,10 +6,13 @@
  * One reader at a time. QEMU owns a control block and a set of regions, each
  * one allocation with one handle. A region is a sealed memfd on Linux, a
  * POSIX shared-memory object on macOS and a pagefile-backed section on
- * Windows; QEMU maps each and the reader maps its own view. The handle
- * travels to the reader on the AF_UNIX stream socket (SCM_RIGHTS on POSIX,
- * DuplicateHandle on Windows). The socket also carries the reader's binary
- * input, which sgi-display-input.c turns into qemu_input_*() calls.
+ * Windows; QEMU maps each and the reader maps its own view. With
+ * display-shm-gpu the scanout regions are host-visible Vulkan memory
+ * instead (sgi-display-vk.c), which the reader imports into its own Vulkan
+ * device; any region that cannot be allocated that way is shared memory. The
+ * handle travels to the reader on the AF_UNIX stream socket (SCM_RIGHTS on
+ * POSIX, DuplicateHandle on Windows). The socket also carries the reader's
+ * binary input, which sgi-display-input.c turns into qemu_input_*() calls.
  *
  * A head that has not been converted to its own family publishes its
  * SGIScanout frame as family xrgb: the frame lives in a region, the
@@ -32,6 +35,7 @@
 #include "hw/display/sgi/scanout.h"
 #include "ui/sgi-display-shm.h"
 #include "ui/sgi-display-priv.h"
+#include "ui/sgi-display-vk.h"
 
 #ifndef _WIN32
 #include <sys/mman.h>
@@ -62,6 +66,11 @@ struct SGIDisplayRegion {
     uint8_t *ptr;
     size_t size;                /* what the reader maps; rounded up to 64 KiB */
     bool local;                 /* g_malloc0() memory, display-shm is off */
+    uint32_t backend;           /* SGI_SHM_BACKEND_*, as REGION says */
+    uint32_t memory_type;       /* the Vulkan backends' import parameters */
+    uint64_t alloc_size;
+    uint32_t flags;             /* SGI_SHM_REGION_* */
+    SGIVkExport *vk;            /* the Vulkan allocation, or NULL for shm */
 #ifdef _WIN32
     HANDLE handle;
 #else
@@ -99,7 +108,8 @@ struct SGIDisplay {
     char *sock_path;            /* the property, or NULL for the default */
     bool gpu_requested;
     uint8_t gpu_uuid[16];
-    uint32_t backend;           /* what GPU regions use: always a shm backend */
+    SGIVkDevice *vk;            /* the adapter regions are exported from */
+    bool vk_tried;              /* opening it was tried, win or lose */
     SGIDisplayRegion *control;
     SGIShmHeader *hdr;
     QTAILQ_HEAD(, SGIDisplayRegion) regions;
@@ -170,6 +180,8 @@ static bool region_map(SGIDisplayRegion *r, const char *label, size_t size,
                        Error **errp)
 {
     r->size = size;
+    r->alloc_size = size;
+    r->backend = SGI_SHM_HOST_BACKEND;
 #ifdef _WIN32
     r->handle = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
                                    (DWORD)((uint64_t)size >> 32),
@@ -208,6 +220,18 @@ static bool region_map(SGIDisplayRegion *r, const char *label, size_t size,
 
 static void region_unmap(SGIDisplayRegion *r)
 {
+    if (r->vk) {
+        /* The export owns its mapping and its handle. */
+        sgi_display_vk_free(r->vk);
+        r->vk = NULL;
+        r->ptr = NULL;
+#ifdef _WIN32
+        r->handle = NULL;
+#else
+        r->fd = -1;
+#endif
+        return;
+    }
 #ifdef _WIN32
     if (r->ptr) {
         UnmapViewOfFile(r->ptr);
@@ -417,8 +441,9 @@ static void send_region(SGIDisplay *d, const SGIDisplayRegion *r)
 {
     SGIShmMsgRegion m = {
         .hdr = { .type = SGI_SHM_MSG_REGION },
-        .id = r->id, .kind = r->kind, .backend = d->backend,
-        .size = r->size, .alloc_size = r->size,
+        .id = r->id, .kind = r->kind, .backend = r->backend,
+        .memory_type = r->memory_type, .size = r->size,
+        .alloc_size = r->alloc_size, .flags = r->flags,
     };
     int fd;
 
@@ -429,16 +454,40 @@ static void send_region(SGIDisplay *d, const SGIDisplayRegion *r)
     out_queue(d, &m, sizeof(m), fd);
 }
 
+/*
+ * The GPU backend when any live region is exported on the adapter, else the
+ * host's shared memory. REGION names the backend of each region, which is the
+ * one a reader acts on: a region whose export failed is shared memory in a
+ * session that is otherwise Vulkan.
+ */
+static uint32_t welcome_backend(const SGIDisplay *d)
+{
+    const SGIDisplayRegion *r;
+
+    QTAILQ_FOREACH(r, &d->regions, next) {
+        if (r->vk) {
+            return r->backend;
+        }
+    }
+    return SGI_SHM_HOST_BACKEND;
+}
+
 static void send_welcome(SGIDisplay *d)
 {
     SGIShmMsgWelcome m = {
         .hdr = { .type = SGI_SHM_MSG_WELCOME },
-        .version = SGI_SHM_VERSION, .backend = d->backend,
+        .version = SGI_SHM_VERSION, .backend = welcome_backend(d),
         .nheads = qatomic_read(&d->hdr->nheads),
         .control_backend = SGI_SHM_HOST_BACKEND,
     };
     int fd;
 
+    if (m.backend != SGI_SHM_HOST_BACKEND) {
+        memcpy(m.device_uuid, sgi_display_vk_device_uuid(d->vk),
+               sizeof(m.device_uuid));
+        memcpy(m.driver_uuid, sgi_display_vk_driver_uuid(d->vk),
+               sizeof(m.driver_uuid));
+    }
     if (!region_export(d, d->control, &fd, &m.control_handle)) {
         client_drop(d);
         return;
@@ -611,6 +660,73 @@ static void client_accept(void *opaque)
 
 /* ---- Regions: the model-facing half ----------------------------------- */
 
+/*
+ * Open the adapter named by display-shm-gpu, once. NULL, with one warning,
+ * when this host cannot export from it: every region is then shared memory.
+ */
+static SGIVkDevice *display_vk(SGIDisplay *d)
+{
+    Error *err = NULL;
+
+    if (!d->gpu_requested || d->vk_tried) {
+        return d->vk;
+    }
+    d->vk_tried = true;
+    d->vk = sgi_display_vk_open(d->gpu_uuid, &err);
+    if (!d->vk) {
+        warn_report("sgi-display-shm: display-shm-gpu: %s; publishing "
+                    "shared memory", error_get_pretty(err));
+        error_free(err);
+        return NULL;
+    }
+    info_report("sgi-display-shm: exporting scanout memory from %s",
+                sgi_display_vk_device_name(d->vk));
+    return d->vk;
+}
+
+/*
+ * Back r with exportable Vulkan memory. False, with r untouched, when the
+ * kind is not scanout memory or the adapter cannot give it: the caller then
+ * maps shared memory instead.
+ */
+static bool region_map_vk(SGIDisplay *d, SGIDisplayRegion *r, size_t size)
+{
+    SGIVkDevice *vk;
+    Error *err = NULL;
+    SGIVkExport *x;
+
+    /* The cursor image is small and the viewer copies it: not scanout. */
+    if (r->kind == SGI_SHM_KIND_CURSOR) {
+        return false;
+    }
+    vk = display_vk(d);
+    if (!vk) {
+        return false;
+    }
+    x = sgi_display_vk_alloc(vk, size, &err);
+    if (!x) {
+        warn_report_once("sgi-display-shm: cannot export a region from "
+                         "the GPU (%s); it is shared memory instead",
+                         error_get_pretty(err));
+        error_free(err);
+        return false;
+    }
+    r->vk = x;
+    r->ptr = x->ptr;
+    r->size = size;
+    r->alloc_size = x->alloc_size;
+    r->memory_type = x->memory_type;
+    r->flags = x->dedicated ? SGI_SHM_REGION_DEDICATED : 0;
+#ifdef _WIN32
+    r->backend = SGI_SHM_BACKEND_VK_WIN32;
+    r->handle = x->handle;
+#else
+    r->backend = SGI_SHM_BACKEND_VK_FD;
+    r->fd = x->fd;
+#endif
+    return true;
+}
+
 void *sgi_display_region_alloc(Object *owner, const char *label,
                                uint64_t size, uint32_t kind,
                                SGIDisplayRegion **region)
@@ -634,7 +750,8 @@ void *sgi_display_region_alloc(Object *owner, const char *label,
 #endif
     name = g_strdup_printf("sgi-display-%s-%s", label,
                            owner ? object_get_typename(owner) : "anon");
-    if (!region_map(r, name, rounded, &err)) {
+    if (!region_map_vk(d, r, rounded) &&
+        !region_map(r, name, rounded, &err)) {
         error_report_err(err);
         exit(1);
     }
@@ -1085,14 +1202,8 @@ static void shm_machine_done(Notifier *n, void *data)
     if (!d->nheads) {
         warn_report("sgi-display-shm: this machine has no graphic head");
     }
-    if (d->gpu_requested) {
-        /*
-         * Exporting GPU memory is a separate backend this build does not
-         * have. Every region is shared memory, and WELCOME says so.
-         */
-        warn_report("sgi-display-shm: display-shm-gpu is set but this build "
-                    "has no GPU export backend; publishing shared memory");
-    }
+    /* Say now, not at the first region, why a GPU request fell back. */
+    display_vk(d);
     d->exit.notify = shm_exit;
     qemu_add_exit_notifier(&d->exit);
 
@@ -1126,7 +1237,6 @@ static SGIDisplay *shm_get_display(void)
         shm_display->listen_fd = -1;
         shm_display->client_fd = -1;
         shm_display->next_region_id = 1;
-        shm_display->backend = SGI_SHM_HOST_BACKEND;
         shm_display->cursor_head = -1;
         QTAILQ_INIT(&shm_display->regions);
         QSIMPLEQ_INIT(&shm_display->out);

@@ -1,5 +1,12 @@
 system_ss.add(files('sgi-renderer.c'))
-system_ss.add(files('sgi-display-shm.c', 'sgi-display-input.c'))
+system_ss.add(files('sgi-display-shm.c', 'sgi-display-input.c',
+                    'sgi-display-vk.c'))
+# The Vulkan loader is opened at run time, never linked; only dlopen needs a
+# library on hosts whose C library keeps it separate.
+if host_os not in ['windows', 'darwin']
+  libdl = cc.find_library('dl', required: false)
+  system_ss.add(when: libdl, if_true: libdl)
+endif
 
 keymaps = [
   ['atset1', 'linux'],
