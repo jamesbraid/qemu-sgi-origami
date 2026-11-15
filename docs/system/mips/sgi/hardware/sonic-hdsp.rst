@@ -1162,6 +1162,18 @@ it; the contract below is what the firmware needs to run.
        Descriptor chains in local memory, PCI addresses on
        the primary or secondary bus. DMA to the primary bus uses the
        function's PCI address space, so the Bridge applies its swap.
+       Channel 2 reaches the secondary bus: a transfer into a DSP's host-port
+       data window (secondary address BAR0 + ``0x1c`` to the end of the BAR)
+       moves a word at a time and waits while the DSP's host-to-DSP FIFO is
+       full, and a transfer out of it waits while the DSP has no word, since
+       the HI32 holds the cycle in wait states and then retries it
+       (:src:`nxp-dsp56301um-4 pp. 6-62, 6-63`); the transfer carries on
+       from the next i960 slice. Completion sets EOC (EOT when a descriptor
+       follows), clears the active bit, and raises XINT6 while a descriptor
+       with DCR bit 4 is done and unacknowledged. The module's block and
+       chain transfers to the DSPs are channel 2 DMA that holds the module's
+       DSP lock until completion (*software expectation*, the monitor
+       reader's analysis of the module).
      - *established* for the layout, *software expectation* for the use
    * - Memory controller ``0x1500``-``0x153c``
      - ``0x1504`` = ``0xfef80000`` (bank 0 base is the flash), ``0x1508``
@@ -2517,8 +2529,11 @@ Model limits
   not modelled (:ref:`sgi-sonic-hdsp-dsp-limits`).
 - The flash reprogramming path is modelled at the part's command
   interface; the upgrade module's other effects are the firmware's.
-- DMA to the secondary bus (channel 2, and 64-bit transfers) is not
-  modelled: it is logged and refused.
+- DMA with a 64-bit PCI address is not modelled: it is logged and refused.
+  Channel 2 reaches only the secondary bus memory space, with the DSPs'
+  data windows throttled as above; the wait is an *approximation* of the
+  wait states and retries (the transfer resumes at the next slice, not at
+  the cycle the FIFO frees).
 - If the firmware narrows the inbound limit, the mapped region stays 128 MiB,
   and the size a host reads back when sizing BAR0 follows the inbound limit
   register while it is narrowed (32 MiB at 0xfe000000, for example). The
@@ -2752,6 +2767,8 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   reads back from what DSP 0 wrote;
 - twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
   low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
+- a two-descriptor channel 2 DMA of twenty words into a slow DSP's data window
+  arrives in order, ends with EOC and EOT as described and raises XINT6;
 - DCTR bit 6 on any DSP sets IPND bit 4 on the i960 and clears when the last
   DSP clears it;
 - timer 1's data bit rising on DSP 0 wakes DSP 3 through IRQC and not

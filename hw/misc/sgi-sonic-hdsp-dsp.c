@@ -1875,6 +1875,41 @@ static void dsp_catch_up_to(SonicHDSPState *h)
     }
 }
 
+/* Bring the DSPs up to the i960's present, for a DMA that waits on them. */
+void sonic_hdsp_dsp_sync(SonicHDSPState *h)
+{
+    dsp_catch_up_to(h);
+}
+
+bool sonic_hdsp_dsp_tx_room(const SonicHDSPDSPState *s)
+{
+    return s->tx_count < SONIC_DSP_FIFO_DEPTH;
+}
+
+bool sonic_hdsp_dsp_rx_ready(const SonicHDSPDSPState *s)
+{
+    return s->rx_count > 0;
+}
+
+/* The DSP whose host data window holds secondary address @addr, or NULL. */
+SonicHDSPDSPState *sonic_hdsp_dsp_at(SonicHDSPState *h, uint64_t addr)
+{
+    for (unsigned n = 0; n < SONIC_HDSP_NUM_DSP; n++) {
+        SonicHDSPDSPState *s = h->dsp[n];
+        uint64_t base;
+
+        if (!s || s->in_reset) {
+            continue;
+        }
+        base = pci_get_bar_addr(PCI_DEVICE(s), 0);
+        if (base != PCI_BAR_UNMAPPED && addr >= base + 0x1c &&
+            addr < base + memory_region_size(&s->bar0)) {
+            return s;
+        }
+    }
+    return NULL;
+}
+
 bool sonic_hdsp_dsp_realize(SonicHDSPState *h, Error **errp)
 {
     static const uint32_t rates[] = {
