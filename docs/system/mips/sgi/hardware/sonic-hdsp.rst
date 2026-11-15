@@ -2169,6 +2169,10 @@ because it lets the first frame finish, whereas the falling edge leaves
 DSP 3's flag unset until the end of frame 0 and the frame stalls
 (*inferred*).
 
+On a first board DSP 0's frame loop then waits for port C data bit 1 of
+ESSI0 (the SC01 pin, a GPIO input) to read 1; no image drives it. The model
+holds it high (*approximation*; the source is *unknown*, a box-present or
+clock-locked line being plausible).
 
 .. _sgi-sonic-hdsp-host:
 
@@ -2589,6 +2593,10 @@ with what would settle it:
        output, delivers an IRQC edge to DSP 3 if its IPRC enables it
        (priority from bits 7:6, negative-edge mode bit 8)
      - A trace of TIO1 against IRQC on the card
+   * - ESSI0 port C pin PC1
+     - A GPIO input reads high; an output reads what was written
+     - What drives SC01 on a first board (a box-present or clock-locked
+       signal is plausible)
    * - DMA timing
      - Instantaneous, channels in index order, no bus arbitration
      - A trace of channel activity against a running monitor
@@ -2675,6 +2683,7 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
 - timer 1's data bit rising on DSP 0 wakes DSP 3 through IRQC and not
   before;
+  ESSI0's PC1 reads high as an input and as written as an output;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends
