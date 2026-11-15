@@ -242,10 +242,16 @@ def build_environment(name, prefix, work):
 
 
 def meson_tool(build):
+    """The command that runs the Meson configure made for `build`."""
     for candidate in ('pyvenv/bin/meson', 'pyvenv/Scripts/meson.exe',
                       'pyvenv/Scripts/meson'):
         if (build / candidate).exists():
-            return build / candidate
+            return [build / candidate]
+    # MSYS2's Python lays its virtual environment out as bin/ with no meson
+    # launcher a native process can start, but the interpreter runs Meson.
+    for python in ('pyvenv/bin/python.exe', 'pyvenv/Scripts/python.exe'):
+        if (build / python).exists():
+            return [build / python, '-m', 'mesonbuild.mesonmain']
     raise PackageError(f'no meson in {build}/pyvenv; did configure fail?')
 
 
@@ -269,12 +275,12 @@ def build_qemu(name, build, env, pkgversion, jobs):
     meson = meson_tool(build)
     # QEMU reports this in --version. Setting it here rather than at
     # configure keeps a reused build directory in step with its label.
-    run([meson, 'configure', f'-Dpkgversion={pkgversion}', build], env=env)
+    run([*meson, 'configure', f'-Dpkgversion={pkgversion}', build], env=env)
     # Meson keeps an extracted subproject until told to refresh it, so a
     # source tree that built before a libslirp patch changed would keep the
     # old copy.
     if glob.glob(str(SOURCE / 'subprojects/libslirp*/meson.build')):
-        run([meson, 'subprojects', 'update', '--reset', '--sourcedir', SOURCE,
+        run([*meson, 'subprojects', 'update', '--reset', '--sourcedir', SOURCE,
              'libslirp'], cwd=build, env=env)
     exe = PLATFORMS[name][2]
     run(['ninja', '-C', build, '-j', jobs,
