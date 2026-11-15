@@ -68,6 +68,7 @@ How to start each machine, with the options its catalogue entry offers.
    :maxdepth: 1
 
    running
+   video-io
 
 Firmware
 --------

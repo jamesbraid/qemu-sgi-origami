@@ -143,6 +143,11 @@ SGI manuals, service documents and papers, cited by document number.
 ``007-3938-006``
    *SGI L1 and L2 Controller Software User's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3938-006/pdf/007-3938-006.pdf>`__ SHA-256 ``fd9f98168ca04a9d4406041f5fce34fdbb89f3bafd5a0c6f38bea6e64291f08e``. Published; may be quoted.
 
+.. _sgi-ref-007-3968-002:
+
+``007-3968-002``
+   *SGI HD I/O Option Board Owner's Guide*. Silicon Graphics. Manual, cited by page. `<https://techpubs.jurassic.nl/library/manuals/3000/007-3968-002/pdf/007-3968-002.pdf>`__ SHA-256 ``c5d608ad64b38be7595c918662b40b908c225b4a0c2eb8aebab9db8b4ad8e0f6``. Published; may be quoted.
+
 .. _sgi-ref-007-4207-002:
 
 ``007-4207-002``

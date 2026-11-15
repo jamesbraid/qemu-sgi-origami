@@ -1210,6 +1210,8 @@ the input converter, and at ``0x803004``, ``0x80300c`` (mask ``0x3ff``),
 overlap the module's layout, so the two are separate address spaces
 selected by the loaded image.
 
+.. _sgi-xt-digvid-converters:
+
 The colour converters have two register layouts, one per image. The
 module loads the "programmable" images and writes the first layout below.
 The diagnostic loads two other images and tests the second. A model
@@ -1507,17 +1509,116 @@ page's sources; the video path is not run. A model completes an armed slot
 on the last field interrupt of a frame of its pipe: every second one for
 an interlaced timing, every one for a progressive timing and before any
 timing is known. It validates the map RAM entry for the page that holds the slot's
-first start address, and transfers no payload bytes, an *approximation*.
-A single-field path, which no register tells the model apart, completes a
-slot per two fields too, so it runs at half the rate the driver expects,
-an *approximation*. Output frames are discarded and input buffers keep their
-previous content, unless a loopback cable is fitted
-(:ref:`sgi-xt-digvid-loopback`). What a slot transfer reads and writes would be settled
-by decoding the raster registers against the manual's packing tables
-(:src:`007-4317-001 5`, :src:`007-4317-001 6`). The field period is taken
-from the timing record the virtual VBOB last received
+first start address and, on the output pipe, transfers the frame as
+:ref:`sgi-xt-digvid-payload` says. A single-field path, which no register
+tells the model apart, completes a slot per two fields too, so it runs at
+half the rate the driver expects, an *approximation*. The field period is
+taken from the timing record the virtual VBOB last received
 (:ref:`sgi-xt-digvid-vbob`), with the property override and the
 1001/60000 s default.
+
+.. _sgi-xt-digvid-payload:
+
+Payload
+~~~~~~~
+
+The registers do not settle the packing, so the model takes it from a
+property. What they do and do not carry:
+
+- The output converter's 8-bit packing flag (``0x80304c``) follows the
+  component depth (:ref:`colour converters <sgi-xt-digvid-converters>`), *inferred*. No register
+  follows the 10-bit variant (packed, left or right justified in 16 bits),
+  the sampling or the component order.
+- The packer and unpacker images are the same size for every packing
+  (:ref:`sgi-xt-digvid-fpga-names`), so the loaded image is not visible
+  either.
+- The video control counts and flags
+  (:ref:`sgi-xt-digvid-gif`) have an *unknown* meaning, so the transfer's
+  extent is not derived from them.
+
+Three facts the model does have:
+
+- The packings. The owner's guide lists the packings the board takes
+  (:src:`007-4317-001 5`, :src:`007-4317-001 73`) by library name and maps
+  each onto an older name (Table 5-4, :src:`007-4317-001 73`,
+  *established*). The HD I/O board's guide draws the older names' bits
+  (:src:`007-3968-002 62` and :src:`007-3968-002 63` for the 8-bit and
+  packed 10-bit rows, its figures C-3 and C-5; the 10-in-16 rows are figures
+  in the PDF at :src:`007-3968-002 72` and :src:`007-3968-002 73`, which this
+  page's author read as images, not text). Its conventions say bytes
+  increase in address and bits run from most to least significant
+  (:src:`007-3968-002 58`) and that a reader may take the padding bits of a
+  left-justified word to repeat the component's top bits, a writer leaving
+  them as garbage (:src:`007-3968-002 59`). That the DM2 uses the same
+  layouts under the DM names is *inferred* from the DM2 guide's Table 5-4
+  naming them; the figures themselves are not stated for the DM2. All are
+  4:2:2 and CbYCrY in memory order, and the model supports these four:
+
+  .. list-table::
+     :header-rows: 1
+
+     * - ``x-packing``
+       - DM library name
+       - Layout of two pixels
+     * - ``8``
+       - ``DM_PACKING_8``
+       - 4 bytes: Cb, Y, Cr, Y
+     * - ``10``
+       - ``DM_PACKING_10``
+       - 5 bytes: Cb, Y, Cr, Y of 10 bits each, back to back
+     * - ``10in16l``
+       - ``DM_PACKING_10in16L``
+       - 8 bytes: four 16-bit big-endian words, each a sample in its upper
+         10 bits; the model ignores the six pad bits when it reads, and a
+         model-written file has them repeat the sample's top bits
+     * - ``10in16r``
+       - ``DM_PACKING_10in16R``
+       - 8 bytes: four 16-bit big-endian words, each a sample in its lower
+         10 bits with zeros above
+
+  The component-reversed variants (names ending ``3214``) and the 4:4:4 and
+  4:4:2:4 packings are not modelled.
+- The raster. Message ``0x22``'s active width and two field heights
+  (:ref:`sgi-xt-digvid-vbob`, bytes 6 and 7, 10 and 11, 14 and 15) are the
+  active raster of the path, :src:`dm2-library-1.1.3 0x40fbf0`, *software
+  expectation*. A frame is that many samples by the two heights' sum.
+- The placement of a frame in a slot is *unknown*: the line order, the
+  second start address's role and the interleave are in the FPGA images.
+
+One guest run bears on it (*observed*, Octane2 on IRIX 6.5.23m with the 1.1.3
+package, :src:`dm2-library-1.1.3` as the program that picks the format).
+The shipped playback program ``dv_memtovid`` asks for RGB, 4:4:4, 8-bit
+memory by default, and the library sizes its buffer at 720 by 487 by 3
+bytes, 1,051,920. Given ``ML_SAMPLING_422`` with a CbYCr colour space
+matching the video's (709) it sizes it at 720 by 487 by 2 bytes, 701,280,
+which is this section's 8-bit packing at the 244 plus 243 lines of message
+``0x22``; the library refuses 4:2:2 memory with an RGB colour space, and
+refuses a colour model that differs from the video's, so the board's colour
+converters are not asked to convert in those runs. The program's own test
+pattern then shows as clean bars on the console, and the first bytes a
+capture saves for a white line are ``80 eb`` (Cb, Y), the CbYCrY order. The
+default RGB run reaches the model as 3-byte pixels that the 4:2:2 reading
+shows wrongly; that packing and the converter are not modelled.
+
+The model's choices, each an *approximation*: the frame starts at the first
+start address and is that many lines of packed rows, one after another, in
+the order the guest stored them, so an interlaced frame is woven; the second
+start address is not consulted; the first stored line belongs to the earlier
+field, which the Y4M file marks top field first, because which field is
+first in time is *unknown* (:ref:`sgi-xt-digvid-pipes`); rows past the end of
+the mapped run are black. The default packing is ``8``, the 4:2:2 8-bit
+packing the guide calls the most commonly used and the one the runs above
+need; the packing SGI's programs choose by default is the RGB one just
+described, which is not modelled.
+
+The frame is read when its slot completes, converted to the console's
+colours (limited-range YCbCr, ITU-R BT.601 up to 720 samples wide and
+BT.709 above, chroma repeated, which no source states for the board and is
+the viewer's choice) and, with an ``out-sink`` linked, given to the sink in
+the layout of Y4M's ``C422`` or ``C422p10`` by depth.
+
+The console's picture is not migrated: a restored machine shows nothing
+until its next frame, and a reset blanks the console and clears its size.
 
 .. _sgi-xt-digvid-ring:
 
@@ -2594,9 +2695,14 @@ an *approximation*; the last column says what would settle it.
    * - Slot completion and payload
      - one slot per frame in arming order, a frame being two field
        interrupts for an interlaced timing and one otherwise; the first
-       start address's page is checked against the map RAM; no payload
-       bytes
-     - decoding the raster registers against the packing tables
+       start address's page is checked against the map RAM; an output
+       frame is read from the first start address as rows of the
+       ``x-packing`` property's packing (default 8-bit 4:2:2), woven, as
+       many rows as the mapped run holds, and shown and written to the
+       sink; an input slot's buffer keeps its content
+     - ``x-packing``: no register shows the packing; the driver's
+       raster block against a capture of a frame in memory; the second
+       start address and the line order against a capture
    * - Field period
      - derived from the latest timing record (line period from the
        samples per line and the luma clock, frame period from the lines per
@@ -2653,12 +2759,13 @@ Unknowns that block parts of the model
 Two kinds of unknown would stop a model from being complete rather than
 merely approximate.
 
-- **The video data path.** The packings, colour-space conversions, lookup
-  tables, the slot's transfer extent and the HDOC and VIF behaviour are
-  all behind the FPGA images, and no shipped software states them. The
-  model completes DMA slots without payload, so a guest that captures
-  video gets unchanged buffers, and one that plays back loses the
-  frames. The one exception is a loopback cable, which copies the output
+- **The video data path.** The colour-space conversions, lookup
+  tables, the packing a stream selects, the placement of a frame in its
+  slot and the HDOC and VIF behaviour are all behind the FPGA images, and
+  no shipped software states them. The output pipe moves its payload under
+  the :ref:`sgi-xt-digvid-payload` choices; the input pipe moves none, so a
+  guest that captures video gets unchanged buffers (a loopback cable
+  copies an output frame, :ref:`sgi-xt-digvid-loopback`). The one exception is a loopback cable, which copies the output
   bytes raw (:ref:`sgi-xt-digvid-loopback`).
 - **The VBOB side of the link.** The messages the module sends are
   covered, but the VBOB's replies beyond the bytes the module reads, its
@@ -2675,7 +2782,9 @@ of :ref:`sgi-ip30`, widget 9 to 12 (the Octane's graphics and expansion
 ports; widget 13 holds the PCI module alone). The model is
 ``hw/misc/sgi-xt-digvid.c`` and its register-contract tests are
 ``tests/qtest/octane-xt-digvid-test.c``, each check citing the section
-above that it follows. The virtual VBOB's world is three properties,
+above that it follows; the output payload, console and sink are tested in
+``tests/qtest/octane-xt-digvid-video-test.c`` and the packings in
+``tests/unit/test-sgi-video-port.c``. The virtual VBOB's world is three properties,
 settable on the command line and at run time, which send the unrequested
 frames and status flags a change calls for:
 
@@ -2689,6 +2798,17 @@ frames and status flags a change calls for:
 - ``x-vbob-loopback``: coax cables from output jacks to input jacks,
   ``sd-out1:sd-in1`` and so on; empty by default
   (:ref:`sgi-xt-digvid-loopback`).
+
+The output pipe's picture is a display and, optionally, a file:
+
+- the board's own QEMU console (``screendump device=<id> head=0``, or a
+  window in GTK, or VNC's ``display=<id>``), sized to the active raster of
+  the latest timing record, showing the last frame the output pipe
+  completed;
+- ``out-sink``: a link to an ``sgi-video-file-sink`` device (``-device``, no bus), which writes
+  every frame as Y4M (:doc:`../video-io`);
+- ``x-packing``: the memory packing of the output frames
+  (:ref:`sgi-xt-digvid-payload`).
 
 ``x-test-gif-loaded`` is host-only: it reports the GIF configured without
 the 1.4 million clock pairs of its load, so tests of the register file do
@@ -2801,8 +2921,11 @@ The page states these as unsupported, each *unknown* or outside scope:
   wiring and the Origin-only tunables (hub I/O credit counts) are not
   described here.
 - The 400 MB/s link-speed distinction (status bit 5).
-- Execution of the FPGA images, the video formatters, the packers, the
-  colour converters, the lookup tables and the LVDS link.
+- Execution of the FPGA images, the video formatters, the colour
+  converters, the lookup tables and the LVDS link; the packers and
+  unpackers are only the output packings of :ref:`sgi-xt-digvid-payload`.
+- Input payload, 4:4:4 and key (alpha) packings, the reversed component
+  orders, and board audio.
 - The VBOB's firmware, its flashing protocol and its other front-panel
   inputs and outputs (genlock outputs, RS-422, general-purpose I/O).
 - The diagnostic's second colour converter register layout.

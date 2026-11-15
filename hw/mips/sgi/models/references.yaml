@@ -380,6 +380,15 @@ documents:
     obtain:
       url: https://techpubs.jurassic.nl/library/manuals/4000/007-4222-002/pdf/007-4222-002.pdf
       sha256: 0b2d500c17d3d2a02034ab8723cc8d263567fbf28a0bfe5751e7668b30c8d86d
+  007-3968-002:
+    title: "SGI HD I/O Option Board Owner's Guide"
+    publisher: Silicon Graphics
+    kind: manual
+    locator: page
+    rights: published
+    obtain:
+      url: https://techpubs.jurassic.nl/library/manuals/3000/007-3968-002/pdf/007-3968-002.pdf
+      sha256: c5d608ad64b38be7595c918662b40b908c225b4a0c2eb8aebab9db8b4ad8e0f6
   007-4317-001:
     title: "SGI DMediaPro DM2/DM3 Board Owner's Guide"
     publisher: Silicon Graphics
