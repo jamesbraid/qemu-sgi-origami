@@ -1465,7 +1465,7 @@ bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
     CPUMIPSState *env = cpu_env(cs);
     uint32_t lo = env->CP0_WatchLo[0];
     int hit = (wp->flags >> BP_HIT_SHIFT) & BP_MEM_ACCESS;
-    hwaddr phys;
+    TranslateForDebugResult result;
 
     if (!env->cfg.watch_is_physical) {
         return false;
@@ -1474,8 +1474,8 @@ bool mips_debug_check_watchpoint(CPUState *cs, CPUWatchpoint *wp)
           ((hit & BP_MEM_WRITE) && (lo & CP0WL_R10K_W)))) {
         return false;
     }
-    phys = mips_cpu_get_phys_addr_debug(cs, wp->vaddr);
-    if (phys == -1 || phys != mips_r10k_watch_pa(env)) {
+    if (!mips_cpu_translate_for_debug(cs, wp->vaddr, &result) ||
+        result.physaddr != mips_r10k_watch_pa(env)) {
         return false;
     }
     if (env->CP0_Status & ((1 << CP0St_EXL) | (1 << CP0St_ERL))) {
