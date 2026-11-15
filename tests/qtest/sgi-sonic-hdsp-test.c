@@ -2206,6 +2206,138 @@ static void test_timer1_terminal_count(void)
 }
 
 /*
+ * DMA channel 2 to DSP 0's data window against a slow DSP: every word
+ * arrives in order, the channel ends EOC, idle, and raises XINT6.
+ */
+#define DMA2        0x1480u
+#define DMA2_BUF     0xa0010000u
+#define DMA2_DESC    0xa0011000u
+
+static void dma2_to_dsp(unsigned n)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    uint32_t *out = g_new0(uint32_t, n);
+    unsigned got = 0, csr, ipnd, half = n / 2;
+    const uint32_t prog[] = {
+        /* 0x100 */ JCLR_PP(2, X_DSR), 0x100,           /* wait for a word */
+        /* 0x102 */ MOVEP_RD(REG_A1, X_DRXR),
+        /* 0x103 */ JCLR_PP(1, X_DSR), 0x103,           /* room to send */
+        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x106 */ 0x06ffaf,                           /* rep #4095 */
+        /* 0x107 */ 0x000000,                           /* nop */
+        /* 0x108 */ JMP(0x100),
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
+    qtest_clock_step(c.qts, 500 * 1000);
+    for (unsigned i = 0; i < n; i++) {
+        px_write(p, DMA2_BUF + 4 * i, 0x300001 + i);
+    }
+    /* Two descriptors: next, PCI lo, hi, local, count, DCR */
+    for (unsigned k = 0; k < 2; k++) {
+        uint32_t d = DMA2_DESC + 0x20 * k;
+
+        px_write(p, d, k ? 0 : DMA2_DESC + 0x20);
+        px_write(p, d + 4, DSP_BASE(0) + HP_DATA);
+        px_write(p, d + 8, 0);
+        px_write(p, d + 12, DMA2_BUF + 4 * half * k);
+        px_write(p, d + 16, 4 * half);
+        px_write(p, d + 20, 0x17);          /* memory write, interrupt */
+    }
+    px_write(p, DMA2, 1);                   /* enable */
+    px_write(p, DMA2 + 0x10, DMA2_DESC);     /* the chain starts */
+    px_run(&c, p);
+    for (unsigned i = 0; i < 2000 && got < n; i++) {
+        Proxy *q = g_new0(Proxy, 1);
+        unsigned st[6], dat[6];
+
+        qtest_clock_step(c.qts, 100 * 1000);
+        for (unsigned k = 0; k < 6; k++) {
+            st[k] = px_hp_read(q, 0, HP_HSTR);
+            dat[k] = px_hp_read(q, 0, HP_DATA);
+        }
+        px_run(&c, q);
+        for (unsigned k = 0; k < 6 && got < n; k++) {
+            if ((q->val[st[k]] & HSTR_HRRQ) || q->val[dat[k]]) {
+                out[got++] = q->val[dat[k]];
+            }
+        }
+        g_free(q);
+    }
+    g_assert_cmpuint(got, ==, n);
+    for (unsigned i = 0; i < n; i++) {
+        g_assert_cmphex(out[i], ==, 0x300001 + i);
+    }
+    csr = px_read(p, DMA2 + 4);
+    ipnd = px_read(p, MMR_IPND);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[csr] & 0x700, ==, 0x300);    /* EOT, EOC, idle */
+    g_assert_cmphex(p->val[ipnd] & 0x40, ==, 0x40);     /* XINT6 */
+    g_free(out);
+    g_free(p);
+    card_quit(&c);
+}
+
+static void test_dma2_chain_to_dsp(void)
+{
+    dma2_to_dsp(20);
+}
+
+/* More words than the host-write hold queue takes: the channel must wait. */
+static void test_dma2_chain_to_dsp_long(void)
+{
+    dma2_to_dsp(300);
+}
+
+/* From the DSP: the channel waits for each word the DSP has to give. */
+static void test_dma2_from_dsp(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    unsigned csr, w[8];
+    uint32_t code[0x40] = { 0 };
+    unsigned i = 0, at;
+
+    for (unsigned k = 0; k < 8; k++) {
+        at = i;
+        code[i++] = JCLR_PP(1, X_DSR);                  /* room to send */
+        code[i++] = 0x100 + at;
+        PUT_PP(code, i, X_DTXS, 0x600001 + k);
+        code[i++] = 0x06ffaf;                           /* rep #4095 */
+        code[i++] = 0x000000;
+    }
+    code[i++] = DSP_WAIT;
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, code, i);
+    qtest_clock_step(c.qts, 500 * 1000);
+    px_write(p, DMA2_DESC, 0);
+    px_write(p, DMA2_DESC + 4, DSP_BASE(0) + HP_DATA);
+    px_write(p, DMA2_DESC + 8, 0);
+    px_write(p, DMA2_DESC + 12, DMA2_BUF);
+    px_write(p, DMA2_DESC + 16, 32);
+    px_write(p, DMA2_DESC + 20, 0x6);                   /* memory read */
+    px_write(p, DMA2, 1);
+    px_write(p, DMA2 + 0x10, DMA2_DESC);
+    px_run(&c, p);
+    qtest_clock_step(c.qts, 5 * 1000 * 1000);
+    for (unsigned k = 0; k < 8; k++) {
+        w[k] = px_read(p, DMA2_BUF + 4 * k);
+    }
+    csr = px_read(p, DMA2 + 4);
+    px_run(&c, p);
+    for (unsigned k = 0; k < 8; k++) {
+        g_assert_cmphex(p->val[w[k]], ==, 0x600001 + k);
+    }
+    g_assert_cmphex(p->val[csr] & 0x700, ==, 0x100);    /* EOC, idle */
+    g_free(p);
+    card_quit(&c);
+}
+
+/*
  * SSISR: an enabled transmitter with nothing written sets TUE and TDE; a
  * write to the data register, or to TSR, after reading SSISR clears TUE.
  */
@@ -2699,6 +2831,11 @@ int main(int argc, char **argv)
                    test_dsp_hinta_to_xint4);
     qtest_add_func("/sgi-sonic-hdsp/timer1-terminal-count",
                    test_timer1_terminal_count);
+    qtest_add_func("/sgi-sonic-hdsp/dma2-chain-to-dsp",
+                   test_dma2_chain_to_dsp);
+    qtest_add_func("/sgi-sonic-hdsp/dma2-chain-to-dsp-long",
+                   test_dma2_chain_to_dsp_long);
+    qtest_add_func("/sgi-sonic-hdsp/dma2-from-dsp", test_dma2_from_dsp);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-tfs-slot0",
                    test_dsp_essi0_tfs_slot0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue", test_ssisr_tue);

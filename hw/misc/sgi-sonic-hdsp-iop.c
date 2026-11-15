@@ -625,10 +625,9 @@ static void dma_run(SonicHDSPState *h, unsigned ch, bool resume)
             d->csr |= DMA_CSR_MASTER_ABORT;
             break;
         }
-        if (ch == 2 || d->puadr) {
-            qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DMA channel %u to the "
-                          "secondary bus or a 64-bit address is not "
-                          "modelled\n", ch);
+        if (d->puadr) {
+            qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DMA channel %u to a "
+                          "64-bit address is not modelled\n", ch);
             d->csr |= DMA_CSR_MASTER_ABORT;
             break;
         }
@@ -641,6 +640,43 @@ static void dma_run(SonicHDSPState *h, unsigned ch, bool resume)
                 return;     /* still active: the next slice continues */
             }
             n = MIN(n, budget);
+            if (ch == 2) {
+                /*
+                 * Channel 2 waits on a DSP's FIFO (UM pp. 6-62, 6-63) and
+                 * retries next slice.
+                 */
+                SonicHDSPDSPState *t;
+
+                sonic_hdsp_dsp_sync(h);
+                t = sonic_hdsp_dsp_at(h, d->padr);
+                if (t) {
+                    n = MIN(n, 4u);
+                    if (to_pci ? !sonic_hdsp_dsp_tx_room(t) :
+                                 !sonic_hdsp_dsp_rx_ready(t)) {
+                        return;     /* still active: wait for the DSP */
+                    }
+                }
+                if (to_pci) {
+                    local_read_buf(h, d->ladr, buf, n);
+                    r = address_space_write(&PCI_BRIDGE(h)->as_mem, d->padr,
+                                            MEMTXATTRS_UNSPECIFIED, buf, n);
+                } else {
+                    r = address_space_read(&PCI_BRIDGE(h)->as_mem, d->padr,
+                                           MEMTXATTRS_UNSPECIFIED, buf, n);
+                    if (r == MEMTX_OK) {
+                        local_write_buf(h, d->ladr, buf, n);
+                    }
+                }
+                if (r != MEMTX_OK) {
+                    d->csr |= DMA_CSR_MASTER_ABORT;
+                    goto out;
+                }
+                d->padr += n;
+                d->ladr += n;
+                d->bcr -= n;
+                budget -= n;
+                continue;
+            }
             if (to_pci) {
                 local_read_buf(h, d->ladr, buf, n);
                 r = pci_dma_write(atu, d->padr, buf, n);
