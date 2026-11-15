@@ -364,6 +364,15 @@ static void mgras_retrace(void *opaque)
 {
     SGIMgrasState *s = opaque;
 
+    /*
+     * The two coordinates are separate register writes. Reporting at the
+     * retrace gives the absolute pointer one position a move, not an x
+     * with the old y, which it would answer with a second step.
+     */
+    if (s->cursor_report_pending) {
+        s->cursor_report_pending = false;
+        sgi_mgras_display_cursor_report(s);
+    }
     if (s->display_enabled) {
         bool vintr = s->vc3_reg[MGRAS_VC3_CONTROL] & MGRAS_VC3_CONTROL_VINTR;
         bool dest = s->hq_vector_dest_upper || s->hq_vector_dest_lower;
@@ -1429,8 +1438,16 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
         case 0x05:
             s->dirty = true;
             break;
-        case 0x02: s->cursor_x = data16; s->dirty = true; break;
-        case 0x03: s->cursor_y = data16; s->dirty = true; break;
+        case 0x02:
+            s->cursor_x = data16;
+            s->cursor_report_pending = true;
+            s->dirty = true;
+            break;
+        case 0x03:
+            s->cursor_y = data16;
+            s->cursor_report_pending = true;
+            s->dirty = true;
+            break;
         case 0x1d: {
             bool enabled = (data16 & 0x2) != 0;
             if (enabled != s->cursor_enabled) {
@@ -1735,6 +1752,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
     s->entry = s->protocol = s->prefix = 0; s->prefix_written = false;
     s->entry_selected = s->first_ack = s->second_ack = s->ready = false;
     s->display_enabled = s->cursor_enabled = false;
+    s->cursor_report_pending = false;
     /* Redraw because reset changes display state and pixel storage. */
     s->dirty = true;
     memset(s->xmap, 0, sizeof(s->xmap));

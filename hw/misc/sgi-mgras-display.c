@@ -16,6 +16,18 @@
 #define MGRAS_CURSOR_ORIGIN 31
 
 /*
+ * Tell the shared-memory display where the guest has put its cursor, the
+ * glyph's top-left pixel, which is where the X server puts the pointer less
+ * its hot spot (an approximation: the pointer lands that offset away).
+ */
+void sgi_mgras_display_cursor_report(SGIMgrasState *s)
+{
+    sgi_scanout_cursor_report(&s->scanout,
+                              (int)s->cursor_x - MGRAS_CURSOR_ORIGIN,
+                              (int)s->cursor_y - MGRAS_CURSOR_ORIGIN);
+}
+
+/*
  * The VC3 takes each pixel's window ID (the XMAP entry it resolves
  * through) from display-ID tables in its SRAM: register 4 points at the
  * main planes' frame table, register 5 at the overlay's. A frame table

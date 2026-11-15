@@ -899,6 +899,14 @@ centre (:src:`sgi-gbe-1.1-spec p. 22`), *established*. Both modes need the
 enable bit. A line period of 54 dots or fewer disables the cursor
 (``/sgi-gbe/cursor-projection``, ``/sgi-gbe/cursor-boundaries``).
 
+A write to CRS_0 reports the glyph's corrected top-left position (the
+crosshair's centre) to the shared-memory display (:ref:`sgi-display-shm`)
+so an absolute pointer can find it, whether or not the cursor is enabled. A
+line period of 54 dots or fewer, or no lines, reports nothing. The report
+is the glyph's corner and the pointer lands the hot spot's offset in the
+glyph away from a target, an *approximation*; a later change to the timing
+registers moves the cursor without a new report until CRS_0 is written.
+
 Video capture
 =============
 

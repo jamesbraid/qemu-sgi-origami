@@ -960,6 +960,167 @@ static void test_properties_on_every_machine(void)
     qtest_quit(qts);
 }
 
+/* ---- Guest cursors that live in the model's pixels ------------------- */
+
+#define HEAD_CURSOR_GEN     48
+#define HEAD_CURSOR_ON      52
+#define HEAD_CURSOR_X       56
+#define HEAD_CURSOR_Y       60
+
+#define ODSY_CURSOR_POSITION    0x2580
+#define ODSY_CURSOR_CONTROL     0x2581
+
+#define MGRAS_VC3_INDEXDATA     (0x1b000000ULL + 0x072038)
+#define MGRAS_VC3_WORD(index, data) \
+    (((uint32_t)(index) << 24) | ((uint32_t)(data) << 8))
+#define MGRAS_CURSOR_ORIGIN     31
+
+#define GBE_BASE                0x16000000ULL
+#define GBE_VT(n)               (GBE_BASE + 0x10000 + (n) * 4)
+#define GBE_CRS_0               (GBE_BASE + 0x70000)
+
+static int32_t head_cursor_x(Session *s)
+{
+    return (int32_t)qatomic_read((uint32_t *)(head_raw(s, 0) +
+                                              HEAD_CURSOR_X));
+}
+
+static int32_t head_cursor_y(Session *s)
+{
+    return (int32_t)qatomic_read((uint32_t *)(head_raw(s, 0) +
+                                              HEAD_CURSOR_Y));
+}
+
+/*
+ * A model that draws its cursor into its own pixels publishes only where the
+ * guest put it: cursor_on stays 0 so a viewer shows no second cursor, and
+ * there is no new generation, the cursor being in the pixels. gen is the
+ * one binding the head left.
+ */
+static void assert_cursor_published_only_as_position(Session *s, uint32_t gen,
+                                                     int x, int y)
+{
+    g_assert_cmpint(head_cursor_x(s), ==, x);
+    g_assert_cmpint(head_cursor_y(s), ==, y);
+    g_assert_cmpuint(ldl_le_p(head_raw(s, 0) + HEAD_CURSOR_ON), ==, 0);
+    g_assert_cmpuint(ldl_le_p(head_raw(s, 0) + HEAD_CURSOR_GEN), ==, gen);
+}
+
+/* The VPro's position entry: the glyph's top-left pixel, x:y in 31:16, 15:0. */
+static void test_vpro_cursor_position(void)
+{
+    QTestState *qts = start();
+    uint32_t gen;
+    Session s;
+
+    session_open(&s, qts);
+    gen = ldl_le_p(head_raw(&s, 0) + HEAD_CURSOR_GEN);
+    assert_cursor_published_only_as_position(&s, gen, 0, 0);
+
+    backend_push(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_POSITION, 1));
+    backend_push(qts, 380u << 16 | 372);
+    assert_cursor_published_only_as_position(&s, gen, 380, 372);
+
+    /* Enabling it, or loading a glyph, moves nothing. */
+    backend_push(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_CONTROL, 1));
+    backend_push(qts, 1);
+    assert_cursor_published_only_as_position(&s, gen, 380, 372);
+
+    /* Each coordinate is a signed 16-bit value. */
+    backend_push(qts, ODSY_BACKEND_HDR(ODSY_CURSOR_POSITION, 1));
+    backend_push(qts, ((uint32_t)(uint16_t)-5) << 16 | 1023);
+    assert_cursor_published_only_as_position(&s, gen, -5, 1023);
+    session_close(&s);
+    qtest_quit(qts);
+}
+
+static QTestState *start_octane_mgras(void)
+{
+    return qtest_initf("-M octane,display-shm=sgi-dsp-%d,"
+                       "display-shm-socket=%s -m 128M -cpu R10000 -bios %s "
+                       "-S -display none -serial none -monitor none "
+                       "-device sgi-mgras,slot=widget-11,product=si",
+                       getpid(), sock_path, prom_path);
+}
+
+/*
+ * The IMPACT's VC3 registers 2 and 3 are the glyph's top-left pixel plus
+ * 31. They are separate writes, so the position is published at the next
+ * retrace, once, not as an x with the old y.
+ */
+static void test_impact_cursor_position(void)
+{
+    QTestState *qts = start_octane_mgras();
+    uint32_t gen;
+    Session s;
+
+    /* The retrace timer is on the virtual clock, which only runs when going. */
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    session_open(&s, qts);
+    gen = ldl_le_p(head_raw(&s, 0) + HEAD_CURSOR_GEN);
+    assert_cursor_published_only_as_position(&s, gen, 0, 0);
+
+    qtest_writel(qts, MGRAS_VC3_INDEXDATA,
+                 MGRAS_VC3_WORD(2, 380 + MGRAS_CURSOR_ORIGIN));
+    g_assert_cmpint(head_cursor_x(&s), ==, 0);
+    qtest_writel(qts, MGRAS_VC3_INDEXDATA,
+                 MGRAS_VC3_WORD(3, 372 + MGRAS_CURSOR_ORIGIN));
+    g_assert_cmpint(head_cursor_y(&s), ==, 0);
+    qtest_clock_step(qts, 100 * 1000 * 1000);
+    assert_cursor_published_only_as_position(&s, gen, 380, 372);
+
+    /* Near the top left the glyph's corner is off the screen. */
+    qtest_writel(qts, MGRAS_VC3_INDEXDATA, MGRAS_VC3_WORD(2, 10));
+    qtest_writel(qts, MGRAS_VC3_INDEXDATA, MGRAS_VC3_WORD(3, 0));
+    qtest_clock_step(qts, 100 * 1000 * 1000);
+    assert_cursor_published_only_as_position(&s, gen,
+                                             10 - MGRAS_CURSOR_ORIGIN,
+                                             -MGRAS_CURSOR_ORIGIN);
+    session_close(&s);
+    qtest_quit(qts);
+}
+
+/*
+ * The O2's GBE places CRS_0's position by the timing registers: less the
+ * 54-dot lead taken from VT_18, plus VT_18's signed Y start.
+ */
+static void test_gbe_cursor_position(void)
+{
+    QTestState *qts = qtest_initf(
+        "-M o2,display-shm=sgi-dsp-%d,display-shm-socket=%s,"
+        "register-test-profile=on,bank-profile=8x128m-synthetic,"
+        "crime-profile=1.5,reset-low-ram-approx=on,"
+        "functional-memory-transfer=on,prom-private-window=on,"
+        "prom-sb64-reset=on,gbe11-registers=on,prom-id-word=on,"
+        "password-clear-input=0,rom-image=%s,rom-size=524288,"
+        "rom-offset=0,rom-pad-byte=238 -cpu R10000 -m 1G -display none "
+        "-serial none -monitor none -S", getpid(), sock_path, prom_path);
+    uint32_t gen;
+    Session s;
+
+    session_open(&s, qts);
+    gen = ldl_le_p(head_raw(&s, 0) + HEAD_CURSOR_GEN);
+    assert_cursor_published_only_as_position(&s, gen, 0, 0);
+
+    /* No line period yet: nothing to place the cursor in. */
+    qtest_writel(qts, GBE_CRS_0, 7u << 16 | 9);
+    assert_cursor_published_only_as_position(&s, gen, 0, 0);
+
+    /* 1344 dots by 806 lines, the cursor lead 54 dots before the start. */
+    qtest_writel(qts, GBE_VT(1), 806u << 12 | 1344);
+    qtest_writel(qts, GBE_VT(18), (1344 - 54));
+    qtest_writel(qts, GBE_CRS_0, 100u << 16 | 200);
+    assert_cursor_published_only_as_position(&s, gen, 200, 100);
+
+    /* A negative position is signed, and VT_18's Y start moves it. */
+    qtest_writel(qts, GBE_VT(18), 3u << 12 | (1344 - 54));
+    qtest_writel(qts, GBE_CRS_0, ((uint32_t)(uint16_t)-4) << 16 |
+                                 (uint16_t)-31);
+    assert_cursor_published_only_as_position(&s, gen, -31, -1);
+    session_close(&s);
+    qtest_quit(qts);
+}
+
 /* ---- Input ------------------------------------------------------------ */
 
 #define BRIDGE          0x1f000000ULL
@@ -1736,6 +1897,12 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-display-shm/region-message", test_region_message);
     qtest_add_func("sgi-display-shm/dirty", test_dirty);
     qtest_add_func("sgi-display-shm/cursor-wake", test_cursor_wake);
+    qtest_add_func("sgi-display-shm/vpro-cursor-position",
+                   test_vpro_cursor_position);
+    qtest_add_func("sgi-display-shm/impact-cursor-position",
+                   test_impact_cursor_position);
+    qtest_add_func("sgi-display-shm/gbe-cursor-position",
+                   test_gbe_cursor_position);
     qtest_add_func("sgi-display-shm/resize", test_resize);
     qtest_add_func("sgi-display-shm/reconnect", test_reconnect);
     qtest_add_func("sgi-display-shm/reconnect-after-resize",

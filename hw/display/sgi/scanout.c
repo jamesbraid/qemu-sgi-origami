@@ -361,6 +361,11 @@ void sgi_scanout_cursor_move(SGIScanout *s, int x, int y, bool on)
     }
 }
 
+void sgi_scanout_cursor_report(SGIScanout *s, int x, int y)
+{
+    sgi_display_head_guest_cursor(s, x, y);
+}
+
 void sgi_scanout_queue_swap(SGIScanout *s, uint64_t seq, uint64_t cookie)
 {
     if (s->swap_count == SGI_SWAP_MAX) {

@@ -158,6 +158,14 @@ void sgi_scanout_cursor_define(SGIScanout *s, uint32_t w, uint32_t h,
                                int hot_x, int hot_y, const uint32_t *argb);
 /* The hot spot is at display (x, y); on is whether the cursor shows. */
 void sgi_scanout_cursor_move(SGIScanout *s, int x, int y, bool on);
+/*
+ * A model that draws its cursor into the pixels it resolves, and so calls
+ * neither of the above, reports where the guest put it: the position, in
+ * display pixels, of the point the guest means by the cursor. The
+ * shared-memory display's absolute pointer closes its loop on it. Nothing
+ * is drawn or shown from this and cursor_on stays 0.
+ */
+void sgi_scanout_cursor_report(SGIScanout *s, int x, int y);
 
 /*
  * Queue a swap to take effect at a coming retrace. With SGI_SWAP_MAX

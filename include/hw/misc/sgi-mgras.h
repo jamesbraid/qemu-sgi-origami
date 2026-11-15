@@ -846,6 +846,8 @@ struct SGIMgrasState {
     uint8_t cursor[256];
     uint32_t cursor_x;
     uint32_t cursor_y;
+    /* The position moved since the last report; not migrated state. */
+    bool cursor_report_pending;
     uint16_t cmap_selector;
     uint8_t cmap_position;
     uint32_t cmap[SGI_MGRAS_CMAP_ENTRIES];

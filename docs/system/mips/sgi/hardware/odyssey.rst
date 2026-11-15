@@ -772,8 +772,14 @@ encoding and the latch point are the model's (*approximation*); whether
 the board can mask the retrace source is *unknown*.
 
 OpenBSD's console uses 1280 by 1024 at 32 bits per pixel and draws its
-cursor in software, a *software expectation*. The model has no hardware
-cursor, no DDC or EDID and no second channel.
+cursor in software, a *software expectation*. The model has no DDC or EDID
+and no second channel. The display back end's 32 by 32 hardware cursor is
+drawn into the scanned-out picture, and a write to its position entry
+(``0x2580``, x in 31:16 and y in 15:0 as signed values) is reported to the
+shared-memory display as the cursor's position, so an absolute pointer can
+find it (:ref:`sgi-display-shm`). The entry holds the glyph's top-left pixel
+and the board has no hot spot, so that is the position reported, an
+*approximation*.
 
 .. _sgi-odyssey-mesa:
 
@@ -944,7 +950,7 @@ Model limits
 ============
 
 - One fixed 1280 by 1024 plane set and a 60 Hz retrace at every display
-  size. No hardware cursor, DDC, EDID, second channel or video timing.
+  size. No DDC, EDID, second channel or video timing.
 - No uploaded program runs. Program uploads are stored; the model
   recognises the known geometry programs and does their work itself.
 - The framebuffer, depth, stencil and object planes are model storage,

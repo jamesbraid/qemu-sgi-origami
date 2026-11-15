@@ -2869,6 +2869,16 @@ static void odyssey_cursor_write(SGIOdysseyState *s, uint32_t index,
     odyssey_cursor_span(s, &first, &last);
     odyssey_cursor_invalidate(s, old_first, old_last);
     odyssey_cursor_invalidate(s, first, last);
+    if (index == ODSY_CURSOR_POSITION) {
+        /*
+         * The shared-memory display's absolute pointer follows the guest's
+         * cursor. The board has no hot spot, so the glyph's top-left pixel
+         * (the crosshair's point) stands for it, an APPROXIMATION: the
+         * pointer lands the hot spot's offset in the glyph away.
+         */
+        sgi_scanout_cursor_report(&s->scanout, odyssey_cursor_x(s),
+                                  odyssey_cursor_y(s));
+    }
 }
 
 /*

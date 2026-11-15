@@ -1346,6 +1346,11 @@ VC3 registers 2 and 3 position the 32x32 cursor at its top-left pixel
 plus 31, *inferred* from the X server's writes; register ``0x1d`` bit 1
 enables it and register ``0x1e`` bit 2 enables the display. Register 7
 loads and reads back the SRAM address.
+The model reports the position less 31, the glyph's top-left pixel, to the
+shared-memory display (:ref:`sgi-display-shm`) at the next retrace after
+either register is written, so that the two writes of one move are one
+report. With no retrace running there is no report. The VC3 has no hot spot register, so the pointer lands the hot
+spot's offset in the glyph away from a target, an *approximation*.
 
 Retrace period
 --------------

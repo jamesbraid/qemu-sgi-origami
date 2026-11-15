@@ -536,10 +536,16 @@ image. To read the image: read ``cursor_gen``, retry while it is odd, copy
 the image, read it again and retry if it moved. A viewer that only follows
 the pointer reads the position when ``cursor_gen`` changes. The host cursor
 is the guest's, so a viewer that shows it never repaints for it.
-A model that draws its cursor into its own pixels (the InfiniteReality)
-keeps ``cursor_on`` 0, so a viewer shows no second cursor, and still
-publishes ``cursor_x`` and ``cursor_y`` for absolute input, without a generation: the
-cursor is in the pixels and a move marks lines.
+A model that draws its cursor into its own pixels (the InfiniteReality, the
+VPro, the IMPACT and the O2's GBE) keeps ``cursor_on`` 0, so a viewer shows
+no second cursor, and still publishes ``cursor_x`` and ``cursor_y`` for
+absolute input, without a generation: the cursor is in the pixels and a move
+marks lines. These four publish when the guest writes the cursor's position
+register. The VPro, the IMPACT and the GBE have no hot spot register, so the
+position is the glyph's top-left pixel, and the pointer lands the hot spot's
+offset in the glyph away from the target (*approximation*). The IMPACT
+reports at its next retrace, because its two coordinates are separate
+register writes.
 
 **Order of channels.** The control block and the socket are separate
 channels. A plane or the cursor image can name a region before the viewer
@@ -718,6 +724,8 @@ Limits
 - Heads are fixed when the machine starts. Models other than the four
   above that draw through the shared scanout do not publish yet.
 - The cursor is the guest's image, at most 64 by 64.
+- The PsiTech RAD1 and RAD4 draw through their own console, not the shared
+  scanout, and publish no head, so no cursor.
 - The GPU export is tested against NVIDIA's proprietary driver and
   Mesa's lavapipe on Linux. AMD, Intel and nouveau drivers implement the
   same interface, and Windows with any adapter, have not been run.
@@ -742,6 +750,9 @@ GPU:
 - the dirty bitmap (a changed line is marked, an unchanged one and a line
   past the head's last are not), ``content_gen`` and ``WAKE`` after a pixel
   change;
+- the VPro's, the IMPACT's and the GBE's cursor position register writes
+  appearing as ``cursor_x`` and ``cursor_y`` with ``cursor_on`` and
+  ``cursor_gen`` unchanged;
 - a guest cursor move bumping ``cursor_gen`` by 2 and waking an armed
   viewer, through ``x-display-shm-cursor``, a test-only machine property
   that moves head 0's host cursor as a model would;

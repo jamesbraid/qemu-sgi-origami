@@ -9,6 +9,8 @@
 void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst);
 /* Hand a pending whole-frame change to the scanout as dirty lines. */
 void sgi_mgras_display_flush(SGIMgrasState *s);
+/* Report the VC3 cursor position to the shared-memory display. */
+void sgi_mgras_display_cursor_report(SGIMgrasState *s);
 /*
  * The display mode: the board's screen, and the retrace period the VC3
  * timing tables and the DAC's pixel clock give. Tables that give no frame,

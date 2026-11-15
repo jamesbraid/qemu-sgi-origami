@@ -654,23 +654,50 @@ invalid:
     return 0;
 }
 
+/*
+ * Where CRS_0 puts the glyph's top-left corner (the crosshair's centre) on
+ * the display: the register, less the horizontal alignment and plus the
+ * vertical one the timing registers give. False if the line period is too
+ * short for the 54-dot lead or the frame has no lines, which no cursor can
+ * be placed in.
+ */
+static bool cursor_position(SGIO2GBEState *s, int *cx, int *cy)
+{
+    unsigned xp = lo(s->vt[1]), yp = hi(s->vt[1]);
+
+    if (xp <= 54 || !yp) {
+        return false;
+    }
+    *cx = (int16_t)s->crs[0] +
+          (int)distance(lo(s->vt[15]) % xp, lo(s->vt[18]), xp) - 54;
+    *cy = (int16_t)(s->crs[0] >> 16) + sextract32(s->vt[18], 12, 12) +
+          distance(lo(s->vt[16]) % yp, hi(s->vt[4]), yp);
+    return true;
+}
+
+/* Tell the shared-memory display where the guest has put its cursor. */
+static void cursor_report(SGIO2GBEState *s)
+{
+    int cx, cy;
+
+    if (cursor_position(s, &cx, &cy)) {
+        sgi_scanout_cursor_report(&s->scanout, cx, cy);
+    }
+}
+
 static uint32_t cursor_color(SGIO2GBEState *s, unsigned x, unsigned y,
                               uint32_t under)
 {
-    unsigned xp = lo(s->vt[1]), yp = hi(s->vt[1]);
-    int cx = (int16_t)s->crs[0], cy = (int16_t)(s->crs[0] >> 16);
+    int cx, cy;
     unsigned index;
 
     if (!(s->crs[1] & 1)) {
         return under;
     }
-    if (xp <= 54) {
+    if (!cursor_position(s, &cx, &cy)) {
         unsupported("cursor horizontal alignment");
         return under;
     }
-    cx += (int)distance(lo(s->vt[15]) % xp, lo(s->vt[18]), xp) - 54;
-    cy += sextract32(s->vt[18], 12, 12) +
-          distance(lo(s->vt[16]) % yp, hi(s->vt[4]), yp);
     if (s->crs[1] & 2) {
         return (x == cx || y == cy) ? s->crs[2] >> 8 : under;
     }
@@ -989,6 +1016,9 @@ static void write_reg(void *opaque, hwaddr addr, uint64_t value, unsigned size)
                              index == 1 ? 3 : GBE_RGB_MASK);
         if (index >= 2) {
             s->crs_written[index - 2] = 1;
+        }
+        if (!index) {
+            cursor_report(s);
         }
         goto done;
     }
