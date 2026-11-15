@@ -2172,7 +2172,12 @@ DSP 3's flag unset until the end of frame 0 and the frame stalls
 On a first board DSP 0's frame loop then waits for port C data bit 1 of
 ESSI0 (the SC01 pin, a GPIO input) to read 1; no image drives it. The model
 holds it high (*approximation*; the source is *unknown*, a box-present or
-clock-locked line being plausible).
+clock-locked line being plausible). Each frame also needs the DMA
+channel 1 interrupt, six words received on ESSI0 (24-bit words, network
+on-demand mode, external bit clock, DSP-driven frame sync on SC2), so the
+audio ports of DSP 0 and 1 receive a word per frame from outside; the rate
+is the model's sample rate (*approximation*, the board's clock is
+*unknown*).
 
 .. _sgi-sonic-hdsp-host:
 
@@ -2585,8 +2590,9 @@ with what would settle it:
      - A DSP-line trace against the i960's interrupt controller
    * - ESSI timing and pins
      - One word per slot per frame sync of the sample clock; no bit clock;
-       clock, frame-sync and pin fields stored only; ports with no link
-       receive nothing
+       clock, frame-sync and pin fields stored only; a 24-bit port with
+       nothing linked receives a zero word per slot, as if the board
+       supplied its clocks and the input were silent
      - A capture of the ports' pins against a running monitor
    * - DSP 0's TIO1 to DSP 3's IRQC
      - A rising edge of timer 1's data bit on DSP 0, with the timer a GPIO
@@ -2682,8 +2688,9 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
   low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
 - timer 1's data bit rising on DSP 0 wakes DSP 3 through IRQC and not
-  before;
-  ESSI0's PC1 reads high as an input and as written as an output;
+  before; ESSI0's PC1 reads high as an input and as written as an output;
+  ESSI0 in the first-board mode feeds a six-word DMA block that completes;
+  a 24-bit port with no link receives a zero word per frame;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

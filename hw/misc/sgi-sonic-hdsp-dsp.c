@@ -312,9 +312,20 @@ static bool essi_link_rx(SonicHDSPDSPState *s, unsigned essi, uint32_t *word,
     if (s->index == 2 && essi == 0 && h->box) {
         return sonic_ada8824_rx(h->box, word, wl);
     }
-    if (essi == 1 && h->essi1_chain && e->in_valid) {
-        e->in_valid = 0;
-        *word = e->in_word >> (24 - wl);
+    if (essi == 1 && h->essi1_chain) {
+        if (e->in_valid) {
+            e->in_valid = 0;
+            *word = e->in_word >> (24 - wl);
+            return true;
+        }
+        return false;       /* chained: only what the neighbour sent */
+    }
+    if (wl == 24) {
+        /*
+         * Audio clocks come from the board and never stop; unlinked input
+         * is silence.
+         */
+        *word = 0;
         return true;
     }
     return false;
