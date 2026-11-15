@@ -1873,7 +1873,13 @@ receive buffers. An on-demand word on the board's clock takes ``WL`` bit
 clocks of 256 times the sample rate, *inferred*: the frame loop has to move
 six words per 48 kHz frame, so the clock cannot be slower than about 7 MHz,
 and 256 * fs is the usual converter master clock above that. At a word per
-sample period the loops ran at a quarter of real time. In each slot a transmitter takes
+sample period the loops ran at a quarter of real time. A port whose bit clock and frame sync are both inputs (SCKD and SCD2
+clear), on a DSP other than DSP 2, with nothing linked to it, shifts no word
+and sets neither TDE nor RDF: with no clock nothing moves. That is how a
+first board's ESSI1 on DSP 0 and DSP 1 is set up (CRB ``0x031100``,
+*software expectation*), and the frame loops never wait on it
+(*inferred*: no clock source is known for it on a single card). The
+converter box clocks both of DSP 2's ports. In each slot a transmitter takes
 the word in TX0 (its top ``WL`` bits, 8, 12, 16 or 24 bits; 32-bit words
 log ``LOG_UNIMP``) if the DSP wrote it since the last slot, sets TDE, and
 otherwise sets TUE and sends the old word again; a receiver takes the
@@ -2640,8 +2646,10 @@ with what would settle it:
      - One word at the start of each slot, a slot being a share of the
        sample period, or ``WL`` bit clocks of the DSP's own clock with SCKD
        set; no bit shifting; polarity, direction and pin fields stored
-       only; a 24-bit port with nothing linked receives a zero word per
-       slot, as if the board supplied its clocks and the input were silent
+       only; a 24-bit port that the board clocks (an on-demand port, or one of
+       DSP 2's) with nothing linked receives a zero word per slot, as if the
+       input were silent; an unlinked port with an external clock and frame
+       sync is idle
      - A capture of the ports' pins against a running monitor
    * - DSP 0's TIO1 to DSP 3's IRQC
      - A rising edge of timer 1's data bit on DSP 0, with the timer a GPIO
