@@ -306,6 +306,7 @@ if have_system
                      '../../hw/display/sgi/command-fetch.c',
                      migration, io],
     'test-sgi-scanout': ['../../hw/display/sgi/scanout.c',
+                         'test-sgi-scanout-stubs.c',
                          migration, io, pixman, opengl],
     'test-iov': [],
     'test-opts-visitor': [testqapi],

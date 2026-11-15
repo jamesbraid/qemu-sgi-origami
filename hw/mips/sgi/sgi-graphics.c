@@ -17,6 +17,7 @@
 #include "qom/object.h"
 #include "system/system.h"
 #include "hw/mips/sgi/sgi-graphics.h"
+#include "ui/sgi-display-shm.h"
 
 /* The device each family's pipes are, as the catalogue names them. */
 static const char *const sgi_graphics_devices[] = {
@@ -659,4 +660,9 @@ void sgi_graphics_pipes_cleanup(SGIGraphicsPipes *p)
         g_ptr_array_free(p->fitted, true);
         p->fitted = NULL;
     }
+}
+
+void sgi_machine_class_add_display_shm(ObjectClass *oc)
+{
+    sgi_display_shm_class_add_properties(oc);
 }

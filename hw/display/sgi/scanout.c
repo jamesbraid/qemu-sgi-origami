@@ -7,6 +7,7 @@
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
 #include "ui/surface.h"
+#include "ui/sgi-display-shm.h"
 #include "hw/display/sgi/scanout.h"
 #include "trace.h"
 
@@ -137,6 +138,11 @@ void sgi_scanout_invalidate(SGIScanout *s, int first, int count)
         return;
     }
     /*
+     * A family publishing its own planes tells the reader before the
+     * cheap exit below: the reader clears its bits on its own schedule.
+     */
+    sgi_display_head_invalidated(s, first, last - first + 1);
+    /*
      * A band-parallel draw marks rows from several threads at once, a
      * pixel at a time: leave a row already marked alone rather than make
      * every pixel's store contend for its word.
@@ -208,35 +214,55 @@ static uint32_t sgi_scanout_blend(uint32_t src, uint32_t dst)
     return out;
 }
 
-static void sgi_scanout_draw_cursor(SGIScanout *s, int first, int last)
+/* Draw the cursor over display line y, whose pixels are at dst. */
+static void sgi_scanout_draw_cursor_row(SGIScanout *s, int y, uint32_t *dst)
 {
     int left = s->cursor_x - s->cursor_hot_x;
     int top = s->cursor_y - s->cursor_hot_y;
     int w = s->mode.width;
+    const uint32_t *src;
 
-    if (!s->cursor_on) {
+    if (!s->cursor_on || y < top || y > top + (int)s->cursor_h - 1) {
         return;
     }
-    first = MAX(first, top);
-    last = MIN(last, top + (int)s->cursor_h - 1);
-    for (int y = first; y <= last; y++) {
-        const uint32_t *src = &s->cursor_image[(y - top) * s->cursor_w];
-        uint32_t *dst = &s->frame[(size_t)y * w];
+    src = &s->cursor_image[(y - top) * s->cursor_w];
+    for (int i = 0; i < (int)s->cursor_w; i++) {
+        int x = left + i;
 
-        for (int i = 0; i < (int)s->cursor_w; i++) {
-            int x = left + i;
-
-            if (x < 0 || x >= w || !(src[i] >> 24)) {
-                continue;
-            }
-            dst[x] = sgi_scanout_blend(src[i], dst[x]);
+        if (x < 0 || x >= w || !(src[i] >> 24)) {
+            continue;
         }
+        dst[x] = sgi_scanout_blend(src[i], dst[x]);
     }
+}
+
+/*
+ * Resolve one line for a reader that sees the frame's memory: into a spare
+ * row first, so the frame changes, and the line is marked, only where its
+ * pixels do. An unchanged line costs the compare and no store.
+ */
+static bool sgi_scanout_resolve_published(SGIScanout *s, unsigned long line)
+{
+    size_t bytes = (size_t)s->mode.width * sizeof(uint32_t);
+    uint32_t *dst = &s->frame[line * s->mode.width];
+
+    s->ops->resolve_row(s->opaque, line, s->row);
+    if (s->composite_cursor) {
+        sgi_scanout_draw_cursor_row(s, line, s->row);
+    }
+    if (memcmp(dst, s->row, bytes)) {
+        memcpy(dst, s->row, bytes);
+        sgi_display_head_presented(s, line, 1);
+        return true;
+    }
+    return false;
 }
 
 void sgi_scanout_update(SGIScanout *s)
 {
     unsigned long h, y, end;
+    unsigned resolved = 0, changed = 0;
+    bool published;
 
     if (s->ops->pre_update) {
         s->ops->pre_update(s->opaque);
@@ -244,21 +270,32 @@ void sgi_scanout_update(SGIScanout *s)
     if (!s->frame) {
         return;
     }
+    published = sgi_display_head_exact(s);
     h = s->mode.height;
     for (y = find_first_bit(s->dirty, h); y < h;
          y = find_next_bit(s->dirty, h, end)) {
         end = find_next_zero_bit(s->dirty, h, y);
         for (unsigned long line = y; line < end; line++) {
-            s->ops->resolve_row(s->opaque, line,
-                                &s->frame[line * s->mode.width]);
+            if (published) {
+                changed += sgi_scanout_resolve_published(s, line);
+                resolved++;
+            } else {
+                s->ops->resolve_row(s->opaque, line,
+                                    &s->frame[line * s->mode.width]);
+                if (s->composite_cursor) {
+                    sgi_scanout_draw_cursor_row(s, line,
+                        &s->frame[line * s->mode.width]);
+                }
+            }
         }
         bitmap_clear(s->dirty, y, end - y);
-        if (s->composite_cursor) {
-            sgi_scanout_draw_cursor(s, y, end - 1);
-        }
         trace_sgi_scanout_update(y, end - 1);
         qemu_console_update(s->con, 0, y, s->mode.width, end - y);
     }
+    if (resolved) {
+        trace_sgi_scanout_frame(resolved, changed);
+    }
+    sgi_display_head_published(s);
     if (s->composite_cursor) {
         int first, last;
 
@@ -317,6 +354,8 @@ void sgi_scanout_cursor_move(SGIScanout *s, int x, int y, bool on)
     s->cursor_on = on;
     if (s->composite_cursor) {
         sgi_scanout_cursor_invalidate(s);
+        /* No host cursor, but absolute input still needs to see it move. */
+        sgi_display_head_guest_cursor(s, x, y);
     } else {
         qemu_console_set_mouse(s->con, x, y, on);
     }
@@ -334,36 +373,62 @@ void sgi_scanout_queue_swap(SGIScanout *s, uint64_t seq, uint64_t cookie)
     s->swap_count++;
 }
 
+/*
+ * The reader's view of the mode and of the frame that holds it, in one
+ * layout update so it never sees the new size with the old frame.
+ */
+static void sgi_scanout_publish_mode(SGIScanout *s)
+{
+    uint32_t mhz = 0;
+
+    if (s->mode.clock_hz && s->mode.frame_clocks) {
+        mhz = muldiv64(s->mode.clock_hz, 1000, s->mode.frame_clocks);
+    }
+    sgi_display_head_set_frame(s, s->frame ? s->frame_region : NULL,
+                               s->frame ? s->mode.width : 0,
+                               s->frame ? s->mode.height : 0, mhz);
+}
+
 /* A frame, dirty map and surface for the mode, when its size changed. */
 static void sgi_scanout_alloc(SGIScanout *s)
 {
     uint32_t w = s->mode.width, h = s->mode.height;
     uint32_t *old = s->frame;
+    SGIDisplayRegion *old_region = s->frame_region;
 
     if (old && w == s->frame_width && h == s->frame_height) {
         return;
     }
     g_free(s->dirty);
+    g_free(s->row);
+    s->row = NULL;
     s->frame = NULL;
+    s->frame_region = NULL;
     s->dirty = NULL;
     s->frame_width = s->frame_height = 0;
     /* The size is sanitized, so w * 4 fits an int. */
     QEMU_BUILD_BUG_ON(SGI_SCANOUT_MAX_DIM > INT_MAX / 4);
     if (w && h) {
-        s->frame = g_new0(uint32_t, (size_t)w * h);
+        s->frame = sgi_display_region_alloc(OBJECT(s->dev), "frame",
+                                            (uint64_t)w * h * 4,
+                                            SGI_SHM_KIND_PLANE,
+                                            &s->frame_region);
         s->dirty = bitmap_new(h);
+        s->row = g_new(uint32_t, w);
         s->frame_width = w;
         s->frame_height = h;
+        sgi_scanout_publish_mode(s);
         qemu_console_set_surface(s->con,
             qemu_create_displaysurface_from(w, h, PIXMAN_x8r8g8b8, w * 4,
                                             (uint8_t *)s->frame));
     } else if (old) {
+        sgi_scanout_publish_mode(s);
         /* Nothing to show, and the old surface must not outlive its frame. */
         qemu_console_set_surface(s->con,
             qemu_create_placeholder_surface(640, 480, "No display mode"));
     }
     /* Only now: the console's previous surface pointed into it. */
-    g_free(old);
+    sgi_display_region_free(old_region);
 }
 
 void sgi_scanout_set_mode(SGIScanout *s, const SGIScanoutMode *mode)
@@ -373,6 +438,7 @@ void sgi_scanout_set_mode(SGIScanout *s, const SGIScanoutMode *mode)
     trace_sgi_scanout_mode(s->mode.width, s->mode.height,
                            s->mode.frame_clocks, s->mode.clock_hz);
     sgi_scanout_alloc(s);
+    sgi_scanout_publish_mode(s);
     s->cursor_drawn_first = 0;
     s->cursor_drawn_last = -1;
     sgi_scanout_invalidate_all(s);
@@ -419,23 +485,30 @@ void sgi_scanout_init_head(SGIScanout *s, DeviceState *dev, uint32_t head,
     assert(ops->resolve_row);
     s->ops = ops;
     s->opaque = opaque;
+    s->dev = dev;
     s->cursor_drawn_first = 0;
     s->cursor_drawn_last = -1;
     s->retrace_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, sgi_scanout_retrace,
                                     s);
     s->con = qemu_graphic_console_create(dev, head, &sgi_scanout_gfx_ops, s);
+    /* Until a model converts, every head reaches the reader as xrgb. */
+    sgi_display_head_bind(s, SGI_SHM_FAMILY_XRGB, 1);
 }
 
 void sgi_scanout_cleanup(SGIScanout *s)
 {
     timer_free(s->retrace_timer);
     s->retrace_timer = NULL;
+    sgi_display_head_unbind(s);
     qemu_graphic_console_close(s->con);
     s->con = NULL;
-    g_free(s->frame);
+    sgi_display_region_free(s->frame_region);
     g_free(s->dirty);
+    g_free(s->row);
     s->frame = NULL;
+    s->frame_region = NULL;
     s->dirty = NULL;
+    s->row = NULL;
 }
 
 static int sgi_scanout_post_load(void *opaque, int version_id)
@@ -448,6 +521,7 @@ static int sgi_scanout_post_load(void *opaque, int version_id)
         return -EINVAL;
     }
     sgi_scanout_alloc(s);
+    sgi_scanout_publish_mode(s);
     s->cursor_drawn_first = 0;
     s->cursor_drawn_last = -1;
     sgi_scanout_invalidate_all(s);

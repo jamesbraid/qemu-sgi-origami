@@ -18,6 +18,7 @@ docs/sphinx/sgirun.py
 docs/system/mips/sgi/index.rst
 docs/system/mips/sgi/identity.rst
 docs/system/mips/sgi/interchange.rst
+docs/system/mips/sgi/display-shm.rst
 docs/system/devices/sgi-mace-i2c.rst
 docs/system/mips/sgi/glossary.rst
 docs/system/mips/sgi/hardware/baseio.rst
@@ -1074,6 +1075,7 @@ tests/unit/test-sgi-rad1-audio-pcm.c
 tests/unit/test-sgi-render-resource.c
 tests/unit/test-sgi-router.c
 tests/unit/test-sgi-scanout.c
+tests/unit/test-sgi-scanout-stubs.c
 tests/unit/test-sgi-synthetic-serial.c
 tests/unit/test-sgi-x-gc.c
 tests/unit/test-sn-model.c
@@ -1253,6 +1255,7 @@ tests/qtest/sgi-mace-video-test.c
 tests/qtest/sgi-machine-init-test.c
 tests/qtest/sgi-identity-props-test.c
 tests/qtest/sgi-machine-storage-test.c
+tests/qtest/sgi-display-shm-test.c
 tests/qtest/sgi-store-format-test.c
 tests/qtest/sgi-o2-product-fixture.h
 tests/qtest/sgi-pci-expansion-ni-fixture.h

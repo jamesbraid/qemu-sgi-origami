@@ -1,4 +1,5 @@
 system_ss.add(files('sgi-renderer.c'))
+system_ss.add(files('sgi-display-shm.c', 'sgi-display-input.c'))
 
 keymaps = [
   ['atset1', 'linux'],

@@ -8,6 +8,7 @@
 #include "hw/core/boards.h"
 #include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sn-machine.h"
+#include "hw/mips/sgi/sgi-graphics.h"
 #include "cpu.h"
 
 static const char * const sgi_sn1_r14000_cpu_types[] = {
@@ -76,6 +77,7 @@ static void sn1_machine_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "sn1.ram";
     sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
+    sgi_machine_class_add_display_shm(oc);
 }
 
 static const TypeInfo sn1_machine_types[] = {

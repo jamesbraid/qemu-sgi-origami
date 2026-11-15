@@ -32,7 +32,13 @@
  * into the presented frame instead, repainting the lines it covered and
  * covers.
  *
- * Every field is main-loop owned.
+ * With the machine property display-shm the frame lives in shared memory and
+ * the scanout publishes its dirty lines to the external reader as the
+ * generic xrgb family (ui/sgi-display-shm.c); a family that publishes its own
+ * planes says so with sgi_display_head_bind().
+ *
+ * Every field is main-loop owned, except that sgi_scanout_invalidate() may
+ * be called from several threads.
  */
 #ifndef HW_DISPLAY_SGI_SCANOUT_H
 #define HW_DISPLAY_SGI_SCANOUT_H
@@ -62,13 +68,18 @@ typedef struct SGISwapRecord {
 
 typedef struct SGIScanout {
     QemuConsole *con;
+    DeviceState *dev;
     const SGIHeadOps *ops;
     void *opaque;
     bool composite_cursor;      /* draw the cursor into the frame */
 
     SGIScanoutMode mode;
     uint32_t *frame;            /* width x height of 0x00RRGGBB */
+    /* The frame's storage, and the head that publishes it (display-shm). */
+    struct SGIDisplayRegion *frame_region;
+    struct SGIDisplayHead *dhead;
     unsigned long *dirty;       /* one bit per display line */
+    uint32_t *row;              /* a spare line for a published frame */
     uint32_t frame_width, frame_height; /* what frame was allocated for */
 
     QEMUTimer *retrace_timer;

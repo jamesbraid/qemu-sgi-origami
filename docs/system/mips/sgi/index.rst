@@ -55,6 +55,7 @@ each platform page covers its own products.
    ip53
    identity
    interchange
+   display-shm
    measured-machines
    vocabulary
 

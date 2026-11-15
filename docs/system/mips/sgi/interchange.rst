@@ -17,9 +17,10 @@ It covers store images and their clock records, machine identity, how
 firmware images are taken from the published catalogue, CHD hard disks and
 the stream network framing. It leaves out the control protocols (QMP on one
 side, iris's command socket on the other), snapshots and saved machine state,
-the display and input paths and the consoles' byte rules. Those differ by
+the input paths and the consoles' byte rules. Those differ by
 design and no file is exchanged through them. A snapshot taken by one
-emulator is never opened by the other.
+emulator is never opened by the other. The shared-memory display that QEMU
+offers external viewers has its own page, :doc:`display-shm`.
 
 How facts are rated
 ===================
