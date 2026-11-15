@@ -268,8 +268,10 @@ void sonic_hdsp_dsp_reset_line(SonicHDSPState *h, unsigned n, bool held);
 
 /* sgi-sonic-hdsp.c */
 bool sonic_hdsp_retry(SonicHDSPState *h);
-uint32_t sonic_hdsp_secondary_config_read(SonicHDSPState *h, uint32_t addr);
+uint32_t sonic_hdsp_secondary_config_read(SonicHDSPState *h, uint32_t addr,
+                                          unsigned byte, unsigned len);
 void sonic_hdsp_secondary_config_write(SonicHDSPState *h, uint32_t addr,
+                                       unsigned byte, unsigned len,
                                        uint32_t val);
 
 #endif /* HW_MISC_SGI_SONIC_HDSP_H */

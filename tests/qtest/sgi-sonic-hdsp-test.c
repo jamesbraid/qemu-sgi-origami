@@ -793,7 +793,8 @@ static void px_run(Card *c, Proxy *p)
     }
     g_assert_cmpuint(rd(c, PX_GO_OFF), ==, 0);
     for (unsigned i = 0; i < p->n; i++) {
-        if (p->op[i] == PX_READ) {
+        if (p->op[i] == PX_READ || p->op[i] == PX_READ_B ||
+            p->op[i] == PX_READ_S) {
             p->val[i] = rd(c, PX_LIST_OFF + 12 * i + 8);
         }
     }
@@ -835,6 +836,59 @@ static void dsp_release(Card *c, unsigned n)
     px_cfg_write(p, n, 0x04, 0xf8000006);
     px_run(c, p);
     g_free(p);
+}
+
+/*
+ * A byte or halfword access to the secondary outbound configuration data
+ * port runs a configuration cycle of that width (272736-002 p. 16-70): the
+ * i960 reads a DSP's vendor and device IDs as halfwords and its class code
+ * byte as a byte.  An IDSEL with no device answers all ones at the access
+ * width, and a narrow write changes only the bytes it names.
+ */
+static void test_sec_config_subword(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    unsigned vid, did, cls3, cls, none_s, none_b, cmd[4];
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    qtest_clock_step(c.qts, 500 * 1000);
+    px_write(p, 0x12a8, 1u << 17);
+    vid = px_add(p, PX_READ_S, 0x12b0, 0);
+    did = px_add(p, PX_READ_S, 0x12b2, 0);
+    px_write(p, 0x12a8, (1u << 17) | 0x8);
+    cls3 = px_add(p, PX_READ_B, 0x12b3, 0);
+    cls = px_read(p, 0x12b0);
+    px_write(p, 0x12a8, 1u << 12);              /* private lines: no device */
+    none_s = px_add(p, PX_READ_S, 0x12b2, 0);
+    none_b = px_add(p, PX_READ_B, 0x12b1, 0);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[vid], ==, 0x1057);
+    g_assert_cmphex(p->val[did], ==, 0x1801);
+    g_assert_cmphex(p->val[cls3], ==, p->val[cls] >> 24);
+    g_assert_cmphex(p->val[none_s], ==, 0xffff);
+    g_assert_cmphex(p->val[none_b], ==, 0xff);
+
+    /* Command register: a byte write leaves the other bytes alone. */
+    px_write(p, 0x12a8, (1u << 17) | 0x4);
+    px_write(p, 0x12b0, 0x0006);
+    px_add(p, PX_WRITE_B, 0x12b0, 0x02);
+    cmd[0] = px_read(p, 0x12b0);
+    px_add(p, PX_WRITE_B, 0x12b1, 0x00);
+    cmd[1] = px_read(p, 0x12b0);
+    px_add(p, PX_WRITE_S, 0x12b0, 0x0004);
+    cmd[2] = px_read(p, 0x12b0);
+    px_write(p, 0x12b0, 0x0006);
+    px_add(p, PX_WRITE_B, 0x12b1, 0x01);        /* bit 8, not bits 7:0 */
+    cmd[3] = px_read(p, 0x12b0);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[cmd[0]] & 0xff, ==, 0x02);
+    g_assert_cmphex(p->val[cmd[1]] & 0xff, ==, 0x02);
+    g_assert_cmphex(p->val[cmd[2]] & 0xffff, ==, 0x0004);
+    g_assert_cmphex(p->val[cmd[3]] & 0xff, ==, 0x06);
+    g_free(p);
+    card_quit(&c);
 }
 
 /* Host bootstrap: format word, count, start address, then the program. */
@@ -1871,6 +1925,8 @@ int main(int argc, char **argv)
                    test_dsp_host_command_priority_off);
     qtest_add_func("/sgi-sonic-hdsp/dsp/boot-zero-count",
                    test_dsp_boot_zero_count);
+    qtest_add_func("/sgi-sonic-hdsp/sec-config-subword",
+                   test_sec_config_subword);
     qtest_add_func("/sgi-sonic-hdsp/system-reset-dsp", test_system_reset_dsp);
 
     return g_test_run();

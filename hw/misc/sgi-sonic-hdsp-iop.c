@@ -849,7 +849,8 @@ static void atu_apply_limit(SonicHDSPState *h)
     pci_set_long(f1->wmask + PCI_BASE_ADDRESS_0, limit & 0xfffffff0u);
 }
 
-static uint32_t soccdp_access(SonicHDSPState *h, bool write, uint32_t val)
+static uint32_t soccdp_access(SonicHDSPState *h, bool write, uint32_t val,
+                              unsigned byte, unsigned len)
 {
     uint32_t addr = h->atu_x[(0x12a8 - 0x1240) / 4];
 
@@ -860,9 +861,9 @@ static uint32_t soccdp_access(SonicHDSPState *h, bool write, uint32_t val)
      */
     h->iop_access = true;
     if (write) {
-        sonic_hdsp_secondary_config_write(h, addr, val);
+        sonic_hdsp_secondary_config_write(h, addr, byte, len, val);
     } else {
-        val = sonic_hdsp_secondary_config_read(h, addr);
+        val = sonic_hdsp_secondary_config_read(h, addr, byte, len);
     }
     h->iop_access = false;
     return val;
@@ -875,7 +876,7 @@ static uint32_t pmmr_read32(SonicHDSPState *h, uint32_t addr)
     switch (addr) {
     case 0x1240 ... 0x12b4:
         if (addr == 0x12b0) {
-            return soccdp_access(h, false, 0);
+            return soccdp_access(h, false, 0, 0, 4);
         }
         if (addr == 0x12ac) {
             qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: primary outbound "
@@ -1053,7 +1054,7 @@ static void pmmr_write32(SonicHDSPState *h, uint32_t addr, uint32_t val)
         unsigned i = (addr - 0x1240) / 4;
 
         if (addr == 0x12b0) {
-            soccdp_access(h, true, val);
+            soccdp_access(h, true, val, 0, 4);
             break;
         }
         if (addr == 0x12ac) {
@@ -1209,6 +1210,9 @@ static uint32_t pmmr_read(SonicHDSPState *h, uint32_t addr, unsigned size)
         }
         return v;
     }
+    if (addr >= 0x12b0 && addr < 0x12b4) {
+        return soccdp_access(h, false, 0, addr & 3, size);
+    }
     if (size != 4 && pmmr_data_port(addr & ~3u)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-sonic-hdsp: %u-byte read of "
                       "configuration data port 0x%04x ignored\n", size, addr);
@@ -1224,10 +1228,13 @@ static bool pmmr_w1c(uint32_t a)
            a == 0x1404 || a == 0x1444 || a == 0x1484 || a == 0x1684;
 }
 
-/* Registers whose read starts a bus cycle: no read-modify-write on them. */
+/*
+ * No read-modify-write on the primary data port; the secondary one takes
+ * sub-word cycles.
+ */
 static bool pmmr_data_port(uint32_t a)
 {
-    return a == 0x12ac || a == 0x12b0;
+    return a == 0x12ac;
 }
 
 static void pmmr_write(SonicHDSPState *h, uint32_t addr, uint32_t val,
@@ -1258,6 +1265,10 @@ static void pmmr_write(SonicHDSPState *h, uint32_t addr, uint32_t val,
         uint32_t shift = (addr & 3) * 8;
         uint32_t mask = (size == 4 ? ~0u : (1u << (size * 8)) - 1) << shift;
 
+        if (addr >= 0x12b0 && addr < 0x12b4) {
+            soccdp_access(h, true, val, addr & 3, size);
+            return;
+        }
         if (pmmr_data_port(addr & ~3u)) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-sonic-hdsp: %u-byte access "
                           "to configuration data port 0x%04x ignored\n",
