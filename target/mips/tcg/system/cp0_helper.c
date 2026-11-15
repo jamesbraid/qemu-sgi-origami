@@ -400,7 +400,7 @@ target_ulong HELPER(mfc0_count)(CPUMIPSState *env)
 {
     uint32_t count = cpu_mips_get_count(env);
 
-    if (trace_event_get_state(TRACE_MIPS_CP0_COUNT_READ)) {
+    if (trace_event_get_state_backends(TRACE_MIPS_CP0_COUNT_READ)) {
         trace_mips_cp0_count_read(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                                   env_cpu(env)->cpu_index,
                                   env->active_tc.PC, count);

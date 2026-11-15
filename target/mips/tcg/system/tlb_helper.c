@@ -1855,7 +1855,7 @@ bool mips_cpu_exec_interrupt(CPUState *cs, int interrupt_request)
         bool enabled = cpu_mips_hw_interrupts_enabled(env);
         bool deliverable = enabled && cpu_mips_hw_interrupts_pending(env);
 
-        if (trace_event_get_state(TRACE_MIPS_EXT_INTERRUPT_CHECK)) {
+        if (trace_event_get_state_backends(TRACE_MIPS_EXT_INTERRUPT_CHECK)) {
             trace_mips_ext_interrupt_check(
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
                 qemu_clock_get_ns(QEMU_CLOCK_REALTIME), cs->cpu_index,

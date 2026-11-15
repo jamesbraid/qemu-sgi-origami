@@ -161,7 +161,7 @@ bool cpu_mips_r10k_perf_ip7(CPUMIPSState *env)
 static void mips_r10k_perf_set_irq(CPUMIPSState *env, unsigned irq,
                                    bool level, bool perf, int64_t now_ns)
 {
-    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_IP7);
+    bool tracing = trace_event_get_state_backends(TRACE_MIPS_CP0_IP7);
 
     qemu_set_irq(env->irq[irq], level);
     if (tracing) {

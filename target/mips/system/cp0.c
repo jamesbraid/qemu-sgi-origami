@@ -143,7 +143,7 @@ void cpu_mips_reassert_interrupt(CPUMIPSState *env)
 
 void cpu_mips_store_status(CPUMIPSState *env, target_ulong val)
 {
-    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_STATUS_WRITE);
+    bool tracing = trace_event_get_state_backends(TRACE_MIPS_CP0_STATUS_WRITE);
     uint32_t old_status = tracing ? env->CP0_Status : 0;
 
     /*

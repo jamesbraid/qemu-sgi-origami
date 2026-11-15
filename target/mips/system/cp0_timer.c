@@ -50,7 +50,7 @@ static void cpu_mips_update_ip7(CPUMIPSState *env)
     unsigned irq = extract32(env->CP0_IntCtl, CP0IntCtl_IPTI, 3);
     bool level = env->cp0_timer_ip7;
     int perf = -1;
-    bool tracing = trace_event_get_state(TRACE_MIPS_CP0_IP7);
+    bool tracing = trace_event_get_state_backends(TRACE_MIPS_CP0_IP7);
 
     if (env->r10k_perf_timer) {
         if (!level) {
@@ -89,7 +89,7 @@ static void cpu_mips_timer_update(CPUMIPSState *env, int64_t now_ns)
     }
     next_ns = now_ns + clock_ticks_to_ns(cpu->count_clock, wait);
     timer_mod(env->timer, next_ns);
-    if (trace_event_get_state(TRACE_MIPS_CP0_TIMER_ARM)) {
+    if (trace_event_get_state_backends(TRACE_MIPS_CP0_TIMER_ARM)) {
         trace_mips_cp0_timer_arm(now_ns,
                                  qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
                                  env_cpu(env)->cpu_index, env->active_tc.PC,
@@ -100,7 +100,7 @@ static void cpu_mips_timer_update(CPUMIPSState *env, int64_t now_ns)
 /* Expire the timer.  */
 static void cpu_mips_timer_expire(CPUMIPSState *env, int64_t now_ns)
 {
-    if (trace_event_get_state(TRACE_MIPS_CP0_TIMER_EXPIRE)) {
+    if (trace_event_get_state_backends(TRACE_MIPS_CP0_TIMER_EXPIRE)) {
         trace_mips_cp0_timer_expire(
             now_ns, qemu_clock_get_ns(QEMU_CLOCK_REALTIME),
             env_cpu(env)->cpu_index, env->active_tc.PC,
@@ -222,7 +222,8 @@ static void cpu_mips_store_count_internal(CPUMIPSState *env, uint32_t count,
             cpu_mips_update_ip7(env);
         }
     }
-    if (guest_write && trace_event_get_state(TRACE_MIPS_CP0_COUNT_WRITE)) {
+    if (guest_write &&
+        trace_event_get_state_backends(TRACE_MIPS_CP0_COUNT_WRITE)) {
         if (write_ns < 0) {
             write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
@@ -317,7 +318,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
         }
         cpu_mips_timer_update(env, now_ns);
     }
-    if (trace_event_get_state(TRACE_MIPS_CP0_COMPARE_WRITE)) {
+    if (trace_event_get_state_backends(TRACE_MIPS_CP0_COMPARE_WRITE)) {
         if (write_ns < 0) {
             write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
@@ -327,7 +328,8 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
             env_cpu(env)->cpu_index, env->active_tc.PC, count, value,
             adjacent, elapsed, forward, matched);
     }
-    if (window && trace_event_get_state(TRACE_MIPS_CP0_COUNT_SAMPLE_WINDOW)) {
+    if (window &&
+        trace_event_get_state_backends(TRACE_MIPS_CP0_COUNT_SAMPLE_WINDOW)) {
         if (write_ns < 0) {
             write_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
         }
