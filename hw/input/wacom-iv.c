@@ -23,6 +23,8 @@
 #include "chardev/char-serial.h"
 #include "ui/input.h"
 #include "qom/object.h"
+#include "qapi/error.h"
+#include "qapi/visitor.h"
 #include "trace.h"
 
 #define WACOM_IV_TYPE_NAME      "chardev-wacom-iv"
@@ -88,6 +90,8 @@ struct WacomIvChardev {
 
     int axis[INPUT_AXIS__MAX];
     bool btns[INPUT_BUTTON__MAX];
+    /* Percent of each axis, at both ends, that the console does not cover. */
+    int64_t margin;
 
     /* The current Setting, as ~R shows it. */
     uint32_t body;
@@ -180,13 +184,15 @@ static bool wacom_iv_command_set_iv(const WacomIvChardev *w)
 
 /*
  * 0..32767 console axis onto the tablet's 0..max coordinate, where max is
- * the ~C size at 1270 lpi rescaled to the axis' logical resolution.
+ * the ~C size at 1270 lpi rescaled to the axis' logical resolution, less
+ * the margin percent at each end.
  */
-static int wacom_iv_scale(int value, int max_1270, int res)
+static int wacom_iv_scale(int value, int max_1270, int res, int margin)
 {
     int64_t max = (int64_t)max_1270 * res / WACOM_IV_DEFAULT_RES;
+    int64_t edge = max * margin / 100;
 
-    return (int64_t)value * max / INPUT_EVENT_ABS_MAX;
+    return edge + (int64_t)value * (max - 2 * edge) / INPUT_EVENT_ABS_MAX;
 }
 
 static int wacom_iv_switch_number(const WacomIvChardev *w)
@@ -248,8 +254,10 @@ static int64_t wacom_iv_interval_ns(const WacomIvChardev *w)
  */
 static void wacom_iv_try_send(WacomIvChardev *w)
 {
-    int x = wacom_iv_scale(w->axis[INPUT_AXIS_X], WACOM_IV_MAX_X, w->xres);
-    int y = wacom_iv_scale(w->axis[INPUT_AXIS_Y], WACOM_IV_MAX_Y, w->yres);
+    int x = wacom_iv_scale(w->axis[INPUT_AXIS_X], WACOM_IV_MAX_X, w->xres,
+                           w->margin);
+    int y = wacom_iv_scale(w->axis[INPUT_AXIS_Y], WACOM_IV_MAX_Y, w->yres,
+                           w->margin);
     int sw = wacom_iv_switch_number(w);
     int64_t now, due;
 
@@ -622,9 +630,36 @@ static void wacom_iv_chr_finalize(Object *obj)
     }
 }
 
+static void wacom_iv_get_margin(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    int64_t value = WACOM_IV_CHARDEV(obj)->margin;
+
+    visit_type_int(v, name, &value, errp);
+}
+
+static void wacom_iv_set_margin(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    int64_t value;
+
+    if (!visit_type_int(v, name, &value, errp)) {
+        return;
+    }
+    if (value < 0 || value > 49) {
+        error_setg(errp, "margin must be 0 to 49 percent");
+        return;
+    }
+    WACOM_IV_CHARDEV(obj)->margin = value;
+}
+
 static void wacom_iv_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
+
+    /* Set it with qom-set on /chardevs/ID; a chardev option needs QAPI. */
+    object_class_property_add(oc, "margin", "int", wacom_iv_get_margin,
+                              wacom_iv_set_margin, NULL, NULL);
 
     cc->chr_open = wacom_iv_chr_open;
     cc->chr_write = wacom_iv_chr_write;

@@ -323,6 +323,20 @@ scales the console's 0 to 32767 range onto the far edge on both axes,
 *approximation*: a real tablet's active area is what the stylus can reach,
 not the console's.
 
+The ``margin`` property (0 to 49, default 0, set with ``qom-set`` on the
+chardev) insets the console's range by that percent of the axis at each end.
+It is host-side input mapping only: the device's replies are unchanged. It
+exists because dlwacom 3.03 under Inferno 4.7.2 IR2 appears to leave about 5
+percent of the tablet at each edge outside its screen mapping, *inferred*
+from a fit to the measured slope (1.11 times the ideal) and offset. With the
+default margin, host positions in the outer 5 percent of the console all land
+on the screen edge. Measured on the Onyx2 at 1280x1024, ``margin`` 5 brings
+the cursor to within 3 pixels of the host position, *observed on the model*.
+The root cause is *unknown*: ``DLMargin "2"`` in the driver's configuration
+does not obviously give 5 percent and the driver was not traced. The stock
+IRIX ``wacom`` module and the Linux driver were not checked for the same
+inset. A real tablet has no such property, so it is an *approximation*.
+
 The pressure is an 8-bit two's complement value spread over P0 and Sp with
 P6 to P1: P0 is bit 2 of byte 4, and byte 7 holds Sp and P6 to P1
 :src:`wtc-1002 p. 30-31`, *established*. The manual says the no-pressure
