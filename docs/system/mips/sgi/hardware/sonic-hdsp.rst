@@ -1874,8 +1874,16 @@ HV gives (twice its value, from VBA); HNMI makes it non-maskable and
 independent of HCIE and the priority. HC clears when the core takes the
 interrupt, so a masked command stays pending and the host sees it. A DSP read of an empty DRXR returns zero and logs; the manual also sets
 SRRQ then (:src:`nxp-dsp56301um-4 p. 6-37`), which the model does not, an
-*approximation*. A host write with six words already queued is dropped and
-logged, and so is a host read of an empty data port. DPCR,
+*approximation*. A host write with six words already queued waits: the HI32
+inserts up to eight wait states and then retries the cycle
+(:src:`nxp-dsp56301um-4 pp. 6-62, 6-63`, *established*), and HTRQ is low
+while the FIFO is full (:src:`nxp-dsp56301um-4 p. 6-57`). The model has no
+bus to retry on and the i960 keeps running, so it queues up to 256 words
+behind the FIFO and feeds them in as the DSP takes words, with HTRQ low
+until there is room; a 257th word is dropped with a log. The queue, the
+i960 running on and the drop are an *approximation*; the order and HTRQ
+low are *established*. A host read of an empty data port is dropped and
+logged. DPCR,
 DPMC, DPAR, DPSR and the host port's GPIO registers store and read back;
 the PCI master mode is not modelled, so DTXM logs ``LOG_UNIMP``. The SCI,
 the port control registers, the bus control, address attribute and PLL
@@ -2630,7 +2638,8 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - the 256K words of external memory at ``0x400000`` read back through Y
   what X wrote and nothing is backed past them, and the 2K words at
   ``0xfff000`` are one RAM that DSP 1 reads back from what DSP 0 wrote;
-- HTRQ reads 1 once a fast DSP has taken a word;
+- twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
+  low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

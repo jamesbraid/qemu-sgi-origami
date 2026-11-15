@@ -1955,6 +1955,71 @@ static void test_dsp_ext_sram_xy(void)
 }
 
 /*
+ * The host-to-DSP path is a six-word FIFO and a write to a full one waits
+ * (DSP56301UM p. 6-57): nothing is lost, in order, and HTRQ stays low until
+ * the DSP has taken the held words.  The DSP here reads a word and echoes
+ * it, then spends about 40 microseconds before the next.
+ */
+static void test_dsp_host_fifo_holds(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    Proxy *p = g_new0(Proxy, 1);
+    uint32_t out[32];
+    unsigned got = 0, hs;
+    const uint32_t prog[] = {
+        /* 0x100 */ JCLR_PP(2, X_DSR), 0x100,           /* wait for a word */
+        /* 0x102 */ MOVEP_RD(REG_A1, X_DRXR),
+        /* 0x103 */ JCLR_PP(1, X_DSR), 0x103,           /* room to send */
+        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x106 */ 0x06ffaf,                           /* rep #4095 */
+        /* 0x107 */ 0x000000,                           /* nop */
+        /* 0x108 */ JMP(0x100),
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
+    qtest_clock_step(c.qts, 500 * 1000);
+    for (unsigned i = 0; i < 20; i++) {
+        px_hp_write(p, 0, HP_DATA, 0x100001 + i);
+    }
+    hs = px_hp_read(p, 0, HP_HSTR);
+    px_run(&c, p);
+    /* Twenty words against a six-word FIFO and a slow DSP: HTRQ is low. */
+    g_assert_cmphex(p->val[hs] & HSTR_HTRQ, ==, 0);
+    g_free(p);
+    for (unsigned i = 0; i < 400 && got < 20; i++) {
+        qtest_clock_step(c.qts, 100 * 1000);
+        /*
+         * Status then data, six times.  The DSP runs between the two reads,
+         * so a word may arrive after its status read said empty: every
+         * word here is nonzero, so take any nonzero data word.
+         */
+        Proxy *q = g_new0(Proxy, 1);
+        unsigned st[6], dat[6];
+
+        for (unsigned k = 0; k < 6; k++) {
+            st[k] = px_hp_read(q, 0, HP_HSTR);
+            dat[k] = px_hp_read(q, 0, HP_DATA);
+        }
+        px_run(&c, q);
+        for (unsigned k = 0; k < 6 && got < 20; k++) {
+            if ((q->val[st[k]] & HSTR_HRRQ) || q->val[dat[k]]) {
+                out[got++] = q->val[dat[k]];
+            }
+        }
+        g_free(q);
+    }
+    g_assert_cmpuint(got, ==, 20);
+    for (unsigned i = 0; i < 20; i++) {
+        g_assert_cmphex(out[i], ==, 0x100001 + i);
+    }
+    /* Drained: the host can write again. */
+    g_assert_cmphex(hp_read(&c, 0, HP_HSTR) & HSTR_HTRQ, ==, HSTR_HTRQ);
+    card_quit(&c);
+}
+
+/*
  * A host that polls HTRQ must see the DSP make progress: the DSP runs for
  * the time the host spent, not only when its slice timer fires.  Six words
  * fill the FIFO; a fast DSP has taken some by the time the host reads
@@ -2039,6 +2104,8 @@ int main(int argc, char **argv)
                    test_dsp_boot_zero_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/host-fifo-holds",
+                   test_dsp_host_fifo_holds);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-poll-sees-drain",
                    test_dsp_host_poll_sees_drain);
     qtest_add_func("/sgi-sonic-hdsp/sec-config-subword",
