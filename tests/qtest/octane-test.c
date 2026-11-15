@@ -4279,6 +4279,35 @@ static void test_rad_status_overrun(void)
     qtest_quit(qts);
 }
 
+/* A guest access completes the slots a batched wake left due. */
+static void test_rad_status_batched_catch_up(void)
+{
+    QTestState *qts = octane_start_args(
+        "-global sgi-rad1-octane.status-batch-ns=1000000");
+    const uint64_t buffer = RAM + 0x10000;
+
+    octane_rad_map(qts);
+    qtest_writel(qts, CFG(3) + 4, 6);
+    qtest_writel(qts, BRIDGE_REG(0x080), 8u << 20);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    qtest_memset(qts, buffer, 0xa5, 128 * 0x80);
+    octane_rad_status_program(qts, 0xa0010000, 0xffffc078);
+    qtest_writel(qts, RAD_BAR0 + 0x5c, 0x40003 | (330 << 2));
+    qtest_clock_step(qts, 10000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 0xfc), ==, 0x80080000);
+    qtest_clock_step(qts, 20000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 2 * 0x80 + 0x7c), ==,
+                    0xa5a5a5a5);
+    qtest_readl(qts, RAD_BAR0 + 0x5c);
+    g_assert_cmphex(qtest_readl(qts, buffer + 2 * 0x80 + 0x7c), ==,
+                    0x80080000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 3 * 0x80 + 0x7c), ==,
+                    0x80080000);
+    g_assert_cmphex(qtest_readl(qts, buffer + 4 * 0x80 + 0x7c), ==,
+                    0xa5a5a5a5);
+    qtest_quit(qts);
+}
+
 static void test_rad_startup_unsupported(void)
 {
     g_autofree char *path = NULL;
@@ -7157,6 +7186,8 @@ int main(int argc, char **argv)
     qtest_add_func("/octane/rad-aes-subcode", test_rad_aes_subcode);
     qtest_add_func("/octane/rad-status-continuous", test_rad_status_continuous);
     qtest_add_func("/octane/rad-status-overrun", test_rad_status_overrun);
+    qtest_add_func("/octane/rad-status-batched-catch-up",
+                   test_rad_status_batched_catch_up);
     qtest_add_func("/octane/rad-transfer-migration",
                    test_rad_transfer_migration);
     qtest_add_func("/octane/rad-output-samples", test_rad_output_samples);

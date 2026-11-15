@@ -783,6 +783,11 @@ struct SGIRad1AudioState {
     uint32_t status_interval;
     int64_t status_start_ns;
     uint64_t status_done;
+    /* Wake the status engine about this often, in whole intervals (0: each). */
+    uint32_t status_batch_ns;
+    /* While a batched slot is filled, the time it is filled for. */
+    bool fill_at_valid;
+    int64_t fill_at_ns;
 
     /* Virtual-clock time captured at reset; the 0x30 UST counter's origin. */
     int64_t ust_base_ns;

@@ -529,6 +529,11 @@ start, so a late timer catches up back to back. A timer more than a ring
 behind restarts the schedule from the present. Each is an *approximation*.
 The driver needs completions about every 250 µs: its mixer refills the
 output only about ``0xcc`` words ahead of the last pointer it saw.
+The ``status-batch-ns`` property (default 0, every completion) wakes the
+engine about every that many ns, rounded up to whole completions, and fills
+every slot that came due, each read at its own
+boundary; a slot then reaches guest memory up to one batch late, which eats
+into that margin, an *approximation*.
 
 MediaIO accepts any limit, using one slot when it does not decode; an
 interval of zero stops the ring, and one below 330 clocks is raised to
