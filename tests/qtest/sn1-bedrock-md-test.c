@@ -1155,9 +1155,9 @@ static void assert_storage_zero(QTestState *s)
 }
 
 /*
- * Every table is mapped in whole host pages and reset by dropping them, so
- * the last line of the largest and smallest node must survive a write and
- * read back zero after a reset, on 4 KiB and 16 KiB page hosts alike.
+ * Tables are sparse and reset by freeing their chunks, so the last line of
+ * the largest and smallest node must survive a write, which allocates the
+ * final partial chunk, and read back zero after a reset.
  */
 static void test_reset_clears_table_tails(void)
 {
@@ -1915,6 +1915,49 @@ static void test_memory_installed_migration(void)
     unlink(socket);
     g_assert_cmpint(rmdir(directory), ==, 0);
     unlink(prom);
+}
+
+/*
+ * The tables are sparse in memory but the stream carries them whole: words
+ * written into the first chunk and a late one of the directory and page
+ * counters, and the first and last chunk of the ECC table, must arrive, and a
+ * chunk nobody wrote must still read zero.
+ */
+static void test_table_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *directory =
+        g_dir_make_tmp("sn1-md-table-migration-XXXXXX", &error);
+    g_autofree char *socket = NULL;
+    g_autofree char *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(directory, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = start_with_memory("32M", "");
+    to = start_with_memory("32M", "-incoming defer");
+    qtest_writeq(from, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeq(from, MD(DIRECTORY_CONFIG), 2);
+    qtest_writeq(from, DIRECTORY(0), 0x1234);
+    qtest_writeq(from, DIRECTORY(8), 0x5678);
+    qtest_writeq(from, DIRECTORY(0x1ffff0), 0x76543210);
+    qtest_writeq(from, DIRECTORY(0x1ffff8), 0x89abcdef);
+    qtest_writeb(from, ECC(0), 0x35);
+    qtest_writeb(from, ECC(0x3ffff8), 0xa5);
+    migrate_pair(from, to, uri);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(0)), ==, 0x1234);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(8)), ==, 0x5678);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(0x1ffff0)), ==, 0x76543210);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(0x1ffff8)), ==, 0x89abcdef);
+    g_assert_cmphex(qtest_readb(to, ECC(0)), ==, 0x35);
+    g_assert_cmphex(qtest_readb(to, ECC(0x3ffff8)), ==, 0xa5);
+    g_assert_cmphex(qtest_readq(to, DIRECTORY(0x100000)), ==, 0);
+    g_assert_cmphex(qtest_readb(to, ECC(0x100000)), ==, 0);
+    qtest_quit(from);
+    qtest_quit(to);
+    unlink(socket);
+    g_assert_cmpint(rmdir(directory), ==, 0);
 }
 
 static void test_selftest_migration_running(void)
@@ -3131,6 +3174,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn1/bedrock-md/migration", test_migration);
     qtest_add_func("sn1/bedrock-md/memory-installed-migration",
                    test_memory_installed_migration);
+    qtest_add_func("sn1/bedrock-md/table-migration", test_table_migration);
     qtest_add_func("sn1/bedrock-md/writable-masks", test_writable_masks);
     qtest_add_func("sn1/bedrock-md/ecc-carrier", test_ecc_carrier);
     qtest_add_func("sn1/bedrock-md/ecc-bank-translation",

@@ -33,6 +33,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIBedrockMDState, SGI_BEDROCK_MD)
 
 /* Opaque here: only the owning sgi-bedrock.c dereferences it. */
 typedef struct SGIBedrockState SGIBedrockState;
+typedef struct SGIBedrockMDTable SGIBedrockMDTable;
 
 typedef struct SGIBedrockMDECCInjection {
     MemoryRegion mr;
@@ -181,10 +182,10 @@ struct SGIBedrockMDState {
     AddressSpace node_as;
     bool node_as_initialized;
     bool memory_alias_initialized;
-    uint64_t *directory;
-    uint64_t *page_counters;
+    SGIBedrockMDTable *directory;
+    SGIBedrockMDTable *page_counters;
     uint64_t *protection;
-    uint8_t *ecc;
+    SGIBedrockMDTable *ecc;
     uint32_t directory_entries;
     uint32_t protection_entries;
     uint32_t ecc_entries;

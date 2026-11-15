@@ -10,7 +10,6 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/bitmap.h"
-#include "qemu/madvise.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
@@ -96,6 +95,106 @@ static uint64_t md_directory_word_written(SGIBedrockMDState *s,
                                           const uint32_t *index);
 static void md_watch_line(SGIBedrockMDState *s, uint32_t index);
 static void md_watched_pages_place(SGIBedrockMDState *s);
+
+/*
+ * The directory, page counter and ECC tables together are a quarter of the
+ * node's memory, 8 GiB for a 32 GiB Origin 3800 node set, and a guest
+ * touches a small part of them. Calloc'd and cleared with memset(), they
+ * took 9.5 GiB of resident memory from a machine that had run nothing,
+ * enough to get four parallel qtests OOM-killed on a 16 GiB CI builder.
+ * A flat anonymous mapping stays lazy on Linux and macOS, but Windows
+ * charges the whole length against the commit limit when it is allocated,
+ * and refused one 128 MiB table of an Origin 3900 that already held 8 GiB
+ * of guest RAM.
+ *
+ * So the tables are sparse: fixed-size chunks allocated on the first write,
+ * with an absent chunk reading as zero. Reset frees every chunk, which
+ * leaves the table zero. This needs no host virtual-memory interface, so
+ * every host takes the same path.
+ */
+#define MD_TABLE_CHUNK_BYTES 65536
+
+struct SGIBedrockMDTable {
+    size_t entries;
+    unsigned entry_size;
+    unsigned chunk_shift;           /* log2 of the entries in a chunk */
+    size_t nchunks;
+    uint8_t *chunks[];
+};
+
+static SGIBedrockMDTable *md_table_new(size_t entries, unsigned entry_size)
+{
+    unsigned per_chunk = MD_TABLE_CHUNK_BYTES / entry_size;
+    size_t nchunks = DIV_ROUND_UP(entries, per_chunk);
+    SGIBedrockMDTable *t = g_malloc0(sizeof(*t) +
+                                     nchunks * sizeof(t->chunks[0]));
+
+    t->entries = entries;
+    t->entry_size = entry_size;
+    t->chunk_shift = ctz32(per_chunk);
+    t->nchunks = nchunks;
+    return t;
+}
+
+static void md_table_clear(SGIBedrockMDTable *t)
+{
+    for (size_t i = 0; i < t->nchunks; i++) {
+        g_clear_pointer(&t->chunks[i], g_free);
+    }
+}
+
+static void md_table_free(SGIBedrockMDTable *t)
+{
+    if (t) {
+        md_table_clear(t);
+        g_free(t);
+    }
+}
+
+static uint8_t *md_table_chunk(SGIBedrockMDTable *t, size_t index,
+                               bool create)
+{
+    uint8_t **chunk = &t->chunks[index >> t->chunk_shift];
+
+    g_assert(index < t->entries);
+    if (!*chunk && create) {
+        *chunk = g_malloc0(MD_TABLE_CHUNK_BYTES);
+    }
+    return *chunk;
+}
+
+static uint64_t md_table_get64(SGIBedrockMDTable *t, size_t index)
+{
+    uint64_t *chunk = (uint64_t *)md_table_chunk(t, index, false);
+
+    return chunk ? chunk[index & ((1u << t->chunk_shift) - 1)] : 0;
+}
+
+static void md_table_set64(SGIBedrockMDTable *t, size_t index, uint64_t value)
+{
+    uint64_t *chunk = (uint64_t *)md_table_chunk(t, index, value != 0);
+
+    /* An absent chunk already reads zero. */
+    if (chunk) {
+        chunk[index & ((1u << t->chunk_shift) - 1)] = value;
+    }
+}
+
+static uint8_t md_table_get8(SGIBedrockMDTable *t, size_t index)
+{
+    uint8_t *chunk = md_table_chunk(t, index, false);
+
+    return chunk ? chunk[index & ((1u << t->chunk_shift) - 1)] : 0;
+}
+
+static void md_table_set8(SGIBedrockMDTable *t, size_t index, uint8_t value)
+{
+    uint8_t *chunk = md_table_chunk(t, index, value != 0);
+
+    if (chunk) {
+        chunk[index & ((1u << t->chunk_shift) - 1)] = value;
+    }
+}
 
 static bool md_storage(hwaddr offset, unsigned *index, uint64_t *mask)
 {
@@ -606,13 +705,13 @@ static MemTxResult md_directory_read(void *opaque, hwaddr offset,
         return MEMTX_OK;
     }
     if (offset & 8) {
-        *value = s->page_counters[index];
+        *value = md_table_get64(s->page_counters, index);
         return MEMTX_OK;
     }
     if (!attrs.debug) {
         md_watch_line(s, index);
     }
-    *value = s->directory[index] & md_directory_mask(s);
+    *value = md_table_get64(s->directory, index) & md_directory_mask(s);
     return MEMTX_OK;
 }
 
@@ -639,11 +738,11 @@ static MemTxResult md_directory_write(void *opaque, hwaddr offset,
         return MEMTX_OK;
     }
     if (offset & 8) {
-        s->page_counters[index] = value;
+        md_table_set64(s->page_counters, index, value);
     } else {
-        s->directory[index] =
-            md_directory_word_written(s, value, offset, &index) &
-            md_directory_mask(s);
+        md_table_set64(s->directory, index,
+                       md_directory_word_written(s, value, offset, &index) &
+                       md_directory_mask(s));
     }
     return MEMTX_OK;
 }
@@ -1026,7 +1125,7 @@ static MemTxResult md_directory_checked_read(
 
     *value = 0;
     if (!(s->directory_config & 2)) {
-        uint64_t word = s->directory[injection->index];
+        uint64_t word = md_table_get64(s->directory, injection->index);
         uint8_t syndrome = md_directory_syndrome(word, premium);
         uint64_t address = MD_DIRECTORY_HSPEC_BASE + injection->offset;
 
@@ -1044,7 +1143,8 @@ static MemTxResult md_directory_checked_read(
                 return MEMTX_ERROR;
             }
             /* The corrected word is written back: the backdoor shows it. */
-            s->directory[injection->index] = word ^ (UINT64_C(1) << bit);
+            md_table_set64(s->directory, injection->index,
+                           word ^ (UINT64_C(1) << bit));
             md_directory_injection_clear(s, injection->index);
             md_directory_error_latch(s, MD_DIRECTORY_ERROR_CE, address,
                                      syndrome);
@@ -1154,9 +1254,10 @@ static MemTxResult md_directory_overlay_read(void *opaque, hwaddr offset,
 static void md_directory_line_written(SGIBedrockMDState *s, uint32_t index)
 {
     if (md_directory_injection_find(s, index)) {
-        s->directory[index] =
-            sgi_bedrock_md_directory_encode(s->directory[index],
-                                            md_directory_premium(s));
+        md_table_set64(s->directory, index,
+                       sgi_bedrock_md_directory_encode(
+                           md_table_get64(s->directory, index),
+                           md_directory_premium(s)));
         md_directory_injection_clear(s, index);
     }
 }
@@ -1489,7 +1590,7 @@ static uint8_t md_ecc_byte(SGIBedrockMDState *s, uint64_t raw)
     uint64_t data;
 
     if (md_ecc_injection_find(s, raw)) {
-        return s->ecc[raw];
+        return md_table_get8(s->ecc, raw);
     }
     data = address_space_ldq_be(&s->node_as, raw * 8, MEMTXATTRS_UNSPECIFIED,
                                 &result);
@@ -1506,7 +1607,7 @@ static void md_ecc_written(SGIBedrockMDState *s, uint64_t raw)
     if (result != MEMTX_OK) {
         return;
     }
-    if (sgi_bedrock_md_ecc_compute(data) != s->ecc[raw]) {
+    if (sgi_bedrock_md_ecc_compute(data) != md_table_get8(s->ecc, raw)) {
         md_ecc_injection_add(s, raw);
     } else {
         md_ecc_injection_clear(s, raw);
@@ -1534,7 +1635,8 @@ static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
     }
     if (!(s->storage[MD_ECC_CONFIG] & 1)) {
         uint64_t raw = injection->raw;
-        uint8_t syndrome = s->ecc[raw] ^ sgi_bedrock_md_ecc_compute(data);
+        uint8_t syndrome = md_table_get8(s->ecc, raw) ^
+                           sgi_bedrock_md_ecc_compute(data);
 
         if (syndrome) {
             int bit = md_ecc_syndrome_bit(syndrome);
@@ -1584,7 +1686,7 @@ static MemTxResult md_ecc_checked_read(SGIBedrockMDECCInjection *injection,
                         return result;
                     }
                 }
-                s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
+                md_table_set8(s->ecc, raw, sgi_bedrock_md_ecc_compute(data));
                 md_ecc_injection_clear(s, raw);
                 md_memory_error_latch(s, MD_MEMORY_ERROR_READ_CE, address,
                                       syndrome);
@@ -1632,7 +1734,7 @@ static MemTxResult md_ecc_overlay_write(void *opaque, hwaddr offset,
     if (result != MEMTX_OK) {
         return result;
     }
-    s->ecc[raw] = sgi_bedrock_md_ecc_compute(data);
+    md_table_set8(s->ecc, raw, sgi_bedrock_md_ecc_compute(data));
     md_ecc_injection_clear(s, raw);
     md_node_memory_written(s, raw * 8, 8);
     return MEMTX_OK;
@@ -1801,10 +1903,10 @@ static void md_ecc_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     }
     if (size == 1) {
-        s->ecc[index] = value;
+        md_table_set8(s->ecc, index, value);
     } else {
-        s->ecc[index] = value;
-        s->ecc[index + 1] = value >> 8;
+        md_table_set8(s->ecc, index, value);
+        md_table_set8(s->ecc, index + 1, value >> 8);
     }
     for (unsigned byte = 0; byte < size; byte++) {
         md_ecc_written(s, index + byte);
@@ -2029,7 +2131,7 @@ static void md_selftest_fill(SGIBedrockMDState *s, uint64_t base,
 
         if (injection->active && injection->raw >= base / 8 &&
             injection->raw - base / 8 < size / 8) {
-            s->ecc[injection->raw] = 0;
+            md_table_set8(s->ecc, injection->raw, 0);
             md_ecc_injection_unplace(injection);
             md_ecc_injection_deactivate(s, injection);
         }
@@ -2696,7 +2798,7 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
                                     bool prefetch)
 {
     bool premium = md_directory_premium(s);
-    uint64_t old = s->directory[line->index];
+    uint64_t old = md_table_get64(s->directory, line->index);
     uint64_t requester = UINT64_C(1) << md_pointer_interface(pointer);
     MDDirectoryEntry entry;
     SGIBedrockMDLineState *state;
@@ -2780,11 +2882,14 @@ static uint8_t md_directory_request(SGIBedrockMDState *s,
     if (s->directory_config & 2) {
         word |= old & md_directory_check_mask(premium);
     }
-    s->directory[line->index] =
-        md_directory_word_written(s, word, md_line_directory_offset(line),
-                                  &line->index) & md_directory_mask(s);
-    trace_sgi_bedrock_md_directory_request(line->index, pointer, request,
-                                           old, s->directory[line->index]);
+    md_table_set64(s->directory, line->index,
+                   md_directory_word_written(s, word,
+                                             md_line_directory_offset(line),
+                                             &line->index) &
+                   md_directory_mask(s));
+    trace_sgi_bedrock_md_directory_request(
+        line->index, pointer, request, old,
+        md_table_get64(s->directory, line->index));
     return granted;
 }
 
@@ -2984,8 +3089,8 @@ static void md_line_state_from_word(SGIBedrockMDState *s, uint32_t index)
     SGIBedrockMDHolder *holder;
 
     if (md_line_state(s, index, false) || !s->pointer_present ||
-        !md_directory_decode(s->directory[index], md_directory_premium(s),
-                             &entry) ||
+        !md_directory_decode(md_table_get64(s->directory, index),
+                             md_directory_premium(s), &entry) ||
         !md_directory_entry_present(s, &entry)) {
         return;
     }
@@ -3559,88 +3664,11 @@ static void md_soft_reset_input(void *opaque, int n, int level)
     }
 }
 
-/*
- * The directory, page counter and ECC tables together are a quarter of the
- * node's memory, 8 GiB for a 32 GiB Origin 3800 node set. Calloc'd, cleared
- * with memset() at reset and, with transparent huge pages on, touched by a
- * few writes into 2 MiB pages, they took 9.5 GiB of resident memory from a
- * machine that had run nothing, enough to get four parallel qtests
- * OOM-killed on a 16 GiB CI builder. Map them anonymously without huge
- * pages, and reset them by giving the pages back, which also leaves them
- * zero.
- *
- * Only Linux can skip the swap reservation: other hosts have no
- * MAP_NORESERVE behaviour, and qemu_anon_ram_alloc() refuses to map with
- * the flag there, so asking for it made every Bedrock machine fail to start
- * on macOS. Those hosts overcommit anonymous memory and fault pages in on
- * first touch anyway. SGI_BEDROCK_MD_PORTABLE_TABLES selects this path on
- * Linux so a Linux build can test it.
- */
-#if defined(CONFIG_LINUX) && !defined(SGI_BEDROCK_MD_PORTABLE_TABLES)
-#define MD_TABLE_NORESERVE true
-#else
-#define MD_TABLE_NORESERVE false
-#endif
-
-/* Lengths are whole host pages: 16 KiB on Apple Silicon, 4 KiB elsewhere. */
-static size_t md_table_bytes(size_t size)
-{
-    return QEMU_ALIGN_UP(size, qemu_real_host_page_size());
-}
-
-static void *md_table_alloc(size_t size, Error **errp)
-{
-    uint64_t align;
-    void *table = qemu_anon_ram_alloc(md_table_bytes(size), &align, false,
-                                      MD_TABLE_NORESERVE);
-
-    if (!table) {
-        error_setg(errp, "sgi-bedrock-md: cannot map %zu bytes of tables",
-                   size);
-        return NULL;
-    }
-    qemu_madvise(table, size, QEMU_MADV_NOHUGEPAGE);
-    return table;
-}
-
 static void md_tables_free(SGIBedrockMDState *s)
 {
-    if (s->directory) {
-        qemu_anon_ram_free(s->directory,
-                           md_table_bytes(s->directory_entries *
-                                          sizeof(*s->directory)));
-        s->directory = NULL;
-    }
-    if (s->page_counters) {
-        qemu_anon_ram_free(s->page_counters,
-                           md_table_bytes(s->directory_entries *
-                                          sizeof(*s->page_counters)));
-        s->page_counters = NULL;
-    }
-    if (s->ecc) {
-        qemu_anon_ram_free(s->ecc,
-                           md_table_bytes(s->ecc_entries * sizeof(*s->ecc)));
-        s->ecc = NULL;
-    }
-}
-
-static void md_table_zero(void *table, size_t size)
-{
-#if defined(CONFIG_LINUX) && !defined(SGI_BEDROCK_MD_PORTABLE_TABLES)
-    if (!qemu_madvise(table, size, QEMU_MADV_DONTNEED)) {
-        return;
-    }
-#elif defined(CONFIG_POSIX) && !defined(EMSCRIPTEN)
-    /*
-     * MADV_DONTNEED leaves the data on BSD hosts. Mapping fresh anonymous
-     * pages over the table drops the old ones and reads back as zero.
-     */
-    if (mmap(table, md_table_bytes(size), PROT_READ | PROT_WRITE,
-             MAP_FIXED | MAP_ANONYMOUS | MAP_PRIVATE, -1, 0) != MAP_FAILED) {
-        return;
-    }
-#endif
-    memset(table, 0, size);
+    g_clear_pointer(&s->directory, md_table_free);
+    g_clear_pointer(&s->page_counters, md_table_free);
+    g_clear_pointer(&s->ecc, md_table_free);
 }
 
 static void md_reset_enter(Object *obj, ResetType type)
@@ -3649,10 +3677,8 @@ static void md_reset_enter(Object *obj, ResetType type)
 
     md_reset_registers(s);
     if (s->directory) {
-        md_table_zero(s->directory,
-                      s->directory_entries * sizeof(*s->directory));
-        md_table_zero(s->page_counters,
-                      s->directory_entries * sizeof(*s->page_counters));
+        md_table_clear(s->directory);
+        md_table_clear(s->page_counters);
     }
     memset(s->directory_compat_offsets, 0,
            sizeof(s->directory_compat_offsets));
@@ -3660,7 +3686,7 @@ static void md_reset_enter(Object *obj, ResetType type)
            sizeof(s->directory_compat_values));
     s->directory_compat_count = 0;
     if (s->ecc) {
-        md_table_zero(s->ecc, s->ecc_entries * sizeof(*s->ecc));
+        md_table_clear(s->ecc);
     }
     s->ecc_admitted_halfword_low = 0;
     s->ecc_admitted_halfword = 0;
@@ -3930,6 +3956,82 @@ static const VMStateInfo vmstate_info_md_be64_block = {
     .save = md_save_be64_block,
 };
 
+/*
+ * The sparse tables travel as the flat arrays they replace, so the stream
+ * is unchanged. An absent chunk is sent as zeros, and a loaded block of
+ * zeros allocates nothing.
+ */
+static bool md_load_table(QEMUFile *f, void *pv, size_t size,
+                          const VMStateField *field, Error **errp)
+{
+    SGIBedrockMDTable *t = pv;
+    uint8_t block[4096];
+
+    if (!t) {
+        return true;
+    }
+    md_table_clear(t);
+    for (size_t done = 0; done < size;) {
+        size_t n = MIN(size - done, sizeof(block));
+
+        qemu_get_buffer(f, block, n);
+        if (t->entry_size == sizeof(uint64_t)) {
+            for (size_t i = 0; i < n / sizeof(uint64_t); i++) {
+                uint64_t word = ldq_be_p(block + i * sizeof(uint64_t));
+
+                md_table_set64(t, done / sizeof(uint64_t) + i, word);
+            }
+        } else {
+            for (size_t i = 0; i < n; i++) {
+                md_table_set8(t, done + i, block[i]);
+            }
+        }
+        done += n;
+    }
+    return true;
+}
+
+static bool md_save_table(QEMUFile *f, void *pv, size_t size,
+                          const VMStateField *field, JSONWriter *vmdesc,
+                          Error **errp)
+{
+    SGIBedrockMDTable *t = pv;
+    uint8_t block[4096];
+
+    for (size_t done = 0; done < size;) {
+        size_t n = MIN(size - done, sizeof(block));
+
+        if (t->entry_size == sizeof(uint64_t)) {
+            for (size_t i = 0; i < n / sizeof(uint64_t); i++) {
+                stq_be_p(block + i * sizeof(uint64_t),
+                         md_table_get64(t, done / sizeof(uint64_t) + i));
+            }
+        } else {
+            for (size_t i = 0; i < n; i++) {
+                block[i] = md_table_get8(t, done + i);
+            }
+        }
+        qemu_put_buffer(f, block, n);
+        done += n;
+    }
+    return true;
+}
+
+static const VMStateInfo vmstate_info_md_table = {
+    .name = "sgi-bedrock-md-table",
+    .load = md_load_table,
+    .save = md_save_table,
+};
+
+#define VMSTATE_MD_TABLE(_field, _count, _entry_size) {                 \
+    .name         = (stringify(_field)),                                \
+    .size_indirect  = vmstate_field_offset(SGIBedrockMDState, _count),  \
+    .size         = (_entry_size),                                      \
+    .info         = &vmstate_info_md_table,                             \
+    .flags        = VMS_VBUFFER | VMS_POINTER | VMS_MULTIPLY,           \
+    .offset       = offsetof(SGIBedrockMDState, _field),                \
+}
+
 #define VMSTATE_MD_BE64_BLOCK(_field, _count) {                         \
     .name         = (stringify(_field)),                                \
     .size_indirect  = vmstate_field_offset(SGIBedrockMDState, _count),  \
@@ -3950,8 +4052,8 @@ static const VMStateDescription vmstate_md = {
         VMSTATE_UINT64(directory_config, SGIBedrockMDState),
         VMSTATE_UINT64_ARRAY(storage, SGIBedrockMDState,
                              SGI_BEDROCK_MD_STORAGE),
-        VMSTATE_MD_BE64_BLOCK(directory, directory_entries),
-        VMSTATE_MD_BE64_BLOCK(page_counters, directory_entries),
+        VMSTATE_MD_TABLE(directory, directory_entries, sizeof(uint64_t)),
+        VMSTATE_MD_TABLE(page_counters, directory_entries, sizeof(uint64_t)),
         VMSTATE_MD_BE64_BLOCK(protection, protection_entries),
         VMSTATE_UINT64_ARRAY(directory_compat_offsets, SGIBedrockMDState,
                              SGI_BEDROCK_MD_DIRECTORY_COMPAT_ENTRIES),
@@ -3963,8 +4065,7 @@ static const VMStateDescription vmstate_md = {
          * A buffer writes the same stream as the byte array it replaces
          * but in blocks, not through one call per byte.
          */
-        VMSTATE_VBUFFER_UINT32(ecc, SGIBedrockMDState, 0, NULL,
-                               ecc_entries),
+        VMSTATE_MD_TABLE(ecc, ecc_entries, sizeof(uint8_t)),
         VMSTATE_UINT16(ecc_admitted_halfword, SGIBedrockMDState),
         VMSTATE_UINT16(ecc_admitted_halfword_low, SGIBedrockMDState),
         VMSTATE_BOOL(selftest_running, SGIBedrockMDState),
@@ -4141,20 +4242,9 @@ static void md_realize(DeviceState *dev, Error **errp)
     md_update_memory_aliases(s);
     s->directory_entries = node_size / 128;
     s->ecc_entries = node_size / 8;
-    s->directory = md_table_alloc(s->directory_entries *
-                                  sizeof(*s->directory), errp);
-    if (s->directory) {
-        s->page_counters = md_table_alloc(s->directory_entries *
-                                          sizeof(*s->page_counters), errp);
-    }
-    if (s->page_counters) {
-        s->ecc = md_table_alloc(s->ecc_entries * sizeof(*s->ecc), errp);
-    }
-    if (!s->ecc) {
-        /* The finalizer frees what is left of the other tables. */
-        md_tables_free(s);
-        return;
-    }
+    s->directory = md_table_new(s->directory_entries, sizeof(uint64_t));
+    s->page_counters = md_table_new(s->directory_entries, sizeof(uint64_t));
+    s->ecc = md_table_new(s->ecc_entries, sizeof(uint8_t));
     s->named_lines = bitmap_new(s->directory_entries);
     s->named_line_bits = s->directory_entries;
 }
