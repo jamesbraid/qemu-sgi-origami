@@ -690,6 +690,32 @@ static void test_status_batched_catch_up(void)
     rad_quit(&r);
 }
 
+/* The channel tick, not just position reads, follows the batch. */
+static void test_status_batched_tick(void)
+{
+    const char *types[] = { "sgi-rad1-pci",
+                            "sgi-rad1-pci,status-batch-ns=5000000",
+                            "sgi-rad1-pci,status-batch-ns=5000000" };
+    bool moved[3];
+
+    for (int i = 0; i < 3; i++) {
+        Rad r = rad_boot_with(types[i], "");
+        uint64_t ring = guest_alloc(&alloc, 4096);
+        uint8_t seed[4096], got[4096];
+
+        memset(seed, 0x5a, sizeof(seed));
+        qtest_memwrite(r.qts, ring, seed, sizeof(seed));
+        chan_start(&r, &AES_IN, ring, 4096);
+        qtest_clock_step(r.qts, i == 2 ? MS(7) : MS(2));
+        qtest_memread(r.qts, ring, got, sizeof(got));
+        moved[i] = memcmp(got, seed, sizeof(got)) != 0;
+        rad_quit(&r);
+    }
+    g_assert_true(moved[0]);
+    g_assert_false(moved[1]);
+    g_assert_true(moved[2]);
+}
+
 /*
  * Position encoding. Each position is a 14-bit frame count at shift 18
  * (bits 31:18), wrapping; a subcode channel's own count is the A register's
@@ -888,6 +914,8 @@ int main(int argc, char **argv)
                    test_status_continuous);
     qtest_add_func("/sgi-rad1-pci/status-batched-ust",
                    test_status_batched_ust);
+    qtest_add_func("/sgi-rad1-pci/status-batched-tick",
+                   test_status_batched_tick);
     qtest_add_func("/sgi-rad1-pci/status-batched-catch-up",
                    test_status_batched_catch_up);
     qtest_add_func("/sgi-rad1-pci/positions", test_positions);

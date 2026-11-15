@@ -549,8 +549,9 @@ static void sgi_rad1_audio_status_catch_up(SGIRad1AudioState *s)
         bool ok;
 
         /* Unbatched, a slot is read at the wake, as it always was. */
-        s->fill_at_ns = sgi_rad1_audio_status_deadline(s, s->status_done + 1);
-        s->fill_at_valid = s->status_batch_ns != 0;
+        s->fill_at_ns = s->status_batch_ns ?
+            sgi_rad1_audio_status_deadline(s, s->status_done + 1) : now;
+        s->fill_at_valid = true;
         ok = sgi_rad1_audio_fill_slot(s, slot);
         s->fill_at_valid = false;
         if (!ok) {
@@ -1052,18 +1053,33 @@ static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
 static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s)
 {
     unsigned int i;
+    bool pinned = !s->fill_at_valid;
 
+    /* One clock read for all channels. */
+    if (pinned) {
+        s->fill_at_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+        s->fill_at_valid = true;
+    }
     for (i = 0; i < SGI_RAD1_AUDIO_NUM_CH; i++) {
         sgi_rad1_audio_chan_sync(&s->chan[i]);
     }
+    if (pinned) {
+        s->fill_at_valid = false;
+    }
 }
 
-/* Arm a channel's timer TICK_FRAMES frames past what it has moved. */
+/* Arm a channel's timer one tick of frames past what it has moved. */
 static void sgi_rad1_audio_chan_arm(SGIRad1AudioChannel *c)
 {
+    /* A batched status engine syncs the channels too: tick no faster. */
+    uint64_t step = MAX(SGI_RAD1_AUDIO_TICK_FRAMES,
+                        muldiv64(c->dev->status_batch_ns,
+                                 sgi_rad1_audio_chan_freq(c),
+                                 NANOSECONDS_PER_SECOND));
+
     /* Round up, so the frames due when it fires are never one short. */
     timer_mod(c->timer, c->start_ns +
-              muldiv64_round_up(c->frames + SGI_RAD1_AUDIO_TICK_FRAMES,
+              muldiv64_round_up(c->frames + step,
                                 NANOSECONDS_PER_SECOND,
                                 sgi_rad1_audio_chan_freq(c)));
 }

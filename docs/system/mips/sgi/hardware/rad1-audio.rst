@@ -531,9 +531,13 @@ The driver needs completions about every 250 µs: its mixer refills the
 output only about ``0xcc`` words ahead of the last pointer it saw.
 The ``status-batch-ns`` property (default 0, every completion) wakes the
 engine about every that many ns, rounded up to whole completions, and fills
-every slot that came due, each read at its own
-boundary; a slot then reaches guest memory up to one batch late, which eats
-into that margin, an *approximation*.
+every slot that came due, each read at its own boundary. A slot then
+reaches guest memory up to one batch late, which eats into that margin.
+The channels also tick no faster than the engine wakes. Input DMA can then
+land up to one batch late when nothing syncs the channel, so a guest that
+reads an input ring with no status or position read first sees stale data,
+and backend audio is delivered in bursts of one batch. Output refill is
+unaffected, because its reads sync first. All of this is an *approximation*.
 
 MediaIO accepts any limit, using one slot when it does not decode; an
 interval of zero stops the ring, and one below 330 clocks is raised to
