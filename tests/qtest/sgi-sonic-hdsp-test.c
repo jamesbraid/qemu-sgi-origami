@@ -1347,31 +1347,77 @@ static void test_dsp_essi0_pc1(void)
  * ESSI0 as the monitor sets it (network on-demand, synchronous): a frame needs
  * a transmit write and a six-word DTM 1 block receives exactly six.
  */
-static void test_dsp_essi0_external_clock_dma(void)
+#define OD_TX_AT    0x180
+#define OD_RX_AT    0x1a0
+
+static void test_dsp_essi0_on_demand(void)
 {
     Card c = card_start(FW_PROXY, "");
-    uint32_t prog[0x30] = { 0 }, out[4];
+    uint32_t prog[OD_RX_AT - 0x100 + 8] = { 0 }, out[8];
     unsigned i = 0, at;
+    const uint32_t tx_dcr = DCR(DRS_ESSI0_TX, DAM_NONE_INC, SP_X, SP_P);
 
     PUT_QQ(prog, i, X_CRA0, 0x180000);
     PUT_QQ(prog, i, X_PCRC, 0x3c);
+    PUT_PP(prog, i, X_DSR_CH(0), OD_TX_AT);
+    PUT_PP(prog, i, X_DDR_CH(0), X_TX00);
+    PUT_PP(prog, i, X_DCO_CH(0), 5);                /* six words */
+    PUT_PP(prog, i, X_DCR_CH(0), tx_dcr);           /* the first words go */
     PUT_PP(prog, i, X_DSR_CH(1), X_RX0);
-    PUT_PP(prog, i, X_DDR_CH(1), DATA_AT);
-    PUT_PP(prog, i, X_DCO_CH(1), 5);                /* six words */
-    PUT_PP(prog, i, X_DCR_CH(1), DCR(DRS_ESSI0_RX, DAM_INC_NONE, SP_P, SP_X));
+    PUT_PP(prog, i, X_DDR_CH(1), OD_RX_AT);
+    PUT_PP(prog, i, X_DCO_CH(1), 99);
+    PUT_PP(prog, i, X_DCR_CH(1), DCR(DRS_ESSI0_RX, DAM_INC_NONE, SP_P, SP_X) |
+           (4u << 19));                             /* DTM 5: DE stays */
     PUT_QQ(prog, i, X_CRB0, 0x033110);
     at = i;
-    prog[i++] = JCLR_PP(1, X_DSTR);                 /* wait for channel 1 */
+    prog[i++] = JCLR_PP(0, X_DSTR);                 /* wait for channel 0 */
     prog[i++] = 0x100 + at;
-    PUT_PP(prog, i, X_DTXS, 0xd0d0d0);
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);                  /* the host's go */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    prog[i++] = MOVEP_RD(REG_A1, X_DDR_CH(1));
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    prog[i++] = MOVEP_RD(REG_A1, X_DCR_CH(0));
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);                  /* and again */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    prog[i++] = MOVEP_RD(REG_A1, X_DDR_CH(1));      /* still six words on */
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    PUT_PP(prog, i, X_DSR_CH(0), OD_TX_AT);
+    PUT_PP(prog, i, X_DCO_CH(0), 5);                /* restart: reload, DE */
+    PUT_PP(prog, i, X_DCR_CH(0), tx_dcr);
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    prog[i++] = MOVEP_RD(REG_A1, X_DDR_CH(1));
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
     prog[i++] = DSP_WAIT;
+    g_assert_cmpuint(i, <, OD_TX_AT - 0x100);
+    for (unsigned k = 0; k < 6; k++) {
+        prog[OD_TX_AT - 0x100 + k] = 0x500000 + k;
+    }
 
     card_boot(&c);
     dsp_release(&c, 0);
-    dsp_boot(&c, 0, 0x100, prog, i);
-    qtest_clock_step(c.qts, 1000 * 1000);
-    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
-    g_assert_cmphex(out[0], ==, 0xd0d0d0);
+    dsp_boot(&c, 0, 0x100, prog, OD_RX_AT - 0x100);
+    qtest_clock_step(c.qts, 40 * 1000);   /* six words take 12 us */
+    hp_write(&c, 0, HP_DATA, 0);
+    qtest_clock_step(c.qts, 40 * 1000);   /* six words take 12 us */
+    g_assert_cmpuint(dsp_words(&c, 0, out, 8), ==, 2);
+    g_assert_cmphex(out[0], ==, OD_RX_AT + 6);      /* six words received */
+    g_assert_cmphex(out[1] & 0x800000, ==, 0);      /* DE cleared at the end */
+    hp_write(&c, 0, HP_DATA, 0);
+    qtest_clock_step(c.qts, 40 * 1000);   /* six words take 12 us */
+    g_assert_cmpuint(dsp_words(&c, 0, out, 8), ==, 1);
+    g_assert_cmphex(out[0], ==, OD_RX_AT + 6);      /* and no more by itself */
+    hp_write(&c, 0, HP_DATA, 0);
+    qtest_clock_step(c.qts, 40 * 1000);   /* six words take 12 us */
+    g_assert_cmpuint(dsp_words(&c, 0, out, 8), ==, 1);
+    g_assert_cmphex(out[0], ==, OD_RX_AT + 12);     /* the restart: six more */
     card_quit(&c);
 }
 
@@ -2527,8 +2573,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/tio1-irqc", test_dsp_tio1_irqc);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-pc1", test_dsp_essi0_pc1);
-    qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-external-clock-dma",
-                   test_dsp_essi0_external_clock_dma);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-on-demand",
+                   test_dsp_essi0_on_demand);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-p-shares-xy",
                    test_dsp_ext_p_shares_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-fifo-holds",
