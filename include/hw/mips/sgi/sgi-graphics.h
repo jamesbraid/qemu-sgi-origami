@@ -29,6 +29,13 @@ bool sgi_graphics_pipe_family(DeviceState *dev,
                               SGIModelGraphicsFamilyKind *family);
 
 /*
+ * Give an SGI machine class the display-shm and display-shm-socket
+ * properties (ui/sgi-display-shm.c). Every board's class init calls this
+ * once, so all of them offer the same contract.
+ */
+void sgi_machine_class_add_display_shm(ObjectClass *oc);
+
+/*
  * What -vga asks of a machine whose display is its catalogue's: true
  * through *@none for -vga none (or -nodefaults), which skips the default
  * pipe, and false for no -vga at all. Any other -vga value is refused,

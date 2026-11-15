@@ -1310,6 +1310,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
         t->nodes->value->cpu_slots->value->assembly;
     const char **cpu_types = g_new0(const char *, 2);
 
+    sgi_machine_class_add_display_shm(oc);
     object_class_property_add_str(oc, "topology", octane_get_topology,
                                   octane_set_topology);
     object_class_property_set_description(oc, "topology",

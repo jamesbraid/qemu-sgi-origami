@@ -12441,6 +12441,7 @@ static void origin200_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "sn0.node0.ram";
     sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
+    sgi_machine_class_add_display_shm(oc);
 }
 
 static void origin2000_class_init(ObjectClass *oc, const void *data)
@@ -12470,6 +12471,7 @@ static void origin2000_class_init(ObjectClass *oc, const void *data)
         "daughtercard's second IOC3 and both chips' keyboard/mouse pair).");
     sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
+    sgi_machine_class_add_display_shm(oc);
 }
 
 /*
@@ -12497,6 +12499,7 @@ static void onyx2_class_init(ObjectClass *oc, const void *data)
     mc->default_ram_id = "sn0.ram";
     sgi_board_cdrom_class_init(mc);
     sgi_machine_class_add_storage(oc);
+    sgi_machine_class_add_display_shm(oc);
 }
 
 /*

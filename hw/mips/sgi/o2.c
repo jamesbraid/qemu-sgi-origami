@@ -34,6 +34,7 @@
 #include "hw/mips/sgi/sgi-board-mac.h"
 #include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
+#include "hw/mips/sgi/sgi-graphics.h"
 #include "hw/mips/sgi/sgi-storage.h"
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_device.h"
@@ -2536,6 +2537,7 @@ static void o2_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->auto_create_sdcard = false;
     sgi_board_cdrom_class_init(mc);
+    sgi_machine_class_add_display_shm(oc);
     for (const SGIModelOfferingList *entry = sgi_machines()->offerings;
          entry; entry = entry->next) {
         if (!g_str_equal(entry->value->product, "o2")) {
