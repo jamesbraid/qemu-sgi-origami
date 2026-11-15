@@ -1312,16 +1312,229 @@ static void test_input_absolute(void)
     qtest_quit(qts);
 }
 
+/* ---- The absolute pointer against a simulated guest -------------------- */
+
+/* Virtual time QEMU waits for a guest answer, and to call one complete. */
+#define ANSWER_MS 250
+#define SETTLE_MS 40
+#define HEAD_W 1280
+#define HEAD_H 1024
+
 /*
- * The guest answers a step by moving its cursor; QEMU learns the gain from
- * the answer and sends the rest. The first step is 1:1 from the origin
- * (7, 9). The guest, accelerating, moves only to (3, 4), a gain of 3/7 and
- * 4/9, so the 4 and 5 still to go take steps of 9 and 11.
+ * The next mouse packet, as the QEMU pointer counts it carried (y down).
+ * False when none starts in @wait_ms of virtual time. The controller
+ * shifts the bytes in over time, so a started packet is read to its end.
+ */
+static bool next_packet(QTestState *qts, int *dx, int *dy, int wait_ms)
+{
+    uint8_t p[3];
+    unsigned n = 0;
+
+    for (int ms = 0; ; ms++) {
+        uint32_t v = qtest_readl(qts, AUX_RECEIVE);
+
+        for (int i = 2; i >= 0 && n < 3; i--) {
+            if (v & RX_VALID(i)) {
+                p[n++] = (v >> (i * 8)) & 0xff;
+            }
+        }
+        if (n == 3 || (!n && ms >= wait_ms)) {
+            break;
+        }
+        g_assert_cmpint(ms, <, wait_ms + 100);
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    if (!n) {
+        return false;
+    }
+    g_assert_cmpuint(n, ==, 3);
+    g_assert_cmphex(p[0] & 0x08, ==, 0x08);
+    /* At most 127 counts, so the 8-bit value is the whole delta. */
+    *dx = (int8_t)p[1];
+    *dy = -(int8_t)p[2];
+    g_assert_cmpint(!!(p[0] & 0x10), ==, *dx < 0);
+    g_assert_cmpint(!!(p[0] & 0x20), ==, *dy > 0);
+    return true;
+}
+
+/*
+ * How the simulated guest turns one packet's counts on one axis into
+ * pixels. IRIX 6.5.30 on the VPro, observed with one packet at a time: up
+ * to 4 counts move that many pixels, n counts above that 2n - 4.
+ */
+static int irix_accel(int n)
+{
+    int a = abs(n);
+
+    return n < 0 ? -(a <= 4 ? a : 2 * a - 4) : (a <= 4 ? a : 2 * a - 4);
+}
+
+/* A steeper guest: one count is one pixel, n above that 4n - 3. */
+static int steep_accel(int n)
+{
+    int a = abs(n);
+
+    return n < 0 ? -(a <= 1 ? a : 4 * a - 3) : (a <= 1 ? a : 4 * a - 3);
+}
+
+typedef struct SimGuest {
+    QTestState *qts;
+    int (*accel)(int n);
+    /*
+     * Answer every packet late and in parts: first the old position again,
+     * then x alone, then y, SETTLE_MS / 2 apart.
+     */
+    bool lag;
+    int max_x, max_y;           /* where the guest stops its cursor */
+    int x, y;
+    unsigned steps;             /* packets for the current target */
+} SimGuest;
+
+static void sim_report(SimGuest *g, int x, int y)
+{
+    guest_cursor(g->qts, x, y, true);
+}
+
+/* Play the guest until QEMU stops sending; returns the packets it took. */
+static unsigned sim_run(SimGuest *g)
+{
+    int dx, dy;
+
+    g->steps = 0;
+    while (next_packet(g->qts, &dx, &dy, ANSWER_MS + SETTLE_MS)) {
+        int nx = MAX(0, MIN(g->max_x, g->x + g->accel(dx)));
+        int ny = MAX(0, MIN(g->max_y, g->y + g->accel(dy)));
+
+        g->steps++;
+        g_assert_cmpuint(g->steps, <=, 32);
+        if (g->lag) {
+            sim_report(g, g->x, g->y);
+            qtest_clock_step(g->qts, SETTLE_MS / 2 * 1000 * 1000);
+            sim_report(g, nx, g->y);
+            qtest_clock_step(g->qts, SETTLE_MS / 2 * 1000 * 1000);
+        }
+        g->x = nx;
+        g->y = ny;
+        sim_report(g, nx, ny);
+    }
+    return g->steps;
+}
+
+static void sim_target(SimGuest *g, int sock, int x, int y)
+{
+    static uint32_t seq;
+    uint8_t b[32];
+    Msg m;
+
+    fill_input(b, ++seq, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, x, y);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    sim_run(g);
+    g_test_message("target %d,%d: at %d,%d after %u steps", x, y, g->x,
+                   g->y, g->steps);
+}
+
+/*
+ * Every corner to the opposite one and to the middle, then far targets in
+ * turn, as a viewer moving across the head would send them. The first
+ * target of each pair also starts from wherever the last one left the
+ * cursor, so nothing learnt on one target may spoil the next.
+ */
+static const int sim_targets[][2] = {
+    { 0, 0 }, { 1279, 1023 }, { 640, 512 },
+    { 1279, 0 }, { 0, 1023 }, { 640, 512 },
+    { 1279, 1023 }, { 0, 0 }, { 640, 512 },
+    { 0, 1023 }, { 1279, 0 }, { 640, 512 },
+    { 380, 372 }, { 580, 512 }, { 680, 172 }, { 80, 72 }, { 880, 872 },
+    { 5, 1018 }, { 1274, 3 }, { 641, 513 }, { 1, 1 },
+};
+
+static void sim_all_targets(int (*accel)(int n), bool lag)
+{
+    int sock;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = accel, .lag = lag,
+                   .max_x = HEAD_W - 1, .max_y = HEAD_H - 1,
+                   .x = 640, .y = 512 };
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    for (unsigned i = 0; i < ARRAY_SIZE(sim_targets); i++) {
+        sim_target(&g, sock, sim_targets[i][0], sim_targets[i][1]);
+        g_assert_cmpint(g.x, ==, sim_targets[i][0]);
+        g_assert_cmpint(g.y, ==, sim_targets[i][1]);
+    }
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A guest that accelerates as IRIX does: a gain learnt on a large step is
+ * twice the gain of a small one. Every target lands exactly, in one packet
+ * per step, with nothing learnt on one target spoiling the next.
+ */
+static void test_input_absolute_accelerating(void)
+{
+    sim_all_targets(irix_accel, false);
+}
+
+/* Steeper still: four pixels a count above a threshold of one. */
+static void test_input_absolute_steep(void)
+{
+    sim_all_targets(steep_accel, false);
+}
+
+/*
+ * A guest whose answer lags the packet and comes in parts: first a report
+ * that has not moved, then x, then y. QEMU waits for the whole answer
+ * before the next step.
+ */
+static void test_input_absolute_lagging(void)
+{
+    sim_all_targets(irix_accel, true);
+}
+
+/*
+ * A target the guest will not move its cursor to: IRIX on the VPro stops
+ * the reported corner 8 pixels short of the right and bottom edges. The
+ * move ends at the edge, on one axis while the other still closes in and
+ * on both when both are held, and the next target is reached as usual.
+ */
+static void test_input_absolute_edge(void)
+{
+    int sock;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = irix_accel,
+                   .max_x = HEAD_W - 9, .max_y = HEAD_H - 9,
+                   .x = 640, .y = 512 };
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    sim_target(&g, sock, HEAD_W - 1, 300);
+    g_assert_cmpint(g.x, ==, HEAD_W - 9);
+    g_assert_cmpint(g.y, ==, 300);
+    sim_target(&g, sock, HEAD_W - 1, HEAD_H - 1);
+    g_assert_cmpint(g.x, ==, HEAD_W - 9);
+    g_assert_cmpint(g.y, ==, HEAD_H - 9);
+    g_assert_cmpuint(g.steps, <=, 8);
+    sim_target(&g, sock, 100, 100);
+    g_assert_cmpint(g.x, ==, 100);
+    g_assert_cmpint(g.y, ==, 100);
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * The guest answers a step by moving its cursor; QEMU sizes the next step
+ * from what that one did. The first step is 1:1 from (0, 0). A guest that
+ * moves only to (3, 4) shows gains of 3/7 and 4/9, so the 4 and 5 still to
+ * go take steps of 9 and 11. A relative message then ends the move: the
+ * next answer sends nothing.
  */
 static void test_input_absolute_loop(void)
 {
     uint8_t buf[16], b[32];
-    int sock;
+    int sock, dx, dy;
     QTestState *qts = input_start(&sock);
     Msg m;
 
@@ -1329,18 +1542,36 @@ static void test_input_absolute_loop(void)
     fill_input(b, 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, 7, 9);
     send_all(sock, b, sizeof(b));
     expect_msg(sock, &m, 0x85);
-    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 3);
-    g_assert_cmphex(buf[1], ==, 7);
-    g_assert_cmphex(buf[2], ==, 0xf7);
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g_assert_cmpint(dx, ==, 7);
+    g_assert_cmpint(dy, ==, 9);
 
+    /* Not complete until the cursor has been still for SETTLE_MS. */
     guest_cursor(qts, 3, 4, true);
-    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 3);
-    g_assert_cmphex(buf[1], ==, 9);
-    g_assert_cmphex(buf[2], ==, 0xf5);              /* -11 */
+    qtest_clock_step(qts, (SETTLE_MS - 1) * 1000 * 1000);
+    g_assert_false(next_packet(qts, &dx, &dy, 0));
+    g_assert_true(next_packet(qts, &dx, &dy, 2));
+    g_assert_cmpint(dx, ==, 9);
+    g_assert_cmpint(dy, ==, 11);
 
-    /* On target: the next answer ends the loop and sends nothing. */
-    guest_cursor(qts, 7, 9, true);
+    /* A relative message replaces the target. */
+    fill_input(b, 2, true, SGI_SHM_INPUT_RELATIVE, 0, 0, 0, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    guest_cursor(qts, 6, 8, true);
     g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 0);
+    g_assert_false(next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS));
+
+    /* A step the guest never answers ends the move. */
+    fill_input(b, 3, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, 100, 8);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g_assert_cmpint(dx, ==, 94);
+    g_assert_cmpint(dy, ==, 0);
+    qtest_clock_step(qts, ANSWER_MS * 1000 * 1000);
+    guest_cursor(qts, 20, 8, true);
+    g_assert_false(next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS));
     close(sock);
     qtest_quit(qts);
 }
@@ -1921,6 +2152,14 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-display-shm/input-absolute", test_input_absolute);
     qtest_add_func("sgi-display-shm/input-absolute-loop",
                    test_input_absolute_loop);
+    qtest_add_func("sgi-display-shm/input-absolute-accelerating",
+                   test_input_absolute_accelerating);
+    qtest_add_func("sgi-display-shm/input-absolute-steep",
+                   test_input_absolute_steep);
+    qtest_add_func("sgi-display-shm/input-absolute-lagging",
+                   test_input_absolute_lagging);
+    qtest_add_func("sgi-display-shm/input-absolute-edge",
+                   test_input_absolute_edge);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 

@@ -689,19 +689,37 @@ position into relative motion by closing a loop on the guest cursor:
 - The target is the position in the head's pixels. The cursor is what
   the head publishes in ``cursor_x`` and ``cursor_y`` (the origin, before the
   guest shows one).
-- QEMU sends a step of the remaining error divided by the gain observed so
-  far, the gain starting at 1, rounded to at least one count in the error's
-  direction, at most 4,096 counts a step.
-- The guest's cursor update for the head is the answer. QEMU learns the gain
-  from it (the distance the cursor moved divided by the step sent, within 1/16
-  to 16, only when the cursor moved the way it was told to), and sends the
-  next step. IRIX accelerates relative motion, so the gain is not 1. The gain
-  carries over to the next target until the viewer disconnects. A step is at
-  most 255 counts, one PS/2 packet.
-- It stops at zero error, after 8 steps, or 1 second after the target was
-  given. An update that does not move the cursor is not an answer and is
-  ignored. A new absolute target, or any relative message, replaces a
-  pending one.
+- QEMU sends one step at a time, as one packet of at most 127 counts on
+  each axis, the most QEMU's PS/2 mouse puts in one packet. A larger move
+  would leave as several packets, and the guest moves its cursor once for
+  each, so a step would have several answers.
+- The answer to a step is the guest's cursor leaving where it was when the
+  step went out; an update that leaves it there is not one. The answer is
+  complete when the cursor has then been still for 40 ms of guest time, so
+  an answer that comes in parts or late is measured whole. IRIX takes up to
+  30 ms to act on a packet. A step not answered within 250 ms of guest time
+  ends the move.
+- Each axis sizes its next step from its last: the remaining error
+  divided by the pixels a count moved on that step (the gain, within 1/16
+  to 16, starting at 1 for every target), rounded to the nearest count with
+  halves toward zero. The gain depends on the size of the step, because IRIX
+  accelerates: on IRIX 6.5.30 with the VPro, observed one packet at a time,
+  up to 4 counts move that many pixels and n counts above that move
+  2n - 4, on each axis apart. So a gain is never carried to another target,
+  and a step that overshoots the target bars every step as large on that
+  axis for the rest of the target. The steps therefore shrink as the cursor
+  closes in, and the last ones are small enough that IRIX moves them one to
+  one.
+- An error that rounds to no counts takes a step of one count, unless the
+  last step on that axis was one count, in which case the axis is as close
+  as it gets. A move of nothing or against the step teaches no gain: the
+  axis is at the edge of the screen, or the guest changed the shape of its
+  cursor, which moves the corner the VPro reports. An axis that moves
+  nothing on 2 steps in a row stops.
+- The move ends when neither axis has a step left, after 32 steps, or 2
+  seconds of guest time after the target was given, however the cursor
+  keeps moving. A new absolute target,
+  or any relative message, replaces a pending one.
 - When the guest cursor is on another head than the target, QEMU does not
   know how the guest arranged its screens, so there is no target to close on.
   It sends the difference from the last absolute position the viewer gave for
@@ -775,4 +793,11 @@ GPU:
   Octane2's keyboard and mouse controller, in batches with their acks, a
   held key released when the viewer drops, and the closed loop answering
   cursor updates;
+- the closed loop against a simulated guest, through
+  ``x-display-shm-cursor``: one that accelerates as IRIX does, a steeper one
+  (one pixel for one count, 4n - 3 for more), and the IRIX one answering
+  each packet late and in parts. From each corner to the opposite one and
+  to the middle, and between far targets, every target lands exactly, one
+  packet a step; and a guest that stops its cursor short of the right and
+  bottom edges, where the move ends at the edge;
 - the socket's removal at exit.
