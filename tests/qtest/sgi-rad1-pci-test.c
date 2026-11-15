@@ -718,6 +718,7 @@ static void test_reset(void)
     qtest_clock_step(r.qts, MS(2));
     g_assert_cmpuint(field(rd(&r, AES_OUT.pos_a), 18), >, 0);
 
+    qpci_iounmap(r.dev, r.bar);
     qtest_system_reset(r.qts);
     rad_enable(&r);
     g_assert_cmphex(rd(&r, REG_BC), ==, 0);

@@ -369,6 +369,8 @@ static void test_resets(void)
     g_assert_cmphex(read_reg(&t, 0x08), ==, 0);
     g_assert_false(irq(&t));
     g_assert_cmphex(qpci_config_readw(t.dev, 4), !=, 0);
+    qpci_iounmap(t.dev, t.bar[0]);
+    qpci_iounmap(t.dev, t.bar[1]);
     qtest_system_reset(t.qts);
     /* PCI reset disables decode; map the same BARs again. */
     t.bar[0] = qpci_iomap(t.dev, 0, NULL);
@@ -487,6 +489,8 @@ static void test_phy_read(void)
     g_assert_cmphex(read_reg(&t, 0xec), ==, 0x81050100);
 
     /* A hard reset restores the PHY's power-on gap count. */
+    qpci_iounmap(t.dev, t.bar[0]);
+    qpci_iounmap(t.dev, t.bar[1]);
     qtest_system_reset(t.qts);
     t.bar[0] = qpci_iomap(t.dev, 0, NULL);
     qpci_config_writew(t.dev, PCI_COMMAND,
