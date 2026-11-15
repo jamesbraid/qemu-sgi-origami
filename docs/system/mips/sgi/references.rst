@@ -413,6 +413,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``dmesgd-5290``
    *NetBSD 9.99.31 dmesg of a real O2 (R12000), dmesgd entry 5290*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=5290>`__ SHA-256 ``9ccceae98ed0985cc10833bd99b0d9800fd67bd36e6b1a1ffbaf9bb5ca70642e``. Public web page; may be quoted.
 
+.. _sgi-ref-dmesgd-6924:
+
+``dmesgd-6924``
+   *OpenBSD 7.2 dmesg of a real Origin 200 with a Toshiba XM-6201TA CD-ROM, dmesgd entry 6924*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=6924>`__ SHA-256 ``e631b20e64a2c332be14550b0f57fa1f05f065d4e42fb8a6a57e24300cb81533``. Public web page; may be quoted.
+
+.. _sgi-ref-dmesgd-7106:
+
+``dmesgd-7106``
+   *OpenBSD 7.0 dmesg of a real Origin 200 with a Toshiba XM-5701TA CD-ROM, dmesgd entry 7106*. NYC\*BUG dmesgd. Capture, cited by line. `<https://dmesgd.nycbug.org/index.cgi?do=view&id=7106>`__ SHA-256 ``bf09a690fd7a431e6452fc2284258f1e247f2ebd024d22996d9b6db33ce284ff``. Public web page; may be quoted.
+
 .. _sgi-ref-dmesgd-8994:
 
 ``dmesgd-8994``
@@ -938,6 +948,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``sgi-gbe-1.1-spec``
    *GBE ASIC spec for REV1.1, 1996-07-18*. Silicon Graphics. Asic spec, cited by page. `<https://bukosek.si/hardware/collection/sgi-o2/o2-GBE-spec.pdf>`__ SHA-256 ``cc9e14e1a70d03eabd35ef27aa96a810c4c17840ecedb7a6bf9883cef3a527e7``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
+.. _sgi-ref-sgi-hardware-faq-2000:
+
+``sgi-hardware-faq-2000``
+   *comp.sys.sgi.misc, SGI hardware Frequently Asked Questions, last modified 2000-06-20, question 47, Message-ID <hardware\_994399215@viz.tamu.edu>*. Usenet. Capture, cited by line. Message-ID ``<hardware_994399215@viz.tamu.edu>``. Public web page; may be quoted.
+
 .. _sgi-ref-sgi-mace-2-0-spec:
 
 ``sgi-mace-2.0-spec``
@@ -1098,6 +1113,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-3a23907e``
    *comp.sys.sgi.admin, 2000-11-28, sysinfo doesn't work anymore after upgrade. (D. Voetelink), Message-ID <3A23907E.A0A6BD61@ecn.nl>*. Usenet. Capture, cited by line. Message-ID ``<3A23907E.A0A6BD61@ecn.nl>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3a4eb9bb:
+
+``usenet-3a4eb9bb``
+   *comp.sys.sgi.admin, 2000-12-31, Greg Douglas, Re: Irix Install probs on a new disk, Message-ID <3A4EB9BB.1F00EAE9@reputable.com>*. Usenet. Capture, cited by line. Message-ID ``<3A4EB9BB.1F00EAE9@reputable.com>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-3adb3ac0:
 
 ``usenet-3adb3ac0``
@@ -1133,6 +1153,16 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 ``usenet-3fef80f1``
    *Usenet post, Octane V8 hinv -mv, Message-ID <3FEF80F1.F00A6CFE@comcast.net>*. Usenet. Capture, cited by line. Message-ID ``<3FEF80F1.F00A6CFE@comcast.net>``. Public web page; may be quoted.
 
+.. _sgi-ref-usenet-3msttn:
+
+``usenet-3msttn``
+   *comp.sys.sgi.hardware, 1995-04-17, Dave Olson (Silicon Graphics), Re: New TOSHIBA CDs, Message-ID <3msttn$68k@gazette.engr.sgi.com>*. Usenet. Capture, cited by line. Message-ID ``<3msttn$68k@gazette.engr.sgi.com>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-3mu7ea:
+
+``usenet-3mu7ea``
+   *comp.sys.sgi.hardware, 1995-04-17, Steve Welch, Special Toshiba CD version required, Message-ID <3mu7ea$2k3@ncar.ucar.edu>*. Usenet. Capture, cited by line. Message-ID ``<3mu7ea$2k3@ncar.ucar.edu>``. Public web page; may be quoted.
+
 .. _sgi-ref-usenet-40c20497:
 
 ``usenet-40c20497``
@@ -1142,6 +1172,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``usenet-4197ca17``
    *comp.sys.sgi post describing a two-port XIO Fibre Channel card, with its hinv and fcadp loop-initialisation log, Message-ID <4197CA17.AF164514@kpp.kiev.ua>*. Usenet. Capture, cited by line. Message-ID ``<4197CA17.AF164514@kpp.kiev.ua>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-4eofac:
+
+``usenet-4eofac``
+   *comp.sys.sgi.hardware, 1996-01-31, Robert E. Seastrom, Want to make an SGI CD-ROM drive work on a Mac?, Message-ID <4eofac$pdc@access4.digex.net>*. Usenet. Capture, cited by line. Message-ID ``<4eofac$pdc@access4.digex.net>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-6kd8bj:
 
@@ -1197,6 +1232,11 @@ Published inventories, posts, photographs and messages, cited as ``web:<id>``.
 
 ``usenet-bqfo2p``
    *comp.sys.sgi.apps, 2003-12-01, Octane with an ESSI under IRIX 6.5.21f, gfxinfo*. Usenet. Capture, cited by line. Message-ID ``<bqfo2p$35k$1@news.mie>``. Public web page; may be quoted.
+
+.. _sgi-ref-usenet-g6j8y1:
+
+``usenet-g6j8y1``
+   *comp.sys.sgi.admin, 2001-01-02, Ralf Beyer, Re: Irix Install probs on a new disk, Message-ID <G6J8y1.Jwn@arl.army.mil>*. Usenet. Capture, cited by line. Message-ID ``<G6J8y1.Jwn@arl.army.mil>``. Public web page; may be quoted.
 
 .. _sgi-ref-usenet-hvh0d:
 
@@ -1287,6 +1327,11 @@ Stock firmware, cited as ``firmware:<id>`` and identified by version and SHA-256
 
 ``ip30-kernel-6.5.21``
    *IP30 kernel of IRIX 6.5.21*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 installed kernel. Version 6.5. Banner ``IRIX Release 6.5 IP30 Version 07141608 System V - 64 Bit``. Found on IRIX 6.5.21 installation of the IP30 kernel; addresses are offsets into the kernel's text, whose mapped base is 0xa800000020004180. Hashed as the payload image. SHA-256 ``c5cb452162321dd3fccb958f885796e82ae0d3d2cc7d8eeb992dfb4eca2cebb4``. Public, without a redistribution grant: cited and linked, never copied into this tree.
+
+.. _sgi-ref-ip30-kernel-6-5-30:
+
+``ip30-kernel-6.5.30``
+   *IP30 kernel of IRIX 6.5.30*. Silicon Graphics. Firmware, cited by address. For Octane and Octane2 IP30 installed kernel. Version 6.5.30. Found on IRIX 6.5.30 installation of the IP30 kernel, a linked image; addresses are its link addresses without the 0xa800000000000000 prefix. Hashed as the payload image. SHA-256 ``607a432f441d15f747d34d593a115c691bf87bcd16275114be894db31fae125b``. Public, without a redistribution grant: cited and linked, never copied into this tree.
 
 .. _sgi-ref-ip30-prom-3-7:
 

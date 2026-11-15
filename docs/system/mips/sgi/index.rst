@@ -151,6 +151,7 @@ Storage and buses
    hardware/qlogic-isp2200
    hardware/adaptec-aic1160
    hardware/dbrick
+   hardware/scsi-cdrom
    hardware/scsi-hd-inquiry
    hardware/aic7880
    hardware/lucent-ohci
