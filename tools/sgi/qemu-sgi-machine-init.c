@@ -17,7 +17,7 @@
 #include "qapi/error.h"
 #include "qemu/error-report.h"
 #include "qemu/help-texts.h"
-#include "qemu-version.h"
+#include "qemu/version.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/prom-image.h"
 #include "hw/mips/sgi/sgi-machines.h"
