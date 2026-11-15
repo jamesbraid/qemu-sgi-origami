@@ -10,7 +10,7 @@ else, in a fixed layout with no wrapping directory:
     bin/qemu-sgi-machine-init
                              builds a new machine's storage
     bin/*.dll                Windows only: the MinGW runtime DLLs
-    share/keymaps/           keyboard maps
+    share/qemu/keymaps/      keyboard maps
     licenses/                QEMU's licences and one file per library built in
 
 and is named sgi-origami-<version>-<platform>.tar.gz (Windows: .zip), where
@@ -329,7 +329,9 @@ def stage(name, build, prefix, stage_dir, strip):
         if strip:
             strip_binary(name, target)
 
-    keymaps = stage_dir / 'share/keymaps'
+    # QEMU looks for its data in ../share/qemu beside the executable, and
+    # -vnc fails to start without a keymap found there.
+    keymaps = stage_dir / 'share/qemu/keymaps'
     shutil.copytree(SOURCE / 'pc-bios/keymaps', keymaps,
                     ignore=shutil.ignore_patterns('meson.build'))
 

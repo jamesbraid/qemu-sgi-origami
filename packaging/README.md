@@ -18,7 +18,7 @@ bin/qemu-system-mips64[.exe]
 bin/qemu-img[.exe]
 bin/qemu-sgi-machine-init[.exe]
 bin/*.dll                        Windows only
-share/keymaps/
+share/qemu/keymaps/
 licenses/
 ```
 
