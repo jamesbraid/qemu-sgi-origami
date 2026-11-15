@@ -1451,7 +1451,7 @@ static void test_dsp_interrupt_out(void)
 }
 
 /* The box device, and what DSP 2 gets back from a command word. */
-#define BOX_CMD(addr, cmd) ((addr) | ((cmd) << 11))
+#define BOX_CMD(addr, cmd) (((addr) << 11) | ((cmd) << 8))
 
 /*
  * DSP 2 sends a 16-bit command word on ESSI0 the way the page describes
