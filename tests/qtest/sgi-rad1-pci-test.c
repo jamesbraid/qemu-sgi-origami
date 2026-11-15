@@ -616,6 +616,81 @@ static void test_status_continuous(void)
 }
 
 /*
+ * With status-batch-ns the engine wakes once per 1 ms and fills every slot
+ * that came due, each carrying the UST of its own 250 us boundary, not of
+ * the wake: slots 2 to 5 land together at 1.25 ms and are 312.5 ticks apart.
+ */
+static void status_batched_start(Rad *r, uint64_t ring, unsigned slots)
+{
+    wr(r, REG_STATUS_LIMIT, 0x78 - slots * SLOT_BYTES);
+    wr(r, REG_STATUS_LO, (uint32_t)ring);
+    wr(r, REG_STATUS_HI, ring >> 32);
+    wr(r, 0x4b4, (uint32_t)ring);
+    wr(r, 0x4b8, ring >> 32);
+    wr(r, 0x4bc, 0x78 - slots * SLOT_BYTES);
+    wr(r, REG_STATUS_CTRL, STATUS_CONT_250);
+}
+
+static void test_status_batched_ust(void)
+{
+    enum { SLOTS = 8 };
+    Rad r = rad_boot_with("sgi-rad1-pci,status-batch-ns=1000000", "");
+    uint64_t ring = guest_alloc(&alloc, SLOTS * SLOT_BYTES);
+    uint8_t zero[SLOTS * SLOT_BYTES] = { 0 }, slot[SLOT_BYTES];
+    uint32_t ust[SLOTS + 1];
+
+    qtest_memwrite(r.qts, ring, zero, sizeof(zero));
+    status_batched_start(&r, ring, SLOTS);
+
+    /* Slot 1 has its own wake; slots 2 to 5 wait for the next one. */
+    qtest_clock_step(r.qts, STATUS_INTERVAL_NS + 1000);
+    slot_read(&r, ring + 1 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, DONE_BIT);
+    slot_read(&r, ring + 2 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, 0);
+    qtest_clock_step(r.qts, 4 * STATUS_INTERVAL_NS);
+    for (unsigned k = 1; k <= 5; k++) {
+        slot_read(&r, ring + k * SLOT_BYTES, slot);
+        g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, DONE_BIT);
+        ust[k] = word(slot, SLOT_MIRROR + 0x30);
+    }
+    slot_read(&r, ring + 6 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, 0);
+
+    /* The values are those of the boundaries, not four copies of the wake. */
+    for (unsigned k = 2; k <= 5; k++) {
+        int64_t want = (int64_t)(k - 1) * STATUS_INTERVAL_NS / 800;
+
+        g_assert_cmpint(llabs((int64_t)(ust[k] - ust[1]) - want), <=, 1);
+    }
+    rad_quit(&r);
+}
+
+/*
+ * A guest access between wakes first completes the slots already due, in
+ * order, so the engine never reads state past a boundary it has not filled.
+ */
+static void test_status_batched_catch_up(void)
+{
+    enum { SLOTS = 8 };
+    Rad r = rad_boot_with("sgi-rad1-pci,status-batch-ns=1000000", "");
+    uint64_t ring = guest_alloc(&alloc, SLOTS * SLOT_BYTES);
+    uint8_t zero[SLOTS * SLOT_BYTES] = { 0 }, slot[SLOT_BYTES];
+
+    qtest_memwrite(r.qts, ring, zero, sizeof(zero));
+    status_batched_start(&r, ring, SLOTS);
+    qtest_clock_step(r.qts, 2 * STATUS_INTERVAL_NS + 1000);
+    slot_read(&r, ring + 2 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, 0);
+    rd(&r, REG_UST);
+    slot_read(&r, ring + 2 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, DONE_BIT);
+    slot_read(&r, ring + 3 * SLOT_BYTES, slot);
+    g_assert_cmphex(word(slot, SLOT_DONE) & DONE_BIT, ==, 0);
+    rad_quit(&r);
+}
+
+/*
  * Position encoding. Each position is a 14-bit frame count at shift 18
  * (bits 31:18), wrapping; a subcode channel's own count is the A register's
  * bits 17:4, and the parent's field in bits 31:18 of the same word is not
@@ -810,6 +885,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-rad1-pci/bus-master-gate", test_bus_master_gate);
     qtest_add_func("/sgi-rad1-pci/status-continuous",
                    test_status_continuous);
+    qtest_add_func("/sgi-rad1-pci/status-batched-ust",
+                   test_status_batched_ust);
+    qtest_add_func("/sgi-rad1-pci/status-batched-catch-up",
+                   test_status_batched_catch_up);
     qtest_add_func("/sgi-rad1-pci/positions", test_positions);
     qtest_add_func("/sgi-rad1-pci/subcode-positions", test_subcode_positions);
     qtest_add_func("/sgi-rad1-pci/reset", test_reset);

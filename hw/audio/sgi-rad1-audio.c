@@ -61,9 +61,16 @@
 static void sgi_rad1_octane_ust_update(SGIRad1AudioState *s);
 static uint32_t sgi_rad1_octane_ust_at(SGIRad1AudioState *s, int64_t ns);
 
+/* The time device state is read at: a batched slot's own boundary, or now. */
+static int64_t sgi_rad1_audio_now(SGIRad1AudioState *s)
+{
+    return s->fill_at_valid ? s->fill_at_ns :
+           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+}
+
 static uint32_t sgi_rad1_audio_ust_counter(SGIRad1AudioState *s)
 {
-    int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->ust_base_ns;
+    int64_t elapsed = sgi_rad1_audio_now(s) - s->ust_base_ns;
 
     if (s->octane) {
         sgi_rad1_octane_ust_update(s);
@@ -309,7 +316,7 @@ static uint32_t sgi_rad1_audio_field_bit(uint64_t n)
  */
 static uint32_t sgi_rad1_audio_field_events(SGIRad1AudioState *s)
 {
-    int64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->ust_base_ns;
+    int64_t elapsed = sgi_rad1_audio_now(s) - s->ust_base_ns;
     uint64_t fields;
     uint32_t bits = 0;
 
@@ -349,6 +356,7 @@ static uint32_t sgi_rad1_audio_flags_word(SGIRad1AudioState *s)
 }
 
 static void sgi_rad1_audio_sync_all(SGIRad1AudioState *s);
+static void sgi_rad1_audio_status_catch_up(SGIRad1AudioState *s);
 static bool sgi_rad1_octane_pass_end(SGIRad1AudioChannel *c);
 
 /* A channel's current DMA pointer, low 32 bits of the PCI address. */
@@ -442,7 +450,7 @@ static bool sgi_rad1_audio_fill_slot(SGIRad1AudioState *s, uint64_t slot)
         SGIRad1AudioChannel *c = &s->chan[SGI_RAD1_AUDIO_CH_OUT];
 
         trace_sgi_rad1_octane_status_snapshot(slot,
-            qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), c->start_ns, c->frames,
+            sgi_rad1_audio_now(s), c->start_ns, c->frames,
             output_ptr,
             ldl_le_p(mirror + SGI_RAD1_AUDIO_REG_OUT_POS_A -
                      SGI_RAD1_AUDIO_SLOT_MIRROR_FIRST),
@@ -526,38 +534,62 @@ static int64_t sgi_rad1_audio_status_deadline(SGIRad1AudioState *s,
  * consumer index and clears each done bit, so filling the next slot each
  * completion keeps it finding fresh ones.
  */
+static void sgi_rad1_audio_status_catch_up(SGIRad1AudioState *s)
+{
+    int64_t now;
+
+    if (!s->status_running || s->fill_at_valid) {
+        return;
+    }
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    while (sgi_rad1_audio_status_deadline(s, s->status_done + 1) <= now) {
+        uint64_t slot = sgi_rad1_audio_status_ring_base(s) +
+                        (uint64_t)s->status_ring_cursor *
+                        SGI_RAD1_AUDIO_SLOT_STRIDE;
+        bool ok;
+
+        /* Unbatched, a slot is read at the wake, as it always was. */
+        s->fill_at_ns = sgi_rad1_audio_status_deadline(s, s->status_done + 1);
+        s->fill_at_valid = s->status_batch_ns != 0;
+        ok = sgi_rad1_audio_fill_slot(s, slot);
+        s->fill_at_valid = false;
+        if (!ok) {
+            /* Ring base unmapped: stop rather than spin on a failing DMA. */
+            s->status_running = false;
+            return;
+        }
+        if (s->status_ring_slots) {
+            s->status_ring_cursor =
+                (s->status_ring_cursor + 1) % s->status_ring_slots;
+        }
+        s->status_done++;
+        if (now > sgi_rad1_audio_status_deadline(s, s->status_done +
+                                                 s->status_ring_slots)) {
+            /* More than a ring behind: start the schedule again. */
+            s->status_start_ns = now;
+            s->status_done = 0;
+        }
+    }
+}
+
 static void sgi_rad1_audio_status_tick(void *opaque)
 {
     SGIRad1AudioState *s = opaque;
-    uint64_t base = sgi_rad1_audio_status_ring_base(s);
-    uint64_t slot = base + (uint64_t)s->status_ring_cursor *
-                    SGI_RAD1_AUDIO_SLOT_STRIDE;
-    int64_t now;
+    int64_t interval_ns;
+    uint64_t batch;
 
     if (!s->status_running) {
         return;
     }
-
-    if (!sgi_rad1_audio_fill_slot(s, slot)) {
-        /* Ring base unmapped: stop rather than spin on a failing DMA. */
-        s->status_running = false;
+    sgi_rad1_audio_status_catch_up(s);
+    if (!s->status_running) {
         return;
     }
-
-    if (s->status_ring_slots) {
-        s->status_ring_cursor =
-            (s->status_ring_cursor + 1) % s->status_ring_slots;
-    }
-    s->status_done++;
-
-    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
-    if (now > sgi_rad1_audio_status_deadline(s, s->status_done +
-                                             s->status_ring_slots)) {
-        s->status_start_ns = now;
-        s->status_done = 0;
-    }
+    interval_ns = sgi_rad1_audio_status_deadline(s, 1) - s->status_start_ns;
+    batch = interval_ns > 0 ?
+            MAX(1, DIV_ROUND_UP(s->status_batch_ns, interval_ns)) : 1;
     timer_mod(s->status_timer,
-              sgi_rad1_audio_status_deadline(s, s->status_done + 1));
+              sgi_rad1_audio_status_deadline(s, s->status_done + batch));
 }
 
 /*
@@ -994,7 +1026,7 @@ static bool sgi_rad1_audio_chan_move(SGIRad1AudioChannel *c, uint64_t frames)
  */
 static void sgi_rad1_audio_chan_sync(SGIRad1AudioChannel *c)
 {
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t now = sgi_rad1_audio_now(c->dev);
     uint64_t due, frames;
 
     /* Elapsed time at or below zero would become a huge unsigned count. */
@@ -1041,6 +1073,7 @@ static void sgi_rad1_audio_chan_tick(void *opaque)
 {
     SGIRad1AudioChannel *c = opaque;
 
+    sgi_rad1_audio_status_catch_up(c->dev);
     sgi_rad1_audio_chan_sync(c);
     if (c->running) {
         sgi_rad1_audio_chan_arm(c);
@@ -1169,6 +1202,7 @@ static uint64_t sgi_rad1_audio_bar0_read(void *opaque, hwaddr addr,
                                          unsigned size)
 {
     SGIRad1AudioState *s = opaque;
+    sgi_rad1_audio_status_catch_up(s);
 
     if (addr >= SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST &&
         addr <= SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST) {
@@ -1246,6 +1280,7 @@ static void sgi_rad1_audio_bar0_write(void *opaque, hwaddr addr, uint64_t val,
                                       unsigned size)
 {
     SGIRad1AudioState *s = opaque;
+    sgi_rad1_audio_status_catch_up(s);
 
     if (addr >= SGI_RAD1_AUDIO_REG_SAMPLE_POS_FIRST &&
         addr <= SGI_RAD1_AUDIO_REG_SAMPLE_POS_LAST) {
@@ -1425,6 +1460,7 @@ static uint64_t sgi_rad1_audio_subcode_read(void *opaque, hwaddr addr,
                                             unsigned size)
 {
     SGIRad1AudioState *s = opaque;
+    sgi_rad1_audio_status_catch_up(s);
 
     if (sgi_rad1_audio_subcode_gap(addr, size)) {
         qemu_log_mask(LOG_UNIMP,
@@ -1440,6 +1476,7 @@ static void sgi_rad1_audio_subcode_write(void *opaque, hwaddr addr,
                                          uint64_t val, unsigned size)
 {
     SGIRad1AudioState *s = opaque;
+    sgi_rad1_audio_status_catch_up(s);
 
     if (sgi_rad1_audio_subcode_gap(addr, size)) {
         qemu_log_mask(LOG_UNIMP,
@@ -1478,7 +1515,7 @@ static const MemoryRegionOps sgi_rad1_audio_bar0_ops = {
 
 static void sgi_rad1_octane_ust_update(SGIRad1AudioState *s)
 {
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    int64_t now = sgi_rad1_audio_now(s);
 
     if (s->octane_ust_enabled && now > s->octane_ust_last_ns) {
         uint64_t elapsed = now - s->octane_ust_last_ns;
@@ -1898,6 +1935,7 @@ static MemTxResult sgi_rad1_octane_read(void *opaque, hwaddr addr,
     SGIRad1AudioState *s = opaque;
     int index = sgi_rad1_octane_startup_index(addr);
 
+    sgi_rad1_audio_status_catch_up(s);
     if (size == 4 && index >= 0) {
         *value = s->octane_startup[index];
         return MEMTX_OK;
@@ -1955,6 +1993,7 @@ static MemTxResult sgi_rad1_octane_write(void *opaque, hwaddr addr,
     SGIRad1OctaneRing ring;
     int index = sgi_rad1_octane_startup_index(addr);
 
+    sgi_rad1_audio_status_catch_up(s);
     if (size == 4 && index >= 0) {
         uint32_t unsupported = 0;
 
@@ -2615,6 +2654,8 @@ static const Property sgi_rad1_audio_properties[] = {
     DEFINE_PROP_UINT32("aes-input-rate", SGIRad1AudioState, aes_input_rate, 0),
     DEFINE_PROP_BOOL("adat-input", SGIRad1AudioState, adat_input, false),
     DEFINE_PROP_STRING("genlock", SGIRad1AudioState, genlock),
+    DEFINE_PROP_UINT32("status-batch-ns", SGIRad1AudioState,
+                       status_batch_ns, 0),
 };
 
 static void sgi_rad1_audio_class_init(ObjectClass *klass, const void *data)
