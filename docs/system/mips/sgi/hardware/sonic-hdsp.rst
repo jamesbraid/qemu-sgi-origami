@@ -1820,11 +1820,24 @@ source its request field names: ESSI0 and ESSI1 receive and transmit
 by clearing the flag), and the host port's slave receive and slave transmit
 requests. The transfer modes are block (a request starts the whole block),
 word and line (one word per request, the line mode treated as word), and the
-DE-triggered block; the address modes are no update and postincrement by 1.
-Multi-dimensional addressing, the reserved address modes (6 and 7, which
-hold the address), the transfer-done request sources and the IRQA to IRQD
-pins log ``LOG_UNIMP``. DIE also raises the channel's interrupt when
-software clears DE during a transfer. Channel priorities and the core's
+DE-triggered block; the address modes are no update, postincrement by 1
+and the two-dimensional modes with an offset register, DOR0 to DOR3
+(DSP56300FM section 10.5.3). With a two-dimensional end the counter is in
+mode B: DCOH is bits 23 to 12 and DCOL bits 11 to 0, a block is
+``(DCOH + 1) * (DCOL + 1)`` transfers, and the address steps by one while
+DCOL counts down and by the offset when it is zero, after the last
+transfer too (*established*, :src:`nxp-dsp56300fm-5 section 10.5.3.2`);
+the audio channels' control words use it. The counter reload does not
+rewind an address, as the manual describes (Table 10-2). A linear end (postincrement by 1) of a two-dimensional
+transfer steps by one on every transfer, row boundaries included, an
+*approximation*: the manual does not say how it counts in mode B. Three-dimensional
+addressing, the reserved address modes (6 and 7, which hold the address),
+the transfer-done request sources and the IRQA to IRQD pins log
+``LOG_UNIMP``. DIE also raises the channel's interrupt when
+software clears DE during a transfer, and at the end of a block in the
+modes that leave DE set (DTM 4 and 5), where the manual says the interrupt
+cannot be used; the monitors depend on it (*inferred* from
+:src:`sonic-dsp-programs-5.0`). Channel priorities and the core's
 bus arbitration are not modelled: transfers are instantaneous and run in
 channel order. The block end sets the status bit, clears DE for the modes
 that do, and raises the channel's interrupt when DIE is set and its

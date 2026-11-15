@@ -661,6 +661,37 @@ static void dma_done(SonicHDSPDSPState *s, unsigned ch)
     }
 }
 
+/*
+ * Counter mode B (FM 10.5.3.2): a block is (DCOH + 1) * (DCOL + 1)
+ * transfers.
+ */
+static void dma_word_2d(SonicHDSPDSPState *s, unsigned ch, unsigned smode,
+                        unsigned dmode)
+{
+    SonicDspDma *d = &s->dma[ch];
+    uint32_t dcol = d->dco & 0xfff, dcoh = d->dco >> 12;
+    bool step_one = dcol > 0;
+
+    if (smode < 4) {
+        d->dsr = (d->dsr + (step_one ? 1 : s->dor[smode])) & 0xffffff;
+    } else if (smode == 5) {
+        d->dsr = (d->dsr + 1) & 0xffffff;
+    }
+    if (dmode < 4) {
+        d->ddr = (d->ddr + (step_one ? 1 : s->dor[dmode])) & 0xffffff;
+    } else if (dmode == 5) {
+        d->ddr = (d->ddr + 1) & 0xffffff;
+    }
+    if (dcol) {
+        d->dco--;
+    } else if (dcoh) {
+        d->dco = ((dcoh - 1) << 12) | (d->dco_init & 0xfff);
+    } else {
+        d->dco = d->dco_init;
+        dma_done(s, ch);
+    }
+}
+
 static void dma_word(SonicHDSPDSPState *s, unsigned ch)
 {
     SonicDspDma *d = &s->dma[ch];
@@ -675,19 +706,23 @@ static void dma_word(SonicHDSPDSPState *s, unsigned ch)
         d->dcr &= ~DCR_DE;
         return;
     }
-    if ((d->dcr & (1u << 10)) || smode < 4 || dmode < 4) {
-        LOG_UNIMP_ONCE("sgi-sonic-hdsp: DMA multi-dimensional addressing\n");
+    if (d->dcr & (1u << 10)) {
+        LOG_UNIMP_ONCE("sgi-sonic-hdsp: DMA three-dimensional addressing\n");
     }
     if (smode > 5 || dmode > 5) {
         LOG_UNIMP_ONCE("sgi-sonic-hdsp: reserved DMA address mode\n");
     }
     val = dsp_mem_read(s, sspace, d->dsr);
     dsp_mem_write(s, dspace, d->ddr, val);
-    /* Modes 0 to 3 (2D) are treated as postincrement; 4 holds, 6 and 7 hold. */
-    if (smode < 4 || smode == 5) {
+    if (smode < 4 || dmode < 4) {
+        dma_word_2d(s, ch, smode, dmode);
+        return;
+    }
+    /* Counter mode A: no update (4) and postincrement by 1 (5). */
+    if (smode == 5) {
         d->dsr = (d->dsr + 1) & 0xffffff;
     }
-    if (dmode < 4 || dmode == 5) {
+    if (dmode == 5) {
         d->ddr = (d->ddr + 1) & 0xffffff;
     }
     if (d->dco) {

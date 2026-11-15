@@ -986,6 +986,7 @@ static unsigned dsp_words(Card *c, unsigned n, uint32_t *out, unsigned max)
 #define X_PCRC          0xffffbfu
 #define X_IPRC          0xffffffu
 #define X_DSTR          0xfffff4u
+#define X_DOR0          0xfffff3u
 #define X_TLR0          0xffff8eu
 #define X_TCPR0         0xffff8du
 #define X_DSR_CH(ch)    (0xffffefu - 4 * (ch))
@@ -1826,6 +1827,114 @@ static void test_dsp_essi0_tfs_slot0(void)
 }
 
 /*
+ * Counter mode A: the reload does not rewind the address (FM Table 10-2), so a
+ * DTM 4 channel's second block reads S + 2 and S + 3.
+ */
+static void test_dsp_dma_counter_mode_a(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x40] = { 0 }, out[8];
+    unsigned i = 0;
+
+    PUT_QQ(prog, i, X_TLR0, 0);
+    PUT_QQ(prog, i, X_TCPR0, 24999);            /* a compare every 500 us */
+    PUT_PP(prog, i, X_DSR_CH(0), DATA_AT);
+    PUT_PP(prog, i, X_DDR_CH(0), X_DTXS);
+    PUT_PP(prog, i, X_DCO_CH(0), 1);            /* two words a block */
+    PUT_PP(prog, i, X_DCR_CH(0), 0x800000 | (4 << 19) |
+           (DRS_TIMER0 << 11) | (DAM_NONE_INC << 4) | 2);
+    PUT_QQ(prog, i, X_TCSR0, 0x201);
+    prog[i++] = DSP_WAIT;
+    for (unsigned k = 0; k < 6; k++) {
+        prog[DATA_AT - 0x100 + k] = 0xb00000 + k;
+    }
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, DATA_AT - 0x100 + 6);
+    qtest_clock_step(c.qts, 1200 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 8), >=, 4);
+    g_assert_cmphex(out[0], ==, 0xb00000);
+    g_assert_cmphex(out[1], ==, 0xb00001);
+    g_assert_cmphex(out[2], ==, 0xb00002);
+    g_assert_cmphex(out[3], ==, 0xb00003);
+    card_quit(&c);
+}
+
+/*
+ * Counter mode B (FM Table 10-3): DCOH 1, DCOL 1, offset 2 read S, S + 1,
+ * S + 3, S + 4 and leave the source at S + 6, not 4097 transfers.
+ */
+static void test_dsp_dma_counter_mode_b(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x40] = { 0 }, out[8];
+    unsigned i = 0, at;
+
+    PUT_PP(prog, i, X_DOR0, 2);
+    PUT_PP(prog, i, X_DSR_CH(0), DATA_AT);
+    PUT_PP(prog, i, X_DDR_CH(0), X_DTXS);
+    PUT_PP(prog, i, X_DCO_CH(0), 0x001001);
+    /* DTM 3 (started by DE), source 2D with DOR0, destination held */
+    PUT_PP(prog, i, X_DCR_CH(0), 0x800000 | (3 << 19) | (0x20 << 4) | 2);
+    at = i;
+    prog[i++] = JCLR_PP(0, X_DSTR);
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DSR_CH(0));
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    prog[i++] = DSP_WAIT;
+    for (unsigned k = 0; k < 6; k++) {
+        prog[DATA_AT - 0x100 + k] = 0xa00000 + k;
+    }
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, DATA_AT - 0x100 + 6);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 8), ==, 5);
+    g_assert_cmphex(out[0], ==, 0xa00000);
+    g_assert_cmphex(out[1], ==, 0xa00001);
+    g_assert_cmphex(out[2], ==, 0xa00003);
+    g_assert_cmphex(out[3], ==, 0xa00004);
+    g_assert_cmphex(out[4], ==, DATA_AT + 6);
+    card_quit(&c);
+}
+
+/*
+ * DTM 5 with DIE interrupts at the counter reload, which the manual says is
+ * unusable; the monitors rely on it (inferred).
+ */
+static void test_dsp_dma_mode101_interrupt(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x40] = { 0 }, out[4];
+    unsigned i = 0;
+
+    PUT_PP(prog, i, X_IPRC, 0x001000);              /* channel 0, level 0 */
+    prog[i++] = ANDI_MR(0xfc);
+    PUT_QQ(prog, i, X_TLR0, 0);
+    PUT_QQ(prog, i, X_TCPR0, 999);
+    PUT_PP(prog, i, X_DOR0, 2);
+    PUT_PP(prog, i, X_DSR_CH(0), DATA_AT);
+    PUT_PP(prog, i, X_DDR_CH(0), 0x180);
+    PUT_PP(prog, i, X_DCO_CH(0), 0x001000);         /* DCOH 1, DCOL 0 */
+    PUT_PP(prog, i, X_DCR_CH(0), 0xc00000 | (5 << 19) |
+           (DRS_TIMER0 << 11) | (0x20 << 4) | 2);
+    PUT_QQ(prog, i, X_TCSR0, 0x201);
+    prog[i++] = DSP_WAIT;
+    PUT_PP(prog, i, X_DTXS, 0xd0d0d0);
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
+    g_assert_cmphex(out[0], ==, 0xd0d0d0);
+    card_quit(&c);
+}
+
+/*
  * SSISR: an enabled transmitter with nothing written sets TUE and TDE; a
  * write to the data register, or to TSR, after reading SSISR clears TUE.
  */
@@ -2305,6 +2414,12 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/dsp/slot-counts", test_slot_counts);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-internal-clock-tde",
                    test_dsp_essi0_internal_clock_tde);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/dma-counter-mode-a",
+                   test_dsp_dma_counter_mode_a);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/dma-counter-mode-b",
+                   test_dsp_dma_counter_mode_b);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/dma-mode101-interrupt",
+                   test_dsp_dma_mode101_interrupt);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-tfs-slot0",
                    test_dsp_essi0_tfs_slot0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue", test_ssisr_tue);
