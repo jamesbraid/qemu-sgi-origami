@@ -745,6 +745,8 @@ endif
 
 qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
                                               'r10k-cache-index-ops-test'] + \
+  (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
+    ['qtest-irq-test'] : []) + \
   (config_all_devices.has_key('CONFIG_MALTA') ? ['wacom-iv-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_VICE') ?
     ['sgi-vice-test', 'sgi-vice-msp-test'] : []) + \

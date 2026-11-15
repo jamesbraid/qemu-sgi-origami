@@ -1591,6 +1591,7 @@ F: tests/qtest/qlogic-isp-migration-test.c
 F: tests/qtest/qlogic-isp-test.c
 F: tests/qtest/qlogic-isp2200-test.c
 F: tests/qtest/qlogic-isp2200-migration-test.c
+F: tests/qtest/qtest-irq-test.c
 F: tests/qtest/sgi-cdrom-test.c
 F: tests/qtest/sgi-dbrick-test.c
 F: tests/qtest/sgi-scsi-cd-test.h

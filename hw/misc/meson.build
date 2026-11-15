@@ -253,7 +253,8 @@ system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_SN0'],
                              '../../tests/qtest/fixtures/sgi-router-test.c',
                              '../../tests/qtest/fixtures/sgi-xbow-transport-test.c'))
 system_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
-              if_true: files('../../tests/qtest/fixtures/sgi-command-port-test.c',
+              if_true: files('../../tests/qtest/fixtures/qtest-irq.c',
+                             '../../tests/qtest/fixtures/sgi-command-port-test.c',
                              '../../tests/qtest/fixtures/sgi-heart-xtalk-test.c',
                              '../../tests/qtest/fixtures/sgi-iommu-notifier-test.c',
                              '../../tests/qtest/fixtures/sgi-xio-test-target.c'))

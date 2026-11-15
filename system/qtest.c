@@ -268,8 +268,9 @@ IrqInterceptState irq_intercept_state;
  *  < OK
  *
  * Attach to the gpio-in (resp. gpio-out) pins exported by the device at
- * QOM-PATH.  When the pin is triggered, one of the following async messages
- * will be printed to the qtest stream::
+ * QOM-PATH. Input interception covers every GPIO-in list; the lists share
+ * line indices. When the pin is triggered, one of the following async
+ * messages will be printed to the qtest stream::
  *
  *  IRQ raise NUM
  *  IRQ lower NUM
@@ -542,25 +543,35 @@ static void qtest_process_command(CharFrontend *chr, gchar **words)
             return;
         }
 
-        QLIST_FOREACH(ngl, &dev->gpios, node) {
-            /* NULL is valid and matchable, for "unnamed GPIO" */
-            if (g_strcmp0(ngl->name, words[2]) != 0) {
-                continue;
-            }
+        if (!is_outbound) {
+            int max_inputs = 0;
 
+            /* Input lists share line indices; size for the largest list. */
+            QLIST_FOREACH(ngl, &dev->gpios, node) {
+                max_inputs = MAX(max_inputs, ngl->num_in);
+            }
+            qtest_init_irq_intercept(max_inputs);
+        }
+
+        QLIST_FOREACH(ngl, &dev->gpios, node) {
             if (is_outbound) {
                 int i;
+
+                /* NULL is valid and matchable, for "unnamed GPIO". */
+                if (g_strcmp0(ngl->name, words[2]) != 0) {
+                    continue;
+                }
                 qtest_init_irq_intercept(ngl->num_out);
                 for (i = 0; i < ngl->num_out; ++i) {
                     qtest_install_gpio_out_intercept(dev, ngl->name, i);
                 }
+                interception_succeeded = true;
+                break;
             } else {
-                qtest_init_irq_intercept(ngl->num_in);
                 qemu_irq_set_observer(ngl->in, qtest_irq_handler,
                                       ngl->num_in);
+                interception_succeeded = true;
             }
-            interception_succeeded = true;
-            break;
         }
 
         if (interception_succeeded) {

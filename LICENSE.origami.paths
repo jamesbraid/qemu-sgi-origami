@@ -847,6 +847,7 @@ tests/qtest/bcm570x-test.c
 tests/qtest/bic-board-interface-fixture.c
 tests/qtest/board-test-fixture.c
 tests/qtest/ds1742-test.c
+tests/qtest/fixtures/qtest-irq.c
 tests/qtest/fixtures/sgi-bridge-dma-test.c
 tests/qtest/fixtures/sgi-command-port-test.c
 tests/qtest/fixtures/sgi-dma-word-test.c
@@ -880,6 +881,7 @@ tests/qtest/psitech-rad4-mode0-fixture.h
 tests/qtest/psitech-rad4-modes-fixture.h
 tests/qtest/psitech-rad4-test.c
 tests/qtest/qlogic-isp-test.c
+tests/qtest/qtest-irq-test.c
 tests/qtest/r10000-identity-test.c
 tests/qtest/scsi-tape-test.c
 tests/qtest/sgi-bic-board-interface-test.c
