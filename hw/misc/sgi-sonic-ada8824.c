@@ -27,8 +27,12 @@
         } \
     } while (0)
 
-#define CMD_ADDRESS(w)  ((w) & 0x1f)
-#define CMD_COMMAND(w)  (((w) >> 11) & 0x1f)
+/*
+ * A scan sends 0x0700, then commands 1 and 2 per address 1 to 31 (address
+ * in bits 15:11).
+ */
+#define CMD_ADDRESS(w)  (((w) >> 11) & 0x1f)
+#define CMD_COMMAND(w)  (((w) >> 8) & 7)
 
 #define CMD_IDENTIFY    1       /* answers 288: the library's ADA8 test */
 #define CMD_VERSION     2

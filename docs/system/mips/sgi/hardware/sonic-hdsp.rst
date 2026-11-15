@@ -1990,8 +1990,13 @@ the ``box`` link property and ``sonic-ada8824``'s own properties.
        by 8, and takes ``0x80000000`` as an error.
      - *software expectation*
      - :src:`sonic-hdsp-library-5.0 0x5ecd6ed0`.
-   * - The command word is ``address | (load << 8) | (command << 11)``,
-       with a 5-bit address and a 5-bit command.
+   * - The command word is ``(address << 11) | (command << 8)``, a 5-bit
+       address and a 3-bit command. An earlier reading of the library had the
+       fields the other way round (address in the low bits, command at bit
+       11); a run of the library against the model sends ``0x0700``, then
+       ``0x0900``, ``0x0a00``, ``0x1100``, ``0x1200``, ``0x1900``, ...,
+       which is command 7 once and then commands 1 and 2 for each address
+       from 1 up in this layout.
      - *software expectation*
      - :src:`sonic-hdsp-library-5.0 0x5ec67f50`.
    * - A scan sends command 7 to the board, then for addresses 1 to 31
@@ -2060,8 +2065,8 @@ attached with the card's ``box`` property
 (``-device sonic-ada8824,id=box -device sgi-sonic-hdsp,box=box``). It
 answers the 16-bit words DSP 2 sends on ESSI0:
 
-- It latches each word and decodes address (bits 4:0), load-settings
-  (bit 8) and command (bits 15:11).
+- It latches each word and decodes the address (bits 15:11) and the
+  command (bits 10:8).
 - A word whose address is not the box's address is ignored and the
   box drives no reply.
 - Command 1 at the box's address returns 288, an *approximation* of the
