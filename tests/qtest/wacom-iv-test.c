@@ -294,6 +294,37 @@ static void test_resolution_scales_coordinates(void)
     qtest_quit(qts);
 }
 
+/* At margin 5 of 15240, console 0 is 762 = 0x2fa and its far edge 14478. */
+static void test_margin_insets_console_range(void)
+{
+    QTestState *qts = start();
+    const uint8_t low_x[PACKET_LEN] = { 0xe0, 0x05, 0x7a, 0x00, 0x71, 0x0e,
+                                        0x44 };
+    const uint8_t low_y[PACKET_LEN] = { 0xe0, 0x71, 0x0e, 0x00, 0x05, 0x7a,
+                                        0x44 };
+    QDict *r;
+
+    open_tablet(qts);
+    r = qtest_qmp(qts, "{'execute': 'qom-set', 'arguments': {'path':"
+                  " '/chardevs/tab', 'property': 'margin', 'value': 5}}");
+    g_assert(qdict_haskey(r, "return"));
+    qobject_unref(r);
+    move(qts, 0, 32767);
+    expect_packet(qts, low_x);
+    move(qts, 32767, 0);
+    expect_packet(qts, low_y);
+
+    r = qtest_qmp(qts, "{'execute': 'qom-set', 'arguments': {'path':"
+                  " '/chardevs/tab', 'property': 'margin', 'value': 50}}");
+    g_assert(qdict_haskey(r, "error"));
+    qobject_unref(r);
+    r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': {'path':"
+                  " '/chardevs/tab', 'property': 'margin'}}");
+    g_assert_cmpint(qdict_get_int(r, "return"), ==, 5);
+    qobject_unref(r);
+    qtest_quit(qts);
+}
+
 static void test_increment(void)
 {
     QTestState *qts = start();
@@ -546,6 +577,8 @@ int main(int argc, char **argv)
                    test_still_pointer_is_silent);
     qtest_add_func("/wacom-iv/resolution-scales-coordinates",
                    test_resolution_scales_coordinates);
+    qtest_add_func("/wacom-iv/margin-insets-console-range",
+                   test_margin_insets_console_range);
     qtest_add_func("/wacom-iv/increment", test_increment);
     qtest_add_func("/wacom-iv/interval", test_interval);
     qtest_add_func("/wacom-iv/stop-and-start", test_stop_and_start);
