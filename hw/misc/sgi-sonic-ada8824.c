@@ -92,8 +92,21 @@ static bool ada_audio_open(SonicAda8824State *b)
     return true;
 }
 
-static void ada_audio_word(SonicAda8824State *b, uint32_t word)
+/*
+ * @slot is the network-mode slot or -1; only the first @audio_channels
+ * words are kept (approximation).
+ */
+static void ada_audio_word(SonicAda8824State *b, uint32_t word, int slot)
 {
+    if (slot >= 0) {
+        if (slot <= b->last_slot) {
+            b->net_words = 0;           /* a new frame sync */
+        }
+        b->last_slot = slot;
+        if (b->net_words++ >= b->audio_channels) {
+            return;
+        }
+    }
     /* 24 significant bits, carried left aligned in a signed 32-bit sample. */
     b->frame[b->frame_pos++] = (int32_t)(word << 8);
     if (b->frame_pos < b->audio_channels) {
@@ -142,14 +155,15 @@ static void ada_command(SonicAda8824State *b, uint32_t word)
     }
 }
 
-void sonic_ada8824_tx(SonicAda8824State *b, uint32_t word, unsigned wl)
+void sonic_ada8824_tx(SonicAda8824State *b, uint32_t word, unsigned wl,
+                      int slot)
 {
     switch (wl) {
     case 16:
         ada_command(b, word & 0xffff);
         break;
     case 24:
-        ada_audio_word(b, word & 0xffffff);
+        ada_audio_word(b, word & 0xffffff, slot);
         break;
     default:
         LOG_UNIMP_ONCE("sonic-ada8824: %u-bit word not modelled\n", wl);
@@ -218,6 +232,8 @@ static void ada_reset_hold(Object *obj, ResetType type)
     b->reply_valid = false;
     b->reply = 0;
     b->frame_pos = 0;
+    b->net_words = 0;
+    b->last_slot = -1;
     b->ring_head = b->ring_count = 0;
 }
 

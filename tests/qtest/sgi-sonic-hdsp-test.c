@@ -948,6 +948,8 @@ static unsigned dsp_words(Card *c, unsigned n, uint32_t *out, unsigned max)
 #define MOVEP_IPP(a)    (0x08f480u | PP(a))
 #define MOVEP_IQQ(a)    (0x07f400u | QQ(a))
 #define JCLR_PP(b, a)   (0x0a8080u | (PP(a) << 8) | (b))
+#define JCLR_QQ(b, a)   (0x018080u | (QQ(a) << 8) | (b))
+#define JSET_QQ(b, a)   (0x0180a0u | (QQ(a) << 8) | (b))
 #define JMP(a)          (0x0c0000u | (a))
 #define JSR(a)          (0x0d0000u | (a))
 #define DSP_WAIT        0x000086u
@@ -974,6 +976,7 @@ static unsigned dsp_words(Card *c, unsigned n, uint32_t *out, unsigned max)
 #define X_RX1           0xffffa8u
 #define X_TSMA0         0xffffb4u
 #define X_RSMA0         0xffffb2u
+#define X_SSISR0        0xffffb7u
 #define X_SSISR1        0xffffa7u
 #define X_TSR1          0xffffa9u
 #define X_TCSR0         0xffff8fu
@@ -1673,6 +1676,11 @@ static void test_slot_counts(void)
         { "rx-mask", 3, 48000, 2, 0xf, 0x2, 4, 1 },
         { "rate", 1, 96000, 2, 0xffff, 0xffff, 2, 2 },
         { "channels", 3, 48000, 4, 0xffff, 0xffff, 4, 4 },
+        /*
+         * Ten slots a frame: the box takes the first two words; only its
+         * frames are checked.
+         */
+        { "ten-slots", 9, 48000, 2, 0xffff, 0xffff, 10, 0 },
     };
 
     for (unsigned k = 0; k < ARRAY_SIZE(cases); k++) {
@@ -1733,17 +1741,88 @@ static void test_slot_counts(void)
         t2 = qtest_clock_step(c.qts, 1);
 
         ticks = (double)(t2 - t1) * cases[k].rate / 1e9;
-        exp_frames = ticks * cases[k].tx_slots / cases[k].channels;
+        exp_frames = ticks * MIN(cases[k].tx_slots, cases[k].channels) /
+                     cases[k].channels;
         exp_rx = ticks * cases[k].rx_slots;
         g_test_message("ticks %.0f frames %" PRIu64 " (want %.0f) rx %u "
                        "(want %.0f)", ticks, f2 - f1, exp_frames, d2 - d1,
                        exp_rx);
         g_assert_cmpfloat(fabs((double)(f2 - f1) - exp_frames), <=,
                           0.15 * exp_frames + 3);
-        g_assert_cmpfloat(fabs((double)(d2 - d1) - exp_rx), <=,
-                          0.15 * exp_rx + 3);
+        if (cases[k].rx_slots) {
+            g_assert_cmpfloat(fabs((double)(d2 - d1) - exp_rx), <=,
+                              0.15 * exp_rx + 3);
+        }
         card_quit(&c);
     }
+}
+
+/*
+ * Network mode on the DSP's own bit clock: TDE empties once a slot (3.84 us),
+ * so sixteen write-when-empty cycles take about 61 us.
+ */
+static void test_dsp_essi0_internal_clock_tde(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x80] = { 0 }, out[4];
+    unsigned i = 0;
+
+    PUT_QQ(prog, i, X_CRA0, 0x189000);
+    PUT_QQ(prog, i, X_TSMA0, 0xffff);
+    PUT_QQ(prog, i, X_CRB0, 0x032130);
+    for (unsigned k = 0; k < 16; k++) {
+        prog[i++] = JCLR_QQ(6, X_SSISR0);           /* wait for TDE */
+        prog[i] = 0x100 + i - 1;
+        i++;
+        PUT_QQ(prog, i, X_TX00, 0x100 + k);
+    }
+    PUT_PP(prog, i, X_DTXS, 0xd0d0d0);
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 30 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 0);
+    qtest_clock_step(c.qts, 200 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
+    g_assert_cmphex(out[0], ==, 0xd0d0d0);
+    card_quit(&c);
+}
+
+/*
+ * TFS is set in slot 0 only: successive sets are a frame (ten slots) apart.
+ */
+static void test_dsp_essi0_tfs_slot0(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x40] = { 0 }, out[4];
+    unsigned i = 0, at;
+
+    PUT_QQ(prog, i, X_CRA0, 0x189000);
+    PUT_QQ(prog, i, X_TSMA0, 0xffff);
+    PUT_QQ(prog, i, X_CRB0, 0x032130);
+    for (unsigned k = 0; k < 2; k++) {
+        at = i;
+        prog[i++] = JCLR_QQ(2, X_SSISR0);           /* wait for TFS */
+        prog[i++] = 0x100 + at;
+        at = i;
+        prog[i++] = JSET_QQ(2, X_SSISR0);           /* and for it to go */
+        prog[i++] = 0x100 + at;
+    }
+    at = i;
+    prog[i++] = JCLR_QQ(2, X_SSISR0);
+    prog[i++] = 0x100 + at;
+    PUT_PP(prog, i, X_DTXS, 0xd0d0d0);
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 300 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
+    g_assert_cmphex(out[0], ==, 0xd0d0d0);
+    card_quit(&c);
 }
 
 /*
@@ -2224,6 +2303,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/box/audio-samples", test_audio_samples);
     qtest_add_func("/sgi-sonic-hdsp/migration-dsp", test_migration_dsp);
     qtest_add_func("/sgi-sonic-hdsp/dsp/slot-counts", test_slot_counts);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-internal-clock-tde",
+                   test_dsp_essi0_internal_clock_tde);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-tfs-slot0",
+                   test_dsp_essi0_tfs_slot0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue", test_ssisr_tue);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue-tsr", test_ssisr_tue_tsr);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-roe", test_ssisr_roe);

@@ -41,6 +41,8 @@ struct SonicAda8824State {
     SWVoiceOut *voice;
     int32_t frame[SONIC_ADA_MAX_CHANNELS];
     uint32_t frame_pos;
+    uint32_t net_words;         /* words taken from this network frame */
+    int32_t last_slot;          /* the network slot of the last word */
     int32_t ring[SONIC_ADA_RING_FRAMES][SONIC_ADA_MAX_CHANNELS];
     uint32_t ring_head, ring_count;
     uint64_t frames_out;        /* frames handed to the ring */
@@ -55,7 +57,8 @@ void sonic_ada8824_set_rate(SonicAda8824State *b, uint32_t hz);
  * aligned), and the word the box shifts in for the same slot. rx returns
  * false when the box drives nothing.
  */
-void sonic_ada8824_tx(SonicAda8824State *b, uint32_t word, unsigned wl);
+void sonic_ada8824_tx(SonicAda8824State *b, uint32_t word, unsigned wl,
+                      int slot);
 bool sonic_ada8824_rx(SonicAda8824State *b, uint32_t *word, unsigned wl);
 
 #endif /* HW_MISC_SGI_SONIC_ADA8824_H */

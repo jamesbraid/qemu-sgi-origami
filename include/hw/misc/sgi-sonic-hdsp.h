@@ -60,6 +60,10 @@ typedef struct SonicDspEssi {
     uint32_t pcr, prr, pdr;
     uint32_t in_word;           /* chained peer's word, when in_valid */
     uint32_t in_valid;
+    /* Network mode runs slot by slot; re-armed after a load (not migrated). */
+    int64_t slot_next;          /* when the next slot starts, DSP time */
+    uint32_t slot_idx;
+    uint32_t slot_armed;
 } SonicDspEssi;
 
 typedef struct SonicDspDma {

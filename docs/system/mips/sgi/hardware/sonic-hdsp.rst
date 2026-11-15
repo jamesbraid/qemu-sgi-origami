@@ -1830,10 +1830,22 @@ channel order. The block end sets the status bit, clears DE for the modes
 that do, and raises the channel's interrupt when DIE is set and its
 priority field in IPRC is nonzero.
 
-The ESSIs work on words, not bits. Each frame sync of the board's sample
-clock (:ref:`sgi-sonic-hdsp-audio`) is one frame: a port in normal mode has
-one slot a frame and in network mode ``DC + 1`` slots (TSMA, TSMB, RSMA
-and RSMB select which slots are active). In each slot a transmitter takes
+The ESSIs work on words, not bits. A port in normal mode has one slot a
+frame, started at each frame sync of the board's sample clock
+(:ref:`sgi-sonic-hdsp-audio`). A port in network mode has ``DC + 1`` slots
+a frame (TSMA, TSMB, RSMA and RSMB select which slots are active) and
+starts them one at a time: the transmit register empties and the receive
+register fills once a slot, and TFS and RFS are set in slot 0 only
+(*established*, :src:`nxp-dsp56301um-4 p. 7-26`); the library's resync waits
+for TDE and then for TFS in slot 0 (*software expectation*,
+:src:`sonic-hdsp-library-5.0 0x5ec167c0`). A slot lasts ``WL`` bit clocks. With SCKD
+set the bit clock is the DSP's own, the oscillator frequency over
+``2 * (PM + 1)`` times 8, or 1 with PSR set (*inferred* from the manual's
+clock generator description,
+:src:`nxp-dsp56301um-4 section 7.3`, and the control words the library
+writes, which give a bit clock of the oscillator over 16). With SCKD clear
+the clock is the board's and the slots share the sample period equally,
+an *approximation* (no capture shows the board's bit clock rate). In each slot a transmitter takes
 the word in TX0 (its top ``WL`` bits, 8, 12, 16 or 24 bits; 32-bit words
 log ``LOG_UNIMP``) if the DSP wrote it since the last slot, sets TDE, and
 otherwise sets TUE and sends the old word again; a receiver takes the
@@ -1845,8 +1857,8 @@ interrupts, transmitters 1 and 2, the shift direction, the alignment
 control (CRA ALC), the SSC1 and prescaler fields, the clock and
 frame-sync polarity and direction fields, the serial control pins and the
 flag bits are stored and not acted on, an *approximation*: the model has
-no bit clock, so one word moves per slot regardless of ``CKP``, ``FSL`` or
-``SCKD``. The timing of a word within its slot is not modelled either.
+no bit clock: a word moves at the start of its slot regardless of ``CKP`` or
+``FSL``, and the shift of its bits within the slot is not modelled.
 What the pins connect to is the link: DSP 2's ESSI0 to the converter box
 (:ref:`sgi-sonic-hdsp-box`). Every other ESSI transmits into nothing and
 receives nothing (RDF never sets): the wiring is *unknown*. For tests and
@@ -2135,7 +2147,10 @@ model's box shifts in are the DSP's captured input
 (:ref:`sgi-sonic-hdsp-dsp-int`, *software expectation*). The model carries
 the 24-bit words ESSI0 transmits to the ``audiodev``: each transmitted
 word is one channel sample, assigned to channels in transmit order and
-wrapping at the configured channel count. The stream carries the first two
+wrapping at the configured channel count. A port in network mode, which is
+what the library uses, sends ten slots a frame; the box takes the first
+``audio-channels`` words of each frame as one audio frame and drops the
+rest, an *approximation* (the slot to channel map is not recorded). The stream carries the first two
 channels by default and up to eight when the ``audio-channels`` property
 is raised (1 to 8) and the backend takes them, an *approximation*: the number of
 time slots per frame and the channel order are not recorded (control A's
@@ -2594,10 +2609,11 @@ with what would settle it:
        byte; not wired to the i960's external input
      - A DSP-line trace against the i960's interrupt controller
    * - ESSI timing and pins
-     - One word per slot per frame sync of the sample clock; no bit clock;
-       clock, frame-sync and pin fields stored only; a 24-bit port with
-       nothing linked receives a zero word per slot, as if the board
-       supplied its clocks and the input were silent
+     - One word at the start of each slot, a slot being a share of the
+       sample period, or ``WL`` bit clocks of the DSP's own clock with SCKD
+       set; no bit shifting; polarity, direction and pin fields stored
+       only; a 24-bit port with nothing linked receives a zero word per
+       slot, as if the board supplied its clocks and the input were silent
      - A capture of the ports' pins against a running monitor
    * - DSP 0's TIO1 to DSP 3's IRQC
      - A rising edge of timer 1's data bit on DSP 0, with the timer a GPIO
