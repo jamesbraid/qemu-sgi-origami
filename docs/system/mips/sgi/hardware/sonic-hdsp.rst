@@ -2148,6 +2148,28 @@ frames (counted in the box's read-only ``frames-out`` and
 The box's input side delivers silence in audio mode: the model has no
 capture from the host's input device, an *approximation*.
 
+.. _sgi-sonic-hdsp-frame-lockstep:
+
+The four DSPs' frame lock step
+------------------------------
+
+Read from the DSP monitor programs (:src:`sonic-dsp-programs-5.0`). The four monitors run each frame in lock
+step through the shared Y flags at ``0xfffffc`` (DSP 0) to ``0xffffff``
+(DSP 3), a flag set meaning ready (*software expectation*, :src:`sonic-dsp-programs-5.0`).
+DSP 0 waits for the other three. DSP 3 publishes its flag only from its
+frame routine, which runs only from IRQC (vector ``0x14``), enabled at
+start-up with IPRC ``0x17f`` (IRQC negative edge, level 1; IRQA and IRQB at
+level 3) (*software expectation*). The images show a single signal that changes at
+the start of each frame wait: DSP 0's timer 1 pin, a GPIO output (TCSR1
+``0x800``) whose data bit goes high there and low at the end. The model
+delivers an IRQC edge to DSP 3 on each rising edge of that bit. That TIO1
+reaches IRQC at all is *inferred* from that, and the edge direction at the
+pin, with or without an inverter, is *unknown*: the rising edge is chosen
+because it lets the first frame finish, whereas the falling edge leaves
+DSP 3's flag unset until the end of frame 0 and the frame stalls
+(*inferred*).
+
+
 .. _sgi-sonic-hdsp-host:
 
 The host-side contract
@@ -2562,6 +2584,11 @@ with what would settle it:
        clock, frame-sync and pin fields stored only; ports with no link
        receive nothing
      - A capture of the ports' pins against a running monitor
+   * - DSP 0's TIO1 to DSP 3's IRQC
+     - A rising edge of timer 1's data bit on DSP 0, with the timer a GPIO
+       output, delivers an IRQC edge to DSP 3 if its IPRC enables it
+       (priority from bits 7:6, negative-edge mode bit 8)
+     - A trace of TIO1 against IRQC on the card
    * - DMA timing
      - Instantaneous, channels in index order, no bus arbitration
      - A trace of channel activity against a running monitor
@@ -2646,6 +2673,8 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   reads back from what DSP 0 wrote;
 - twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
   low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
+- timer 1's data bit rising on DSP 0 wakes DSP 3 through IRQC and not
+  before;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

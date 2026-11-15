@@ -651,6 +651,29 @@ static void dma_service(SonicHDSPDSPState *s)
 /* Timers                                                             */
 /* ------------------------------------------------------------------ */
 
+/* An edge on IRQA to IRQD: only negative-edge pins are driven (UM p. 4-15). */
+static void dsp_irq_pin_edge(SonicHDSPDSPState *s, unsigned pin)
+{
+    unsigned field = (s->ipr_c >> (3 * pin)) & 7;
+
+    if (!(field & 3)) {
+        return;
+    }
+    if (!(field & 4)) {
+        LOG_UNIMP_ONCE("sgi-sonic-hdsp: level-triggered external interrupt\n");
+        return;
+    }
+    dsp56300_irq_raise(&s->core, 0x10 + 2 * pin, (field & 3) - 1);
+}
+
+/* A timer in GPIO output mode drives its pin from the data bit. */
+static bool timer_tio_level(uint32_t tcsr)
+{
+    bool gpio_out = !((tcsr >> 4) & 0xf) && (tcsr & TCSR_DIR);
+
+    return gpio_out && (!!(tcsr & TCSR_DO) != !!(tcsr & TCSR_INV));
+}
+
 static void timer_line(SonicDspTimer *t, SonicHDSPDSPState *s, unsigned n)
 {
     SonicHDSPState *h = s->hub;
@@ -742,6 +765,12 @@ static void timer_write(SonicHDSPDSPState *s, unsigned n, unsigned reg,
             t->tcsr &= ~(TCSR_TCF | TCSR_TOF);
         }
         timer_line(t, s, n);
+        if (n == 1 && s->index == 0 && !timer_tio_level(old) &&
+            timer_tio_level(t->tcsr) && s->hub->dsp[3]) {
+            /* TIO1's rising edge is taken as IRQC's edge (inferred, see */
+            /* the page). */
+            dsp_irq_pin_edge(s->hub->dsp[3], 2);
+        }
         break;
     }
     case 1:
