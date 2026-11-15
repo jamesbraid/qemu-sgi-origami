@@ -47,6 +47,8 @@ system_ss.add(when: 'CONFIG_SGI_IOC4', if_true: files('sgi-ioc4.c'))
 system_ss.add(when: 'CONFIG_SGI_SONIC_HDSP',
               if_true: files('sgi-sonic-hdsp.c', 'sgi-sonic-hdsp-iop.c',
                              'sgi-sonic-hdsp-dsp.c', 'sgi-sonic-ada8824.c'))
+system_ss.add(when: ['CONFIG_SGI_SONIC_HDSP', dsp56300_jit],
+              if_true: [dsp56300_jit, files('sgi-sonic-hdsp-jit.c')])
 system_ss.add(when: 'CONFIG_SGI_ROUTER', if_true: files('sgi-router.c'))
 system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER', if_true: files('sgi-sn1-router.c'))
 system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER_TEST', if_true: files('sgi-sn1-router-test.c'))

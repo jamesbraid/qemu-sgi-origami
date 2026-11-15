@@ -14,6 +14,7 @@
 /glib-sys-*
 /libc-*
 /libchdman-rs-*
+/dsp56300-*
 /probe-*
 /proc-macro*
 /quote-*
@@ -25,3 +26,4 @@
 # The wrap applies this fork-carried series to the vendored libslirp;
 # the root *.patch ignore must not swallow it.
 !packagefiles/libslirp-sgi-prom.patch
+!packagefiles/dsp56300/dsp56300-raise-interrupt.patch

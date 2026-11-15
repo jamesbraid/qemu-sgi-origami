@@ -22,7 +22,11 @@
 #include "hw/pci/pci.h"
 #include "hw/pci/pci_bridge.h"
 #include "hw/misc/sgi-sonic-hdsp.h"
+#ifdef CONFIG_DSP56300_JIT
+#include "sgi-sonic-hdsp-jit.h"
+#endif
 #include "migration/vmstate.h"
+#include "migration/blocker.h"
 #include "qemu/module.h"
 
 #define DSP_VENDOR_ID       0x1057      /* hardwired, DSP56301 CDID/CVID */
@@ -111,6 +115,100 @@ static inline int64_t now_ns(void)
     return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
 }
 
+static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr);
+static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
+                          uint32_t val);
+
+/* ------------------------------------------------------------------ */
+/* The core: the interpreter, or the JIT from the dsp56300 crate       */
+/* ------------------------------------------------------------------ */
+
+/* The JIT runs the same X, Y and P arrays; the rest goes via dsp_ext_*. */
+static void dsp_core_reset(SonicHDSPDSPState *s, uint32_t boot_pc)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_reset(s->jit, boot_pc);
+        return;
+    }
+#endif
+    dsp56300_reset(&s->core, boot_pc);
+}
+
+static void dsp_core_run(SonicHDSPDSPState *s, uint64_t cycles)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_run(s->jit, cycles);
+        return;
+    }
+#endif
+    dsp56300_run(&s->core, cycles);
+}
+
+static void dsp_irq_raise(SonicHDSPDSPState *s, uint32_t vector, unsigned ipl)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_irq_raise(s->jit, vector, ipl, false);
+        return;
+    }
+#endif
+    dsp56300_irq_raise(&s->core, vector, ipl);
+}
+
+static void dsp_irq_raise_level(SonicHDSPDSPState *s, uint32_t vector,
+                                unsigned ipl)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_irq_raise(s->jit, vector, ipl, true);
+        return;
+    }
+#endif
+    dsp56300_irq_raise_level(&s->core, vector, ipl);
+}
+
+static void dsp_irq_lower(SonicHDSPDSPState *s, uint32_t vector)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_irq_lower(s->jit, vector);
+        return;
+    }
+#endif
+    dsp56300_irq_lower(&s->core, vector);
+}
+
+/* Raised and not yet taken by the core. */
+static bool dsp_irq_pending(SonicHDSPDSPState *s, uint32_t vector)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        return sonic_dsp_jit_irq_pending(s->jit, vector);
+    }
+#endif
+    return s->core.irq_pending[vector >> 1];
+}
+
+/* Program memory the JIT may have translated changed behind its back. */
+static void dsp_core_pmem_changed(SonicHDSPDSPState *s)
+{
+#ifdef CONFIG_DSP56300_JIT
+    if (s->jit) {
+        sonic_dsp_jit_invalidate(s->jit);
+    }
+#endif
+}
+
+/* A write to program space from outside the core. */
+static void dsp_core_p_write(SonicHDSPDSPState *s, uint32_t addr, uint32_t val)
+{
+#ifdef CONFIG_DSP56300_JIT
+    sonic_dsp_jit_p_write(s->jit, addr, val);
+#endif
+}
+
 /* ------------------------------------------------------------------ */
 /* Interrupts                                                         */
 /* ------------------------------------------------------------------ */
@@ -120,9 +218,9 @@ static void dsp_irq_level(SonicHDSPDSPState *s, uint32_t vector,
                           unsigned field, bool active)
 {
     if (active && field) {
-        dsp56300_irq_raise_level(&s->core, vector, field - 1);
+        dsp_irq_raise_level(s, vector, field - 1);
     } else {
-        dsp56300_irq_lower(&s->core, vector);
+        dsp_irq_lower(s, vector);
     }
 }
 
@@ -155,14 +253,14 @@ static void timer_irq(SonicHDSPDSPState *s, unsigned n, unsigned field)
 
         if (t->irq_out & (1u << k)) {
             if (!want) {
-                dsp56300_irq_lower(&s->core, vec);
+                dsp_irq_lower(s, vec);
                 t->irq_out &= ~(1u << k);
-            } else if (!s->core.irq_pending[vec >> 1]) {
+            } else if (!dsp_irq_pending(s, vec)) {
                 t->tcsr &= ~src[k].flag;        /* taken: the flag clears */
                 t->irq_out &= ~(1u << k);
             }
         } else if (want) {
-            dsp56300_irq_raise(&s->core, vec, field - 1);
+            dsp_irq_raise(s, vec, field - 1);
             t->irq_out |= 1u << k;
         }
     }
@@ -210,17 +308,17 @@ static void dsp_hc_raise(SonicHDSPDSPState *s)
         return;
     }
     if (s->hcvr & HCVR_HNMI) {
-        dsp56300_irq_raise(&s->core, vec, 3);
+        dsp_irq_raise(s, vec, 3);
         s->hc_raised = 1;
     } else if ((s->dctr & DCTR_HCIE) && hpl) {
-        dsp56300_irq_raise(&s->core, vec, hpl - 1);
+        dsp_irq_raise(s, vec, hpl - 1);
         s->hc_raised = 1;
     }
 }
 
 static void dsp_hc_check(SonicHDSPDSPState *s)
 {
-    if (s->hc_raised && !s->core.irq_pending[(s->hcvr & 0xfe) >> 1]) {
+    if (s->hc_raised && !dsp_irq_pending(s, s->hcvr & 0xfe)) {
         s->hc_raised = 0;
         s->hcvr &= ~HCVR_HC;        /* cleared by the interrupt logic */
     }
@@ -229,10 +327,6 @@ static void dsp_hc_check(SonicHDSPDSPState *s)
 /* ------------------------------------------------------------------ */
 /* Memory                                                             */
 /* ------------------------------------------------------------------ */
-
-static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr);
-static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
-                          uint32_t val);
 
 /* A DMA access: on-chip arrays first, then the same path the core uses. */
 static uint32_t dsp_mem_read(SonicHDSPDSPState *s, unsigned space,
@@ -257,6 +351,11 @@ static void dsp_mem_write(SonicHDSPDSPState *s, unsigned space, uint32_t addr,
         SONIC_DSP_XMEM_WORDS, SONIC_DSP_YMEM_WORDS, SONIC_DSP_PMEM_WORDS,
     };
 
+    if (s->jit && space == DSP56300_SPACE_P) {
+        /* Through the core, which notes the change for its code cache. */
+        dsp_core_p_write(s, addr, val);
+        return;
+    }
     if (addr < words[space]) {
         mem[space][addr] = val & 0xffffff;
         return;
@@ -693,7 +792,7 @@ static void dma_done(SonicHDSPDSPState *s, unsigned ch)
         d->dcr &= ~DCR_DE;
     }
     if ((d->dcr & DCR_DIE) && field) {
-        dsp56300_irq_raise(&s->core, 0x18 + 2 * ch, field - 1);
+        dsp_irq_raise(s, 0x18 + 2 * ch, field - 1);
     }
 }
 
@@ -834,7 +933,7 @@ static void dsp_irq_pin_edge(SonicHDSPDSPState *s, unsigned pin)
         LOG_UNIMP_ONCE("sgi-sonic-hdsp: level-triggered external interrupt\n");
         return;
     }
-    dsp56300_irq_raise(&s->core, 0x10 + 2 * pin, (field & 3) - 1);
+    dsp_irq_raise(s, 0x10 + 2 * pin, (field & 3) - 1);
 }
 
 /* A timer in GPIO output mode drives its pin from the data bit. */
@@ -1040,7 +1139,7 @@ static void dsp_boot_finish(SonicHDSPDSPState *s)
     uint32_t dctr = s->dctr;
 
     s->boot = SONIC_DSP_BOOT_RUN;
-    dsp56300_reset(&s->core, s->boot_start);
+    dsp_core_reset(s, s->boot_start);
     s->dctr = dctr;
 }
 
@@ -1193,7 +1292,7 @@ static void periph_write(SonicHDSPDSPState *s, uint32_t a, uint32_t val)
 
                 d->blk_active = 0;
                 if (field) {
-                    dsp56300_irq_raise(&s->core, 0x18 + 2 * ch, field - 1);
+                    dsp_irq_raise(s, 0x18 + 2 * ch, field - 1);
                 }
             }
             break;
@@ -1330,6 +1429,18 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
                       "= 0x%06x\n", s->index, "XYP"[space], addr, val);
     }
 }
+
+#ifdef CONFIG_DSP56300_JIT
+uint32_t sonic_dsp_ext_read(void *s, unsigned space, uint32_t addr)
+{
+    return dsp_ext_read(s, space, addr);
+}
+
+void sonic_dsp_ext_write(void *s, unsigned space, uint32_t addr, uint32_t val)
+{
+    dsp_ext_write(s, space, addr, val);
+}
+#endif
 
 static const DSP56300Ops dsp_ops = {
     .read = dsp_ext_read,
@@ -1494,6 +1605,7 @@ static void dsp_clear(SonicHDSPDSPState *s)
     memset(s->xmem, 0, sizeof(s->xmem));
     memset(s->ymem, 0, sizeof(s->ymem));
     memset(s->ext, 0, sizeof(s->ext));
+    dsp_core_pmem_changed(s);
     memset(s->periph, 0, sizeof(s->periph));
     memset(s->dor, 0, sizeof(s->dor));
     s->hctr = 0;
@@ -1524,7 +1636,7 @@ void sonic_hdsp_dsp_reset_line(SonicHDSPState *h, unsigned n, bool held)
     }
     if (held) {
         dsp_clear(s);
-        dsp56300_reset(&s->core, DSP_BOOT_ROM);
+        dsp_core_reset(s, DSP_BOOT_ROM);
         s->pci_mode = false;
         h->glue_intreq &= ~(1u << n);       /* its pin is released */
         sonic_hdsp_update_irq(h);
@@ -1562,6 +1674,24 @@ static void dsp_realize(PCIDevice *d, Error **errp)
     /* CSID reads 0 until the DSP's own boot program writes it. */
     pci_set_word(d->config + PCI_SUBSYSTEM_VENDOR_ID, 0);
     pci_set_word(d->config + PCI_SUBSYSTEM_ID, 0);
+    if (s->hub->dsp_jit) {
+#ifdef CONFIG_DSP56300_JIT
+        s->jit = sonic_dsp_jit_create(s, s->xmem, s->ymem, s->pmem,
+                                      s->ext);
+        if (!s->jit) {
+            error_setg(errp, "sgi-sonic-hdsp: cannot create the DSP JIT");
+            return;
+        }
+        /* The core's registers live in the JIT, outside vmstate. */
+        error_setg(&s->migration_blocker, "sgi-sonic-hdsp: dsp-engine=jit "
+                   "does not support migration");
+        if (migrate_add_blocker(&s->migration_blocker, errp) < 0) {
+            sonic_dsp_jit_destroy(s->jit);
+            s->jit = NULL;
+            return;
+        }
+#endif
+    }
     dsp56300_init(&s->core, &dsp_ops, s);
     dsp56300_set_memory(&s->core, DSP56300_SPACE_P, s->pmem,
                         SONIC_DSP_PMEM_WORDS);
@@ -1572,12 +1702,25 @@ static void dsp_realize(PCIDevice *d, Error **errp)
     s->in_reset = true;
 }
 
+static void dsp_exit(PCIDevice *d)
+{
+    SonicHDSPDSPState *s = SGI_SONIC_HDSP_DSP(d);
+
+    if (s->migration_blocker) {
+        migrate_del_blocker(&s->migration_blocker);
+    }
+#ifdef CONFIG_DSP56300_JIT
+    sonic_dsp_jit_destroy(s->jit);
+    s->jit = NULL;
+#endif
+}
+
 static void dsp_reset(DeviceState *dev)
 {
     SonicHDSPDSPState *s = SGI_SONIC_HDSP_DSP(dev);
 
     dsp_clear(s);
-    dsp56300_reset(&s->core, DSP_BOOT_ROM);
+    dsp_core_reset(s, DSP_BOOT_ROM);
     /* Out of reset in PCI target mode, as after the glue's reset byte. */
     s->dctr = DCTR_HM_PCI << DCTR_HM_SHIFT;
     s->pci_mode = true;
@@ -1723,6 +1866,7 @@ static void dsp_class_init(ObjectClass *klass, const void *data)
     PCIDeviceClass *k = PCI_DEVICE_CLASS(klass);
 
     k->realize = dsp_realize;
+    k->exit = dsp_exit;
     k->config_read = dsp_config_read;
     k->config_write = dsp_config_write;
     k->vendor_id = DSP_VENDOR_ID;
@@ -1788,7 +1932,7 @@ static void dsp_run_cores(SonicHDSPState *h, int64_t ns)
             continue;
         }
         /* An idle core is waiting on the world: its time still passes. */
-        dsp56300_run(&s->core, cycles);
+        dsp_core_run(s, cycles);
         dsp_post_run(s, cycles);
     }
 }
@@ -1921,6 +2065,7 @@ bool sonic_hdsp_dsp_realize(SonicHDSPState *h, Error **errp)
     static const uint32_t rates[] = {
         44100, 48000, 88200, 96000, 176400, 192000,
     };
+    const char *engine = h->dsp_engine ?: "interp";
     bool ok = false;
 
     for (unsigned i = 0; i < ARRAY_SIZE(rates); i++) {
@@ -1929,6 +2074,17 @@ bool sonic_hdsp_dsp_realize(SonicHDSPState *h, Error **errp)
     if (!ok) {
         error_setg(errp, "sgi-sonic-hdsp: sample-rate must be 44100, 48000, "
                    "88200, 96000, 176400 or 192000");
+        return false;
+    }
+    if (!strcmp(engine, "jit")) {
+#ifdef CONFIG_DSP56300_JIT
+        h->dsp_jit = true;
+#else
+        error_setg(errp, "sgi-sonic-hdsp: this build has no DSP JIT");
+        return false;
+#endif
+    } else if (strcmp(engine, "interp")) {
+        error_setg(errp, "sgi-sonic-hdsp: dsp-engine must be interp or jit");
         return false;
     }
     if (h->box) {

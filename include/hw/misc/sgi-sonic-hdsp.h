@@ -93,6 +93,8 @@ struct SonicHDSPDSPState {
     MemoryRegion bar0;
 
     DSP56300State core;
+    struct SonicDspJit *jit;    /* the JIT's core; NULL on the interpreter */
+    Error *migration_blocker;
     uint32_t pmem[SONIC_DSP_PMEM_WORDS];
     uint32_t xmem[SONIC_DSP_XMEM_WORDS];
     uint32_t ymem[SONIC_DSP_YMEM_WORDS];
@@ -165,6 +167,8 @@ struct SonicHDSPState {
     uint32_t iop_clock;
     uint32_t dsp_clock;
     uint32_t sample_rate;
+    char *dsp_engine;           /* interp (default) or jit */
+    bool dsp_jit;
     bool essi1_chain;
     SonicAda8824State *box;
 

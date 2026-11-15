@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# The dsp56300 crate (MIT) for the Sonic HDSP's JIT, plus interrupt calls.
+[wrap-file]
+directory = dsp56300-1.0.0
+source_url = https://github.com/mborgerson/dsp56300/archive/refs/tags/v1.0.0.tar.gz
+source_filename = dsp56300-1.0.0.tar.gz
+source_hash = cb5ecf6097d1947f35044c8dda55101db7e9c6e288524c87f2da0ea1901485eb
+diff_files = dsp56300/dsp56300-raise-interrupt.patch
+patch_directory = dsp56300
+
+[provide]
+dependency_names = dsp56300-emu-ffi

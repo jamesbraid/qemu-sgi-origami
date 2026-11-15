@@ -24,6 +24,30 @@
 #include "sgi-migrate.h"
 #include "sgi-sonic-hdsp-image.h"
 
+/*
+ * SONIC_HDSP_ENGINE=jit or interp runs every card on that DSP engine; unset
+ * leaves the property at its default.
+ */
+static QTestState *hdsp_initf(const char *fmt, ...) G_GNUC_PRINTF(1, 2);
+static QTestState *hdsp_initf(const char *fmt, ...)
+{
+    const char *engine = getenv("SONIC_HDSP_ENGINE");
+    g_autofree char *args = NULL;
+    va_list ap;
+
+    va_start(ap, fmt);
+    args = g_strdup_vprintf(fmt, ap);
+    va_end(ap);
+    if (engine) {
+        char *both = g_strdup_printf("-global sgi-sonic-hdsp.dsp-engine=%s %s",
+                                     engine, args);
+
+        g_free(args);
+        args = both;
+    }
+    return qtest_init(args);
+}
+
 /* ------------------------------------------------------------------ */
 /* Fixture                                                             */
 /* ------------------------------------------------------------------ */
@@ -51,7 +75,7 @@ static Card card_start_with(unsigned flags, const char *pre, const char *extra)
 
     c.flash = flash_file(&img);
     qpci_sgi_bridge_alloc_init(&alloc, 0);
-    c.qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+    c.qts = hdsp_initf("-M none " QPCI_SGI_BRIDGE_HEAD
                         "-chardev ringbuf,id=con,size=4096 %s"
                         "-device sgi-sonic-hdsp,id=hdsp,bus=pci,addr=%d,"
                         "flash-image=%s,iop-console=con%s",
@@ -521,7 +545,7 @@ static uint32_t scan_with(unsigned flags, uint16_t sisr, const char *props)
 {
     Image img = { flags, sisr };
     g_autofree char *path = flash_file(&img);
-    QTestState *qts = qtest_initf("-M malta -nic none -vga none "
+    QTestState *qts = hdsp_initf("-M malta -nic none -vga none "
                                   "-device sgi-sonic-hdsp,bus=pci,addr=%x,"
                                   "flash-image=%s%s", MALTA_SLOT, path, props);
     uint32_t found;
@@ -618,6 +642,30 @@ static void test_eeprom_read(void)
  * Migration: the processor's state, the units and the DRAM travel; the
  * destination goes on answering the messaging unit from where the source was.
  */
+static bool engine_is_jit(void)
+{
+    const char *engine = getenv("SONIC_HDSP_ENGINE");
+
+    return engine && !strcmp(engine, "jit");
+}
+
+/* The JIT keeps its registers outside vmstate, so a card on it blocks this. */
+static void test_migration_jit_blocked(void)
+{
+    Card c = card_start(0, "");
+    QDict *rsp = qtest_qmp(c.qts, "{ 'execute': 'migrate', 'arguments': "
+                           "{ 'uri': 'unix:/nonexistent/migrate.sock' } }");
+    const char *desc;
+
+    g_assert(qdict_haskey(rsp, "error"));
+    desc = qdict_get_try_str(qdict_get_qdict(rsp, "error"), "desc");
+
+    g_assert_nonnull(desc);
+    g_assert_nonnull(strstr(desc, "dsp-engine=jit does not support migration"));
+    qobject_unref(rsp);
+    card_quit(&c);
+}
+
 static void test_migration(void)
 {
     g_autofree char *dir = g_dir_make_tmp("sonic-hdsp-migrate-XXXXXX", NULL);
@@ -630,7 +678,7 @@ static void test_migration(void)
     wrb(&from, 0x6000000 + GLUE_RESET_BYTE, 0x03);
 
     to.flash = g_strdup(from.flash);
-    to.qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+    to.qts = hdsp_initf("-M none " QPCI_SGI_BRIDGE_HEAD
                          "-device sgi-sonic-hdsp,id=hdsp,bus=pci,addr=%d,"
                          "flash-image=%s -incoming %s", SLOT, from.flash, uri);
     qtest_qmp_assert_success(from.qts, "{ 'execute': 'stop' }");
@@ -679,7 +727,7 @@ static void test_migration_dirty_dram(void)
 
     card_boot(&from);
     to.flash = g_strdup(from.flash);
-    to.qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+    to.qts = hdsp_initf("-M none " QPCI_SGI_BRIDGE_HEAD
                          "-device sgi-sonic-hdsp,id=hdsp,bus=pci,addr=%d,"
                          "flash-image=%s -incoming %s", SLOT, from.flash, uri);
     qtest_qmp_assert_success(from.qts, "{ 'execute': "
@@ -1747,7 +1795,7 @@ static void test_migration_dsp(void)
     qtest_clock_step(from.qts, 1000 * 1000);
 
     to.flash = g_strdup(from.flash);
-    to.qts = qtest_initf("-M none " QPCI_SGI_BRIDGE_HEAD
+    to.qts = hdsp_initf("-M none " QPCI_SGI_BRIDGE_HEAD
                          "-device sgi-sonic-hdsp,id=hdsp,bus=pci,addr=%d,"
                          "flash-image=%s -incoming %s", SLOT, from.flash, uri);
     qtest_qmp_assert_success(from.qts, "{ 'execute': 'stop' }");
@@ -2866,9 +2914,17 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/eeprom-read", test_eeprom_read);
     qtest_add_func("/sgi-sonic-hdsp/dma-loop-bounded", test_dma_loop_bounded);
     qtest_add_func("/sgi-sonic-hdsp/dma-big-loop", test_dma_big_loop);
-    qtest_add_func("/sgi-sonic-hdsp/migration", test_migration);
-    qtest_add_func("/sgi-sonic-hdsp/migration-dirty-dram",
-                   test_migration_dirty_dram);
+    if (engine_is_jit()) {
+        qtest_add_func("/sgi-sonic-hdsp/migration-jit-blocked",
+                       test_migration_jit_blocked);
+    } else {
+        qtest_add_func("/sgi-sonic-hdsp/migration", test_migration);
+        qtest_add_func("/sgi-sonic-hdsp/migration-dirty-dram",
+                       test_migration_dirty_dram);
+        qtest_add_func("/sgi-sonic-hdsp/migration-dsp", test_migration_dsp);
+        qtest_add_func("/sgi-sonic-hdsp/migration-dsp-hold",
+                       test_migration_dsp_hold);
+    }
     qtest_add_func("/sgi-sonic-hdsp/dsp/runs-program", test_dsp_runs_program);
     qtest_add_func("/sgi-sonic-hdsp/dsp/boot-hf0", test_dsp_boot_hf0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-command", test_dsp_host_command);
@@ -2885,9 +2941,6 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/box/commands", test_box_commands);
     qtest_add_func("/sgi-sonic-hdsp/box/absent", test_box_absent);
     qtest_add_func("/sgi-sonic-hdsp/box/audio-samples", test_audio_samples);
-    qtest_add_func("/sgi-sonic-hdsp/migration-dsp", test_migration_dsp);
-    qtest_add_func("/sgi-sonic-hdsp/migration-dsp-hold",
-                   test_migration_dsp_hold);
     qtest_add_func("/sgi-sonic-hdsp/dsp/slot-counts", test_slot_counts);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-internal-clock-tde",
                    test_dsp_essi0_internal_clock_tde);

@@ -2065,6 +2065,31 @@ exact cycle counts against the sample clock is not modelled to that
 accuracy. Interrupts and DMA are taken when their request appears, with
 no latency beyond the core's instruction boundary.
 
+.. _sgi-sonic-hdsp-dsp-jit:
+
+The DSP JIT
+-----------
+
+With ``dsp-engine=jit`` each DSP's core is the JIT from the dsp56300 crate
+(``subprojects/dsp56300.wrap``, built by cargo). Only the core changes. The
+host port, ESSI, DMA, timers, priority registers and memory map are the
+model's own, reached through the crate's memory callbacks, and the on-chip
+and external RAM arrays are shared with the interpreter. The crate's C
+interface has no call to raise an interrupt, so ``dsp56300-raise-interrupt.patch``
+adds one, and a fix for a ``WAIT`` that never finishes dispatching the
+interrupt that woke it.
+
+Limits, from the crate's own list (*established* from its documentation, not
+yet checked against the card's firmware): 16-bit arithmetic and compatibility
+modes, double-precision multiply, the stack extension, wait states and DMA
+contention are stored or ignored, and cycle counts are the best case. A
+callback may not touch the core's registers. The JIT keeps its state outside
+migration, so a card on it blocks migration and snapshots. All four cores
+still run in one slice timer, on one thread. The JIT learns of program
+memory writes only through ``dsp_mem_write`` in space P; a write to the
+external RAM that aliases code, through X or Y space, DMA included, can leave stale
+compiled code (*inferred* from the crate's design, not tested).
+
 The converter box
 =================
 
@@ -2483,6 +2508,11 @@ two held.
        with ``0x9876`` in the upper half.
    * - ``iop-clock``, ``dsp-clock``
      - Core clocks in Hz, defaults 66 MHz and 100 MHz.
+   * - ``dsp-engine``
+     - ``interp`` (default) runs the DSPs on the in-tree interpreter.
+       ``jit`` runs them on the dsp56300 crate's JIT
+       (:ref:`sgi-sonic-hdsp-dsp-jit`) and needs a build configured with
+       ``--enable-dsp56300-jit``.
    * - ``box``
      - Link to a ``sonic-ada8824``. Optional. Without one the scan finds
        no box.
@@ -2743,6 +2773,13 @@ with what would settle it:
    * - Flash backing file in migration
      - Not in the stream; the destination names the same image
      - Nothing on the card's side
+   * - JIT cycle counts, double-precision multiply, stack extension, wait
+       states and DMA contention
+     - Cycle counts are the best case; the stack extension and double-precision
+       multiply are stored or ignored, and wait states and DMA contention are
+       not modelled (*approximation*, from the crate's own list)
+     - Measured cycle counts of the card's programs. No qtest tells the JIT's
+       counts from the interpreter's, so none discriminates this
 
 Tests
 =====

@@ -1,0 +1,159 @@
+# SPDX-License-Identifier: MIT
+
+diff --git a/crates/emu-ffi/src/lib.rs b/crates/emu-ffi/src/lib.rs
+index bde6c77..da733d3 100644
+--- a/crates/emu-ffi/src/lib.rs
++++ b/crates/emu-ffi/src/lib.rs
+@@ -211,7 +211,8 @@ pub unsafe extern "C" fn dsp56300_create(info: *const CCreateInfo) -> *mut DspJi
+         unsafe { convert_create_info(info) }
+     };
+
+-    let pram_size = map.p_space_end() as usize;
++    // Cap the code cache: it is sized per P word, and pc past it single-steps.
++    let pram_size = (map.p_space_end() as usize).min(0x440000);
+     let state = DspState::new(map);
+
+     Box::into_raw(Box::new(DspJit {
+@@ -497,6 +498,52 @@ pub unsafe extern "C" fn dsp56300_write_memory_run(
+ // State accessors for sync / engine switching
+ // ================================================================
+
++/// Raise the interrupt at byte offset `vector` in the vector table (0x10,
++/// 0x12, ... as the manual lists them) at priority `ipl`: 0 to 2 for a
++/// maskable source, 3 for a non-maskable one. An edge request (`level`
++/// false) is cleared when the core takes it. A level request stays pending
++/// until `dsp56300_lower_interrupt`, so the core takes it again after the
++/// handler returns while the condition holds. Safe to call from a memory
++/// callback: the interrupt pipeline is not a register the compiled code
++/// caches across the call.
++///
++/// # Safety
++/// `dsp` must be a valid pointer to a `DspJit`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn dsp56300_raise_interrupt(
++    dsp: *mut DspJit,
++    vector: u32,
++    ipl: u32,
++    level: bool,
++) {
++    let dsp = unsafe { &mut *dsp };
++    dsp.state
++        .interrupts
++        .raise((vector / 2) as usize, ipl.min(3) as i8, level);
++}
++
++/// Withdraw the interrupt at byte offset `vector` and end its level.
++///
++/// # Safety
++/// `dsp` must be a valid pointer to a `DspJit`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn dsp56300_lower_interrupt(dsp: *mut DspJit, vector: u32) {
++    let dsp = unsafe { &mut *dsp };
++    dsp.state.interrupts.lower((vector / 2) as usize);
++}
++
++/// Whether the interrupt at byte offset `vector` is pending, that is raised
++/// and not yet taken.
++///
++/// # Safety
++/// `dsp` must be a valid pointer to a `DspJit`.
++#[unsafe(no_mangle)]
++pub unsafe extern "C" fn dsp56300_interrupt_pending(dsp: *const DspJit, vector: u32) -> bool {
++    let dsp = unsafe { &*dsp };
++    let i = (vector / 2) as usize;
++    i < 128 && dsp.state.interrupts.pending(i)
++}
++
+ /// Interrupt pipeline state for save/restore.
+ #[repr(C)]
+ pub struct CInterruptState {
+diff --git a/crates/emu/src/core.rs b/crates/emu/src/core.rs
+index 09f248c..09c1e94 100644
+--- a/crates/emu/src/core.rs
++++ b/crates/emu/src/core.rs
+@@ -253,6 +253,9 @@ impl std::fmt::Display for InterruptState {
+ pub struct InterruptPipeline {
+     pub state: InterruptState,
+     pub pending_bits: [u64; 2],
++    /// Sources that stay pending when the core takes them, until the
++    /// embedder lowers them (a peripheral status flag, not a one-shot).
++    pub level_bits: [u64; 2],
+     pub pipeline_stage: u8,
+     pub vector_addr: u32,
+     pub saved_pc: u32,
+@@ -296,6 +299,7 @@ impl InterruptPipeline {
+         Self {
+             state: InterruptState::None,
+             pending_bits: [0; 2],
++            level_bits: [0; 2],
+             pipeline_stage: 0,
+             vector_addr: 0xFFFF,
+             saved_pc: 0xFFFF,
+@@ -323,6 +327,37 @@ impl InterruptPipeline {
+         self.pending_bits[i / 64] &= !(1u64 << (i % 64));
+     }
+
++    /// Raise source `i` at priority `ipl`. A level source stays pending when
++    /// the core takes it; `lower` ends it. An edge source clears when taken.
++    pub fn raise(&mut self, i: usize, ipl: i8, level: bool) {
++        if i >= interrupt::COUNT {
++            return;
++        }
++        self.ipl[i] = ipl;
++        if level {
++            self.level_bits[i / 64] |= 1u64 << (i % 64);
++        } else {
++            self.level_bits[i / 64] &= !(1u64 << (i % 64));
++        }
++        self.set_pending(i);
++    }
++
++    /// Withdraw a pending source and end its level.
++    pub fn lower(&mut self, i: usize) {
++        if i >= interrupt::COUNT {
++            return;
++        }
++        self.level_bits[i / 64] &= !(1u64 << (i % 64));
++        self.clear_pending(i);
++    }
++
++    /// The core takes source `i`: an edge source is consumed.
++    fn take(&mut self, i: usize) {
++        if self.level_bits[i / 64] & (1u64 << (i % 64)) == 0 {
++            self.clear_pending(i);
++        }
++    }
++
+     /// Post a pending interrupt.
+     pub fn add(&mut self, inter: usize) {
+         if inter >= interrupt::COUNT || self.ipl[inter] == -1 {
+@@ -887,8 +922,8 @@ impl DspState {
+
+         let Some(idx) = index else { return };
+
+-        // Dispatch: clear pending, start pipeline
+-        self.interrupts.clear_pending(idx);
++        // Dispatch: consume an edge source, start pipeline
++        self.interrupts.take(idx);
+
+         let new_ipl = (self.interrupts.ipl[idx] + 1).min(3);
+         // Vector address = VBA[23:8] | slot_offset[7:0] (per Section 5.4.4.4)
+diff --git a/crates/emu/src/jit.rs b/crates/emu/src/jit.rs
+index bd793c5..c940942 100644
+--- a/crates/emu/src/jit.rs
++++ b/crates/emu/src/jit.rs
+@@ -1039,7 +1039,13 @@ impl DspState {
+             // wakes the core. We check for pending interrupts: if one can
+             // fire, transition back to Normal and resume execution.
+             if self.power_state == PowerState::Wait {
+-                if self.interrupts.has_pending() {
++                if self.interrupts.state != InterruptState::None {
++                    // An interrupt that woke the core is still moving
++                    // through its pipeline; instructions ahead of the
++                    // vector can run another WAIT (a `wait; jmp` idle
++                    // loop), which must not stall the dispatch.
++                    self.power_state = PowerState::Normal;
++                } else if self.interrupts.has_pending() {
+                     let ipl_sr = ((self.registers[reg::SR] >> sr::I0) & 0x3) as i8;
+                     let can_wake = (0..interrupt::COUNT).any(|i| {
+                         self.interrupts.pending(i)

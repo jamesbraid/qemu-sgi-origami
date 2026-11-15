@@ -1346,6 +1346,22 @@ if get_option('chd').allowed() and have_block
     error('CHD support needs a C++ compiler')
   endif
 endif
+# The Sonic HDSP's optional DSP JIT (subprojects/dsp56300.wrap), built by cargo.
+dsp56300_jit = not_found
+if get_option('dsp56300_jit').allowed() and have_system
+  if host_os != 'linux' or host_arch not in ['x86_64', 'aarch64']
+    if get_option('dsp56300_jit').enabled()
+      error('the DSP56300 JIT needs a Linux x86_64 or aarch64 host')
+    endif
+    message('DSP56300 JIT disabled: it needs a Linux x86_64 or aarch64 host')
+  elif find_program('cargo', required: get_option('dsp56300_jit')).found()
+    dsp56300_proj = subproject('dsp56300',
+                               required: get_option('dsp56300_jit'))
+    if dsp56300_proj.found()
+      dsp56300_jit = dsp56300_proj.get_variable('dsp56300_emu_ffi_dep')
+    endif
+  endif
+endif
 enable_passt = get_option('passt') \
   .require(host_os == 'linux', error_message: 'passt is supported only on Linux') \
   .require(gio.found(), error_message: 'passt requires gio') \
@@ -2540,6 +2556,7 @@ config_host_data.set('CONFIG_PIXMAN', pixman.found())
 config_host_data.set('CONFIG_PASST', enable_passt)
 config_host_data.set('CONFIG_SLIRP', slirp.found())
 config_host_data.set('CONFIG_CHD', libchdman.found())
+config_host_data.set('CONFIG_DSP56300_JIT', dsp56300_jit.found())
 config_host_data.set('CONFIG_SNAPPY', snappy.found())
 config_host_data.set('CONFIG_SOLARIS', host_os == 'sunos')
 if have_tcg
@@ -5021,6 +5038,7 @@ if have_block
   summary_info += {'cloop support':     get_option('cloop').allowed()}
   summary_info += {'dmg support':       get_option('dmg').allowed()}
   summary_info += {'chd support':       libchdman}
+  summary_info += {'DSP56300 JIT':      dsp56300_jit}
   summary_info += {'qcow v1 support':   get_option('qcow1').allowed()}
   summary_info += {'vdi support':       get_option('vdi').allowed()}
   summary_info += {'vhdx support':      get_option('vhdx').allowed()}

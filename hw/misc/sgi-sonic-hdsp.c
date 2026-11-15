@@ -459,6 +459,7 @@ static const Property hdsp_properties[] = {
     DEFINE_PROP_UINT32("iop-clock", SonicHDSPState, iop_clock, 66000000),
     DEFINE_PROP_UINT32("dsp-clock", SonicHDSPState, dsp_clock, 100000000),
     DEFINE_PROP_UINT32("sample-rate", SonicHDSPState, sample_rate, 48000),
+    DEFINE_PROP_STRING("dsp-engine", SonicHDSPState, dsp_engine),
     DEFINE_PROP_BOOL("x-essi1-chain", SonicHDSPState, essi1_chain, false),
     DEFINE_PROP_LINK("box", SonicHDSPState, box, TYPE_SGI_SONIC_ADA8824,
                      SonicAda8824State *),

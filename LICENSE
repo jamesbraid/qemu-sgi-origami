@@ -40,3 +40,13 @@ It does not relicense pre-existing code or code copied or adapted from other
 authors. Those portions retain their notices and licenses, including the
 GPL/LGPL MIPS helpers, I2C bus helpers, SCSI tape skeleton and catalogue
 embedding script. The combined QEMU emulator remains GPL as stated above.
+
+Third-party code built into the Sonic HDSP's optional DSP JIT
+--------------------------------------------------------------
+
+Configured with --enable-dsp56300-jit, the QEMU emulator links the
+dsp56300 crate (subprojects/dsp56300.wrap, MIT, Copyright (c) 2026 Matt
+Borgerson) and the crates it depends on, which cargo fetches at build time
+as pinned by the crate's Cargo.lock. Their licences are their own. The JIT
+is built on Cranelift, which is Apache-2.0 WITH LLVM-exception. The
+combined emulator is distributed under the GPL as stated above.
