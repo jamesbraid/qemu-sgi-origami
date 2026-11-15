@@ -1151,9 +1151,16 @@ static void dsp_catch_up(SonicHDSPDSPState *s)
     SonicHDSPState *h = s->hub;
 
     if (h->iop_in_slice) {
+        int64_t ahead = h->dsp_last_ns - sonic_hdsp_local_ns(h);
+
         h->cpu.insn_cycles += MAX(1, muldiv64(DSP_HOSTPORT_ACCESS_NS,
                                               h->iop_clock,
                                               NANOSECONDS_PER_SECOND));
+        if (ahead > 0) {
+            /* The DSPs ran ahead of the i960: wait for their present. */
+            h->cpu.insn_cycles += muldiv64(ahead, h->iop_clock,
+                                           NANOSECONDS_PER_SECOND) + 1;
+        }
     }
     dsp_catch_up_to(h);
 }
