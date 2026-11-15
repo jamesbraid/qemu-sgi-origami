@@ -1794,11 +1794,11 @@ without one. Each Onyx2 topology fits its default unless a graphics
 Onyx2 without a pipe. The deskside default is the captured deskside's
 (:src:`irixnet-post-32192`). The rack default is the captured rack's
 configuration (:src:`nekonomicon-16285`) with a plain DG5-2 in place of
-its DG5-2 with GVO, which has no video output in the model. The
+its DG5-2 with GVO, so the default has no GVO console. The
 Onyx2 and Onyx 3400 InfiniteReality pipes also offer that board as
 ``dg5-2-gvo``: its identity with a GVO record, and the option channel
 the X server's GVO set-up configures (option mask, channel and logic
-download; see :ref:`sgi-kona-commands`) with no video output
+download; see :ref:`sgi-kona-commands`), shown on a console of its own
 (*approximation*); the plain
 DG5-2 presents 030-1055-001, the part :src:`sgi-pca-numbers` gives for
 a DG5-2, since no capture shows a plain DG5-2 in an

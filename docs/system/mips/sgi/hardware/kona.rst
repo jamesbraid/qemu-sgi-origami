@@ -190,8 +190,7 @@ attach.
      - ``dg5-8`` 030-1087-001, eight channels; ``dg5-2`` 030-1055-001,
        two channels; ``dg5-2-gvo`` 030-1242-001 rev D with a GVO record
      - Default ``dg5-2`` with a Ktown, ``dg5-8`` without. The GVO is an
-       identity and an option channel with no state beyond its format:
-       there is no video output.
+       identity and an option channel, shown on a console of its own.
    * - ``channels``
      - 0 or the display board's count
      - Any other count is refused.
@@ -1158,8 +1157,20 @@ The X server adds one channel per option bit to its channel list, the
 GVO's with physical id ``0xc6`` (*software expectation*, read from the
 shipped X module), and sends a combination's GVO slot to that id. A pipe
 with the GVO therefore answers the channel commands for id ``0xc6`` as
-for a display channel, keeping the format, rectangle and enable state,
-with no console of its own. The channel configuration reply for ``0xc6``
+for a display channel, keeping the format, rectangle and enable state.
+The channel is shown on the console after the display channels' (head 2 of
+a DG5-2), present only with the option: it scans out the channel's input
+rectangle of the managed area at the format's active size, nearest-pixel
+sampled as for a display channel, black while the channel is blanked and
+the "No display mode" placeholder while it is disabled or has no format.
+It is a *software expectation* that the X server sets the option channel's
+format, rectangle and blanking with the commands it uses for a display
+channel; that the GVO's own picture is this rectangle is *inferred* from
+those commands, and no capture shows the serial digital output. The
+console updates at the display refresh, not at the channel's video timing:
+no timing table is held, an *approximation*. The GVO's conversion of RGB
+to a serial digital signal, its filtering and its genlock are not modelled.
+The channel configuration reply for ``0xc6``
 mirrors the display channels' pattern (present, enabled and active bits)
 without the bit the firmware sets for the option's id group, which is
 *unknown*: an *approximation*. ``LoadXilinx``, which ``setmon`` sends the
@@ -1400,8 +1411,9 @@ Model limits
 - Unsupported cursor channels, offsets, positions and modes, and
   unsupported X and GL forms, log ``LOG_UNIMP``. Malformed commands, full
   queues and unregistered pages log ``LOG_GUEST_ERROR``.
-- The GVO option has a channel and no video output: a format loaded onto
-  it is kept and answered, never shown. Genlock, stereo, swap groups and
+- The GVO option's console shows the channel's rectangle as RGB at the
+  display refresh; the serial digital signal and its timing are not
+  modelled. Genlock, stereo, swap groups and
   multiple pipes are not modelled. ``reality``, ``ir`` and ``ir4`` are refused.
 - More than 64 logical contexts stops the virtual machine.
 - The detail combine is the model's reading: its arithmetic widths,
