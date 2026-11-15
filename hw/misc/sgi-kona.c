@@ -601,12 +601,15 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word)
  * marks linear, shows the pixel unchanged (inferred from its log
  * message, "Linear Gamma being used for bind").
  */
+static SGIKonaChannel *sgi_kona_channel_ref(SGIKonaState *s, unsigned c);
+
 static uint32_t sgi_kona_gamma_apply(SGIKonaState *s, unsigned channel,
                                      uint32_t rgb)
 {
     uint32_t out = 0;
 
-    if (s->channel[channel].gamma_map == SGI_KONA_GAMMA_MAP_LINEAR) {
+    if (sgi_kona_channel_ref(s, channel)->gamma_map ==
+        SGI_KONA_GAMMA_MAP_LINEAR) {
         return rgb;
     }
     for (unsigned c = 0; c < SGI_KONA_GAMMA_COMPONENTS; c++) {
@@ -664,7 +667,8 @@ static void sgi_kona_resolve_managed_line(SGIKonaState *s, unsigned y,
  * for it; its output is its video format's active size. The model shows
  * channel c on its own console, head c of the device: channel 0 on
  * s->scanout, which also keeps the retrace and the swap queue, the others
- * on s->channel_scanout[], with no retrace of their own.
+ * on s->channel_scanout[], with no retrace of their own. A fitted GVO
+ * option's channel is the head after the last display channel.
  *
  * Approximated: an input rectangle smaller or larger than the format is
  * sampled to it, nearest pixel, and a part outside the managed area shows
@@ -682,6 +686,16 @@ static unsigned sgi_kona_channel_count(const SGIKonaState *s)
     return s->config.channels ? s->config.channels : 1;
 }
 
+static unsigned sgi_kona_head_count(const SGIKonaState *s)
+{
+    return sgi_kona_channel_count(s) + !!s->config.option;
+}
+
+static SGIKonaChannel *sgi_kona_channel_ref(SGIKonaState *s, unsigned c)
+{
+    return c < sgi_kona_channel_count(s) ? &s->channel[c] : &s->option_channel;
+}
+
 static SGIScanout *sgi_kona_channel_scanout(SGIKonaState *s, unsigned c)
 {
     return c ? &s->channel_scanout[c - 1] : &s->scanout;
@@ -691,9 +705,13 @@ static SGIScanout *sgi_kona_channel_scanout(SGIKonaState *s, unsigned c)
 static bool sgi_kona_channel_view(const SGIKonaState *s, unsigned c,
                                   SGIKonaChannelView *v)
 {
-    const SGIKonaChannel *ch = &s->channel[c];
+    const SGIKonaChannel *ch;
 
-    if (c >= sgi_kona_channel_count(s) || !ch->enabled ||
+    if (c >= sgi_kona_head_count(s)) {
+        return false;
+    }
+    ch = c < sgi_kona_channel_count(s) ? &s->channel[c] : &s->option_channel;
+    if (!ch->enabled ||
         !ch->format_width || !ch->format_height ||
         !ch->input_width || !ch->input_height) {
         return false;
@@ -716,7 +734,7 @@ static bool sgi_kona_channel_view(const SGIKonaState *s, unsigned c,
 static void sgi_kona_invalidate_lines(SGIKonaState *s, int64_t first,
                                       int64_t last)
 {
-    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+    for (unsigned c = 0; c < sgi_kona_head_count(s); c++) {
         SGIKonaChannelView v;
         int64_t a, b, l0, l1;
 
@@ -824,7 +842,7 @@ static void sgi_kona_invalidate_flush(SGIKonaState *s)
 /* Repaint every channel. */
 static void sgi_kona_invalidate_all(SGIKonaState *s)
 {
-    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+    for (unsigned c = 0; c < sgi_kona_head_count(s); c++) {
         sgi_scanout_invalidate_all(sgi_kona_channel_scanout(s, c));
     }
 }
@@ -850,7 +868,7 @@ static void sgi_kona_channel_resolve_row(void *opaque, unsigned y,
         return;
     }
     line = v.top + (int64_t)y * v.height / v.out_height;
-    if (s->video_blanked || s->channel[h->index].blanked ||
+    if (s->video_blanked || sgi_kona_channel_ref(s, h->index)->blanked ||
         line < 0 || line >= s->fb_height) {
         memset(dst, 0, v.out_width * sizeof(*dst));
         return;
@@ -988,7 +1006,7 @@ static void sgi_kona_channel_apply(SGIKonaState *s, unsigned c)
 
 static void sgi_kona_channels_apply(SGIKonaState *s)
 {
-    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+    for (unsigned c = 0; c < sgi_kona_head_count(s); c++) {
         sgi_kona_channel_apply(s, c);
     }
 }
@@ -2778,7 +2796,7 @@ static const SGIKonaTexture sgi_kona_tm_256 = {
  * prints "GVO option detected" for, the option mask GetBoardConfig
  * answers (0x10) and the option channel's physical id (0xc6), which the
  * X server's channel list carries. The option's identity and its channel
- * state and the LoadXilinx status only: the model has no GVO video output.
+ * state and the LoadXilinx status, and its output on a console of its own.
  */
 static const SGIKonaOption sgi_kona_gvo = {
     "gvo", { "GVO", "030-1184-002", "B" }, 6, 0x10, 0xc6,
@@ -2793,8 +2811,9 @@ static const SGIKonaOption sgi_kona_gvo = {
  * are not given. dg5-2, 030-1055-001: the two-GE owner's DG5-2 (owner list,
  * revision unreadable), two channels. dg5-2-gvo: the rack capture's DG5-2
  * base for an option board, 030-1242-001 revision D, with its GVO record; the
- * model has no GVO video output, but answers its option mask, channel and
- * LoadXilinx, so the machine catalogue offers it as an approximation.
+ * model shows the channel on its own console and answers its option mask,
+ * channel and LoadXilinx, so the machine catalogue offers it as an
+ * approximation.
  */
 static const SGIKonaDisplay sgi_kona_displays[] = {
     { "dg5-8", { "", "030-1087-001", "" }, 8, 1, NULL },
@@ -4316,8 +4335,9 @@ static void sgi_kona_video_setter(SGIKonaState *s, uint32_t command)
         }
         return;
     }
-    /* The option board's channel has no console of its own. */
-    if (ch != &s->option_channel) {
+    if (ch == &s->option_channel) {
+        sgi_kona_channel_apply(s, sgi_kona_channel_count(s));
+    } else {
         sgi_kona_channel_apply(s, channel);
         sgi_kona_cursor_update(s);
     }
@@ -4831,7 +4851,7 @@ static void sgi_kona_cursor_update(SGIKonaState *s)
     int y = sgi_kona_cursor_coord(s->cursor_position >> 13);
     unsigned channel = s->cursor_channel;
     SGIKonaChannelView v;
-    bool on = s->cursor_mode == 2 &&
+    bool on = s->cursor_mode == 2 && channel < sgi_kona_channel_count(s) &&
               sgi_kona_cursor_offset_valid(s->cursor_offset) &&
               s->cursor_valid[entry] &&
               sgi_kona_channel_view(s, channel, &v) &&
@@ -21044,8 +21064,8 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     }
     sgi_scanout_init(&s->scanout, DEVICE(s), &sgi_kona_head_ops, s);
     s->scanout.composite_cursor = true;
-    s->channel_scanouts = sgi_kona_channel_count(s) - 1;
-    for (unsigned c = 1; c < sgi_kona_channel_count(s); c++) {
+    s->channel_scanouts = sgi_kona_head_count(s) - 1;
+    for (unsigned c = 1; c < sgi_kona_head_count(s); c++) {
         SGIScanout *so = sgi_kona_channel_scanout(s, c);
 
         sgi_scanout_init_head(so, DEVICE(s), c, &sgi_kona_channel_head_ops,
@@ -21988,7 +22008,7 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
     s->fb_word_low_bits_reported = false;
     sgi_kona_channels_reset(s);
     sgi_kona_channels_apply(s);
-    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+    for (unsigned c = 0; c < sgi_kona_head_count(s); c++) {
         sgi_scanout_reset(sgi_kona_channel_scanout(s, c));
     }
 }
@@ -22444,7 +22464,7 @@ static int sgi_kona_post_load_validate(void *opaque, int version_id)
  */
 static int sgi_kona_channels_match_modes(SGIKonaState *s)
 {
-    for (unsigned c = 0; c < sgi_kona_channel_count(s); c++) {
+    for (unsigned c = 0; c < sgi_kona_head_count(s); c++) {
         const SGIScanout *so = sgi_kona_channel_scanout(s, c);
         SGIKonaChannelView v;
         uint32_t w = 0, h = 0;
@@ -22599,23 +22619,36 @@ static bool sgi_kona_channels_needed(void *opaque)
            memcmp(reset, s->channel, sizeof(reset)) != 0;
 }
 
+static int sgi_kona_channel_post_load(const SGIKonaChannel *ch)
+{
+    if (ch->format_width > SGI_SCANOUT_MAX_DIM ||
+        ch->format_height > SGI_SCANOUT_MAX_DIM ||
+        ch->input_width > SGI_SCANOUT_MAX_DIM ||
+        ch->input_height > SGI_SCANOUT_MAX_DIM ||
+        ch->input_x > SGI_SCANOUT_MAX_DIM ||
+        ch->input_y > SGI_SCANOUT_MAX_DIM) {
+        return -EINVAL;
+    }
+    return 0;
+}
+
 static int sgi_kona_channels_post_load(void *opaque, int version_id)
 {
     SGIKonaState *s = opaque;
 
     for (unsigned c = 0; c < SGI_KONA_MAX_CHANNELS; c++) {
-        const SGIKonaChannel *ch = &s->channel[c];
-
-        if (ch->format_width > SGI_SCANOUT_MAX_DIM ||
-            ch->format_height > SGI_SCANOUT_MAX_DIM ||
-            ch->input_width > SGI_SCANOUT_MAX_DIM ||
-            ch->input_height > SGI_SCANOUT_MAX_DIM ||
-            ch->input_x > SGI_SCANOUT_MAX_DIM ||
-            ch->input_y > SGI_SCANOUT_MAX_DIM) {
+        if (sgi_kona_channel_post_load(&s->channel[c])) {
             return -EINVAL;
         }
     }
     return 0;
+}
+
+static int sgi_kona_option_channel_post_load(void *opaque, int version_id)
+{
+    SGIKonaState *s = opaque;
+
+    return sgi_kona_channel_post_load(&s->option_channel);
 }
 
 static const VMStateDescription vmstate_sgi_kona_channel = {
@@ -22666,6 +22699,7 @@ static const VMStateDescription vmstate_sgi_kona_option_channel = {
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = sgi_kona_option_channel_needed,
+    .post_load = sgi_kona_option_channel_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT(option_channel, SGIKonaState, 1,
                        vmstate_sgi_kona_channel, SGIKonaChannel),

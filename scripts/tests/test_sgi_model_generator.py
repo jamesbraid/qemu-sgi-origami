@@ -20,7 +20,7 @@ INPUTS = ROOT / "hw/mips/sgi/models"
 # model, because a shipped L2 daemon has booted each of them.
 L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "280a8dedc6b48f79d812e61dc68ef78775056701507d705c7c0052146ab2bd99"
+    "b4dbbb72b69cb77ab61c4a505e25b18e97854b1b0004720f6b9e79a74e405938"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))

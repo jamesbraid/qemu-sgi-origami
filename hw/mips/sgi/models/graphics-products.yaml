@@ -93,7 +93,7 @@ families:
              evidence: "030-1087-001"}
           - {value: dg5-2, description: "DG5-2, 2 channels",
              evidence: "030-1055-001"}
-          - {value: dg5-2-gvo, description: "DG5-2 with GVO option channel, 2 channels, no video output",
+          - {value: dg5-2-gvo, description: "DG5-2 with GVO option channel, 2 channels, GVO output on its own console",
              evidence: "030-1242-001"}
 
   # PsiTech.

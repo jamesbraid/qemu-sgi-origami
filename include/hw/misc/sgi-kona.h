@@ -2014,7 +2014,8 @@ struct SGIKonaState {
      * The display channels: channel 0 presents through scanout above,
      * which also runs the retrace and the swap queue; channel c > 0
      * through channel_scanout[c - 1], with no retrace. Only the
-     * configured channel count have consoles. resolve_line holds one
+     * configured channel count have consoles, and a fitted
+     * GVO option one more, after them. resolve_line holds one
      * managed-area line while a scaled channel samples it.
      */
     SGIKonaChannel channel[SGI_KONA_MAX_CHANNELS];

@@ -971,6 +971,99 @@ static void test_channels_show_their_rectangles(void)
     g_rmdir(dir);
 }
 
+#define DG5_2_GVO_ARGS \
+    "-M origin2000,nodes=1,x-uncatalogued-graphics=on -smp 1 -m 64M " \
+    "-device '{\"driver\":\"sgi-kona\",\"id\":\"kona0\"," \
+    "\"slot\":\"io4\",\"fabric-hub-widget\":9," \
+    "\"other-identity-parts\":[],\"product\":\"ir2\"," \
+    "\"display\":\"dg5-2-gvo\"}'"
+
+/*
+ * The pipe's console count, by walking the consoles' QOM objects: a
+ * screendump of a head that does not exist trips an assertion in the
+ * console lookup rather than answering an error.
+ */
+static unsigned kona_console_count(QTestState *s)
+{
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < 16; i++) {
+        g_autofree char *path = g_strdup_printf("/backend/console[%u]", i);
+        QDict *resp = qtest_qmp(s, "{'execute': 'qom-get', 'arguments': "
+                                "{'path': %s, 'property': 'device'}}", path);
+        const char *dev = qdict_haskey(resp, "return") ?
+                          qdict_get_try_str(resp, "return") : NULL;
+
+        count += dev && g_str_has_suffix(dev, "kona0");
+        qobject_unref(resp);
+    }
+    return count;
+}
+
+/*
+ * The GVO option's channel (0xc6) has a console of its own, head 2, only
+ * with the option: it shows its rectangle, repaints, blanks and stops.
+ */
+static void test_gvo_console(void)
+{
+    g_autofree char *dir = kona_tmpdir();
+    g_autofree char *log = g_build_filename(dir, "trace.log", NULL);
+    g_autofree char *found = NULL;
+    uint8_t *frame;
+    unsigned w, h;
+    QTestState *s = qtest_init(DG5_2_ARGS);
+
+    kona_draw_halves(s);
+    kona_load_channel(s, 0xc6, 640, 480, 640, 0, 640, 480);
+    g_assert_cmpuint(kona_console_count(s), ==, 2);
+    qtest_quit(s);
+
+    s = qtest_initf("%s -trace enable=sgi_scanout_mode -D %s",
+                    DG5_2_GVO_ARGS, log);
+    g_assert_cmpuint(kona_console_count(s), ==, 3);
+    kona_draw_halves(s);
+    kona_load_channel(s, 0xc6, 640, 480, 640, 0, 640, 480);
+    frame = kona_screendump_head(s, dir, 2, &w, &h);
+    g_assert_cmpuint(w, ==, 640);
+    g_assert_cmpuint(h, ==, 480);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), ==, 0xc08040);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 60, 23), ==, 0x0000ff);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 61, 23), ==, 0xc08040);
+    g_free(frame);
+
+    /* Drawing after the load repaints it. */
+    kona_textport_push(s, 0x6, (uint32_t[]){ 641, wire_line(1) }, 2);
+    frame = kona_screendump_head(s, dir, 2, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 1, 1), ==, 0x0000ff);
+    g_free(frame);
+
+    kona_video(s, 0x1f, (uint32_t[]){ 0xc6, 1 }, 2);
+    frame = kona_screendump_head(s, dir, 2, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 60, 23), ==, 0);
+    g_free(frame);
+    frame = kona_screendump_head(s, dir, 0, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 700, 23), ==, 0x0000ff);
+    g_free(frame);
+
+    kona_video(s, 0x1f, (uint32_t[]){ 0xc6, 0 }, 2);
+    frame = kona_screendump_head(s, dir, 2, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 60, 23), ==, 0x0000ff);
+    g_free(frame);
+
+    kona_video(s, 0x18, (uint32_t[]){ 0xc6 }, 1);
+    frame = kona_screendump_head(s, dir, 2, &w, &h);
+    g_assert_cmphex(ppm_pixel_in(frame, w, 0, 0), !=, 0xc08040);
+    g_free(frame);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "sgi_scanout_mode 640x480 frame 0 "
+                                   "clocks at 0 Hz"));
+    g_assert_nonnull(strstr(found, "sgi_scanout_mode 0x0 frame 0 "
+                                   "clocks at 0 Hz"));
+    g_rmdir(dir);
+}
+
 /*
  * A channel whose input rectangle is smaller than its format shows it
  * sampled up, nearest pixel: a 320x240 rectangle at (640, 0) on a 640x480
@@ -1344,6 +1437,7 @@ int main(int argc, char **argv)
     qtest_add_func("sn0/origin2000/kona-scanout/"
                    "channel-scales-blanks-and-stops",
                    test_channel_scales_blanks_and_stops);
+    qtest_add_func("sn0/origin2000/kona-scanout/gvo-console", test_gvo_console);
     qtest_add_func("sn0/origin2000/kona-scanout/cursor-follows-its-channel",
                    test_cursor_follows_its_channel);
     qtest_add_func("sn0/origin2000/kona-scanout/channel-gamma-map",
