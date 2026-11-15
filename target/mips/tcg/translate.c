@@ -15259,6 +15259,7 @@ static void decode_opc(CPUMIPSState *env, DisasContext *ctx)
 
     ctx->opcode = translator_ldl_end(env, &ctx->base, ctx->base.pc_next,
                                      mo_endian(ctx));
+    gen_count_compare_adjacency_r10k(ctx);
 
     /* Transition to the auto-generated decoder.  */
 
@@ -15429,7 +15430,6 @@ static void mips_tr_translate_insn(DisasContextBase *dcbase, CPUState *cs)
         insn_bytes = decode_isa_nanomips(env, ctx);
     } else if (!(ctx->hflags & MIPS_HFLAG_M16)) {
         insn_bytes = 4;
-        gen_count_compare_adjacency_r10k(ctx);
         decode_opc(env, ctx);
     } else if (ctx->insn_flags & ASE_MICROMIPS) {
         insn_bytes = decode_isa_micromips(env, ctx);
