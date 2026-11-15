@@ -2659,6 +2659,42 @@ static void test_dsp_io_ram(void)
 }
 
 /*
+ * The shared RAM decodes 11 address bits, so 0xfffff0 and 0xfff7f0 are the
+ * same word, whichever space and whichever DSP reaches it.
+ */
+static void test_dsp_io_ram_alias(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t out[4];
+    const uint32_t writer[] = {
+        /* 0x100 */ 0x54f400, 0x123456,
+        /* 0x102 */ 0x5c7000, 0xffff90,         /* move a1,y:$ffff90 */
+        /* 0x104 */ 0x54f400, 0x654321,
+        /* 0x106 */ 0x5c7000, 0xfff2a0,         /* move a1,y:$fff2a0 */
+        /* 0x108 */ DSP_WAIT,
+    };
+    const uint32_t reader[] = {
+        /* 0x100 */ 0x5cf000, 0xfff790,         /* move y:$fff790,a1 */
+        /* 0x102 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x103 */ 0x5cf000, 0xfffaa0,         /* move y:$fffaa0,a1 */
+        /* 0x105 */ MOVEP_WR(REG_A1, X_DTXS),
+        /* 0x106 */ DSP_WAIT,
+    };
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_release(&c, 1);
+    dsp_boot(&c, 0, 0x100, writer, ARRAY_SIZE(writer));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    dsp_boot(&c, 1, 0x100, reader, ARRAY_SIZE(reader));
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 2);
+    g_assert_cmphex(out[0], ==, 0x123456);      /* high write, low read */
+    g_assert_cmphex(out[1], ==, 0x654321);      /* low write, high read */
+    card_quit(&c);
+}
+
+/*
  * The external SRAM at 0x400000 is one memory in X and Y; past 256K words
  * nothing is backed.
  */
@@ -2885,6 +2921,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/dsp/boot-zero-count",
                    test_dsp_boot_zero_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram-alias", test_dsp_io_ram_alias);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/tio1-irqc", test_dsp_tio1_irqc);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-pc1", test_dsp_essi0_pc1);

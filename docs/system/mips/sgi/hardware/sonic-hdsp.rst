@@ -1747,6 +1747,17 @@ Y:0xfffffc; *software expectation*,
 :src:`sonic-dsp-programs-5.0 the start-up code at P:0x408000, the frame
 loop and the sync-wait loops`) are one RAM that X, Y and P reach and the
 four DSPs share, readable and writable, reading zero after a board reset.
+Guest software expects Y:0xffff90 and Y:0xfff790 to be one word
+(*software expectation*: Smoke 5.0's audio reached the output only on a
+model that aliased the two addresses, and stayed silent on a flat one). That the mechanism is the card's SRAM decoding
+only 11 address bits, so every 0x800 words is the same memory, is
+*inferred*; the board's SRAM size is not measured. The sync flags at
+0xfffff7 to 0xffffff would then also be 0xfff7f7 to 0xfff7ff (*inferred*;
+no run checked it). This is board logic, not a DSP56301 register: the
+attribute register only chooses whether AA1 asserts
+(:src:`nxp-dsp56301um-4 section 4.6.3, from p. 4-25`). The model keeps one
+0x800-word array and drops bit 11 of the address, for all three spaces and
+all four DSPs; the upper half of the 4K words is not separate storage.
 The boot code's address attribute register 1 (``0xfffc39``) covers exactly
 that range for all three spaces (*inferred*, as for the external array), and
 the images' own data segment at Y:0xffff80 for 128 words lies in it. X

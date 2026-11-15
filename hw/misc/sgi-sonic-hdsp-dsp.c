@@ -1292,7 +1292,8 @@ static uint32_t dsp_ext_read(void *opaque, DSP56300Space space, uint32_t addr)
         return s->ext[off];     /* one array for X, Y and P */
     }
     if (addr - SONIC_DSP_IO_BASE < SONIC_DSP_IO_WORDS) {
-        return s->hub->io_ram[addr - SONIC_DSP_IO_BASE];
+        /* The card decodes 11 bits: every 0x800 words is the same RAM. */
+        return s->hub->io_ram[(addr - SONIC_DSP_IO_BASE) & 0x7ff];
     }
     if (space == DSP56300_SPACE_P && addr >= DSP_BOOT_ROM &&
         addr < DSP_BOOT_ROM + 0xc00) {
@@ -1320,7 +1321,7 @@ static void dsp_ext_write(void *opaque, DSP56300Space space, uint32_t addr,
         return;
     }
     if (addr - SONIC_DSP_IO_BASE < SONIC_DSP_IO_WORDS) {
-        s->hub->io_ram[addr - SONIC_DSP_IO_BASE] = val & 0xffffff;
+        s->hub->io_ram[(addr - SONIC_DSP_IO_BASE) & 0x7ff] = val & 0xffffff;
         return;
     }
     /* Log the first few off-the-end accesses only. */
