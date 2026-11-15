@@ -309,8 +309,6 @@ QPCIBus *qpci_init_sgi_bridge(QTestState *qts, QGuestAllocator *alloc)
     qtest_sysbus_mmio_map(qts, "/machine/peripheral/transfer-ram", 0,
                           TRANSFER_RAM_BASE);
 
-    qpci->bus.has_buggy_msi = false;
-
     qpci->bus.pio_readb = qpci_sgi_bridge_pio_readb;
     qpci->bus.pio_readw = qpci_sgi_bridge_pio_readw;
     qpci->bus.pio_readl = qpci_sgi_bridge_pio_readl;
