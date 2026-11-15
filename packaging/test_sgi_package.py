@@ -92,6 +92,9 @@ bin/qemu-img:
         self.assertFalse(pkg.is_host_library('macos',
                                              '/opt/homebrew/lib/libz.dylib'))
         self.assertTrue(pkg.is_host_library('windows', 'KERNEL32.dll'))
+        self.assertTrue(pkg.is_host_library('windows', 'ncrypt.dll'))
+        self.assertTrue(pkg.CRYPTO_DLLS.match('libgnutls-30.dll'))
+        self.assertFalse(pkg.CRYPTO_DLLS.match('libwinpthread-1.dll'))
         self.assertFalse(pkg.is_host_library('windows',
                                              'libwinpthread-1.dll'))
 

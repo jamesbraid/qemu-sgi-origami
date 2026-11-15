@@ -32,11 +32,14 @@ builds a development archive named after the commit.
 
 ## Building
 
-GLib, pixman and SDL 2 come from vcpkg, built statically from `vcpkg.json`
+GLib, pixman, SDL 2 and GnuTLS (with the nettle, GMP and other libraries
+it needs) come from vcpkg, built statically from `vcpkg.json`
 at the commit in `vcpkg-commit`, with the triplets in `triplets/` (Linux
 uses vcpkg's own `x64-linux-release`). QEMU's configure arguments are in
 `configure-flags.json`, which `scripts/ci/sgi-check windows` also reads.
-Each platform builds natively and needs network access for vcpkg and for
+The libraries are linked statically, under the licences in the archive's
+`licenses/`; their sources are the vcpkg ports at the commit in
+`vcpkg-commit`. Each platform builds natively and needs network access for vcpkg and for
 Meson's bundled libslirp and CHD library.
 
 Linux, in a container, so the glibc floor is the image's (Debian 12, glibc
@@ -49,7 +52,7 @@ docker run --rm -v "$PWD":/src -w /src sgi-package \
 ```
 
 macOS, on an arm64 Mac with the Xcode command line tools and
-`brew install ninja pkgconf python autoconf automake libtool`:
+`brew install ninja pkgconf python autoconf autoconf-archive automake libtool`:
 
 ```sh
 python3 packaging/sgi-package.py
@@ -59,7 +62,7 @@ Windows, in an MSYS2 MINGW64 shell. QEMU cannot build with MSVC, so vcpkg
 runs with a MinGW triplet and the MSYS2 compiler on `PATH`:
 
 ```sh
-pacman -S --needed git base-devel mingw-w64-x86_64-toolchain \
+pacman -S --needed git base-devel autoconf-archive mingw-w64-x86_64-toolchain \
     mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
 python packaging/sgi-package.py
 ```

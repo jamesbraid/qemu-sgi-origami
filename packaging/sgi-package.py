@@ -17,8 +17,8 @@ and is named sgi-origami-<version>-<platform>.tar.gz (Windows: .zip), where
 <version> is the release tag without its sgi-origami- prefix. Without --tag
 the build is a development build labelled with the commit instead.
 
-The C libraries QEMU needs (GLib, pixman, SDL 2) come from vcpkg, built
-statically from the manifest in this directory at the commit named in
+The C libraries QEMU needs (GLib, pixman, SDL 2, GnuTLS) come from vcpkg,
+built statically from the manifest in this directory at the commit named in
 vcpkg-commit. Each platform builds natively:
 
     linux    inside the image built from debian-bookworm.docker
@@ -74,7 +74,8 @@ WINDOWS_HOST_DLLS = re.compile(
     r'crypt32|d3d11|d3d9|dnsapi|dsound|dwmapi|dxgi|gdi32|imm32|iphlpapi|'
     r'kernel32|msvcrt|ntdll|ole32|oleaut32|setupapi|shell32|shlwapi|user32|'
     r'userenv|uxtheme|version|winmm|ws2_32|winhttp|secur32|rpcrt4|ucrtbase|'
-    r'mswsock|hid|dinput8|usp10|wldap32|normaliz)\.dll$|^(api|ext)-ms-win-')
+    r'mswsock|hid|dinput8|usp10|wldap32|normaliz|ncrypt)\.dll$|'
+    r'^(api|ext)-ms-win-')
 
 LICENSE_FILES = [
     ('LICENSE', 'qemu.LICENSE'),
@@ -259,6 +260,10 @@ def build_qemu(name, build, env, pkgversion, jobs):
     build.mkdir(parents=True, exist_ok=True)
     configure = [SOURCE / 'configure', *configure_flags(name)]
     if name == 'windows':
+        # Link the libraries statically, MSYS2's included: left alone,
+        # Meson resolves -lgnutls to MSYS2's import library and the program
+        # imports its DLL instead of vcpkg's pinned build.
+        configure.append('--static')
         # A native Windows Python cannot execute a script by its shebang,
         # and configure finds its source tree from the slashes in $0, so
         # pass a path with forward slashes.
@@ -420,6 +425,12 @@ def stray_libraries(name, bin_dir, needed=needed_libraries):
     return sorted(set(problems))
 
 
+# The cryptography stack comes statically from vcpkg on every platform. A
+# DLL of it in the Windows archive means the build linked the MSYS2 copy.
+CRYPTO_DLLS = re.compile(r'^lib(gnutls|nettle|hogweed|gmp|tasn1|idn2|'
+                         r'unistring|p11-kit|brotli\w*)-?[\d.]*\.dll$', re.I)
+
+
 def copy_windows_dlls(bin_dir, extra_dirs):
     """Copy the DLLs the executables need, and theirs in turn, into bin/.
 
@@ -440,6 +451,10 @@ def copy_windows_dlls(bin_dir, extra_dirs):
         for dll in pe_needed(output(['objdump', '-p', path])):
             if is_host_library('windows', dll) or (bin_dir / dll).exists():
                 continue
+            if CRYPTO_DLLS.match(dll):
+                raise PackageError(f'{path.name} imports {dll}, so it linked '
+                                   "a host copy of the cryptography stack "
+                                   'instead of the static vcpkg build')
             for directory in search:
                 candidate = directory / dll
                 if candidate.is_file():

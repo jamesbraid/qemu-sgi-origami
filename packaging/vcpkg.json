@@ -3,6 +3,7 @@
   "name": "qemu-sgi-origami",
   "dependencies": [
     "glib",
+    "libgnutls",
     "pixman",
     {
       "name": "sdl2",

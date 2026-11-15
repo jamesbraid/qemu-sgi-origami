@@ -78,6 +78,16 @@ jobs:
             /sgi/bin/qemu-img --version
             /sgi/bin/qemu-system-mips64 -M help | tee /tmp/machines
             grep -qw octane2 /tmp/machines
+            /sgi/bin/qemu-system-mips64 -L help
+            quit() { printf "%s\n" "{\"execute\":\"qmp_capabilities\"}" "{\"execute\":\"quit\"}"; }
+            quit | /sgi/bin/qemu-system-mips64 -M none -S -display none -monitor none \
+                -serial none -qmp stdio -vnc 127.0.0.1:0,password=on
+            quit | /sgi/bin/qemu-system-mips64 -M none -S -display none -monitor none \
+                -serial none -qmp stdio -object tls-creds-anon,id=tc0,endpoint=server \
+                -vnc 127.0.0.1:0,tls-creds=tc0
+            cd /tmp
+            /sgi/bin/qemu-img create -f luks --object secret,id=s,data=pw \
+                -o key-secret=s test.luks 1M
           '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -101,7 +111,7 @@ jobs:
           msystem: MINGW64
           update: true
           install: >-
-            git base-devel curl zip unzip tar
+            git base-devel autoconf-archive curl zip unzip tar
             mingw-w64-x86_64-toolchain mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
             mingw-w64-x86_64-cmake
@@ -116,6 +126,7 @@ jobs:
           git config --global --add safe.directory '*'
           python packaging/sgi-package.py ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
       - name: run the archive with the MinGW toolchain off PATH
+        timeout-minutes: 10
         # This step's PowerShell has none of MSYS2 on PATH, so a DLL the
         # archive should have bundled is not found.
         shell: pwsh
@@ -132,6 +143,19 @@ jobs:
           if ($LASTEXITCODE) { throw "-M help: $LASTEXITCODE" }
           $machines
           if (-not ($machines -match '\boctane2\b')) { throw 'octane2 is not listed' }
+          & "$bin\qemu-system-mips64.exe" -L help
+          # A bad option makes QEMU exit at once, so a process still running
+          # after a few seconds has accepted them.
+          function Test-Starts([string]$options) {
+              $p = Start-Process -FilePath "$bin\qemu-system-mips64.exe" -ArgumentList "-M none -S -display none $options" -PassThru -NoNewWindow
+              if ($p.WaitForExit(5000)) { throw "qemu-system-mips64 $options exited with $($p.ExitCode)" }
+              $p.Kill()
+              $p.WaitForExit()
+          }
+          Test-Starts '-vnc 127.0.0.1:0,password=on'
+          Test-Starts '-object tls-creds-anon,id=tc0,endpoint=server -vnc 127.0.0.1:0,tls-creds=tc0'
+          & "$bin\qemu-img.exe" create -f luks --object secret,id=s,data=pw -o key-secret=s "$env:RUNNER_TEMP\test.luks" 1M
+          if ($LASTEXITCODE) { throw "qemu-img create -f luks: $LASTEXITCODE" }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archive-windows-x86_64
@@ -148,7 +172,7 @@ jobs:
         with:
           fetch-depth: 1
       - name: install build tools
-        run: brew install ninja pkgconf python autoconf automake libtool
+        run: brew install ninja pkgconf python autoconf autoconf-archive automake libtool
       - name: cache vcpkg binaries
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -165,6 +189,15 @@ jobs:
           unpacked/bin/qemu-img --version
           unpacked/bin/qemu-system-mips64 -M help | tee machines.txt
           grep -qw octane2 machines.txt
+          unpacked/bin/qemu-system-mips64 -L help
+          quit() { printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"quit"}'; }
+          quit | unpacked/bin/qemu-system-mips64 -M none -S -display none -monitor none \
+              -serial none -qmp stdio -vnc 127.0.0.1:0,password=on
+          quit | unpacked/bin/qemu-system-mips64 -M none -S -display none -monitor none \
+              -serial none -qmp stdio -object tls-creds-anon,id=tc0,endpoint=server \
+              -vnc 127.0.0.1:0,tls-creds=tc0
+          unpacked/bin/qemu-img create -f luks --object secret,id=s,data=pw \
+              -o key-secret=s "$RUNNER_TEMP/test.luks" 1M
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: archive-macos-arm64
