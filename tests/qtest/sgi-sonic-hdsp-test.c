@@ -1258,8 +1258,8 @@ static void test_dsp_essi_link(void)
 }
 
 /*
- * Without the chain nothing is linked to DSP 1's receiver, which carries
- * digital silence at the board's frame rate: a zero word arrives per frame.
+ * Without the chain nothing is linked to DSP 1's receiver, whose clock is
+ * external: no word arrives.
  */
 static void test_dsp_essi_unlinked(void)
 {
@@ -1279,8 +1279,40 @@ static void test_dsp_essi_unlinked(void)
     dsp_release(&c, 1);
     dsp_boot(&c, 1, 0x100, rx, i);
     qtest_clock_step(c.qts, 1000 * 1000);
-    g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 1);
-    g_assert_cmphex(out[0], ==, 0);
+    g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 0);
+    card_quit(&c);
+}
+
+/*
+ * A first board's ESSI1 on DSP 0 and DSP 1 (CRB 0x031100: external bit clock
+ * and frame sync, synchronous) has no peer: after the first word is written
+ * nothing is ever shifted, so TDE does not come back and RDF never sets.
+ */
+static void test_dsp_essi1_idle_unlinked(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x30] = { 0 }, out[4];
+    unsigned i = 0, at;
+
+    PUT_QQ(prog, i, X_CRA1, 0x180000);
+    PUT_QQ(prog, i, X_CRB1, 0x031100);
+    PUT_QQ(prog, i, X_TX10, 0x123456);
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);                  /* the host's go */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    prog[i++] = MOVEQQ_RD(REG_A1, X_SSISR1);
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    hp_write(&c, 0, HP_DATA, 0);
+    qtest_clock_step(c.qts, 500 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
+    g_assert_cmphex(out[0] & 0xc0, ==, 0);          /* no TDE, no RDF */
     card_quit(&c);
 }
 
@@ -2038,7 +2070,7 @@ static void ssisr_tue(bool use_tsr)
     unsigned i = 0;
 
     PUT_QQ(prog, i, X_CRA1, 0x180000);
-    PUT_QQ(prog, i, X_CRB1, 0x010000);              /* TE0 */
+    PUT_QQ(prog, i, X_CRB1, 0x010030);              /* TE0, own clock */
     prog[i++] = JCLR_PP(2, X_DSR);
     prog[i++] = 0x104;
     prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
@@ -2505,6 +2537,8 @@ int main(int argc, char **argv)
                    test_dsp_host_command_masked);
     qtest_add_func("/sgi-sonic-hdsp/dsp/hi32-flags", test_dsp_hi32_flags);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi-link", test_dsp_essi_link);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/essi1-idle-unlinked",
+                   test_dsp_essi1_idle_unlinked);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi-unlinked", test_dsp_essi_unlinked);
     qtest_add_func("/sgi-sonic-hdsp/dsp/timer-dma", test_dsp_timer_dma);
     qtest_add_func("/sgi-sonic-hdsp/dsp/interrupt-out",

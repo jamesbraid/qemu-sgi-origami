@@ -63,6 +63,7 @@
 #define CRB_MOD             (1u << 13)
 #define CRB_SCKD            (1u << 5)
 #define CRB_SYN             (1u << 12)
+#define CRB_SCD2            (1u << 4)
 #define SSISR_RDF           (1u << 7)
 #define SSISR_TDE           (1u << 6)
 #define SSISR_ROE           (1u << 5)
@@ -390,6 +391,14 @@ static void essi_slot(SonicHDSPDSPState *s, unsigned n, unsigned slot)
     dma_service(s);
 }
 
+/* A port clocked from outside with nothing linked transfers nothing. */
+static bool essi_idle(const SonicHDSPDSPState *s, unsigned n,
+                      const SonicDspEssi *e)
+{
+    return s->index != 2 && !(n == 1 && s->hub->essi1_chain) &&
+           !(e->crb & (CRB_SCKD | CRB_SCD2));
+}
+
 /* One frame sync: every active slot of both ports. */
 static void essi_frame(SonicHDSPDSPState *s)
 {
@@ -397,6 +406,9 @@ static void essi_frame(SonicHDSPDSPState *s)
         SonicDspEssi *e = &s->essi[n];
 
         if (!essi_te(e) && !(e->crb & CRB_RE)) {
+            continue;
+        }
+        if (essi_idle(s, n, e)) {
             continue;
         }
         if (e->crb & CRB_MOD) {
@@ -454,7 +466,7 @@ static int64_t essi_next_slot(SonicHDSPState *h, int64_t t)
             SonicDspEssi *e = &s->essi[k];
 
             if (s->in_reset || s->boot != SONIC_DSP_BOOT_RUN ||
-                !essi_net(e)) {
+                !essi_net(e) || essi_idle(s, k, e)) {
                 e->slot_armed = 0;
                 continue;
             }

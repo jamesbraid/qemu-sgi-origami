@@ -1863,7 +1863,13 @@ synchronous mode (SYN set) the receiver takes one word for each word sent
 and nothing otherwise (*established*, :src:`nxp-dsp56301um-4 section 7.4.1`).
 The monitors set ESSI0 this way on a first board (CRB ``0x033110``, *software expectation*), which
 is why their six-word DMA blocks end exactly and nothing overruns the
-receive buffers. In each slot a transmitter takes
+receive buffers. A port whose bit clock and frame sync are both inputs (SCKD and SCD2
+clear), on a DSP other than DSP 2, with nothing linked to it, shifts no word
+and sets neither TDE nor RDF: with no clock nothing moves. That is how a
+first board's ESSI1 on DSP 0 and DSP 1 is set up (CRB ``0x031100``,
+*software expectation*), and the frame loops never wait on it
+(*inferred*: no clock source is known for it on a single card). The
+converter box clocks both of DSP 2's ports. In each slot a transmitter takes
 the word in TX0 (its top ``WL`` bits, 8, 12, 16 or 24 bits; 32-bit words
 log ``LOG_UNIMP``) if the DSP wrote it since the last slot, sets TDE, and
 otherwise sets TUE and sends the old word again; a receiver takes the
@@ -2631,8 +2637,10 @@ with what would settle it:
      - One word at the start of each slot, a slot being a share of the
        sample period, or ``WL`` bit clocks of the DSP's own clock with SCKD
        set; no bit shifting; polarity, direction and pin fields stored
-       only; a 24-bit port with nothing linked receives a zero word per
-       slot, as if the board supplied its clocks and the input were silent
+       only; a 24-bit port that the board clocks (an on-demand port, or one of
+       DSP 2's) with nothing linked receives a zero word per slot, as if the
+       input were silent; an unlinked port with an external clock and frame
+       sync is idle
      - A capture of the ports' pins against a running monitor
    * - DSP 0's TIO1 to DSP 3's IRQC
      - A rising edge of timer 1's data bit on DSP 0, with the timer a GPIO
