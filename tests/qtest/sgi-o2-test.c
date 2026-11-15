@@ -6227,9 +6227,9 @@ static void test_storage_cdrom_block_length(void)
     o2_storage_configure_aic(t.qts, 1);
     o2_program_banks(t.qts);
     sgi_cd_check_power_on(&cd);
-    sgi_cd_check_select_512(&cd, true);
+    sgi_cd_check_select(&cd, true);
     sgi_cd_check_reset(&cd);
-    sgi_cd_check_select_512(&cd, false);
+    sgi_cd_check_select(&cd, false);
     events = o2_storage_stop(&t);
     g_assert_cmpint(g_unlink(path), ==, 0);
 }

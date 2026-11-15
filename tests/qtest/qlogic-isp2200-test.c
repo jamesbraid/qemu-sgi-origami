@@ -4219,10 +4219,10 @@ static void test_cdrom_block_length(void *obj, void *data,
     isp_open(&t, obj, alloc);
     isp_loop_up(&t, ICB_OPT_PORT_DB);
     sgi_cd_check_power_on(&cd);
-    sgi_cd_check_select_512(&cd, true);
+    sgi_cd_check_select(&cd, true);
     sgi_cd_check_reset(&cd);
     sgi_cd_check_other_resets(&cd);
-    sgi_cd_check_select_512(&cd, false);
+    sgi_cd_check_select(&cd, false);
     isp_close(&t);
 }
 

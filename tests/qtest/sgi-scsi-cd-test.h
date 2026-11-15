@@ -4,10 +4,12 @@
  * through one host adapter.
  *
  * The drive powers on at 2048-byte logical blocks and reports them in an
- * eight-byte block descriptor; MODE SELECT switches it to 512, after which
- * MODE SENSE, READ CAPACITY and READ(10) all count 512-byte blocks; a
- * reset puts it back at 2048 and raises a unit attention. Each adapter's
- * test supplies the transport; the expectations here are shared.
+ * eight-byte block descriptor. MODE SELECT switches it to 512, as the SGI
+ * PROMs and IRIX's media daemon do, and back to 2048, as Linux and the
+ * media daemon do; after each, MODE SENSE, READ CAPACITY and READ(10) all
+ * count blocks of the new length. A reset puts it back at 2048 and raises
+ * a unit attention. Each adapter's test supplies the transport; the
+ * expectations here are shared.
  *
  * Every 512-byte block of the medium is filled with its own number, so a
  * READ(10) counted in the wrong unit returns another block's bytes.
@@ -217,37 +219,53 @@ static inline void sgi_cd_check_power_on(const SgiCdTransport *t)
     g_assert_cmpuint(buf[3], ==, 0);
     sgi_cd_expect_capacity(t, 2048, SGI_CD_BLOCKS_2048);
     sgi_cd_expect_read(t, 2048, SGI_CD_BLOCKS_2048 - 1);
+    sgi_cd_expect_read_refused(t, 2048, SGI_CD_BLOCKS_2048);
 }
 
 /*
- * After MODE SELECT to 512, a READ(10) of a block beyond the first quarter
- * of the medium, before anything else: no READ CAPACITY has recounted the
- * last LBA for the new unit. Then MODE SENSE and READ CAPACITY in 512s.
+ * The drive's last block and the one past it, in @length units, before
+ * any READ CAPACITY, then MODE SENSE and READ CAPACITY. The first two
+ * need the last LBA recounted for @length: a count left in 2048s refuses
+ * the last 512-byte block, and one left in 512s admits a 2048-byte block
+ * past the end.
  */
-static inline void sgi_cd_check_select_512(const SgiCdTransport *t, bool pf)
+static inline void sgi_cd_expect_length(const SgiCdTransport *t,
+                                        uint32_t length)
+{
+    uint32_t blocks = SGI_CD_MEDIUM_BYTES / length;
+
+    sgi_cd_expect_read(t, length, blocks - 1);
+    sgi_cd_expect_read_refused(t, length, blocks);
+    sgi_cd_expect_descriptor(t, length, blocks);
+    sgi_cd_expect_capacity(t, length, blocks);
+}
+
+/*
+ * From 2048: MODE SELECT to 512, then 512 again while already at 512, as
+ * the O2 PROM sends it whatever the length, then back to 2048. Each is
+ * checked before READ CAPACITY. Ends at 2048.
+ */
+static inline void sgi_cd_check_select(const SgiCdTransport *t, bool pf)
 {
     g_assert_cmphex(sgi_cd_select(t, 512, pf), ==, SGI_CD_GOOD);
-    sgi_cd_expect_read(t, 512, SGI_CD_BLOCKS_512 - 1);
-    sgi_cd_expect_read(t, 512, SGI_CD_BLOCKS_2048 + 1);
-    sgi_cd_expect_descriptor(t, 512, SGI_CD_BLOCKS_512);
-    sgi_cd_expect_capacity(t, 512, SGI_CD_BLOCKS_512);
+    sgi_cd_expect_length(t, 512);
+    g_assert_cmphex(sgi_cd_select(t, 512, pf), ==, SGI_CD_GOOD);
+    sgi_cd_expect_length(t, 512);
+    g_assert_cmphex(sgi_cd_select(t, 2048, pf), ==, SGI_CD_GOOD);
+    sgi_cd_expect_length(t, 2048);
 }
 
 /*
- * After a reset: the reset unit attention, then 2048-byte blocks again,
- * with the last 2048-byte block readable and the one past it refused,
- * both before READ CAPACITY. The refusal needs the last LBA recounted in
- * 2048s: the stale 512-byte count would still admit it.
+ * After a reset from 512: the reset unit attention, then 2048-byte blocks
+ * again, checked before READ CAPACITY.
  */
 static inline void sgi_cd_check_reset_by(const SgiCdTransport *t,
                                          void (*reset)(void *opaque))
 {
+    g_assert_cmphex(sgi_cd_select(t, 512, true), ==, SGI_CD_GOOD);
     reset(t->opaque);
     sgi_cd_expect_reset_attention(t);
-    sgi_cd_expect_read(t, 2048, SGI_CD_BLOCKS_2048 - 1);
-    sgi_cd_expect_read_refused(t, 2048, SGI_CD_BLOCKS_2048);
-    sgi_cd_expect_descriptor(t, 2048, SGI_CD_BLOCKS_2048);
-    sgi_cd_expect_capacity(t, 2048, SGI_CD_BLOCKS_2048);
+    sgi_cd_expect_length(t, 2048);
 }
 
 static inline void sgi_cd_check_reset(const SgiCdTransport *t)
@@ -265,7 +283,6 @@ static inline void sgi_cd_check_other_resets(const SgiCdTransport *t)
 
     for (unsigned i = 0; i < ARRAY_SIZE(resets); i++) {
         if (resets[i]) {
-            sgi_cd_check_select_512(t, true);
             sgi_cd_check_reset_by(t, resets[i]);
         }
     }
