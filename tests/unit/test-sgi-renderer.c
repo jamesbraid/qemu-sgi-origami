@@ -9,7 +9,7 @@
 #include "qemu/module.h"
 #endif
 #ifdef CONFIG_MODULE_UPGRADES
-#include "qemu-version.h"
+#include "qemu/version.h"
 #endif
 #include <math.h>
 #include "ui/sgi-renderer.h"
