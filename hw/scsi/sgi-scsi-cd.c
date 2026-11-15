@@ -4,14 +4,16 @@
  *
  * The SGI machines turn on scsi-cd's quirk_mode_page_set_block_size
  * (hw/mips/sgi/board-cdrom.c), so a guest can switch the drive between
- * 2048- and 512-byte logical blocks with MODE SELECT, as SGI's boot PROMs
- * do. Upstream scsi-cd does not keep the rest of the target consistent
- * with that change, so the host adapters do it here instead:
+ * 512- and 2048-byte logical blocks with MODE SELECT, as the boot PROMs,
+ * IRIX's media daemon and Linux do. Upstream scsi-cd does not keep the
+ * rest of the target consistent with that change, so the host adapters do
+ * it here instead:
  *
  * - MODE SELECT changes the block length but not the last LBA, which keeps
  *   counting blocks of the old length until a READ CAPACITY or a reset
- *   recounts it. A guest that sets 512 and reads on without READ CAPACITY
- *   is refused every block beyond a quarter of the medium.
+ *   recounts it. A guest that switches from 2048 to 512 and reads on
+ *   without READ CAPACITY is refused every block beyond a quarter of the
+ *   medium; one that switches the other way is let read past its end.
  * - A reset keeps the selected length. A drive returns to its power-on
  *   length when reset, because the length is a mode parameter.
  *

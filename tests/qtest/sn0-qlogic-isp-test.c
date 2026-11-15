@@ -1526,18 +1526,47 @@ static void test_cdrom_block_length(const void *data)
 
     cd_ring_init(&ring);
     sgi_cd_check_power_on(&t);
-    sgi_cd_check_select_512(&t, true);
+    sgi_cd_check_select(&t, true);
     sgi_cd_check_reset(&t);
     sgi_cd_check_other_resets(&t);
     /* The same list with PF clear, which a SCSI-2 drive also takes. */
-    sgi_cd_check_select_512(&t, false);
+    sgi_cd_check_select(&t, false);
 
     /* A system reset also returns the drive to its power-on length. */
+    g_assert_cmphex(sgi_cd_select(&t, 512, true), ==, SGI_CD_GOOD);
     qtest_system_reset(ring.qts);
     cd_ring_init(&ring);
     sgi_cd_expect_reset_attention(&t);
-    sgi_cd_expect_read(&t, 2048, SGI_CD_BLOCKS_2048 - 1);
-    sgi_cd_expect_descriptor(&t, 2048, SGI_CD_BLOCKS_2048);
+    sgi_cd_expect_length(&t, 2048);
+
+    qtest_quit(ring.qts);
+    g_assert_cmpint(g_unlink(path), ==, 0);
+}
+
+/*
+ * A scsi-cd with its own physical_block_size powers on, and comes back from
+ * a reset, at that length: the 512-byte drives SGI sold in the Indy era.
+ */
+static void test_cdrom_own_length(const void *data)
+{
+    g_autofree char *path = sgi_cd_medium_create();
+    g_autofree char *args = g_strdup_printf(MACHINE_WITH_BRIDGE
+        " -drive id=cd,if=none,file=%s,format=raw,readonly=on"
+        " -device scsi-cd,bus=scsi.0,scsi-id=1,drive=cd,"
+        "physical_block_size=512", path);
+    CdRing ring = { .qts = qtest_init(args) };
+    const SgiCdTransport t = { cd_command, cd_bus_reset, &ring };
+    static const uint8_t tur[6] = { 0x00 };
+
+    cd_ring_init(&ring);
+    /* The power-on unit attention. */
+    sgi_cd_run(&t, tur, sizeof(tur), NULL, 0, false, NULL);
+    sgi_cd_expect_length(&t, 512);
+    g_assert_cmphex(sgi_cd_select(&t, 2048, true), ==, SGI_CD_GOOD);
+    sgi_cd_expect_length(&t, 2048);
+    cd_bus_reset(&ring);
+    sgi_cd_expect_reset_attention(&t);
+    sgi_cd_expect_length(&t, 512);
 
     qtest_quit(ring.qts);
     g_assert_cmpint(g_unlink(path), ==, 0);
@@ -1790,6 +1819,8 @@ int main(int argc, char **argv)
                         test_two_luns_behind_one_target);
     qtest_add_data_func("sn0/qlogic-isp/cdrom-block-length", NULL,
                         test_cdrom_block_length);
+    qtest_add_data_func("sn0/qlogic-isp/cdrom-own-length", NULL,
+                        test_cdrom_own_length);
     for (unsigned i = 0; i < ARRAY_SIZE(sgi_inquiry_cases); i++) {
         g_autofree char *name = g_strdup_printf(
             "sn0/qlogic-isp/inquiry-data/%s", sgi_inquiry_cases[i].name);

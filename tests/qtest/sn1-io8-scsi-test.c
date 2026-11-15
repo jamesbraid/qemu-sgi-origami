@@ -738,10 +738,10 @@ static void test_cdrom_block_length(const void *data)
     init_queues(qts);
 
     sgi_cd_check_power_on(&t);
-    sgi_cd_check_select_512(&t, true);
+    sgi_cd_check_select(&t, true);
     sgi_cd_check_reset(&t);
     sgi_cd_check_other_resets(&t);
-    sgi_cd_check_select_512(&t, false);
+    sgi_cd_check_select(&t, false);
 
     qtest_quit(qts);
     g_assert_cmpint(g_unlink(path), ==, 0);

@@ -2,21 +2,29 @@
 /*
  * Every SGI machine that can carry a CD-ROM gives scsi-cd the SCSI-2 block
  * length behaviour of hw/mips/sgi/board-cdrom.c. Each machine class lists
- * the quirk properties, and a CD made with -cdrom or with -device scsi-cd
- * has them on. What the drive then does is driven through each host
- * adapter in that adapter's own test.
+ * the properties, and a CD made with -cdrom or with -device scsi-cd has
+ * them, including one that sets its own power-on length. What the drive
+ * then does is driven through each host adapter in that adapter's own
+ * test.
  */
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
+#include "qobject/qbool.h"
+#include "qobject/qnum.h"
 #include "sgi-test.h"
 
-static const char *const quirks[] = {
-    "quirk_mode_sense_rom_use_dbd",
-    "quirk_mode_page_set_block_size",
-    "quirk_mode_page_vendor_specific_apple",
+typedef struct CdProperty {
+    const char *name;
+    const char *value;
+} CdProperty;
+
+static const CdProperty props[] = {
+    { "quirk_mode_sense_rom_use_dbd", "on" },
+    { "quirk_mode_page_set_block_size", "on" },
+    { "quirk_mode_page_vendor_specific_apple", "on" },
 };
 
 /* Every product class, including those a bare launch here cannot start. */
@@ -40,7 +48,7 @@ static void test_machine_classes(void)
 
     for (size_t i = 0; i < G_N_ELEMENTS(products); i++) {
         const QListEntry *e;
-        QList *props = NULL;
+        QList *compat = NULL;
 
         if (!qtest_has_machine(products[i])) {
             continue;
@@ -49,25 +57,26 @@ static void test_machine_classes(void)
             QDict *m = qobject_to(QDict, qlist_entry_obj(e));
 
             if (g_str_equal(qdict_get_str(m, "name"), products[i])) {
-                props = qdict_get_qlist(m, "compat-props");
+                compat = qdict_get_qlist(m, "compat-props");
             }
         }
-        g_assert_nonnull(props);
-        for (size_t q = 0; q < G_N_ELEMENTS(quirks); q++) {
+        g_assert_nonnull(compat);
+        for (size_t q = 0; q < G_N_ELEMENTS(props); q++) {
             bool found = false;
 
-            QLIST_FOREACH_ENTRY(props, e) {
+            QLIST_FOREACH_ENTRY(compat, e) {
                 QDict *p = qobject_to(QDict, qlist_entry_obj(e));
 
                 found |= g_str_equal(qdict_get_str(p, "qom-type"),
                                      "scsi-cd") &&
                          g_str_equal(qdict_get_str(p, "property"),
-                                     quirks[q]) &&
-                         g_str_equal(qdict_get_str(p, "value"), "on");
+                                     props[q].name) &&
+                         g_str_equal(qdict_get_str(p, "value"),
+                                     props[q].value);
             }
             if (!found) {
-                g_test_message("%s lacks scsi-cd.%s=on", products[i],
-                               quirks[q]);
+                g_test_message("%s lacks scsi-cd.%s=%s", products[i],
+                               props[q].name, props[q].value);
             }
             g_assert_true(found);
         }
@@ -125,12 +134,32 @@ static char *cd_path(QTestState *qts)
     return path;
 }
 
-static void check_launch(const CdLaunch *l, bool cdrom)
+/* A CD's property, as qom-get returns it, in the form compat-props uses. */
+static char *cd_property(QTestState *qts, const char *path, const char *name)
+{
+    g_autoptr(QDict) reply = qtest_qmp(qts, "{'execute': 'qom-get', "
+                                       "'arguments': {'path': %s, "
+                                       "'property': %s}}", path, name);
+    QObject *value = qdict_get(reply, "return");
+
+    g_assert_nonnull(value);
+    if (qobject_type(value) == QTYPE_QBOOL) {
+        return g_strdup(qbool_get_bool(qobject_to(QBool, value)) ?
+                        "on" : "off");
+    }
+    return g_strdup_printf("%" PRId64, qnum_get_int(qobject_to(QNum, value)));
+}
+
+/*
+ * Start @l with one CD, by -cdrom or by -device scsi-cd with @extra
+ * appended, and return the state and the CD's QOM path.
+ */
+static QTestState *start_cd(const CdLaunch *l, bool cdrom, const char *extra,
+                            char **path)
 {
     g_autofree char *args = NULL;
     g_autofree char *rest = NULL;
     g_autofree char *drive = NULL;
-    g_autofree char *path = NULL;
     g_autoptr(QDict) type = NULL;
     QTestState *qts;
 
@@ -138,22 +167,52 @@ static void check_launch(const CdLaunch *l, bool cdrom)
     drive = cdrom ?
         g_strdup_printf("-cdrom %s", medium_path) :
         g_strdup_printf("-drive if=none,id=cd,file=%s,format=raw,"
-                        "readonly=on -device scsi-cd,drive=cd,%s",
-                        medium_path, l->device);
+                        "readonly=on -device scsi-cd,drive=cd,%s%s",
+                        medium_path, l->device, extra);
     args = g_strdup_printf("-M %s%s %s -nodefaults -S %s", l->machine,
                            l->options, rest, drive);
     qts = qtest_init(args);
-    path = cd_path(qts);
+    *path = cd_path(qts);
     type = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
-                     "{'path': %s, 'property': 'type'}}", path);
+                     "{'path': %s, 'property': 'type'}}", *path);
     g_assert_cmpstr(qdict_get_str(type, "return"), ==, "scsi-cd");
-    for (size_t q = 0; q < G_N_ELEMENTS(quirks); q++) {
-        if (!qtest_qom_get_bool(qts, path, quirks[q])) {
-            g_test_message("%s %s: %s is off", l->machine,
-                           cdrom ? "-cdrom" : "-device scsi-cd", quirks[q]);
+    return qts;
+}
+
+static void check_launch(const CdLaunch *l, bool cdrom)
+{
+    g_autofree char *path = NULL;
+    QTestState *qts = start_cd(l, cdrom, "", &path);
+
+    for (size_t q = 0; q < G_N_ELEMENTS(props); q++) {
+        g_autofree char *value = cd_property(qts, path, props[q].name);
+
+        if (!g_str_equal(value, props[q].value)) {
+            g_test_message("%s %s: %s is %s, not %s", l->machine,
+                           cdrom ? "-cdrom" : "-device scsi-cd",
+                           props[q].name, value, props[q].value);
             g_assert_not_reached();
         }
     }
+    qtest_quit(qts);
+}
+
+/*
+ * A scsi-cd given its own power-on length keeps it, like the 512-byte
+ * drives SGI sold in the Indy era, and keeps the SCSI-2 behaviour.
+ */
+static void test_own_length(const void *data)
+{
+    const CdLaunch *l = data;
+    g_autofree char *path = NULL;
+    g_autofree char *length = NULL;
+    g_autofree char *select = NULL;
+    QTestState *qts = start_cd(l, false, ",physical_block_size=512", &path);
+
+    length = cd_property(qts, path, "physical_block_size");
+    g_assert_cmpstr(length, ==, "512");
+    select = cd_property(qts, path, "quirk_mode_page_set_block_size");
+    g_assert_cmpstr(select, ==, "on");
     qtest_quit(qts);
 }
 
@@ -194,12 +253,15 @@ int main(int argc, char **argv)
         const CdLaunch *l = &launches[i];
         g_autofree char *device = NULL;
         g_autofree char *cdrom = NULL;
+        g_autofree char *own = NULL;
 
         if (!qtest_has_machine(l->machine)) {
             continue;
         }
         device = g_strdup_printf("/sgi/cdrom/%s/device", l->machine);
         qtest_add_data_func(device, l, test_device);
+        own = g_strdup_printf("/sgi/cdrom/%s/own-length", l->machine);
+        qtest_add_data_func(own, l, test_own_length);
         if (l->cdrom) {
             cdrom = g_strdup_printf("/sgi/cdrom/%s/cdrom", l->machine);
             qtest_add_data_func(cdrom, l, test_cdrom);
