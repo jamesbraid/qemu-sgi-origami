@@ -2,16 +2,20 @@
 /*
  * The SCSI CD-ROM drive on the SGI machines that can carry one.
  *
- * SGI's boot PROMs read an SGI install CD in 512-byte logical blocks. The
- * stock Octane PROM takes the drive's current length from the block
- * descriptor MODE SENSE returns and, when it shows 2048, sends MODE
- * SELECT(6) for 512 before its first READ(10); with no descriptor it
- * assumes 512 and sends nothing. The model's drive is a standard SCSI-2
- * CD-ROM: it powers on at 2048-byte blocks, reports them in a block
- * descriptor, and takes a new length from MODE SELECT. That is a model
- * choice for every SGI machine with a CD, not a measured drive.
+ * The drive powers on at 2048-byte logical blocks, reports its current
+ * length in a block descriptor, takes a new length from MODE SELECT, and
+ * returns to its power-on length when reset.
+ * docs/system/mips/sgi/hardware/scsi-cdrom.rst owns the contract and its
+ * evidence.
  *
- * scsi-cd follows MMC by default: no block descriptor, and a MODE SELECT
+ * The stock PROMs read an install CD in 512-byte blocks and select that
+ * length themselves. OpenBSD trusts READ CAPACITY and lays its install CD
+ * out in 2048-byte sectors, so it needs the drive back at 2048 after its
+ * own bus reset; a drive that powers on at 512 leaves it unable to mount
+ * the CD. The 512-byte drives SGI sold for the Indy era can be had with
+ * physical_block_size=512, which a scsi-cd's own property keeps.
+ *
+ * scsi-cd follows MMC by default: no block descriptor and a MODE SELECT
  * block length ignored. A PROM then issues 512-byte LBAs to a device
  * counting 2048-byte blocks and fails to load sash with "execute format
  * error". The quirk properties below give scsi-cd the SCSI-2 behaviour

@@ -695,6 +695,24 @@ web:
     obtain:
       url: https://www.mrynet.com/FTP/Hardware/sgi/SGI-Xbridge_ASIC_Specification-Revision_0.5_for_Rev_A_Si-19980611.pdf
       sha256: a6a462d72148a3ce545a0ea3d82174f10b1a6cb5c9e42cc49506536193475d8d
+  dmesgd-6924:
+    title: "OpenBSD 7.2 dmesg of a real Origin 200 with a Toshiba XM-6201TA CD-ROM, dmesgd entry 6924"
+    publisher: "NYC*BUG dmesgd"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://dmesgd.nycbug.org/index.cgi?do=view&id=6924
+      sha256: e631b20e64a2c332be14550b0f57fa1f05f065d4e42fb8a6a57e24300cb81533
+  dmesgd-7106:
+    title: "OpenBSD 7.0 dmesg of a real Origin 200 with a Toshiba XM-5701TA CD-ROM, dmesgd entry 7106"
+    publisher: "NYC*BUG dmesgd"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: https://dmesgd.nycbug.org/index.cgi?do=view&id=7106
+      sha256: bf09a690fd7a431e6452fc2284258f1e247f2ebd024d22996d9b6db33ce284ff
   dmesgd-8994:
     title: "OpenBSD dmesg of a real Origin 200, dmesgd entry 8994"
     publisher: "NYC*BUG dmesgd"
@@ -1209,6 +1227,60 @@ web:
     obtain:
       url: null
       message_id: "<b92bss$e2msi$2@ID-22005.news.dfncis.de>"
+  usenet-3msttn:
+    title: "comp.sys.sgi.hardware, 1995-04-17, Dave Olson (Silicon Graphics), Re: New TOSHIBA CDs, Message-ID <3msttn$68k@gazette.engr.sgi.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3msttn$68k@gazette.engr.sgi.com>"
+  usenet-3mu7ea:
+    title: "comp.sys.sgi.hardware, 1995-04-17, Steve Welch, Special Toshiba CD version required, Message-ID <3mu7ea$2k3@ncar.ucar.edu>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3mu7ea$2k3@ncar.ucar.edu>"
+  usenet-4eofac:
+    title: "comp.sys.sgi.hardware, 1996-01-31, Robert E. Seastrom, Want to make an SGI CD-ROM drive work on a Mac?, Message-ID <4eofac$pdc@access4.digex.net>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<4eofac$pdc@access4.digex.net>"
+  usenet-3a4eb9bb:
+    title: "comp.sys.sgi.admin, 2000-12-31, Greg Douglas, Re: Irix Install probs on a new disk, Message-ID <3A4EB9BB.1F00EAE9@reputable.com>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<3A4EB9BB.1F00EAE9@reputable.com>"
+  usenet-g6j8y1:
+    title: "comp.sys.sgi.admin, 2001-01-02, Ralf Beyer, Re: Irix Install probs on a new disk, Message-ID <G6J8y1.Jwn@arl.army.mil>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<G6J8y1.Jwn@arl.army.mil>"
+  sgi-hardware-faq-2000:
+    title: "comp.sys.sgi.misc, SGI hardware Frequently Asked Questions, last modified 2000-06-20, question 47, Message-ID <hardware_994399215@viz.tamu.edu>"
+    publisher: "Usenet"
+    kind: capture
+    locator: line
+    rights: public-web
+    obtain:
+      url: null
+      message_id: "<hardware_994399215@viz.tamu.edu>"
   usenet-3cc2392b:
     title: "comp.sys.sgi.hardware, 2002-04-21, Greg Douglas, Message-ID <3CC2392B.6D549E5B@reputable.com>"
     publisher: "Usenet"
@@ -2277,6 +2349,18 @@ firmware:
       distribution: "IRIX 6.5 base installation media"
       image: payload
       sha256: 73bf108723ea9206300b25cb42c12962a94d50318118967f2556f121d1da5ef5
+  ip30-kernel-6.5.30:
+    title: "IP30 kernel of IRIX 6.5.30"
+    publisher: Silicon Graphics
+    kind: firmware
+    product: "Octane and Octane2 IP30 installed kernel"
+    version: "6.5.30"
+    locator: address
+    rights: obtain-only
+    obtain:
+      distribution: "IRIX 6.5.30 installation of the IP30 kernel, a linked image; addresses are its link addresses without the 0xa800000000000000 prefix"
+      image: payload
+      sha256: 607a432f441d15f747d34d593a115c691bf87bcd16275114be894db31fae125b
   ip30-scsi-driver-6.5.30:
     title: "IP30 QLogic SCSI driver object"
     publisher: Silicon Graphics

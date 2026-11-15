@@ -13,6 +13,7 @@ docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
 docs/sphinx/sgidiagram.py
 docs/sphinx/sgiref.py
+docs/system/mips/sgi/hardware/scsi-cdrom.rst
 docs/system/mips/sgi/hardware/scsi-hd-inquiry.rst
 docs/sphinx/sgirun.py
 docs/system/mips/sgi/index.rst
