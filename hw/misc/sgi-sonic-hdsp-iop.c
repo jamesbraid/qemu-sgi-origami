@@ -1808,7 +1808,7 @@ void sonic_hdsp_iop_reset(SonicHDSPState *h)
     memset(h->i2c, 0, sizeof(h->i2c));
     memset(h->core_mmr, 0, sizeof(h->core_mmr));
     memset(h->lmcon, 0, sizeof(h->lmcon));
-    h->glue_reset = 0xf;
+    h->glue_reset = 0;
     h->glue_cmd = h->glue_080000 = h->glue_038000 = 0;
     h->glue_intreq = 0;
     h->glue_enable[0] = h->glue_enable[1] = 0;
