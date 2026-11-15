@@ -1551,7 +1551,11 @@ own structure, not a measured fact.
        bounded count) would spend a whole slice with the DSPs frozen and
        time out. The DSPs are brought up to the i960's local time, the
        slice's start plus the cycles it has used, before every access to
-       their host ports, and each access costs the i960 300 ns, about ten
+       their host ports. When the DSPs are already ahead of that time (the
+       clock timer moves them in whole slices, and the i960 restarts each
+       slice at the clock) the i960 is charged the difference first, since
+       a word it writes can only be taken from there on. Each access also
+       costs the i960 300 ns, about ten
        clocks of the 33 MHz secondary bus, so the DSP's few instructions to
        answer a command have run by the next read of its status. The 300 ns
        is a round figure, not a measurement.
