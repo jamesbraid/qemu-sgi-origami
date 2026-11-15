@@ -778,8 +778,9 @@ IO9's Ethernet is the generic ``bcm570x`` model as a single-port BCM5701,
 Timekeeper
 ~~~~~~~~~~
 
-Every IP53 profile links a DS1744-compatible 32 KiB timekeeper
-(:src:`analog-ds1744-rev-6-13`) to IOC4, mapped whole at IOC4 BAR0
+Every IO9 profile (Origin 350, Onyx 350, Tezro and Onyx4) links a
+DS1744-compatible 32 KiB timekeeper (:src:`analog-ds1744-rev-6-13`) to
+IOC4, mapped whole at IOC4 BAR0
 offset ``0x80000`` with the clock in its last eight bytes, the span
 OpenBSD's driver uses. A fresh or blank clock starts from the 1968 year
 base. Its data and clock record are the ``nvram0`` and ``nvram0-clock``
@@ -787,7 +788,10 @@ stores. Fitting this part to IO9 is an *approximation*: the datasheet supports
 the part's behaviour, not its presence on the board. The fitted IO9 part
 and its address wiring are *unknown*. The model also has a DS1742
 selection exposing only the clock bytes of a 2 KiB part; no profile uses
-it. :doc:`hardware/timekeepers` describes both parts.
+it. :doc:`hardware/timekeepers` describes both parts. The Origin 3900 IP53
+and IP59 topologies (``origin3900-ip53``, ``origin3900-ip59`` and
+``origin3900-memory-node``) have no IOC4. Their I-brick IO7 carries an
+M48T35-compatible clock instead (:doc:`hardware/timekeepers`).
 
 .. _sgi-ip53-io-profile:
 
