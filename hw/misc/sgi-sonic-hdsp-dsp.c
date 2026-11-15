@@ -807,6 +807,12 @@ static uint32_t dsp_host_to_dsp_pop(SonicHDSPDSPState *s)
         v = s->tx_fifo[0];
         memmove(s->tx_fifo, s->tx_fifo + 1,
                 (--s->tx_count) * sizeof(uint32_t));
+        if (s->tx_hold_count) {
+            /* A held host write goes in as soon as the FIFO has room. */
+            s->tx_fifo[s->tx_count++] = s->tx_hold[0];
+            memmove(s->tx_hold, s->tx_hold + 1,
+                    (--s->tx_hold_count) * sizeof(uint32_t));
+        }
     } else if (s->boot == SONIC_DSP_BOOT_RUN) {
         /* The manual also sets SRRQ here; the model does not (the page). */
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-sonic-hdsp: DSP %u read DRXR "
@@ -1232,10 +1238,16 @@ static void dsp_bar_write(void *opaque, hwaddr off, uint64_t val,
         if (off >= 0x1c && s->tx_count < SONIC_DSP_FIFO_DEPTH) {
             s->tx_fifo[s->tx_count++] = val & 0xffffff;
             dsp_boot_step(s);
+        } else if (off >= 0x1c && s->tx_hold_count < SONIC_DSP_HOLD_DEPTH) {
+            /*
+             * FIFO full (UM pp. 6-62, 6-63): queue the write
+             * (approximation).
+             */
+            s->tx_hold[s->tx_hold_count++] = val & 0xffffff;
         } else if (off >= 0x1c) {
             qemu_log_mask(LOG_GUEST_ERROR, "sgi-sonic-hdsp: host write to "
-                          "DSP %u's data port dropped, %u words queued\n",
-                          s->index, SONIC_DSP_FIFO_DEPTH);
+                          "DSP %u's data port dropped, %u words held\n",
+                          s->index, SONIC_DSP_HOLD_DEPTH);
         }
         break;
     }
@@ -1292,6 +1304,7 @@ static void dsp_clear(SonicHDSPDSPState *s)
     s->hc_raised = 0;
     s->dctr = 0;
     s->tx_count = 0;
+    s->tx_hold_count = 0;
     s->rx_count = 0;
     s->boot = SONIC_DSP_BOOT_RUN;
     s->boot_count = s->boot_next = s->boot_start = 0;
@@ -1380,6 +1393,7 @@ static int dsp_post_load(void *opaque, int version_id)
     SonicHDSPDSPState *s = opaque;
 
     if (s->tx_count > SONIC_DSP_FIFO_DEPTH ||
+        s->tx_hold_count > SONIC_DSP_HOLD_DEPTH ||
         s->rx_count > SONIC_DSP_FIFO_DEPTH ||
         s->boot > SONIC_DSP_BOOT_DATA || s->hc_raised > 1 ||
         s->dma_busy > 1) {
@@ -1472,6 +1486,9 @@ static const VMStateDescription vmstate_sonic_hdsp_dsp = {
         VMSTATE_UINT32_ARRAY(tx_fifo, SonicHDSPDSPState,
                              SONIC_DSP_FIFO_DEPTH),
         VMSTATE_UINT32(tx_count, SonicHDSPDSPState),
+        VMSTATE_UINT32_ARRAY(tx_hold, SonicHDSPDSPState,
+                             SONIC_DSP_HOLD_DEPTH),
+        VMSTATE_UINT32(tx_hold_count, SonicHDSPDSPState),
         VMSTATE_UINT32_ARRAY(rx_fifo, SonicHDSPDSPState,
                              SONIC_DSP_FIFO_DEPTH),
         VMSTATE_UINT32(rx_count, SonicHDSPDSPState),

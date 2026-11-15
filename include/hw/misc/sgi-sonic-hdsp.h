@@ -42,6 +42,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SonicHDSPDSPState, SGI_SONIC_HDSP_DSP)
 #define SONIC_DSP_EXT_Y_WORDS   0x40000     /* X and Y share it */
 #define SONIC_DSP_IO_BASE       0xfff000
 #define SONIC_DSP_IO_WORDS      0x800
+#define SONIC_DSP_HOLD_DEPTH    256
 #define SONIC_DSP_FIFO_DEPTH    6
 #define SONIC_DSP_NDMA          6
 #define SONIC_DSP_NESSI         2
@@ -101,6 +102,9 @@ struct SonicHDSPDSPState {
     uint32_t hcvr;
     uint32_t tx_fifo[SONIC_DSP_FIFO_DEPTH];     /* host to DSP */
     uint32_t tx_count;
+    /* Writes the host made to the full FIFO, held as PCI wait states would. */
+    uint32_t tx_hold[SONIC_DSP_HOLD_DEPTH];
+    uint32_t tx_hold_count;
     uint32_t rx_fifo[SONIC_DSP_FIFO_DEPTH];     /* DSP to host */
     uint32_t rx_count;
     bool in_reset;
