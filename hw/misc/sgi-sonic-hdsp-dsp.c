@@ -1337,8 +1337,11 @@ static void dsp_reset(DeviceState *dev)
 
     dsp_clear(s);
     dsp56300_reset(&s->core, DSP_BOOT_ROM);
-    s->pci_mode = false;
-    s->in_reset = true;     /* held until the glue's reset byte releases it */
+    /* Out of reset in PCI target mode, as after the glue's reset byte. */
+    s->dctr = DCTR_HM_PCI << DCTR_HM_SHIFT;
+    s->pci_mode = true;
+    s->boot = SONIC_DSP_BOOT_COUNT;
+    s->in_reset = false;
 }
 
 static int dsp_post_load(void *opaque, int version_id)
@@ -1643,7 +1646,10 @@ void sonic_hdsp_dsp_board_reset(SonicHDSPState *h)
     h->frame_count = 0;
     h->dsp_ns_rem = 0;
     memset(h->sync, 0, sizeof(h->sync));
-    timer_del(h->dsp_timer);        /* every DSP is in reset */
+    timer_del(h->dsp_timer);
+    if (dsp_any_out_of_reset(h)) {
+        timer_mod(h->dsp_timer, now + DSP_SLICE_NS);
+    }
 }
 
 /* Virtual-time stamps travel as ages: the destination's clock may differ. */

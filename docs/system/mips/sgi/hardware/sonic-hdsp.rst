@@ -399,12 +399,15 @@ rules above):
    whatever SISR leaves exposed. With the default ``nv-word`` the DSPs are
    hidden, so a type 1 scan behind function 0 finds no device. With a blank
    word (SISR = 0) all four DSPs are exposed. If a DSP is held in reset it
-   does not answer a configuration cycle (the DSP reset lines' default
-   state is *unknown*; the model holds them in reset after a board
-   reset, an *approximation*). A DSP out of reset but not yet in PCI mode
-   (DCTR HM = 1) answers every memory and configuration cycle with Retry,
-   not as an empty slot (*established*, :src:`nxp-dsp56301um-4 pp. 6-13,
-   6-69`).
+   does not answer a configuration cycle. The reset lines' state at power-up
+   is *unknown*; the model leaves all four DSPs out of reset after a board
+   reset, in PCI target mode and waiting for a bootstrap, because the
+   downloaded DDM scans the secondary bus for them and finds all four before
+   any reset line is written (*software expectation*, a black-box run of the
+   DDM that logged no write to the reset byte before its scan). A DSP out
+   of reset but not yet in PCI mode (DCTR HM = 1) answers every memory and
+   configuration cycle with Retry, not as an empty slot (*established*,
+   :src:`nxp-dsp56301um-4 pp. 6-13, 6-69`).
 #. After the module attaches, the module has set each DSP's command
    register to ``0xf8000006`` (memory space and bus master) and its base
    address register. An exposed DSP answers with the DSP56301's hardwired
@@ -755,7 +758,8 @@ copy the library keeps (*software expectation*,
      - Source
    * - ``0x0a0000``
      - Reset lines, bits 0 to 3. "Enter reset *n*" sets bit *n* and "exit
-       reset *n*" clears it. Each bit holds DSP *n* in reset.
+       reset *n*" clears it. Each bit holds DSP *n* in reset. The byte reads
+       zero after a board reset (see :ref:`sgi-sonic-hdsp-hiding`).
      - *software expectation*
      - :src:`sonic-hdsp-library-5.0 0x5ec167c0`. The module drives the
        same byte from the i960 side (:src:`sonic-hdsp-module-1.0 0x9888`).
@@ -2563,7 +2567,9 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - function 0 reads header type ``0x81``; a host type 1 scan of devices 0
   to 31 behind function 0 after the operating system's PCI setup, with the
   default ``nv-word``, finds no devices, and with ``nv-word`` set to
-  ``0x98760000`` finds the DSPs the test image has released from reset;
+  ``0x98760000`` finds all four DSPs, which are out of reset from power-up
+  and answer halfword and byte reads of the secondary data port at the
+  access width, while one held in reset does not;
 - the messaging unit answers at BAR0 plus ``0`` to ``0xfff``; a read of
   the inbound queue port at BAR0 plus ``0x40`` returns the free frame
   address and a write at BAR0 plus that address reaches local memory; a
@@ -2581,7 +2587,8 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   and advance the pointers as the Rx manual describes;
 - the glue control bytes read back what is written at byte position 3
   of the word, the i960 sees the same byte at the bank 1 base plus
-  ``0xa0003``, and reset byte writes hold DSP *n* in reset;
+  ``0xa0003``, the reset byte reads zero after a board reset, and reset
+  byte writes hold DSP *n* in reset;
 - a byte or halfword read of the secondary data port returns a DSP's
   vendor and device IDs at the access width, an IDSEL with no device
   answers all ones at that width, and a byte write changes only the byte

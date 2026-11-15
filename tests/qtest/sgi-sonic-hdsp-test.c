@@ -229,8 +229,8 @@ static void test_translate_rule(void)
     wr(&c, 0x2001000, 0xcafe0002);          /* local 0xa2001000 */
     g_assert_cmphex(rd(&c, 0x1000), ==, 0xcafe0001);
     g_assert_cmphex(rd(&c, 0x2001000), ==, 0xcafe0002);
-    /* Reset byte after a board reset: all four DSPs held in reset. */
-    g_assert_cmphex(rdb(&c, 0x6000000 + GLUE_RESET_BYTE), ==, 0x0f);
+    /* Reset byte after a board reset: no DSP held in reset. */
+    g_assert_cmphex(rdb(&c, 0x6000000 + GLUE_RESET_BYTE), ==, 0x00);
     /* Past the end of a 64 MiB DRAM nothing answers; reads are all ones. */
     g_assert_cmphex(rd(&c, 0x4000000), ==, 0xffffffff);
     /* The image reports its own view of the glue base. */
@@ -245,7 +245,7 @@ static void test_translate_rule(void)
     g_assert_cmphex(message(&c, MSG_FLIP), ==, MSG_FLIP + 1);
     g_assert_cmphex(qpci_config_readl(c.fn1, PCI_CLASS_REVISION) >> 8, ==,
                     0x0e0001);
-    g_assert_cmphex(rdb(&c, 0x4000000 + GLUE_RESET_BYTE), ==, 0x0f);
+    g_assert_cmphex(rdb(&c, 0x4000000 + GLUE_RESET_BYTE), ==, 0x00);
     /* The second half of the DRAM aliases the first: bit 25 is set already. */
     wr(&c, 0x1000, 0xcafe0003);
     g_assert_cmphex(rd(&c, 0x2001000), ==, 0xcafe0003);
@@ -389,20 +389,27 @@ static void test_flash_program(void)
 }
 
 /*
- * "Secondary PCI bus and the host port": a DSP held in reset does not answer
- * a configuration cycle (the model holds all four after reset); released by
- * the glue's reset byte it answers with the DSP56301's hardwired identity.
- * An IDSEL line private to the chip never answers.
+ * "Secondary PCI bus and the host port": the DSPs are out of reset from
+ * power-up and answer a configuration cycle with the DSP56301's hardwired
+ * identity; one held in reset by the glue's reset byte does not.  An IDSEL
+ * line private to the chip never answers.
  */
 static void test_dsp_function_reset(void)
 {
     Card c = card_start(0, "");
 
     card_boot(&c);
+    /* From power-up the DSPs are out of reset and answer the i960. */
     g_assert_cmphex(message(&c, 1), ==, 2);
+    g_assert_cmphex(rd(&c, SCR(S_DSP0_ID)), ==, 0x18011057);
+    g_assert_cmphex(rd(&c, SCR(S_DSP3_ID)), ==, 0x18011057);
+    g_assert_cmphex(rd(&c, SCR(S_PRIVATE_ID)), ==, 0xffffffff);
+
+    /* Held in reset, none does. */
+    wrb(&c, 0x6000000 + GLUE_RESET_BYTE, 0x0f);
+    g_assert_cmphex(message(&c, 2), ==, 3);
     g_assert_cmphex(rd(&c, SCR(S_DSP0_ID)), ==, 0xffffffff);
     g_assert_cmphex(rd(&c, SCR(S_DSP3_ID)), ==, 0xffffffff);
-    g_assert_cmphex(rd(&c, SCR(S_PRIVATE_ID)), ==, 0xffffffff);
 
     wrb(&c, 0x6000000 + GLUE_RESET_BYTE, 0x08);     /* release DSPs 0 to 2 */
     g_assert_cmphex(message(&c, 3), ==, 4);
@@ -543,8 +550,8 @@ static uint32_t scan_with(unsigned flags, uint16_t sisr, const char *props)
 
 static void test_type1_scan(void)
 {
-    /* Held in reset after the board reset, the DSPs are never found. */
-    g_assert_cmphex(scan_with(0, SISR_BOOT_ROM, ""), ==, 0);
+    /* Out of reset from power-up, the DSPs answer without a release. */
+    g_assert_cmphex(scan_with(0, SISR_BOOT_ROM, ""), ==, 0x1e);
     /* The boot code's SISR leaves S_AD17 to S_AD20 reachable. */
     g_assert_cmphex(scan_with(FW_RELEASE_DSPS, SISR_BOOT_ROM, ""), ==, 0x1e);
     /* SISR with bits 1 to 4 added hides all four DSPs. */
@@ -1837,8 +1844,9 @@ static void test_dsp_boot_zero_count(void)
 }
 
 /*
- * A system reset puts every DSP back in reset, whatever it was running,
- * and the card comes back: the DSP can be released and loaded again.
+ * A system reset puts every DSP back to its power-up state, whatever it was
+ * running (out of reset, waiting for a bootstrap), and the card comes back:
+ * the DSP can be configured and loaded again.
  */
 static void test_system_reset_dsp(void)
 {
@@ -1862,12 +1870,13 @@ static void test_system_reset_dsp(void)
     g_free(c.fn0);
     g_free(c.fn1);
     card_boot(&c);
-    g_assert_cmphex(rdb(&c, 0x6000000 + GLUE_RESET_BYTE), ==, 0x0f);
+    g_assert_cmphex(rdb(&c, 0x6000000 + GLUE_RESET_BYTE), ==, 0x00);
     g_assert_cmphex(message(&c, 1), ==, 2);
-    g_assert_cmphex(rd(&c, SCR(S_DSP0_ID)), ==, 0xffffffff);
-    dsp_release(&c, 0);
-    g_assert_cmphex(message(&c, 3), ==, 4);
     g_assert_cmphex(rd(&c, SCR(S_DSP0_ID)), ==, 0x18011057);
+    dsp_release(&c, 0);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    /* The old program is gone. */
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 0);
     dsp_boot(&c, 0, 0x100, prog, ARRAY_SIZE(prog));
     qtest_clock_step(c.qts, 1000 * 1000);
     g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 1);
