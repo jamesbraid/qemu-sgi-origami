@@ -440,8 +440,8 @@ static void test_catalogue_records(void)
 
     /*
      * The rack's default is the real Onyx2 rack capture's pipe with a
-     * plain DG5-2 in place of its DG5-2 with GVO, whose video output is not
-     * modelled.
+     * plain DG5-2 in place of its DG5-2 with GVO, so the default has no GVO
+     * console.
      */
     slot = slot_record("onyx2-rack", "io3");
     g_assert_cmpstr(qdict_get_str(qdict_get_qdict(slot, "default"),
