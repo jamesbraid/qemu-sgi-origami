@@ -23,6 +23,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
+#include "hw/display/sgi/scanout.h"
+#include "hw/display/sgi/video-io.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/mips/sgi/xio-widget.h"
@@ -470,6 +472,12 @@ struct DM2State {
     /* The last frame the output pipe sent, held for a cabled input. */
     uint8_t *loop_frame;
     uint32_t loop_len;
+
+    /* The output pipe's picture: a console, and a sink the user may link. */
+    SGIScanout scanout;
+    Object *out_sink;
+    SGIVideoFrame *out_frame;
+    SGIVideoPacking packing;
 
     /* The one-wire record's barcode, built per slot. */
     char barcode[SGI_SYNTHETIC_BARCODE_SIZE];
@@ -1128,6 +1136,86 @@ static void dm2_loop_deliver(DM2State *s, unsigned slot)
     dm2_move(s, addr, s->loop_frame, len, true);
 }
 
+/* "Payload": the latest timing record's raster (bytes 6, 7, 10 to 15). */
+static bool dm2_out_format(DM2State *s, SGIVideoFormat *fmt)
+{
+    DM2Vbob *v = &s->vbob;
+    const uint8_t *m = v->record[v->active_side];
+    uint8_t code;
+    unsigned h2 = (m[14] << 8) | m[15];
+
+    if (!v->have_record[v->active_side]) {
+        return false;
+    }
+    code = v->output_override ? v->output_override : dm2_record_code(m);
+    fmt->width = (m[6] << 8) | m[7];
+    fmt->height = ((m[10] << 8) | m[11]) + h2;
+    fmt->fields = h2 ? SGI_VIDEO_TFF : SGI_VIDEO_PROGRESSIVE;
+    fmt->depth = sgi_video_packing_depth(s->packing);
+    if (code) {
+        Rate r = dm2_field_rate(code);
+
+        /* An interlaced frame is two fields (or PsF segments). */
+        fmt->rate_num = h2 && !(r.num & 1) ? r.num / 2 : r.num;
+        fmt->rate_den = h2 && (r.num & 1) ? r.den * 2 : r.den;
+    } else {
+        fmt->rate_num = NANOSECONDS_PER_SECOND;
+        fmt->rate_den = dm2_field_period_ns(s) * (h2 ? 2 : 1);
+    }
+    return sgi_video_format_valid(fmt);
+}
+
+/* A completed output slot: unpack its frame, show it, give it to the sink. */
+static void dm2_out_frame(DM2State *s, unsigned slot)
+{
+    uint32_t base = SLOT_WINDOW_OUT + slot * SLOT_WINDOW;
+    uint32_t addr = base + (s->gif[GIF_IDX(0x80001c)] & START_MASK);
+    SGIVideoFormat fmt;
+    SGIVideoFrame *f;
+    g_autofree uint8_t *buf = NULL;
+    size_t row;
+    unsigned rows;
+
+    if (!dm2_out_format(s, &fmt)) {
+        return;
+    }
+    row = sgi_video_packed_row_bytes(s->packing, fmt.width);
+    rows = MIN(fmt.height, dm2_mapped_run(s, addr, base + SLOT_WINDOW) / row);
+    buf = g_malloc(row * MAX(rows, 1));
+    f = sgi_video_frame_new(&fmt);
+    if (dm2_move(s, addr, buf, row * rows, false)) {
+        for (unsigned y = 0; y < rows; y++) {
+            sgi_video_unpack_row(s->packing, buf + y * row, f, y);
+        }
+    }
+    if (s->scanout.mode.width != fmt.width ||
+        s->scanout.mode.height != fmt.height) {
+        sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode){
+            .width = fmt.width, .height = fmt.height });
+    }
+    sgi_video_frame_free(s->out_frame);
+    s->out_frame = f;
+    sgi_scanout_invalidate_all(&s->scanout);
+    if (s->out_sink) {
+        sgi_video_sink_put_frame(s->out_sink, f);
+    }
+}
+
+static void dm2_scanout_row(void *opaque, unsigned y, uint32_t *dst)
+{
+    DM2State *s = opaque;
+
+    if (s->out_frame && y < s->out_frame->fmt.height) {
+        sgi_video_row_rgb(s->out_frame, y, dst);
+    } else {
+        memset(dst, 0, s->scanout.mode.width * sizeof(*dst));
+    }
+}
+
+static const SGIHeadOps dm2_scanout_ops = {
+    .resolve_row = dm2_scanout_row,
+};
+
 static void dm2_field_tick(DM2State *s, unsigned p)
 {
     DM2Pipe *pp = &s->pipe[p];
@@ -1152,6 +1240,7 @@ static void dm2_field_tick(DM2State *s, unsigned p)
             flags |= RING_FLAG_SLOT_DONE(slot);
             if (p == PIPE_OUT) {
                 dm2_loop_capture(s, slot);
+                dm2_out_frame(s, slot);
             } else {
                 dm2_loop_deliver(s, slot);
             }
@@ -2064,6 +2153,7 @@ static bool dm2_build_widget(SGIXioBoardState *board, Error **errp)
         s->pipe[p].poll_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, poll_cb[p],
                                              s);
     }
+    sgi_scanout_init(&s->scanout, DEVICE(s), &dm2_scanout_ops, s);
     board->cpu_face = &s->regs;
     board->packet_face = &s->regs;
     board->link_reset = qdev_get_gpio_in_named(DEVICE(s), "link-reset", 0);
@@ -2082,6 +2172,9 @@ static void dm2_unrealize(DeviceState *dev)
         s->pipe[p].field_timer = s->pipe[p].poll_timer = NULL;
     }
     address_space_destroy(&s->fabric_as);
+    sgi_scanout_cleanup(&s->scanout);
+    sgi_video_frame_free(s->out_frame);
+    s->out_frame = NULL;
     g_free(s->loop_frame);
     s->loop_frame = NULL;
 }
@@ -2132,6 +2225,12 @@ static void dm2_reset_hold(Object *obj, ResetType type)
     s->vbob.present = saved.present;
     memcpy(s->vbob.cable, saved.cable, sizeof(s->vbob.cable));
     s->loop_len = 0;
+    /* A reset blanks the console until the next frame. */
+    sgi_video_frame_free(s->out_frame);
+    s->out_frame = NULL;
+    if (s->scanout.con) {
+        sgi_scanout_set_mode(&s->scanout, &(SGIScanoutMode){ });
+    }
     dm2_vbob_sync_reported(s);
 }
 
@@ -2291,6 +2390,23 @@ static void dm2_set_loopback(Object *obj, const char *value, Error **errp)
     }
     memcpy(s->vbob.cable, cable, sizeof(cable));
     dm2_prop_apply(s);
+}
+
+static char *dm2_get_packing(Object *obj, Error **errp)
+{
+    return g_strdup(sgi_video_packing_name(SGI_XT_DIGVID(obj)->packing));
+}
+
+static void dm2_set_packing(Object *obj, const char *value, Error **errp)
+{
+    int p = sgi_video_packing_parse(value);
+
+    if (p < 0) {
+        error_setg(errp, "x-packing takes 8, 10, 10in16l or 10in16r; "
+                   "got '%s'", value);
+        return;
+    }
+    SGI_XT_DIGVID(obj)->packing = p;
 }
 
 /*
@@ -2462,6 +2578,8 @@ static const VMStateDescription vmstate_dm2 = {
 static const Property dm2_properties[] = {
     DEFINE_PROP_LINK("fabric", DM2State, fabric, TYPE_MEMORY_REGION,
                      MemoryRegion *),
+    DEFINE_PROP_LINK("out-sink", DM2State, out_sink, TYPE_SGI_VIDEO_SINK,
+                     Object *),
 };
 
 static void dm2_class_init(ObjectClass *oc, const void *data)
@@ -2506,6 +2624,12 @@ static void dm2_class_init(ObjectClass *oc, const void *data)
         "Coax cables fitted from an output jack to an input jack, as "
         "output:input pairs joined by +, such as sd-out1:sd-in1; the "
         "input then sees the output's timing and its frames");
+    object_class_property_add_str(oc, "x-packing", dm2_get_packing,
+                                  dm2_set_packing);
+    object_class_property_set_description(oc, "x-packing",
+        "How the output pipe's frames are packed in memory: 8 (Cb Y Cr Y "
+        "bytes), 10, 10in16l or 10in16r, 4:2:2 each; the image the driver "
+        "loads is not visible to the model");
     object_class_property_add(oc, "x-vbob-present", "uint8", dm2_get_present,
                               dm2_set_present, NULL, NULL);
     object_class_property_set_description(oc, "x-vbob-present",

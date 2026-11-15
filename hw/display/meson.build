@@ -33,7 +33,8 @@ system_ss.add(when: 'CONFIG_SGI_DISPLAY',
                              'sgi/pixel-dma.c',
                              'sgi/rasterizer.c', 'sgi/render-resource.c',
                              'sgi/renderer.c', 'sgi/render-shadow.c',
-                             'sgi/scanout.c', 'sgi/x-gc.c'))
+                             'sgi/scanout.c', 'sgi/video-file.c',
+                             'sgi/video-port.c', 'sgi/x-gc.c'))
 
 system_ss.add(when: 'CONFIG_EXYNOS4', if_true: files('exynos4210_fimd.c'))
 system_ss.add(when: 'CONFIG_FRAMEBUFFER', if_true: files('framebuffer.c'))
