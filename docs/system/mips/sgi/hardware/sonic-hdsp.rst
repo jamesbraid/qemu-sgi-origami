@@ -1856,7 +1856,14 @@ clock generator description,
 :src:`nxp-dsp56301um-4 section 7.3`, and the control words the library
 writes, which give a bit clock of the oscillator over 16). With SCKD clear
 the clock is the board's and the slots share the sample period equally,
-an *approximation* (no capture shows the board's bit clock rate). In each slot a transmitter takes
+an *approximation* (no capture shows the board's bit clock rate). A port in network
+mode with DC = 0 is in on-demand mode: it has no periodic frame, a frame
+starts when a word is written to the transmit register (or TSR), and in
+synchronous mode (SYN set) the receiver takes one word for each word sent
+and nothing otherwise (*established*, :src:`nxp-dsp56301um-4 section 7.4.1`).
+The monitors set ESSI0 this way on a first board (CRB ``0x033110``, *software expectation*), which
+is why their six-word DMA blocks end exactly and nothing overruns the
+receive buffers. In each slot a transmitter takes
 the word in TX0 (its top ``WL`` bits, 8, 12, 16 or 24 bits; 32-bit words
 log ``LOG_UNIMP``) if the DSP wrote it since the last slot, sets TDE, and
 otherwise sets TUE and sends the old word again; a receiver takes the

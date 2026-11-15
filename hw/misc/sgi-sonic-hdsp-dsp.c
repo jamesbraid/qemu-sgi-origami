@@ -62,6 +62,7 @@
 #define CRB_TE2             (1u << 14)
 #define CRB_MOD             (1u << 13)
 #define CRB_SCKD            (1u << 5)
+#define CRB_SYN             (1u << 12)
 #define SSISR_RDF           (1u << 7)
 #define SSISR_TDE           (1u << 6)
 #define SSISR_ROE           (1u << 5)
@@ -411,6 +412,18 @@ static bool essi_net(const SonicDspEssi *e)
     return (e->crb & CRB_MOD) && (essi_te(e) || (e->crb & CRB_RE));
 }
 
+/* On-demand mode (DC = 0): a frame starts on a transmit write (UM 7.4.1). */
+static bool essi_ondemand(const SonicDspEssi *e)
+{
+    return (e->crb & CRB_MOD) && !((e->cra >> CRA_DC_SHIFT) & 0x1f) &&
+           (e->crb & CRB_SYN) && essi_te(e);
+}
+
+static bool essi_od_pending(const SonicDspEssi *e)
+{
+    return (e->tx_written & essi_te(e)) || e->tsr_skip;
+}
+
 static int64_t essi_slot_ns(const SonicHDSPState *h, const SonicDspEssi *e)
 {
     unsigned slots = ((e->cra >> CRA_DC_SHIFT) & 0x1f) + 1;
@@ -445,6 +458,10 @@ static int64_t essi_next_slot(SonicHDSPState *h, int64_t t)
                 e->slot_armed = 0;
                 continue;
             }
+            if (essi_ondemand(e) && !essi_od_pending(e)) {
+                e->slot_armed = 0;          /* no data written, no frame */
+                continue;
+            }
             if (!e->slot_armed) {
                 e->slot_armed = 1;
                 e->slot_idx = 0;
@@ -473,6 +490,9 @@ static unsigned essi_slots_fire(SonicHDSPState *h, int64_t t)
 
                 e->slot_idx = (idx + 1) % slots;
                 e->slot_next += essi_slot_ns(h, e);
+                if (essi_ondemand(e)) {
+                    e->slot_armed = 0;      /* the next word starts a frame */
+                }
                 essi_slot(s, k, idx);
                 fired++;
             }
