@@ -185,25 +185,30 @@ static PCIDevice *secondary_device(SonicHDSPState *h, uint32_t addr)
     return sec->devices[devfn];
 }
 
-uint32_t sonic_hdsp_secondary_config_read(SonicHDSPState *h, uint32_t addr)
+/*
+ * A config cycle enables the access's own bytes (272736-002 p. 16-70).
+ */
+uint32_t sonic_hdsp_secondary_config_read(SonicHDSPState *h, uint32_t addr,
+                                          unsigned byte, unsigned len)
 {
     PCIDevice *d = secondary_device(h, addr);
 
     if (!d) {
-        return UINT32_MAX;
+        return UINT32_MAX >> (32 - 8 * len);
     }
-    return pci_host_config_read_common(d, addr & 0xfc,
-                                       PCI_CONFIG_SPACE_SIZE, 4);
+    return pci_host_config_read_common(d, (addr & 0xfc) + byte,
+                                       PCI_CONFIG_SPACE_SIZE, len);
 }
 
 void sonic_hdsp_secondary_config_write(SonicHDSPState *h, uint32_t addr,
+                                       unsigned byte, unsigned len,
                                        uint32_t val)
 {
     PCIDevice *d = secondary_device(h, addr);
 
     if (d) {
-        pci_host_config_write_common(d, addr & 0xfc, PCI_CONFIG_SPACE_SIZE,
-                                     val, 4);
+        pci_host_config_write_common(d, (addr & 0xfc) + byte,
+                                     PCI_CONFIG_SPACE_SIZE, val, len);
     }
 }
 

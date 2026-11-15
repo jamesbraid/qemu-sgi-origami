@@ -1315,10 +1315,10 @@ choice is an *approximation* with what would settle it.
      - *approximation*
      - The manual's per-register PCI access rows, which settle it register
        by register (:src:`intel-i960rx-272736-002 pp. 15-38 to 15-73`).
-   * - Registers that clear on write clear per written byte. Sub-word writes
-       to the two outbound configuration data ports (``0x12ac``, ``0x12b0``),
-       non-word writes to messaging unit offsets below ``0x50``, and non-word
-       reads of the two queue ports (``0x40``, ``0x44``) are ignored and
+   * - Registers that clear on write clear per written byte. Sub-word
+       accesses to the primary outbound configuration data port (``0x12ac``,
+       not modelled), non-word writes to messaging unit offsets below
+       ``0x50``, and non-word reads of the two queue ports (``0x40``, ``0x44``) are ignored and
        logged. Other sub-word reads of the messaging unit return the register
        shifted by the byte offset.
      - *approximation*
@@ -1327,6 +1327,15 @@ choice is an *approximation* with what would settle it.
        the ignored accesses are the model's choice. The manual
        (:src:`intel-i960rx-272736-002 pp. 17-5, 17-8`) only requires one word
        per queue access.
+   * - A byte or halfword access to the secondary outbound configuration
+       data port (``0x12b0``) runs a configuration cycle of that width on
+       the secondary bus: it enables the bytes the access names, so a
+       halfword read at ``0x12b0`` returns a device's vendor ID, one at
+       ``0x12b2`` its device ID, and a byte write changes only that byte of
+       the register SOCCAR names. An IDSEL with no device answers all ones
+       at the access width.
+     - *established*
+     - :src:`intel-i960rx-272736-002 p. 16-70`.
    * - The DSP host registers are 32-bit only. The data port at ``0x1c``
        and above aliases the host FIFO. HCVR bit 0 (HC) is cleared by the DSP
        core taking the command, so with no DSP core running the vector it
@@ -2573,6 +2582,10 @@ hand-assembled from the Family Manual's instruction formats. They check that:
 - the glue control bytes read back what is written at byte position 3
   of the word, the i960 sees the same byte at the bank 1 base plus
   ``0xa0003``, and reset byte writes hold DSP *n* in reset;
+- a byte or halfword read of the secondary data port returns a DSP's
+  vendor and device IDs at the access width, an IDSEL with no device
+  answers all ones at that width, and a byte write changes only the byte
+  it names;
 - a DSP's host port accepts a word count, a start address and program
   words and starts the program at that address, HF0 ends a load early, a
   downloaded program announces itself and echoes the words the host sends

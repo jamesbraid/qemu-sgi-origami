@@ -195,7 +195,10 @@ enum {
 #define PROXY_GO        0xa0002f00u
 #define PROXY_LIST      0xa0003000u
 #define PROXY_MAX       1024
-enum { PX_END = 0, PX_WRITE = 1, PX_READ = 2 };
+enum {
+    PX_END = 0, PX_WRITE = 1, PX_READ = 2,
+    PX_WRITE_B = 3, PX_WRITE_S = 4, PX_READ_B = 5, PX_READ_S = 6,
+};
 
 /* The boot code's SISR: S_AD16 and S_AD22 to S_AD25 hidden (0x03c1). */
 #define SISR_BOOT_ROM   0x03c1
@@ -506,6 +509,10 @@ static inline void build_image(uint8_t *flash, const Image *img)
 
     if (flags & FW_PROXY) {
         uint32_t skip_px, next, end_px, skip_w, skip_r;
+        static const struct { unsigned op, mop; bool store; } narrow[] = {
+            { PX_WRITE_B, M_STOB, true }, { PX_WRITE_S, M_STOS, true },
+            { PX_READ_B, M_LDOB, false }, { PX_READ_S, M_LDOS, false },
+        };
 
         ld_abs(&a, M_LD, G(1), PROXY_GO);
         skip_px = cobr_here(&a, C_CMPOBE, 0, true, G(1));
@@ -522,6 +529,18 @@ static inline void build_image(uint8_t *flash, const Image *img)
         emit(&a, mema(M_LD, G(6), G(4), 0));
         emit(&a, mema(M_ST, G(6), G(2), 8));
         patch_cobr(&a, skip_r, a.pc);
+        for (unsigned i = 0; i < G_N_ELEMENTS(narrow); i++) {
+            uint32_t skip_n = cobr_here(&a, C_CMPOBNE, narrow[i].op, true,
+                                        G(3));
+
+            if (narrow[i].store) {
+                emit(&a, mema(narrow[i].mop, G(5), G(4), 0));
+            } else {
+                emit(&a, mema(narrow[i].mop, G(6), G(4), 0));
+                emit(&a, mema(M_ST, G(6), G(2), 8));
+            }
+            patch_cobr(&a, skip_n, a.pc);
+        }
         emit(&a, reg3(OP_ADDO, 12, true, G(2), G(2)));
         branch_to(&a, next);
         patch_cobr(&a, end_px, a.pc);
