@@ -1983,6 +1983,19 @@ not wired to the i960's external interrupt input: how the board wires it
 is *unknown*. A DSP-side trace of the two against the i960's interrupt
 controller would settle it.
 
+The HI32's own interrupt output, HINTA (DCTR bit 6, HINT), is wired to the
+i960: the four DSPs' outputs are ORed into XINT4, so IPND and IMSK bit 4
+(*inferred*; the module's handler for it, which the module's own set-up
+unmasks, is a *software expectation*, :src:`sonic-hdsp-driver-9.2.5 the
+XINT4 handler`). That handler masks XINT4, posts an event that clears the
+DSP with host command ``0x80FD`` and mirrors the click count into the
+control block, then unmasks it again; with the line unrouted the click
+mirror never moves. The vector and priority come from IMAP1's XINT4 field,
+which the module programs; the i960 core model takes them as the Rx manual
+describes. The OR is level-sensitive: the line stays up until the DSP
+clears the bit. The messaging unit's outbound doorbell and queue sources
+reach the card's PCI interrupt pin as the *Interrupts* section says.
+
 .. _sgi-sonic-hdsp-dsp-limits:
 
 What the DSP model lacks
@@ -2640,7 +2653,8 @@ with what would settle it:
      - A board photograph, and a cross-DSP trace
    * - Interrupt-out line
      - Timer 0's data output drives the DSP's bit of the interrupt-request
-       byte; not wired to the i960's external input
+       byte, which the host polls; that line does not reach the i960 (the
+       HINTA outputs do, as XINT4)
      - A DSP-line trace against the i960's interrupt controller
    * - ESSI timing and pins
      - One word at the start of each slot, a slot being a share of the
@@ -2744,6 +2758,8 @@ hand-assembled from the Family Manual's instruction formats. They check that:
   reads back from what DSP 0 wrote;
 - twenty words written to a full host-to-DSP FIFO arrive in order with HTRQ
   low until they drain, and HTRQ reads 1 once a fast DSP has taken a word;
+- DCTR bit 6 on any DSP sets IPND bit 4 on the i960 and clears when the last
+  DSP clears it;
 - timer 1's data bit rising on DSP 0 wakes DSP 3 through IRQC and not
   before; ESSI0's PC1 reads high as an input and as written as an output;
   ESSI0 in the first-board mode feeds a six-word DMA block that completes;

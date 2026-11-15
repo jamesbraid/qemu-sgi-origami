@@ -1224,6 +1224,7 @@ static void periph_write(SonicHDSPDSPState *s, uint32_t a, uint32_t val)
         dsp_hc_raise(s);
         dsp_update_irqs(s);
         dma_service(s);
+        sonic_hdsp_update_irq(s->hub);      /* HINTA goes to the i960 */
         return;
     case 0xffffcd:
         dsp_dsp_to_host_push(s, val);

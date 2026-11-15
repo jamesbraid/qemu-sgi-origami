@@ -2101,6 +2101,60 @@ static void test_dsp_dma_mode101_interrupt(void)
 }
 
 /*
+ * The DSPs' HINTA outputs (DCTR bit 6) are ORed into XINT4 (inferred):
+ * IPND bit 4 follows the last DSP to clear it.
+ */
+#define MMR_IPND    0xff008500u
+
+static void test_dsp_hinta_to_xint4(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x20] = { 0 };
+    unsigned i = 0, at;
+    const uint32_t hm_pci = 0x100000;
+    Proxy *p;
+    unsigned r0;
+
+    PUT_PP(prog, i, X_DCTR, hm_pci | 0x40);         /* HINT: assert HINTA */
+    at = i;
+    prog[i++] = JCLR_PP(2, X_DSR);                  /* the host's go */
+    prog[i++] = 0x100 + at;
+    prog[i++] = MOVEP_RD(REG_A1, X_DRXR);
+    PUT_PP(prog, i, X_DCTR, hm_pci);                /* clear it */
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_release(&c, 1);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 500 * 1000);
+    p = g_new0(Proxy, 1);
+    r0 = px_read(p, MMR_IPND);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[r0] & 0x10, ==, 0x10);   /* DSP 0 alone */
+    g_free(p);
+
+    dsp_boot(&c, 1, 0x100, prog, i);                /* and DSP 1 as well */
+    qtest_clock_step(c.qts, 500 * 1000);
+    hp_write(&c, 0, HP_DATA, 0);                    /* DSP 0 clears its bit */
+    qtest_clock_step(c.qts, 500 * 1000);
+    p = g_new0(Proxy, 1);
+    r0 = px_read(p, MMR_IPND);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[r0] & 0x10, ==, 0x10);   /* DSP 1 still has it */
+    g_free(p);
+
+    hp_write(&c, 1, HP_DATA, 0);
+    qtest_clock_step(c.qts, 500 * 1000);
+    p = g_new0(Proxy, 1);
+    r0 = px_read(p, MMR_IPND);
+    px_run(&c, p);
+    g_assert_cmphex(p->val[r0] & 0x10, ==, 0);      /* all clear */
+    g_free(p);
+    card_quit(&c);
+}
+
+/*
  * SSISR: an enabled transmitter with nothing written sets TUE and TDE; a
  * write to the data register, or to TSR, after reading SSISR clears TUE.
  */
@@ -2590,6 +2644,8 @@ int main(int argc, char **argv)
                    test_dsp_dma_counter_mode_b);
     qtest_add_func("/sgi-sonic-hdsp/dsp/dma-mode101-interrupt",
                    test_dsp_dma_mode101_interrupt);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/hinta-to-xint4",
+                   test_dsp_hinta_to_xint4);
     qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-tfs-slot0",
                    test_dsp_essi0_tfs_slot0);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ssisr-tue", test_ssisr_tue);

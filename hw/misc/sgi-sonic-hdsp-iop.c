@@ -493,6 +493,12 @@ void sonic_hdsp_update_irq(SonicHDSPState *h)
     if (x6) {
         xint |= 1u << 6;
     }
+    /* The DSPs' HINTA outputs are ORed into XINT4 (inferred). */
+    for (unsigned n = 0; n < SONIC_HDSP_NUM_DSP; n++) {
+        if (h->dsp[n] && !h->dsp[n]->in_reset && (h->dsp[n]->dctr & 0x40)) {
+            xint |= 1u << 4;
+        }
+    }
     i960_set_xint(&h->cpu, xint);
 
     nmi = ii & IISR_NMI_MASK;
