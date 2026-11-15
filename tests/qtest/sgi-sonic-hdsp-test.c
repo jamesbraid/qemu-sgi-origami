@@ -980,6 +980,8 @@ static unsigned dsp_words(Card *c, unsigned n, uint32_t *out, unsigned max)
 #define X_SSISR1        0xffffa7u
 #define X_TSR1          0xffffa9u
 #define X_TCSR0         0xffff8fu
+#define X_TCSR1         0xffff8bu
+#define X_IPRC          0xffffffu
 #define X_TLR0          0xffff8eu
 #define X_TCPR0         0xffff8du
 #define X_DSR_CH(ch)    (0xffffefu - 4 * (ch))
@@ -1266,6 +1268,39 @@ static void test_dsp_essi_unlinked(void)
     dsp_boot(&c, 1, 0x100, rx, i);
     qtest_clock_step(c.qts, 1000 * 1000);
     g_assert_cmpuint(dsp_words(&c, 1, out, 4), ==, 0);
+    card_quit(&c);
+}
+
+/*
+ * DSP 0's timer 1 pin (TIO1) goes to DSP 3's IRQC: a rising edge of the
+ * data bit wakes DSP 3, which has enabled IRQC (negative edge, level 1) and
+ * is waiting.  Nothing wakes it before.
+ */
+static void test_dsp_tio1_irqc(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t d3[0x20] = { 0 }, d0[0x10] = { 0 }, out[4];
+    unsigned i = 0, j = 0;
+
+    PUT_PP(d3, i, X_IPRC, 0x17f);
+    d3[i++] = ANDI_MR(0xfc);
+    d3[i++] = DSP_WAIT;
+    PUT_PP(d3, i, X_DTXS, 0xc0ffee);
+    d3[i++] = DSP_WAIT;
+    PUT_QQ(d0, j, X_TCSR1, 0x000800);               /* output, data low */
+    PUT_QQ(d0, j, X_TCSR1, 0x002800);               /* data high */
+    d0[j++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 3);
+    dsp_boot(&c, 3, 0x100, d3, i);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 3, out, 4), ==, 0);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, d0, j);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 3, out, 4), ==, 1);
+    g_assert_cmphex(out[0], ==, 0xc0ffee);
     card_quit(&c);
 }
 
@@ -2143,6 +2178,7 @@ int main(int argc, char **argv)
                    test_dsp_boot_zero_count);
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/tio1-irqc", test_dsp_tio1_irqc);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-p-shares-xy",
                    test_dsp_ext_p_shares_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-fifo-holds",
