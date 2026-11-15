@@ -5446,6 +5446,8 @@ static void test_receive_queue_reset(const void *data)
     sgi_wait_socket_read(sv[0]);
 
     if (system_reset) {
+        /* The reset clears the BAR; libqos wants each mapping released. */
+        qpci_iounmap(b.dev, b.bar);
         qtest_qmp_assert_success(b.qts, "{ 'execute': 'system_reset' }");
         qtest_qmp_eventwait(b.qts, "RESET");
         qpci_device_enable(b.dev);
