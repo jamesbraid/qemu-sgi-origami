@@ -392,6 +392,17 @@ static void essi_frame(SonicHDSPDSPState *s)
     }
 }
 
+/* Port C data (UM p. 7-33); ESSI0's PC1 reads high, its driver is unknown. */
+#define ESSI_PC1_PIN    0x02
+
+static uint32_t essi_pdr_read(SonicHDSPDSPState *s, unsigned n,
+                              const SonicDspEssi *e)
+{
+    uint32_t gpio = ~e->pcr & 0x3f, in = gpio & ~e->prr;
+
+    return (e->pdr & ~in) | (n == 0 ? (ESSI_PC1_PIN & in) : 0);
+}
+
 static uint32_t essi_read(SonicHDSPDSPState *s, unsigned n, unsigned off)
 {
     SonicDspEssi *e = &s->essi[n];
@@ -432,7 +443,7 @@ static uint32_t essi_read(SonicHDSPDSPState *s, unsigned n, unsigned off)
     case 0xe:
         return e->prr;
     case 0xd:
-        return e->pdr;
+        return essi_pdr_read(s, n, e);
     default:
         qemu_log_mask(LOG_UNIMP, "sgi-sonic-hdsp: DSP %u ESSI%u read of "
                       "offset 0x%x\n", s->index, n, off);

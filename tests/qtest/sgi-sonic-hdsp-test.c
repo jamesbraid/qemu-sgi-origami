@@ -981,6 +981,9 @@ static unsigned dsp_words(Card *c, unsigned n, uint32_t *out, unsigned max)
 #define X_TSR1          0xffffa9u
 #define X_TCSR0         0xffff8fu
 #define X_TCSR1         0xffff8bu
+#define X_PDRC          0xffffbdu
+#define X_PRRC          0xffffbeu
+#define X_PCRC          0xffffbfu
 #define X_IPRC          0xffffffu
 #define X_TLR0          0xffff8eu
 #define X_TCPR0         0xffff8du
@@ -1301,6 +1304,36 @@ static void test_dsp_tio1_irqc(void)
     qtest_clock_step(c.qts, 1000 * 1000);
     g_assert_cmpuint(dsp_words(&c, 3, out, 4), ==, 1);
     g_assert_cmphex(out[0], ==, 0xc0ffee);
+    card_quit(&c);
+}
+
+/*
+ * ESSI0's port C pin PC1 as a GPIO input reads high (the monitor's frame
+ * loop waits for it); made an output it reads what was written.
+ */
+static void test_dsp_essi0_pc1(void)
+{
+    Card c = card_start(FW_PROXY, "");
+    uint32_t prog[0x20] = { 0 }, out[4];
+    unsigned i = 0;
+
+    PUT_QQ(prog, i, X_PCRC, 0);
+    PUT_QQ(prog, i, X_PRRC, 0);
+    prog[i++] = MOVEQQ_RD(REG_A1, X_PDRC);
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    PUT_QQ(prog, i, X_PRRC, 2);
+    PUT_QQ(prog, i, X_PDRC, 0);
+    prog[i++] = MOVEQQ_RD(REG_A1, X_PDRC);
+    prog[i++] = MOVEP_WR(REG_A1, X_DTXS);
+    prog[i++] = DSP_WAIT;
+
+    card_boot(&c);
+    dsp_release(&c, 0);
+    dsp_boot(&c, 0, 0x100, prog, i);
+    qtest_clock_step(c.qts, 1000 * 1000);
+    g_assert_cmpuint(dsp_words(&c, 0, out, 4), ==, 2);
+    g_assert_cmphex(out[0], ==, 0x02);
+    g_assert_cmphex(out[1], ==, 0x00);
     card_quit(&c);
 }
 
@@ -2179,6 +2212,7 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-sonic-hdsp/dsp/io-ram", test_dsp_io_ram);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-sram-xy", test_dsp_ext_sram_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/tio1-irqc", test_dsp_tio1_irqc);
+    qtest_add_func("/sgi-sonic-hdsp/dsp/essi0-pc1", test_dsp_essi0_pc1);
     qtest_add_func("/sgi-sonic-hdsp/dsp/ext-p-shares-xy",
                    test_dsp_ext_p_shares_xy);
     qtest_add_func("/sgi-sonic-hdsp/dsp/host-fifo-holds",
