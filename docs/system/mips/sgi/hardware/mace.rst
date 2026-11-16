@@ -957,6 +957,23 @@ rules are checked by ``accesses`` (the read clears the full state),
 ``pending-transmit`` and ``inhibit-queue-priority`` (inhibit and status bits),
 which also read the status alias with its error bits 0.
 
+A command written to the mouse port is answered before anything the mouse
+streamed and the controller has not yet taken: those bytes are dropped when
+the command goes out. A mouse keeps only its latest movement packet for the
+wire and resets its movement counters on every command but resend (Adam
+Chapweske, *The PS/2 Mouse Interface* and *The PS/2 Mouse/Keyboard
+Protocol*), so its answer is the next thing it says, *inferred*. QEMU's
+generic mouse would instead queue every packet and put its answer behind
+them. IRIX 6.5.30's kernel probes the mouse with Get Device ID after the
+:term:`PROM` has left reporting enabled, without disabling reporting first,
+*software expectation*, seen on an Octane2 boot; no O2 boot has shown it, so
+the same probe on this board is *inferred*. Replies to earlier commands still waiting in the
+device are kept, and so are streamed bytes caught behind them. That the stored
+packet is dropped rather than sent after the answer is an *approximation*; a
+capture of a mouse's line across a command sent while it has a packet pending
+would settle it. The keyboard port is unchanged. In ``sgi-mace-ps2-test`` the
+two ``mouse-command`` cases check the order.
+
 The model accepts 64-bit aligned accesses only and logs
 ``LOG_GUEST_ERROR`` for others and for writes to read-only registers. A
 transmit write while a byte is pending, or while reset is set, is
@@ -1283,7 +1300,7 @@ Tests
   master abort, interrupt inputs, expansion pins and migration.
 - ``tests/qtest/sgi-mace-ps2-test.c`` covers reset aliases, pending
   transmit, access widths, keyboard and mouse input, clock inhibit,
-  interrupt and poll outputs, migration and the board route.
+  mouse command order, interrupt and poll outputs, migration and the board route.
 - ``tests/qtest/sgi-mace-serial-dma-test.c`` covers the ring address
   classes and faults, registers, base validation, transmit and receive
   thresholds, packet counts, delay, modem pause, errors, backpressure,

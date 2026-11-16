@@ -30,6 +30,12 @@ typedef struct MACEPS2Port {
     bool tx_pending;
     bool rx_full;
     bool inhibited;
+    /*
+     * Of the bytes still in the mouse, how many at the front answer a command
+     * the guest sent; the rest are what it streamed on its own. Mouse port
+     * only. A control-register reset leaves it, as the mouse keeps its queue.
+     */
+    uint16_t reply;
 } MACEPS2Port;
 
 static inline bool mace_ps2_clock_permitted(const MACEPS2Port *p)

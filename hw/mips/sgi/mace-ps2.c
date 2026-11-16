@@ -34,6 +34,29 @@ static PS2State *mace_ps2_child(MACEPS2State *s, unsigned n)
     return n ? PS2_DEVICE(&s->mouse) : PS2_DEVICE(&s->keyboard);
 }
 
+/*
+ * A mouse answers a command with its next byte, not behind stale motion; keep
+ * replies to earlier commands. Dropping the stored packet is inferred.
+ */
+static void mace_ps2_mouse_command(MACEPS2State *s, MACEPS2Port *p)
+{
+    PS2State *child = PS2_DEVICE(&s->mouse);
+
+    if (!p->reply && !ps2_queue_empty(child)) {
+        unsigned dropped = 0;
+
+        /* Each pop re-raises the child's line; progress is already held off. */
+        while (!ps2_queue_empty(child)) {
+            ps2_read_data(child);
+            dropped++;
+        }
+        trace_mace_ps2_stream_dropped(dropped);
+    }
+    ps2_write_mouse(&s->mouse, p->tx);
+    /* Everything the mouse now holds counts as an answer. */
+    p->reply = child->queue.count;
+}
+
 static void mace_ps2_update(MACEPS2State *s)
 {
     for (unsigned n = 0; n < 2; n++) {
@@ -72,7 +95,7 @@ static void mace_ps2_progress(MACEPS2State *s)
                 continue;
             }
             if (n) {
-                ps2_write_mouse(&s->mouse, p->tx);
+                mace_ps2_mouse_command(s, p);
             } else {
                 ps2_write_keyboard(&s->keyboard, p->tx);
             }
@@ -83,6 +106,10 @@ static void mace_ps2_progress(MACEPS2State *s)
         }
         if (mace_ps2_clock_permitted(p) && !ps2_queue_empty(child)) {
             uint8_t data = ps2_read_data(child);
+
+            if (n && p->reply) {
+                p->reply--;
+            }
             bool accepted = mace_ps2_receive_frame(p, data, false,
                                                     !(ctpop8(data) & 1), true);
 
@@ -193,6 +220,7 @@ static void mace_ps2_reset_enter(Object *obj, ResetType type)
     s->resetting = true;
     for (unsigned n = 0; n < 2; n++) {
         mace_ps2_clear(&s->port[n]);
+        s->port[n].reply = 0;
         s->port[n].control = MACE_PS2_CLOCK;
     }
 }
@@ -233,6 +261,25 @@ void sgi_mace_ps2_restore_post_load(DeviceState *dev)
     mace_ps2_progress(SGI_MACE_PS2(dev));
 }
 
+static bool mace_ps2_reply_needed(void *opaque)
+{
+    MACEPS2Port *p = opaque;
+
+    return p->reply != 0;
+}
+
+/* Which of the mouse's queued bytes answer a command decides what it drops. */
+static const VMStateDescription vmstate_mace_ps2_port_reply = {
+    .name = "sgi-mace-ps2/port/reply",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = mace_ps2_reply_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(reply, MACEPS2Port),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
 static const VMStateDescription vmstate_mace_ps2_port = {
     .name = "sgi-mace-ps2/port",
     .version_id = 1,
@@ -246,6 +293,10 @@ static const VMStateDescription vmstate_mace_ps2_port = {
         VMSTATE_BOOL(rx_full, MACEPS2Port),
         VMSTATE_BOOL(inhibited, MACEPS2Port),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_mace_ps2_port_reply,
+        NULL
     },
 };
 

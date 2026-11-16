@@ -333,6 +333,51 @@ static void check_button_trace(const char *path)
     g_assert_false(last_irq);
 }
 
+/*
+ * A command to a mouse that streamed while the guest was not reading is
+ * answered first. The first byte of two packets is taken and the other five
+ * wait in the mouse; the command sent behind it must not be answered with
+ * them. IRIX probes the mouse this way when its kernel takes over from the
+ * PROM, and a stale answer leaves its pointer dead.
+ */
+static void test_mouse_command_drops_its_stream(void)
+{
+    QTestState *s = start_extra("");
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    control(s, 1, ENABLE);
+    command(s, 1, 0xf4);
+    motion(s, 10, 0, false);
+    motion(s, 20, 0, false);
+    send_byte(s, 1, 0xf2);
+    g_assert_cmphex(receive(s, 1), ==, 0x08);
+    g_assert_cmphex(receive(s, 1), ==, 0xfa);
+    g_assert_cmphex(receive(s, 1), ==, 0);
+    expect_empty(s, 1);
+    qtest_quit(s);
+}
+
+/*
+ * A command sent before the answer to the last one has been read keeps that
+ * answer: IRIX sets the sample rate while the reset's self-test bytes are
+ * still on their way, and expects them before the new ACK.
+ */
+static void test_mouse_command_keeps_earlier_replies(void)
+{
+    const uint8_t expected[] = { 0xfa, 0xaa, 0x00, 0xfa };
+    QTestState *s = start_extra("");
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    control(s, 1, ENABLE);
+    send_byte(s, 1, 0xff);
+    send_byte(s, 1, 0xf3);
+    for (unsigned i = 0; i < ARRAY_SIZE(expected); i++) {
+        g_assert_cmphex(receive(s, 1), ==, expected[i]);
+    }
+    expect_empty(s, 1);
+    qtest_quit(s);
+}
+
 static void test_mouse_button_only(void)
 {
     g_autofree char *dir = g_dir_make_tmp("mace-ps2-buttons-XXXXXX", NULL);
@@ -707,6 +752,10 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/mace-ps2/keyboard-input", test_keyboard_input);
     qtest_add_func("/sgi/mace-ps2/mouse-input", test_mouse_input);
     qtest_add_func("/sgi/mace-ps2/mouse-button-only", test_mouse_button_only);
+    qtest_add_func("/sgi/mace-ps2/mouse-command-drops-its-stream",
+                   test_mouse_command_drops_its_stream);
+    qtest_add_func("/sgi/mace-ps2/mouse-command-keeps-earlier-replies",
+                   test_mouse_command_keeps_earlier_replies);
     qtest_add_func("/sgi/mace-ps2/inhibit-queue-priority",
                    test_inhibit_queue_priority);
     qtest_add_func("/sgi/mace-ps2/local-reset", test_local_reset);
