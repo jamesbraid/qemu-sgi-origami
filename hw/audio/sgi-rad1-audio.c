@@ -945,6 +945,13 @@ static bool sgi_rad1_audio_out_chunk(SGIRad1AudioChannel *c, uint8_t *ring,
         }
         audio_be_write(be, c->out_voice, pcm,
                        frames * SGI_RAD1_AUDIO_HOST_CHANNELS * 2);
+        c->pushed += frames;
+        if (trace_event_get_state_backends(TRACE_SGI_RAD1_AUDIO_OUT)) {
+            trace_sgi_rad1_audio_out(sgi_rad1_audio_chan_index(c), c->pushed,
+                                     frames,
+                                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+                                     get_clock());
+        }
     }
     return true;
 }

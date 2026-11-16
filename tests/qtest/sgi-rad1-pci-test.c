@@ -895,6 +895,57 @@ static void test_migration(void)
     g_rmdir(dir);
 }
 
+/* sgi_rad1_audio_out: one line a chunk, counts and clocks never going back. */
+static void test_audio_out_trace(void)
+{
+    g_autofree char *log = NULL, *text = NULL, *extra = NULL;
+    g_auto(GStrv) lines = NULL;
+    uint64_t pushed = 0, last_ns = 0, last_host = 0, ring, sum = 0;
+    unsigned events = 0;
+    int fd = g_file_open_tmp("sgi-rad1-trace-XXXXXX", &log, NULL);
+    Rad r;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    extra = g_strdup_printf("-audiodev none,id=a -D %s "
+                            "-trace sgi_rad1_audio_out", log);
+    r = rad_boot_with("sgi-rad1-audio,audiodev=a", extra);
+    ring = guest_alloc(&alloc, 4096);
+    chan_start(&r, &ANALOG_OUT, ring, 4096);
+    qtest_clock_step(r.qts, MS(100));
+    rad_quit(&r);
+
+    g_assert(g_file_get_contents(log, &text, NULL, NULL));
+    lines = g_strsplit(text, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        unsigned ch;
+        unsigned long long total, n, ns, host;
+        const char *at = strstr(lines[i], "sgi_rad1_audio_out ");
+
+        if (!at) {
+            continue;
+        }
+        g_assert_cmpint(sscanf(at, "sgi_rad1_audio_out ch %u pushed %llu "
+                               "frames (+%llu) at virtual %llu ns, host "
+                               "%llu ns", &ch, &total, &n, &ns, &host),
+                        ==, 5);
+        sum += n;
+        g_assert_cmpuint(total, ==, sum);
+        g_assert_cmpuint(total, >, pushed);
+        g_assert_cmpuint(ns, >=, last_ns);
+        g_assert_cmpuint(host, >=, last_host);
+        pushed = total;
+        last_ns = ns;
+        last_host = host;
+        events++;
+    }
+    g_assert_cmpuint(events, >, 10);
+    /* 100 ms at 48 kHz, to within the chunk in flight. */
+    g_assert_cmpuint(pushed, >=, 4800 - 480);
+    g_assert_cmpuint(pushed, <=, 4800 + 480);
+    g_unlink(log);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -920,6 +971,7 @@ int main(int argc, char **argv)
                    test_status_batched_catch_up);
     qtest_add_func("/sgi-rad1-pci/positions", test_positions);
     qtest_add_func("/sgi-rad1-pci/subcode-positions", test_subcode_positions);
+    qtest_add_func("/sgi-rad1-pci/audio-out-trace", test_audio_out_trace);
     qtest_add_func("/sgi-rad1-pci/reset", test_reset);
     qtest_add_func("/sgi-rad1-pci/migration", test_migration);
 

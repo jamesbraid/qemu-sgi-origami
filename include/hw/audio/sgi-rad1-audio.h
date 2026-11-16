@@ -707,6 +707,7 @@ typedef struct SGIRad1AudioChannel {
     uint32_t offset;
     int64_t start_ns;
     uint64_t frames;
+    uint64_t pushed;            /* frames handed to the voice, ever */
     /* Octane analog channels: the rate their clock generator sets. */
     uint32_t freq;
 } SGIRad1AudioChannel;
