@@ -78,6 +78,8 @@ typedef struct SGIScanout {
     /* The frame's storage, and the head that publishes it (display-shm). */
     struct SGIDisplayRegion *frame_region;
     struct SGIDisplayHead *dhead;
+    /* The display-shm (protocol version 4) head, or NULL without the device. */
+    struct DShmHead *dshm;
     unsigned long *dirty;       /* one bit per display line */
     uint32_t *row;              /* a spare line for a published frame */
     uint32_t frame_width, frame_height; /* what frame was allocated for */

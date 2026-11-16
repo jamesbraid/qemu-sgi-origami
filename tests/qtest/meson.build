@@ -670,6 +670,10 @@ sgi_qtests = \
     ['sgi-display-shm-test'] : []) + \
   (host_os != 'windows' ? ['display-shm-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
+   config_all_devices.has_key('CONFIG_MALTA') and
+   config_all_devices.has_key('CONFIG_VGA') and host_os != 'windows' ?
+    ['display-shm-machine-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_SGI_SN0') and
    config_all_devices.has_key('CONFIG_AIC1160_PCI') ?
     ['sgi-fc-board-test'] : []) + \

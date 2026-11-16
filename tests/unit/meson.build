@@ -308,6 +308,7 @@ if have_system
     'test-sgi-video-port': ['../../hw/display/sgi/video-port.c'],
     'test-sgi-scanout': ['../../hw/display/sgi/scanout.c',
                          'test-sgi-scanout-stubs.c',
+                         '../../ui/display-shm-stub.c',
                          migration, io, pixman, opengl],
     'test-iov': [],
     'test-opts-visitor': [testqapi],

@@ -8,6 +8,7 @@
 #include "qemu/log.h"
 #include "ui/surface.h"
 #include "ui/sgi-display-shm.h"
+#include "ui/display-shm.h"
 #include "hw/display/sgi/scanout.h"
 #include "trace.h"
 
@@ -66,6 +67,7 @@ static void sgi_scanout_arm(SGIScanout *s)
 
     if (when < 0) {
         timer_del(s->retrace_timer);
+        dshm_head_retrace_stopped(s->dshm);
     } else {
         timer_mod(s->retrace_timer, when);
     }
@@ -124,6 +126,8 @@ static void sgi_scanout_retrace(void *opaque)
     if (swapped) {
         sgi_scanout_invalidate_all(s);
     }
+    /* A sample that waited for a retrace takes this one, swap included. */
+    dshm_head_retrace(s->dshm);
     sgi_scanout_arm(s);
 }
 
@@ -152,6 +156,9 @@ void sgi_scanout_invalidate(SGIScanout *s, int first, int count)
         return;
     }
     bitmap_set_atomic(s->dirty, first, last - first + 1);
+    if (dshm_head_active(s->dshm)) {
+        dshm_head_marked(s->dshm);
+    }
 }
 
 void sgi_scanout_invalidate_all(SGIScanout *s)
@@ -253,6 +260,7 @@ static bool sgi_scanout_resolve_published(SGIScanout *s, unsigned long line)
     if (memcmp(dst, s->row, bytes)) {
         memcpy(dst, s->row, bytes);
         sgi_display_head_presented(s, line, 1);
+        dshm_head_changed(s->dshm, line, 1);
         return true;
     }
     return false;
@@ -270,7 +278,8 @@ void sgi_scanout_update(SGIScanout *s)
     if (!s->frame) {
         return;
     }
-    published = sgi_display_head_exact(s);
+    dshm_head_sample_start(s->dshm);
+    published = sgi_display_head_exact(s) || dshm_head_active(s->dshm);
     h = s->mode.height;
     for (y = find_first_bit(s->dirty, h); y < h;
          y = find_next_bit(s->dirty, h, end)) {
@@ -296,6 +305,8 @@ void sgi_scanout_update(SGIScanout *s)
         trace_sgi_scanout_frame(resolved, changed);
     }
     sgi_display_head_published(s);
+    dshm_head_produced(s->dshm, resolved);
+    dshm_head_sample_end(s->dshm);
     if (s->composite_cursor) {
         int first, last;
 
@@ -356,6 +367,7 @@ void sgi_scanout_cursor_move(SGIScanout *s, int x, int y, bool on)
         sgi_scanout_cursor_invalidate(s);
         /* No host cursor, but absolute input still needs to see it move. */
         sgi_display_head_guest_cursor(s, x, y);
+        dshm_head_cursor_move(s->dshm, x, y, on);
     } else {
         qemu_console_set_mouse(s->con, x, y, on);
     }
@@ -364,6 +376,7 @@ void sgi_scanout_cursor_move(SGIScanout *s, int x, int y, bool on)
 void sgi_scanout_cursor_report(SGIScanout *s, int x, int y)
 {
     sgi_display_head_guest_cursor(s, x, y);
+    dshm_head_guest_cursor(s->dshm, 2, x, y);
 }
 
 void sgi_scanout_queue_swap(SGIScanout *s, uint64_t seq, uint64_t cookie)
@@ -392,6 +405,10 @@ static void sgi_scanout_publish_mode(SGIScanout *s)
     sgi_display_head_set_frame(s, s->frame ? s->frame_region : NULL,
                                s->frame ? s->mode.width : 0,
                                s->frame ? s->mode.height : 0, mhz);
+    dshm_head_set_cursor_embedded(s->dshm, s->composite_cursor);
+    dshm_head_set_mode(s->dshm, s->frame ? s->mode.width : 0,
+                       s->frame ? s->mode.height : 0, mhz, s->frame,
+                       (size_t)s->mode.width * sizeof(uint32_t));
 }
 
 /* A frame, dirty map and surface for the mode, when its size changed. */
@@ -478,6 +495,23 @@ static const GraphicHwOps sgi_scanout_gfx_ops = {
     .gfx_update = sgi_scanout_gfx_update,
 };
 
+static void sgi_scanout_dshm_sample(void *opaque)
+{
+    sgi_scanout_update(opaque);
+}
+
+static bool sgi_scanout_dshm_retrace_armed(void *opaque)
+{
+    SGIScanout *s = opaque;
+
+    return s->retrace_timer && timer_pending(s->retrace_timer);
+}
+
+static const DShmSourceOps sgi_scanout_dshm_ops = {
+    .sample = sgi_scanout_dshm_sample,
+    .retrace_armed = sgi_scanout_dshm_retrace_armed,
+};
+
 void sgi_scanout_init(SGIScanout *s, DeviceState *dev,
                       const SGIHeadOps *ops, void *opaque)
 {
@@ -498,6 +532,8 @@ void sgi_scanout_init_head(SGIScanout *s, DeviceState *dev, uint32_t head,
     s->con = qemu_graphic_console_create(dev, head, &sgi_scanout_gfx_ops, s);
     /* Until a model converts, every head reaches the reader as xrgb. */
     sgi_display_head_bind(s, SGI_SHM_FAMILY_XRGB, 1);
+    s->dshm = dshm_head_add(s->con, &sgi_scanout_dshm_ops, s, "sgi");
+    dshm_head_set_steerable(s->dshm, true);
 }
 
 void sgi_scanout_cleanup(SGIScanout *s)
@@ -505,6 +541,8 @@ void sgi_scanout_cleanup(SGIScanout *s)
     timer_free(s->retrace_timer);
     s->retrace_timer = NULL;
     sgi_display_head_unbind(s);
+    dshm_head_remove(s->dshm);
+    s->dshm = NULL;
     qemu_graphic_console_close(s->con);
     s->con = NULL;
     sgi_display_region_free(s->frame_region);
