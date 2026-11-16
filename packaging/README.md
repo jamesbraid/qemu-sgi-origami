@@ -30,6 +30,9 @@ the tree's `VERSION` file and `<n>` counts releases on that line. The script
 refuses a tag whose version differs from the tree's. Without `--tag` it
 builds a development archive named after the commit.
 
+The tag message is the release body. [RELEASING.md](../RELEASING.md) gives its
+format.
+
 ### Licences and sources
 
 Every library the archive contains is linked statically, under the licences
