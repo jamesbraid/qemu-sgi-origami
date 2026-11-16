@@ -1,0 +1,82 @@
+# The display-shm qtest on a Windows host. The Windows runners have no
+# compiler: MinGW cross-builds QEMU and the test on Linux, the test runs on
+# Windows. The cross-build itself is also part of build.yml's smoke check.
+name: windows display-shm
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'ui/display-shm*'
+      - 'include/ui/display-shm*'
+      - 'tests/qtest/display-shm*'
+      - '.github/workflows/windows-display-shm.yml'
+
+concurrency:
+  group: windows-display-shm-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  cross-build:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on: ${{ vars.CI_RUNNER }}
+    timeout-minutes: 60
+    env:
+      CI_STEP: /tmp/ci-current-step
+    container:
+      image: ${{ vars.CI_JOB_IMAGE }}
+      credentials:
+        username: ${{ vars.CI_REGISTRY_USER }}
+        password: ${{ secrets.CI_BOT_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: docker client
+        run: bash scripts/ci/runner-setup docker
+
+      - name: find the workspace volume
+        run: bash scripts/ci/runner-setup volume
+
+      - name: cross-compile QEMU and the test for Windows
+        env:
+          WINDOWS_ARGS: --stage /src/win-stage
+        run: bash scripts/ci/runner-setup windows
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: windows-display-shm
+          path: win-stage
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    if: ${{ github.server_url != 'https://github.com' }}
+    needs: cross-build
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: windows-display-shm
+          path: win-stage
+
+      - name: display-shm qtest
+        shell: powershell
+        run: |
+          # A hang fails in minutes, with whatever the test printed.
+          $env:QTEST_QEMU_BINARY = "$PWD\win-stage\qemu-system-mips64.exe"
+          $out = "$env:RUNNER_TEMP\qtest-out.txt"
+          $p = Start-Process -FilePath "$PWD\win-stage\display-shm-test.exe" -ArgumentList "--tap" `
+            -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError "$out.err"
+          # Without the handle held, ExitCode reads empty and a failure exits 0.
+          $null = $p.Handle
+          if (-not $p.WaitForExit(600000)) {
+            $p.Kill()
+            Get-Process qemu-system-mips64 -ErrorAction SilentlyContinue | Stop-Process -Force
+            "display-shm-test timed out after 10 minutes"
+            $code = 124
+          } else {
+            $code = $p.ExitCode
+          }
+          Get-Content $out, "$out.err"
+          exit $code

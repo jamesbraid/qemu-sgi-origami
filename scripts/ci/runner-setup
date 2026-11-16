@@ -192,7 +192,7 @@ case "${1-}" in
         tests/docker/dockerfiles)
     test -n "$windows_image"
     IMAGE_ID=$windows_image bash "$0" run -v "$WORKSPACE_VOLUME:/src" \
-        -w /src "$windows_image" python3 scripts/ci/sgi-check windows
+        -w /src "$windows_image" python3 scripts/ci/sgi-check windows ${WINDOWS_ARGS-}
     ;;
   volume)
     : "${GITHUB_ENV:?GITHUB_ENV is required}"

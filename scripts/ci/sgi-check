@@ -22,6 +22,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import statistics
 import subprocess
 import sys
@@ -57,8 +58,19 @@ WINDOWS_CONFIGURE_ARGS = ['--cross-prefix=x86_64-w64-mingw32-',
                           *_RELEASE_FLAGS['windows']]
 # chd-fixture builds the CHD iotest's images; the iotests do not run on
 # Windows, but compiling it checks the MinGW build of the CHD library.
+# display-shm-test.exe is staged for the Windows qtest run of
+# .github/workflows/windows-display-shm.yml.
 WINDOWS_TARGETS = ['qemu-system-mips64.exe', 'qemu-img.exe',
-                   'subprojects/libchdman-rs-0.289.5/chd-fixture.exe']
+                   'subprojects/libchdman-rs-0.289.5/chd-fixture.exe',
+                   'tests/qtest/display-shm-test.exe']
+WINDOWS_STAGED = ['qemu-system-mips64.exe', 'tests/qtest/display-shm-test.exe']
+MINGW_BIN = Path('/usr/x86_64-w64-mingw32/sys-root/mingw/bin')
+# Files loaded or run at run time, which no import table names. Fedora's
+# SDL2.dll is sdl2-compat: without SDL3.dll it stops the program start on a
+# message box. GLib's g_spawn runs a helper program.
+MINGW_LOADED = {'SDL2.dll': ['SDL3.dll'],
+                'libglib-2.0-0.dll': ['gspawn-win64-helper.exe',
+                                      'gspawn-win64-helper-console.exe']}
 
 # The sgi_model contract suites. They need PyYAML and jsonschema, which
 # pythondeps.toml lists as the sgi-model group, but no QEMU binary.
@@ -373,6 +385,34 @@ def windows(args):
     if not (path / 'build.ninja').exists():
         run([SOURCE / 'configure', *WINDOWS_CONFIGURE_ARGS], cwd=path)
     run(['ninja', '-C', path, *WINDOWS_TARGETS])
+    if args.stage:
+        stage_windows(path, args.stage)
+
+
+def mingw_dlls(exe):
+    """The MinGW DLLs exe needs, and those they need, by name."""
+    found, todo = {}, [exe]
+    while todo:
+        path = todo.pop()
+        out = subprocess.run(['x86_64-w64-mingw32-objdump', '-p', path],
+                             check=True, capture_output=True, text=True).stdout
+        names = re.findall(r'DLL Name: (\S+)', out)
+        for name in names + MINGW_LOADED.get(path.name, []):
+            dll = MINGW_BIN / name
+            if dll.exists() and dll.name not in found:
+                found[dll.name] = dll
+                todo.append(dll)
+    return found.values()
+
+
+def stage_windows(build, stage):
+    """Copy the programs Windows runs, with their DLLs, into stage."""
+    stage.mkdir(parents=True, exist_ok=True)
+    for name in WINDOWS_STAGED:
+        exe = build / name
+        shutil.copy2(exe, stage)
+        for dll in mingw_dlls(exe):
+            shutil.copy2(dll, stage)
 
 
 def rom_expected(build, logbase):
@@ -1066,6 +1106,8 @@ def main(argv=None):
     mode.add_argument('--dir', type=Path, default=SOURCE / 'build-windows',
                       help='build directory (default: build-windows in the '
                            'source tree)')
+    mode.add_argument('--stage', type=Path,
+                      help='also copy the programs and their DLLs here')
     mode.set_defaults(func=windows)
 
     mode = modes.add_parser(

@@ -918,6 +918,34 @@ class WindowsMode(unittest.TestCase):
         self.assertEqual(calls, [['ninja', '-C', build,
                                   *sgi_check.WINDOWS_TARGETS]])
 
+    def test_stage_copies_the_programs_and_their_dlls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            build, stage = Path(tmp) / 'build', Path(tmp) / 'stage'
+            for name in sgi_check.WINDOWS_STAGED:
+                (build / name).parent.mkdir(parents=True, exist_ok=True)
+                (build / name).write_text('exe', encoding='utf-8')
+            dll = Path(tmp) / 'a.dll'
+            dll.write_text('dll', encoding='utf-8')
+            with mock.patch.object(sgi_check, 'mingw_dlls',
+                                   return_value=[dll]):
+                sgi_check.stage_windows(build, stage)
+            self.assertEqual(sorted(p.name for p in stage.iterdir()),
+                             ['a.dll', 'display-shm-test.exe',
+                              'qemu-system-mips64.exe'])
+
+    def test_sdl2_brings_the_sdl3_it_loads(self):
+        def objdump(argv, **kwargs):
+            out = 'DLL Name: SDL2.dll' if argv[2].suffix == '.exe' else ''
+            return subprocess.CompletedProcess(argv, 0, stdout=out)
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('SDL2.dll', 'SDL3.dll'):
+                (Path(tmp) / name).touch()
+            with mock.patch.object(sgi_check, 'MINGW_BIN', Path(tmp)), \
+                 mock.patch.object(subprocess, 'run', side_effect=objdump):
+                dlls = sgi_check.mingw_dlls(Path(tmp) / 'qemu.exe')
+            self.assertEqual(sorted(d.name for d in dlls),
+                             ['SDL2.dll', 'SDL3.dll'])
+
     def test_default_directory_is_build_windows(self):
         with mock.patch.object(sgi_check, 'windows') as windows:
             sgi_check.main(['windows'])
