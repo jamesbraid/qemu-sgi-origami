@@ -1106,6 +1106,58 @@ model has none; the optional ``l2`` property is a chardev that stands for
 the USB bulk pair toward a peer. The machine options, link format, requests
 toward the L2 and table exchange are on :doc:`l1-l2-link`.
 
+.. _sgi-l1-node-link:
+
+Node link
+=========
+
+``sgi-l1-uart`` reaches its controller through the ``sgi-l1-provider``
+interface, so its ``controller`` property takes any object that
+implements it. ``sgi-l1`` is one, and everything else on this page
+describes it. ``sgi-l1-link`` is the other: a controller outside the
+process, reached over a chardev. The chardev is the project's own
+stand-in for the wire between the Bedrock and a controller that runs
+elsewhere, not a hardware wire.
+
+``node0`` to ``node3`` are chardevs, one per UART window, named by the
+window's ``transport-index``. The chardev carries a raw byte stream: a
+byte the node writes to the data register goes out whole, and a byte that
+arrives is queued for the node to read. The framing on it is the L1's
+(:ref:`sgi-l1-framing`), which the link neither adds nor looks at. The
+read-only ``nodes-up`` property has bit *n* set while transport *n* has a
+peer connected. Reconnection is the chardev's own (``reconnect-ms``, or a
+listening socket); the link keeps no state across it.
+
+A byte toward the node waits in the window's queue (4096 bytes), and the
+link accepts from the chardev only as much as the queue has room for. A
+full queue therefore holds the rest in the socket, in order, and each
+read of the data register lets more in. The queue depth and the lack of
+character timing are each an *approximation*, as for the window itself.
+
+While no peer is connected the controller is silent, an *approximation*
+of a controller that is off or absent. Nothing arrives, and a byte the
+node writes is dropped and traced, not kept for a peer that connects
+later. Bytes already in the window's queue stay there when the peer
+leaves, and nothing already sent is sent again when it returns.
+
+With a peer connected, a byte that does not fit a short write is dropped
+and traced, an *approximation*. A byte dropped mid-frame loses that frame
+at the receiver: the window cannot push back, because its transmit-ready
+bit is always set, so back-pressure is the board-side pacing's job.
+
+With no ``node`` chardev set the link is inert: it is silent in the same
+way and adds no migration blocker. With one set, the link adds a
+migration blocker that ``query-migrate`` lists in ``blocked-reasons``,
+and removes it when the device is unrealized. A blocker is process-wide,
+so ``savevm`` names only the first blocker in the process. The peer's
+state is outside the machine, so a snapshot could not hold it. The link
+does not refuse ``-incoming``: whether an incoming stream is refused here
+is *unknown*, and a test that sent one would settle it.
+
+The link has no signal chardev, so none of the controller's outputs
+(node power, reset, soft reset or NMI) or its power-button input exist on
+it, and it does not pace bytes or look at the programmed divisor.
+
 Board-side interfaces
 =====================
 
@@ -1292,7 +1344,8 @@ Saving is refused while a routed or bound call is in progress.
 queue, checks its UART index and recomputes the interrupt line. The peer
 link, ``network-422`` and ``auto-power`` are configuration and are not
 migrated. Migration works only between identical builds. An ``l2`` link
-blocks migration and snapshots.
+blocks migration and snapshots, and so does a ``node`` chardev on
+``sgi-l1-link`` (:ref:`sgi-l1-node-link`).
 
 Origin 3000 C-brick, I-brick, N-brick and V-brick profiles
 ==========================================================
@@ -1397,3 +1450,10 @@ forwarded segment bytes, the partition-record fetch and its single- and
 multi-frame replies, tolerance of junk on the link, the stored setting
 behind ``0x000b`` and the migration blocker. The stub answers one
 request and is a fixture, not an L2 model.
+
+``tests/qtest/sgi-l1-link-test.c`` plays the controller from a socket the
+test listens on: bytes from the node to the peer, bytes from the peer to
+the node and the interrupt they raise, a stream larger than the window's
+queue, two transports that do not mix, a silent controller before the peer
+connects, the peer leaving and returning, the migration blocker following
+the chardev and the window's refusals.
