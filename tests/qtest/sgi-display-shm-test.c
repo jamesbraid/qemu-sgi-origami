@@ -2021,6 +2021,170 @@ static void test_input_extremes(void)
     qtest_quit(qts);
 }
 
+/* The reader's connection that has said nothing is not the reader yet. */
+static void test_pending_connection(void)
+{
+    QTestState *qts = start();
+    int idle, second;
+    Session a;
+    Msg m;
+
+    session_open(&a, qts);
+
+    /* A connection that sends nothing costs the current reader nothing. */
+    idle = connect_socket();
+    g_assert_false(recv_msg(a.sock, &m, QUIET_MS));
+    g_assert_false(m.eof);
+    stl_le_p(head_raw(&a, 0) + 44, 1);
+    guest_cursor(qts, 5, 6, true);
+    expect_msg(a.sock, &m, 0x84);
+
+    /* A newer one takes the waiting place: the older is closed. */
+    second = connect_socket();
+    g_assert_true(hung_up(idle));
+    close(idle);
+    g_assert_false(recv_msg(a.sock, &m, QUIET_MS));
+    g_assert_false(m.eof);
+
+    /* One that fails its HELLO does not either. */
+    send_hello_ver(second, 2);
+    g_assert_true(hung_up(second));
+    close(second);
+    g_assert_false(recv_msg(a.sock, &m, QUIET_MS));
+    g_assert_false(m.eof);
+
+    /* A valid HELLO replaces the reader that is there. */
+    second = connect_socket();
+    send_hello(second);
+    expect_msg(second, &m, 0x81);
+    close(m.fd);
+    g_assert_true(hung_up(a.sock));
+    close(second);
+    session_close(&a);
+    qtest_quit(qts);
+}
+
+/*
+ * A second QEMU of the same name, or one given the same socket, does not
+ * take the first one's socket away: it stops and the reader stays.
+ */
+static void test_socket_in_use(void)
+{
+    QTestState *qts = start();
+    g_autofree char *name = g_strdup_printf("sgi-dsp-twin-%d", getpid());
+    g_autofree char *arg = g_strdup_printf(
+        "octane2,display-shm=%s,display-shm-socket=%s", name, sock_path);
+    char *argv[] = {
+        (char *)qtest_qemu_binary(NULL), (char *)"-M", arg,
+        (char *)"-m", (char *)"256M", (char *)"-cpu", (char *)OCTANE2_CPU,
+        (char *)"-bios", prom_path, (char *)"-S", (char *)"-display",
+        (char *)"none", (char *)"-serial", (char *)"none",
+        (char *)"-monitor", (char *)"none", NULL
+    };
+    gint64 end = g_get_monotonic_time() + WAIT_MS * 1000;
+    int status = -1, wstatus;
+    GPid pid;
+    Session s;
+    Msg m;
+
+    session_open(&s, qts);
+    g_assert_true(g_spawn_async(NULL, argv, NULL,
+                                G_SPAWN_DO_NOT_REAP_CHILD |
+                                G_SPAWN_STDOUT_TO_DEV_NULL |
+                                G_SPAWN_STDERR_TO_DEV_NULL,
+                                NULL, NULL, &pid, NULL));
+    while (g_get_monotonic_time() < end) {
+        if (waitpid(pid, &wstatus, WNOHANG) == pid) {
+            status = wstatus;
+            break;
+        }
+        g_usleep(50000);
+    }
+    if (status < 0) {
+        kill(pid, SIGKILL);
+        waitpid(pid, &wstatus, 0);
+    }
+    g_assert_cmpint(status, !=, -1);
+    g_assert_true(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), ==, 1);
+
+    /* The first QEMU kept its socket and its reader. */
+    stl_le_p(head_raw(&s, 0) + 44, 1);
+    guest_cursor(qts, 5, 6, true);
+    expect_msg(s.sock, &m, 0x84);
+    session_close(&s);
+    qtest_quit(qts);
+}
+
+/*
+ * A reader that stops reading while the guest keeps changing mode must not
+ * leave a frame's memory pinned for each change: a region QEMU frees before
+ * the reader was told of it is never sent.
+ */
+static unsigned open_fds(QTestState *qts)
+{
+    g_autofree char *dir = g_strdup_printf("/proc/%d/fd",
+                                           (int)qtest_pid(qts));
+    GDir *d = g_dir_open(dir, 0, NULL);
+    unsigned n = 0;
+
+    g_assert_nonnull(d);
+    while (g_dir_read_name(d)) {
+        n++;
+    }
+    g_dir_close(d);
+    return n;
+}
+
+static void test_unread_regions(void)
+{
+    enum { CHANGES = 1500 };
+    QTestState *qts = start();
+    GHashTable *seen = g_hash_table_new(g_direct_hash, g_direct_equal);
+    unsigned fds_before, regions = 0, gone = 0;
+    uint32_t last = 0;
+    Session s;
+    Msg m;
+
+    session_open(&s, qts);
+    for (unsigned i = 0; i < s.nregions; i++) {
+        g_hash_table_add(seen, GUINT_TO_POINTER(s.regions[i].id));
+    }
+    fds_before = open_fds(qts);
+    for (int i = 0; i < CHANGES; i++) {
+        vpro_set_size(qts, i & 1 ? 1280 : 1024, i & 1 ? 720 : 768);
+        if (i % 100 == 99) {
+            /* Bounded all along, not only at the end. */
+            g_assert_cmpuint(open_fds(qts), <, fds_before + 64);
+        }
+    }
+    g_assert_cmpuint(open_fds(qts), <, fds_before + 64);
+
+    /* The reader is still there, and what it reads is consistent. */
+    while (recv_msg(s.sock, &m, QUIET_MS)) {
+        uint32_t id = ldl_le_p(m.b + 8);
+
+        if (lduw_le_p(m.b) == 0x82) {
+            g_hash_table_add(seen, GUINT_TO_POINTER(id));
+            last = id;
+            regions++;
+            close(m.fd);
+        } else {
+            g_assert_cmphex(lduw_le_p(m.b), ==, 0x83);
+            /* Never told of one it did not hear of. */
+            g_assert_true(g_hash_table_contains(seen, GUINT_TO_POINTER(id)));
+            gone++;
+        }
+    }
+    g_assert_false(m.eof);
+    g_assert_cmpuint(regions, >, 0);
+    g_assert_cmpuint(ldl_le_p(head_raw(&s, 0) + 80), ==, last);
+    g_assert_cmpuint(gone, <=, regions + s.nregions);
+    g_hash_table_destroy(seen);
+    session_close(&s);
+    qtest_quit(qts);
+}
+
 /* The socket is removed when QEMU exits. */
 static void test_cleanup_on_exit(void)
 {
@@ -2617,6 +2781,10 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-display-shm/input-click-in-one-write",
                    test_input_click_in_one_write);
     qtest_add_func("sgi-display-shm/input-extremes", test_input_extremes);
+    qtest_add_func("sgi-display-shm/pending-connection",
+                   test_pending_connection);
+    qtest_add_func("sgi-display-shm/socket-in-use", test_socket_in_use);
+    qtest_add_func("sgi-display-shm/unread-regions", test_unread_regions);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 

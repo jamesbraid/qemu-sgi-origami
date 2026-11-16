@@ -26,6 +26,7 @@
 #include "qemu/sockets.h"
 #include "qemu/atomic.h"
 #include "qemu/memfd.h"
+#include "qemu/units.h"
 #include "qemu/notify.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
@@ -40,6 +41,7 @@
 #ifndef _WIN32
 #include <sys/mman.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #endif
 
@@ -49,6 +51,12 @@
 #define SGI_SHM_OUT_MAX 1024
 #define SGI_SHM_IN_BYTES 2048
 #define SGI_SHM_MSG_MAX 64
+/*
+ * The bytes of regions that queued REGION messages hold open. A reader that
+ * stops reading while the guest changes mode pins one frame per change; past
+ * this it is dropped, as one that lets the message count run out is.
+ */
+#define SGI_SHM_PIN_MAX (256 * MiB)
 
 #ifdef _WIN32
 #define SGI_SHM_HOST_BACKEND SGI_SHM_BACKEND_SHM_WIN32
@@ -97,11 +105,20 @@ struct SGIDisplayHead {
     bool cursor_on;
 };
 
+/* What a message carries to the reader besides its bytes. */
+typedef struct SGIExport {
+    int fd;                     /* POSIX: a dup to attach to the first byte */
+    uint64_t handle;            /* Windows: a handle valid in the reader */
+    uint64_t pin;               /* the bytes of region it keeps open */
+} SGIExport;
+
+#define SGI_NO_EXPORT ((SGIExport) { .fd = -1 })
+
 typedef struct SGIDisplayOut {
     QSIMPLEQ_ENTRY(SGIDisplayOut) next;
     uint8_t buf[SGI_SHM_MSG_MAX];
     size_t len, off;
-    int fd;                     /* to attach to the first byte, or -1 */
+    SGIExport x;
 } SGIDisplayOut;
 
 struct SGIDisplay {
@@ -126,11 +143,16 @@ struct SGIDisplay {
     size_t in_len;
     QSIMPLEQ_HEAD(, SGIDisplayOut) out;
     unsigned out_count;
+    uint64_t out_pinned;        /* the pin of every export still queued */
+    int pend_fd;                /* a connection that has not said HELLO */
+    uint8_t pend_buf[sizeof(SGIShmMsgHello)];
+    size_t pend_len;
     bool want_write;
     bool export_failed;         /* the failure to export was reported */
     bool test_pattern;          /* x-display-shm-test-pattern */
 #ifdef _WIN32
-    HANDLE reader_process;
+    HANDLE reader_process;      /* the peer of client_fd */
+    HANDLE pend_process;        /* the peer of pend_fd */
 #endif
     QEMUBH *wake_bh;
     bool exited;
@@ -257,14 +279,53 @@ static void region_unmap(SGIDisplayRegion *r)
 
 /* ---- The socket ------------------------------------------------------- */
 
-static void out_free(SGIDisplayOut *o)
+#ifdef _WIN32
+/* Close a handle QEMU made in the reader's process and never delivered. */
+static void remote_close(SGIDisplay *d, uint64_t handle)
 {
-#ifndef _WIN32
-    if (o->fd >= 0) {
-        close(o->fd);
+    if (d->reader_process && handle) {
+        DuplicateHandle(d->reader_process, (HANDLE)(uintptr_t)handle, NULL,
+                        NULL, 0, FALSE, DUPLICATE_CLOSE_SOURCE);
+    }
+}
+#endif
+
+/* Give back an export that never reached the reader. */
+static void export_discard(SGIDisplay *d, const SGIExport *x)
+{
+#ifdef _WIN32
+    remote_close(d, x->handle);
+#else
+    if (x->fd >= 0) {
+        close(x->fd);
     }
 #endif
+}
+
+/* Free a message; one that was not sent whole takes its export back. */
+static void out_free(SGIDisplay *d, SGIDisplayOut *o)
+{
+    if (o->off < o->len) {
+        export_discard(d, &o->x);
+    }
+    d->out_pinned -= o->x.pin;
     g_free(o);
+}
+
+static void pend_drop(SGIDisplay *d)
+{
+    if (d->pend_fd >= 0) {
+        qemu_set_fd_handler(d->pend_fd, NULL, NULL, NULL);
+        close(d->pend_fd);
+        d->pend_fd = -1;
+    }
+    d->pend_len = 0;
+#ifdef _WIN32
+    if (d->pend_process) {
+        CloseHandle(d->pend_process);
+        d->pend_process = NULL;
+    }
+#endif
 }
 
 static void client_drop(SGIDisplay *d)
@@ -278,9 +339,10 @@ static void client_drop(SGIDisplay *d)
     }
     while ((o = QSIMPLEQ_FIRST(&d->out))) {
         QSIMPLEQ_REMOVE_HEAD(&d->out, next);
-        out_free(o);
+        out_free(d, o);
     }
     d->out_count = 0;
+    d->out_pinned = 0;
     d->want_write = false;
     d->hello = false;
     d->in_len = 0;
@@ -306,7 +368,7 @@ static ssize_t out_send(int sock, const SGIDisplayOut *o)
         char buf[CMSG_SPACE(sizeof(int))];
     } ctl;
 
-    if (o->fd >= 0 && !o->off) {
+    if (o->x.fd >= 0 && !o->off) {
         struct cmsghdr *c;
 
         memset(&ctl, 0, sizeof(ctl));
@@ -316,7 +378,7 @@ static ssize_t out_send(int sock, const SGIDisplayOut *o)
         c->cmsg_level = SOL_SOCKET;
         c->cmsg_type = SCM_RIGHTS;
         c->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(c), &o->fd, sizeof(int));
+        memcpy(CMSG_DATA(c), &o->x.fd, sizeof(int));
     }
     return sendmsg(sock, &mh, 0);
 #endif
@@ -352,10 +414,12 @@ static void out_flush(SGIDisplay *d)
             return;
         }
 #ifndef _WIN32
-        if (n > 0 && o->fd >= 0) {
+        if (n > 0 && o->x.fd >= 0) {
             /* The handle went with the first byte. */
-            close(o->fd);
-            o->fd = -1;
+            close(o->x.fd);
+            o->x.fd = -1;
+            d->out_pinned -= o->x.pin;
+            o->x.pin = 0;
         }
 #endif
         o->off += n;
@@ -364,7 +428,7 @@ static void out_flush(SGIDisplay *d)
         }
         QSIMPLEQ_REMOVE_HEAD(&d->out, next);
         d->out_count--;
-        out_free(o);
+        out_free(d, o);
     }
     if (d->client_fd >= 0 && d->want_write) {
         d->want_write = false;
@@ -372,26 +436,19 @@ static void out_flush(SGIDisplay *d)
     }
 }
 
-/* Queue a message; it owns fd (a dup, or -1) from here on. */
-static void out_queue(SGIDisplay *d, const void *msg, size_t len, int fd)
+/* Queue a message; it owns the export, if any, from here on. */
+static void out_queue(SGIDisplay *d, const void *msg, size_t len,
+                      SGIExport x)
 {
     SGIDisplayOut *o;
 
     assert(len <= SGI_SHM_MSG_MAX);
     if (d->client_fd < 0 || !d->hello) {
-#ifndef _WIN32
-        if (fd >= 0) {
-            close(fd);
-        }
-#endif
+        export_discard(d, &x);
         return;
     }
     if (d->out_count >= SGI_SHM_OUT_MAX) {
-#ifndef _WIN32
-        if (fd >= 0) {
-            close(fd);
-        }
-#endif
+        export_discard(d, &x);
         warn_report("sgi-display-shm: the reader is not reading, dropping it");
         client_drop(d);
         return;
@@ -399,22 +456,29 @@ static void out_queue(SGIDisplay *d, const void *msg, size_t len, int fd)
     o = g_new0(SGIDisplayOut, 1);
     memcpy(o->buf, msg, len);
     o->len = len;
-    o->fd = fd;
+    o->x = x;
     QSIMPLEQ_INSERT_TAIL(&d->out, o, next);
     d->out_count++;
+    d->out_pinned += x.pin;
     out_flush(d);
+    if (d->client_fd >= 0 && d->out_pinned > SGI_SHM_PIN_MAX) {
+        warn_report("sgi-display-shm: the reader is not reading and queued "
+                    "regions hold %" PRIu64 " MiB open, dropping it",
+                    d->out_pinned / MiB);
+        client_drop(d);
+    }
 }
 
 /*
- * A handle for the reader: a dup of the descriptor on POSIX, returned as
- * *fd; on Windows a handle value already valid in the reader's process,
- * returned as *handle. False when the reader cannot take it.
+ * A handle for the reader: a dup of the descriptor on POSIX, in x->fd; on
+ * Windows a handle value already valid in the reader's process, in
+ * x->handle. False when the reader cannot take it.
  */
-static bool region_export(SGIDisplay *d, const SGIDisplayRegion *r, int *fd,
-                          uint64_t *handle)
+static bool region_export(SGIDisplay *d, const SGIDisplayRegion *r,
+                          SGIExport *x)
 {
-    *fd = -1;
-    *handle = 0;
+    *x = SGI_NO_EXPORT;
+    x->pin = r->size;
 #ifdef _WIN32
     {
         HANDLE dup;
@@ -427,7 +491,7 @@ static bool region_export(SGIDisplay *d, const SGIDisplayRegion *r, int *fd,
                          "error %lu", GetLastError());
             return false;
         }
-        *handle = (uint64_t)(uintptr_t)dup;
+        x->handle = (uint64_t)(uintptr_t)dup;
     }
 #else
     /*
@@ -435,8 +499,8 @@ static bool region_export(SGIDisplay *d, const SGIDisplayRegion *r, int *fd,
      * memory descriptor on macOS refuses with ENOTTY. qemu_dup() already
      * sets close-on-exec.
      */
-    *fd = qemu_dup(r->fd);
-    if (*fd < 0) {
+    x->fd = qemu_dup(r->fd);
+    if (x->fd < 0) {
         /*
          * A reader that reconnects at once would hit this every time:
          * say it once.
@@ -460,13 +524,14 @@ static void send_region(SGIDisplay *d, const SGIDisplayRegion *r)
         .memory_type = r->memory_type, .size = r->size,
         .alloc_size = r->alloc_size, .flags = r->flags,
     };
-    int fd;
+    SGIExport x;
 
-    if (!region_export(d, r, &fd, &m.handle)) {
+    if (!region_export(d, r, &x)) {
         client_drop(d);
         return;
     }
-    out_queue(d, &m, sizeof(m), fd);
+    m.handle = x.handle;
+    out_queue(d, &m, sizeof(m), x);
 }
 
 /*
@@ -495,7 +560,7 @@ static void send_welcome(SGIDisplay *d)
         .nheads = qatomic_read(&d->hdr->nheads),
         .control_backend = SGI_SHM_HOST_BACKEND,
     };
-    int fd;
+    SGIExport x;
 
     if (m.backend != SGI_SHM_HOST_BACKEND) {
         memcpy(m.device_uuid, sgi_display_vk_device_uuid(d->vk),
@@ -503,18 +568,19 @@ static void send_welcome(SGIDisplay *d)
         memcpy(m.driver_uuid, sgi_display_vk_driver_uuid(d->vk),
                sizeof(m.driver_uuid));
     }
-    if (!region_export(d, d->control, &fd, &m.control_handle)) {
+    if (!region_export(d, d->control, &x)) {
         client_drop(d);
         return;
     }
-    out_queue(d, &m, sizeof(m), fd);
+    m.control_handle = x.handle;
+    out_queue(d, &m, sizeof(m), x);
 }
 
 static void send_header_only(SGIDisplay *d, uint16_t type, uint32_t seq)
 {
     SGIShmMsgHeader m = { .type = type, .seq = seq };
 
-    out_queue(d, &m, sizeof(m), -1);
+    out_queue(d, &m, sizeof(m), SGI_NO_EXPORT);
 }
 
 /* WAKE goes from a bottom half, so any thread may ask for it. */
@@ -529,7 +595,7 @@ static void wake_bh(void *opaque)
 
         if (h->bound && qatomic_read(&h->rec->armed) == 1 &&
             qatomic_cmpxchg(&h->rec->armed, 1, 0) == 1) {
-            out_queue(d, &m, sizeof(m), -1);
+            out_queue(d, &m, sizeof(m), SGI_NO_EXPORT);
         }
     }
 }
@@ -564,23 +630,11 @@ static size_t msg_size(uint16_t type)
     }
 }
 
-static bool client_hello(SGIDisplay *d, const SGIShmMsgHello *m)
+/* The reader's HELLO has passed: tell it everything. */
+static bool client_hello(SGIDisplay *d)
 {
     SGIDisplayRegion *r;
 
-    if (m->version != SGI_SHM_VERSION) {
-        warn_report("sgi-display-shm: the reader speaks version %u, this "
-                    "is %u", m->version, SGI_SHM_VERSION);
-        return false;
-    }
-#ifdef _WIN32
-    d->reader_process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, m->pid);
-    if (!d->reader_process) {
-        error_report("sgi-display-shm: cannot open the reader, process "
-                     "%u: error %lu", m->pid, GetLastError());
-        return false;
-    }
-#endif
     d->hello = true;
     send_welcome(d);
     QTAILQ_FOREACH(r, &d->regions, next) {
@@ -629,26 +683,13 @@ static void client_read(void *opaque)
             break;
         }
         if (hdr.type == SGI_SHM_MSG_HELLO) {
-            SGIShmMsgHello m;
-
-            memcpy(&m, d->in_buf + off, sizeof(m));
-            if (d->hello) {
-                warn_report("sgi-display-shm: a second HELLO, closing");
-                client_drop(d);
-                return;
-            }
-            if (!client_hello(d, &m)) {
-                client_drop(d);
-                return;
-            }
+            /* The first one was taken before this reader was accepted. */
+            warn_report("sgi-display-shm: a second HELLO, closing");
+            client_drop(d);
+            return;
         } else {
             SGIShmMsgInput m;
 
-            if (!d->hello) {
-                warn_report("sgi-display-shm: input before HELLO, closing");
-                client_drop(d);
-                return;
-            }
             memcpy(&m, d->in_buf + off, sizeof(m));
             sgi_display_input_apply(&m);
             if (m.hdr.flags & SGI_SHM_MSGF_ACK) {
@@ -666,6 +707,114 @@ static void client_read(void *opaque)
     }
 }
 
+/* Whether the process on the other end of fd is this one's user. */
+static bool peer_is_self(int fd)
+{
+#if defined(CONFIG_LINUX)
+    struct ucred cr;
+    socklen_t len = sizeof(cr);
+
+    return getsockopt(fd, SOL_SOCKET, SO_PEERCRED, &cr, &len) == 0 &&
+           cr.uid == geteuid();
+#elif defined(CONFIG_DARWIN) || defined(CONFIG_BSD)
+    uid_t uid;
+    gid_t gid;
+
+    return getpeereid(fd, &uid, &gid) == 0 && uid == geteuid();
+#else
+    /* The socket's directory is the user's own: see shm_default_socket(). */
+    return true;
+#endif
+}
+
+#ifdef _WIN32
+#ifndef SIO_AF_UNIX_GETPEERPID
+#define SIO_AF_UNIX_GETPEERPID _WSAIOR(IOC_VENDOR, 256)
+#endif
+
+/*
+ * The process on the other end of the socket, opened to duplicate handles
+ * into. HELLO.pid is the reader's own word and is not used.
+ */
+static HANDLE peer_process(int fd)
+{
+    SOCKET sock = _get_osfhandle(fd);
+    DWORD pid = 0, got = 0;
+    HANDLE process;
+
+    if (WSAIoctl(sock, SIO_AF_UNIX_GETPEERPID, NULL, 0, &pid, sizeof(pid),
+                 &got, NULL, NULL) != 0 || !pid) {
+        error_report("sgi-display-shm: cannot find the reader's process: "
+                     "error %d", WSAGetLastError());
+        return NULL;
+    }
+    process = OpenProcess(PROCESS_DUP_HANDLE, FALSE, pid);
+    if (!process) {
+        error_report("sgi-display-shm: cannot open the reader, process "
+                     "%lu: error %lu", pid, GetLastError());
+    }
+    return process;
+}
+#endif
+
+/*
+ * The first bytes of a new connection: a HELLO that passes, and nothing
+ * before it. Only then does this reader replace the current one, so a
+ * connection that says nothing, or the wrong thing, costs it nothing.
+ */
+static void pend_read(void *opaque)
+{
+    SGIDisplay *d = opaque;
+    SGIShmMsgHello m;
+    SGIShmMsgHeader hdr;
+    ssize_t n;
+
+    n = recv(d->pend_fd, (char *)d->pend_buf + d->pend_len,
+             sizeof(d->pend_buf) - d->pend_len, 0);
+    if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
+                   errno != EINTR)) {
+        pend_drop(d);
+        return;
+    }
+    if (n < 0) {
+        return;
+    }
+    d->pend_len += n;
+    if (d->pend_len < sizeof(hdr)) {
+        return;
+    }
+    memcpy(&hdr, d->pend_buf, sizeof(hdr));
+    if (hdr.type != SGI_SHM_MSG_HELLO) {
+        warn_report("sgi-display-shm: a new reader's first message is 0x%x, "
+                    "not HELLO, closing it", hdr.type);
+        pend_drop(d);
+        return;
+    }
+    if (d->pend_len < sizeof(m)) {
+        return;
+    }
+    memcpy(&m, d->pend_buf, sizeof(m));
+    if (m.version != SGI_SHM_VERSION) {
+        warn_report("sgi-display-shm: the reader speaks version %u, this "
+                    "is %u", m.version, SGI_SHM_VERSION);
+        pend_drop(d);
+        return;
+    }
+    /* Read no further than the HELLO: the rest is client_read()'s. */
+    client_drop(d);
+    d->client_fd = d->pend_fd;
+    d->pend_fd = -1;
+    d->pend_len = 0;
+#ifdef _WIN32
+    d->reader_process = d->pend_process;
+    d->pend_process = NULL;
+#endif
+    qemu_set_fd_handler(d->client_fd, client_read, NULL, d);
+    if (!client_hello(d)) {
+        client_drop(d);
+    }
+}
+
 static void client_accept(void *opaque)
 {
     SGIDisplay *d = opaque;
@@ -674,10 +823,24 @@ static void client_accept(void *opaque)
     if (fd < 0) {
         return;
     }
-    client_drop(d);
+    if (!peer_is_self(fd)) {
+        warn_report("sgi-display-shm: a connection from another user, "
+                    "closing it");
+        close(fd);
+        return;
+    }
+    /* One connection waits for its HELLO at a time: the newest. */
+    pend_drop(d);
     qemu_set_blocking(fd, false, NULL);
-    d->client_fd = fd;
-    qemu_set_fd_handler(fd, client_read, NULL, d);
+#ifdef _WIN32
+    d->pend_process = peer_process(fd);
+    if (!d->pend_process) {
+        close(fd);
+        return;
+    }
+#endif
+    d->pend_fd = fd;
+    qemu_set_fd_handler(fd, pend_read, NULL, d);
 }
 
 /* ---- Regions: the model-facing half ----------------------------------- */
@@ -786,6 +949,32 @@ void *sgi_display_region_alloc(Object *owner, const char *label,
     return r->ptr;
 }
 
+/*
+ * Take the REGION for id out of the queue if none of it has been sent. The
+ * descriptor or handle it holds goes with it, so the region's memory is
+ * released when QEMU unmaps it and not when the reader catches up.
+ */
+static bool region_unsent_drop(SGIDisplay *d, uint32_t id)
+{
+    SGIDisplayOut *o;
+
+    QSIMPLEQ_FOREACH(o, &d->out, next) {
+        SGIShmMsgRegion m;
+
+        if (o->off || o->len != sizeof(m)) {
+            continue;
+        }
+        memcpy(&m, o->buf, sizeof(m));
+        if (m.hdr.type == SGI_SHM_MSG_REGION && m.id == id) {
+            QSIMPLEQ_REMOVE(&d->out, o, SGIDisplayOut, next);
+            d->out_count--;
+            out_free(d, o);
+            return true;
+        }
+    }
+    return false;
+}
+
 void sgi_display_region_free(SGIDisplayRegion *r)
 {
     SGIDisplay *d = shm_display;
@@ -803,7 +992,10 @@ void sgi_display_region_free(SGIDisplayRegion *r)
                                   .id = r->id };
 
         QTAILQ_REMOVE(&d->regions, r, next);
-        out_queue(d, &m, sizeof(m), -1);
+        /* A reader that never heard of it need not hear it is gone. */
+        if (!region_unsent_drop(d, r->id)) {
+            out_queue(d, &m, sizeof(m), SGI_NO_EXPORT);
+        }
     }
     region_unmap(r);
     g_free(r);
@@ -1193,15 +1385,91 @@ unsigned sgi_display_head_count(void)
 
 /* ---- Start-up and exit ------------------------------------------------ */
 
-static char *shm_default_socket(SGIDisplay *d)
+/*
+ * A directory only this user can use, for a default socket when
+ * XDG_RUNTIME_DIR is unset. The temporary directory is shared: a socket
+ * bound there by name could be pre-empted, or replaced, by anyone.
+ */
+static char *shm_private_dir(Error **errp)
 {
-    const char *dir = g_getenv("XDG_RUNTIME_DIR");
+#ifdef _WIN32
+    /* The temporary directory is the user's own. */
+    return g_strdup(g_get_tmp_dir());
+#else
+    g_autofree char *dir = g_strdup_printf("%s/sgi-display-%u",
+                                           g_get_tmp_dir(),
+                                           (unsigned)geteuid());
+    struct stat st;
+
+    if (mkdir(dir, 0700) < 0 && errno != EEXIST) {
+        error_setg_errno(errp, errno, "cannot create %s", dir);
+        return NULL;
+    }
+    if (lstat(dir, &st) < 0) {
+        error_setg_errno(errp, errno, "cannot examine %s", dir);
+        return NULL;
+    }
+    if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() ||
+        (st.st_mode & 022)) {
+        error_setg(errp, "%s is not a directory that only this user can "
+                   "write; set XDG_RUNTIME_DIR or display-shm-socket", dir);
+        return NULL;
+    }
+    return g_steal_pointer(&dir);
+#endif
+}
+
+static char *shm_default_socket(SGIDisplay *d, Error **errp)
+{
+    const char *xdg = g_getenv("XDG_RUNTIME_DIR");
+    g_autofree char *dir = NULL;
     g_autofree char *file = g_strdup_printf("%s.sock", d->name);
 
-    if (!dir || !*dir) {
-        dir = g_get_tmp_dir();
+    if (xdg && *xdg) {
+        dir = g_strdup(xdg);
+    } else {
+        dir = shm_private_dir(errp);
+        if (!dir) {
+            return NULL;
+        }
     }
     return g_build_filename(dir, file, NULL);
+}
+
+/*
+ * Whether something is serving path. unix_listen() unlinks whatever is
+ * there, which would take the socket from a running QEMU of the same name;
+ * a stale one, left by a QEMU that was killed, refuses the connection.
+ */
+static bool shm_socket_in_use(const char *path, Error **errp)
+{
+    struct sockaddr_un un = { .sun_family = AF_UNIX };
+    int fd, err;
+#ifndef _WIN32
+    struct stat st;
+
+    if (lstat(path, &st) == 0 && !S_ISSOCK(st.st_mode)) {
+        error_setg(errp, "%s exists and is not a socket", path);
+        return true;
+    }
+#endif
+    if (strlen(path) >= sizeof(un.sun_path)) {
+        return false;           /* unix_listen() says so */
+    }
+    strcpy(un.sun_path, path);
+    fd = qemu_socket(AF_UNIX, SOCK_STREAM, 0);
+    if (fd < 0) {
+        return false;
+    }
+    qemu_set_blocking(fd, false, NULL);
+    err = connect(fd, (struct sockaddr *)&un, sizeof(un)) < 0 ? errno : 0;
+    close(fd);
+    /* A full backlog answers EAGAIN: a live listener all the same. */
+    if (!err || err == EAGAIN || err == EWOULDBLOCK) {
+        error_setg(errp, "another process is serving %s", path);
+        return true;
+    }
+    return false;
 }
 
 static void shm_exit(Notifier *n, void *data)
@@ -1215,6 +1483,7 @@ static void shm_exit(Notifier *n, void *data)
         d->listen_fd = -1;
         unlink(d->sock_path);
     }
+    pend_drop(d);
     /* The listeners stop with the process; they must not see a dead block. */
     for (unsigned i = 0; i < d->nheads; i++) {
         if (d->heads[i].bound) {
@@ -1253,7 +1522,11 @@ static void shm_machine_done(Notifier *n, void *data)
     qemu_add_exit_notifier(&d->exit);
 
     if (!d->sock_path) {
-        d->sock_path = shm_default_socket(d);
+        d->sock_path = shm_default_socket(d, &err);
+    }
+    if (!d->sock_path || shm_socket_in_use(d->sock_path, &err)) {
+        error_report_err(err);
+        exit(1);
     }
 #ifndef _WIN32
     /* Bind the socket for its owner only. Start-up is single threaded. */
@@ -1281,6 +1554,7 @@ static SGIDisplay *shm_get_display(void)
         shm_display = g_new0(SGIDisplay, 1);
         shm_display->listen_fd = -1;
         shm_display->client_fd = -1;
+        shm_display->pend_fd = -1;
         shm_display->next_region_id = 1;
         shm_display->cursor_head = -1;
         QTAILQ_INIT(&shm_display->regions);

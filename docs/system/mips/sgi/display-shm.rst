@@ -53,10 +53,14 @@ Enabling it
        ``display-shm-socket`` says otherwise.
    * - ``display-shm-socket=PATH``
      - The socket's path. Default ``NAME.sock`` in ``$XDG_RUNTIME_DIR``
-       when it is set and non-empty, else in the host's temporary
+       when it is set and non-empty, else in ``sgi-display-UID``, a
+       directory QEMU makes (mode 0700) or checks in the host's temporary
        directory as GLib names it (``$TMPDIR``, ``$TMP`` or ``$TEMP``, then
-       the system default). macOS sets no ``XDG_RUNTIME_DIR``, so there it
-       is the per-user ``$TMPDIR``, whose path can be long. A path must fit
+       the system default). QEMU refuses to start when that directory is
+       not the user's own or is writable by others. On Windows the
+       temporary directory is already the user's own and is used as it is.
+       macOS sets no ``XDG_RUNTIME_DIR``, so there it is under the per-user
+       ``$TMPDIR``, whose path can be long. A path must fit
        in a ``sockaddr_un``, about 104 bytes on macOS and 108 on Linux and
        Windows; QEMU refuses a longer one, and ``display-shm-socket`` then
        names a shorter one.
@@ -73,7 +77,17 @@ naming it. It removes the socket when it exits. QEMU creates it for its
 owner only. There is no named shared-memory object: every region reaches the
 viewer as a passed handle.
 
-One reader at a time. A second connection replaces the first.
+QEMU does not take over a socket that something is serving: when the path
+accepts a connection (another QEMU with the same name, say), or exists and
+is not a socket, QEMU stops with an error. A socket left by a QEMU that was
+killed refuses connections and is replaced. On Linux, macOS and the BSDs,
+QEMU closes a connection from another user at once.
+
+One reader at a time. A new connection waits for its ``HELLO`` without
+disturbing the reader there is; the reader is replaced only when the new
+one's ``HELLO`` is valid. Only one connection waits at a time: a further one
+closes the oldest. A waiting connection that sends anything but a valid
+``HELLO`` is closed, and the reader stays.
 
 Regions
 =======
@@ -110,15 +124,24 @@ Rules:
 - Linux and macOS: the file descriptor travels with its message as
   ``SCM_RIGHTS``, one descriptor per message, on the first byte of that
   message. A viewer reads the message's 8-byte header with ``recvmsg`` to
-  collect it. Windows: QEMU ``DuplicateHandle``\ s the section into the
+  collect it, and asks for ``MSG_CMSG_CLOEXEC`` so a child process does not
+  inherit it. Windows: QEMU ``DuplicateHandle``\ s the section into the
   viewer's process, which it opens with ``PROCESS_DUP_HANDLE`` using the
+  process id of the socket's other end (``SIO_AF_UNIX_GETPEERPID``), not the
   ``pid`` in ``HELLO``; the message carries the handle value valid in the
-  viewer. The viewer closes it.
+  viewer. The viewer closes it, including one it takes from a message it
+  then refuses. A message that QEMU did not send whole, or drops from its
+  queue, takes its handle back.
 - A region is never resized; QEMU replaces it with a new id. Ids start at 1
   and are never reused in one run. The viewer's handle or mapping keeps
   the memory alive, so QEMU may free its side as soon as no head refers to
   the region. ``REGION_GONE`` tells the viewer to drop its mapping and
-  handle. There is no release handshake.
+  handle, and a viewer acts on it after the frame it is composing has
+  finished with the region. There is no release handshake. A region that
+  QEMU frees before its ``REGION`` was sent is never announced and has no
+  ``REGION_GONE``. QEMU drops a viewer that lets its queued ``REGION``
+  messages hold more than 256 MiB of regions open, as it does one that
+  leaves 1,024 messages unread.
 - Memory is zero when created. Pixels and tables are read live, with no
   fence: that is how the hardware scans out.
 - Region 0 is always the control block, backend 3 or 4, 65,536 bytes. It
@@ -164,7 +187,8 @@ Reader to QEMU
 
 ``HELLO``, type ``0x0001``, 48 bytes. It must be the first message and is
 sent once. QEMU closes the connection on a second ``HELLO``, on any message
-before it, and on a ``version`` it does not speak.
+before it, and on a ``version`` it does not speak. The current reader is
+replaced when a valid ``HELLO`` arrives, not when the connection is made.
 
 .. list-table::
    :header-rows: 1
@@ -181,7 +205,8 @@ before it, and on a ``version`` it does not speak.
        wake-ups
    * - 16
      - u32
-     - ``pid``: the viewer's process id
+     - ``pid``: the viewer's process id. QEMU ignores it; the field is kept
+       for the layout
    * - 20
      - u32
      - reserved, 0
@@ -796,7 +821,10 @@ shared-memory segment with input over QMP only, never shipped.
 Limits
 ======
 
-- One reader. A second connection replaces the first.
+- One reader. A second connection waits for its ``HELLO`` and then replaces
+  the first.
+- A GPU reader's reads are not synchronised with QEMU's writes (see
+  the Rules section).
 - At most 8 heads. A head taller than 4,096 lines has no exact dirty
   bitmap.
 - Heads are fixed when the machine starts. Models other than the four
@@ -837,6 +865,13 @@ GPU:
 - a new mode: the replacement region, ``REGION_GONE`` and the layout seqlock;
 - reconnecting, including after a mode change replaced a region, and the
   protocol errors that close the connection;
+- a connection that sends nothing, or a bad ``HELLO``, leaving the current
+  reader in place, and a valid ``HELLO`` replacing it;
+- a second QEMU on a socket that is in use stopping and leaving the first
+  one's socket and reader alone;
+- 1,500 mode changes with the reader not reading: QEMU's open descriptors
+  stay bounded, the reader is not dropped, and it is told of no region it
+  was not sent;
 - the fallback for ``display-shm-gpu``, with a UUID no adapter has and with
   a Vulkan loader that does not exist: shared memory in ``WELCOME`` and every
   ``REGION``, the Vulkan fields zero;
@@ -851,8 +886,9 @@ GPU:
 - the three properties on every SGI machine type;
 - keys, buttons and relative and absolute motion arriving at the
   Octane2's keyboard and mouse controller, in batches with their acks, a
-  held key released when the viewer drops, and the closed loop answering
-  cursor updates;
+  held key released when the viewer drops, a press and release in one write
+  reaching the mouse as two packets, the extremes of every input field, and
+  the closed loop answering cursor updates;
 - the closed loop against a simulated guest, through
   ``x-display-shm-cursor``: one that accelerates as IRIX does, a steeper one
   (one pixel for one count, 4n - 3 for more), and the IRIX one answering
