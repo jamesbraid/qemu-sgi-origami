@@ -13,7 +13,7 @@
 /* The management USB controller's 64 KiB window, a sysbus device. */
 #define TYPE_SGI_L1_USB_WINDOW "sgi-l1-usb-window"
 
-/* Fit the bus select, expanders and monitors on @bus. */
+/* Fit the bus select, expanders, monitors and display on @bus. */
 void sgi_l1_cbrick_peers_fit(I2CBus *bus);
 
 #endif

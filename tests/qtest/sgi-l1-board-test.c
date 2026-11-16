@@ -2159,6 +2159,87 @@ static void test_peers_pimm0_monitors(void)
     quit_all(qts, &f);
 }
 
+#define DISPLAY_PATH    "/machine/peripheral/l1-display"
+
+static char *display_last_write(QTestState *qts)
+{
+    QDict *rsp = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': "
+                           "{'path': %s, 'property': 'last-write'}}",
+                           DISPLAY_PATH);
+    char *text;
+
+    g_assert_true(qdict_haskey(rsp, "return"));
+    text = g_strdup(qdict_get_str(rsp, "return"));
+    qobject_unref(rsp);
+    return text;
+}
+
+/* The display: wire 0xf0 and 0xf1 on segment 0, a sink with no register. */
+static void test_peers_display(void)
+{
+    static const uint8_t line1[] = { '1', 'O', 'K', ' ', ' ', ' ', ' ', ' ',
+                                     ' ', ' ', ' ', ' ', ' ' };
+    static const uint8_t one_char[] = { '3', 5, 'X' };
+    uint8_t long_line[74] = { '6' };
+    g_autofree char *text = NULL;
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+    int i;
+
+    /* Nothing written yet. */
+    text = display_last_write(qts);
+    g_assert_cmpstr(text, ==, "");
+    g_free(text);
+
+    /* It answers on segment 0 whatever the select byte enabled last. */
+    g_assert_true(bus_txn(qts, 0xf0, line1, sizeof(line1), NULL, 0));
+    select_segment(qts, 0xb8);
+    g_assert_true(bus_txn(qts, 0xf0, line1, sizeof(line1), NULL, 0));
+    text = display_last_write(qts);
+    g_assert_cmpstr(text, ==, "31 4f 4b 20 20 20 20 20 20 20 20 20 20");
+    g_free(text);
+
+    /* The read after its reset is acknowledged and returns zero. */
+    g_assert_true(byte_read(qts, 0xf1, &v));
+    g_assert_cmphex(v, ==, 0);
+
+    /* The one-character form and the longest line are each kept whole. */
+    g_assert_true(bus_txn(qts, 0xf0, one_char, sizeof(one_char), NULL, 0));
+    text = display_last_write(qts);
+    g_assert_cmpstr(text, ==, "33 05 58");
+    g_free(text);
+    for (i = 1; i < 74; i++) {
+        long_line[i] = 'a' + i % 26;
+    }
+    g_assert_true(bus_txn(qts, 0xf0, long_line, 73, NULL, 0));
+    text = display_last_write(qts);
+    g_assert_cmpuint(strlen(text), ==, 73 * 3 - 1);
+    g_assert_true(g_str_has_prefix(text, "36 62 63 "));
+    g_free(text);
+    /* A byte past the longest command is acknowledged and not kept. */
+    g_assert_true(bus_txn(qts, 0xf0, long_line, 74, NULL, 0));
+    text = display_last_write(qts);
+    g_assert_cmpuint(strlen(text), ==, 73 * 3 - 1);
+    g_free(text);
+
+    /* A call that writes nothing does not clear what was shown. */
+    g_assert_true(byte_read(qts, 0xf1, &v));
+    text = display_last_write(qts);
+    g_assert_cmpuint(strlen(text), ==, 73 * 3 - 1);
+    g_free(text);
+
+    /* A machine reset clears it. */
+    qtest_writel(qts, DONE, 0);
+    qtest_system_reset(qts);
+    wait_for(qts, DONE, 1);
+    text = display_last_write(qts);
+    g_assert_cmpstr(text, ==, "");
+    /* The next wire address is not the display. */
+    g_assert_false(answers(qts, 0xf2));
+    quit_all(qts, &f);
+}
+
 /* A system reset clears the monitors' registers. */
 static void test_peers_monitor_reset(void)
 {
@@ -2302,6 +2383,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/peers-monitors", test_peers_monitors);
     qtest_add_func("sgi-l1-board/peers-pimm0-monitors",
                    test_peers_pimm0_monitors);
+    qtest_add_func("sgi-l1-board/peers-display", test_peers_display);
     qtest_add_func("sgi-l1-board/peers-usb", test_peers_usb);
 
 

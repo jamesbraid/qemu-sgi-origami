@@ -33,6 +33,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(EnvMonitor, SGI_L1_MONITOR)
 #define TYPE_SGI_L1_BUS_SELECT "sgi-l1-bus-select"
 OBJECT_DECLARE_SIMPLE_TYPE(BusSelect, SGI_L1_BUS_SELECT)
 
+#define TYPE_SGI_L1_DISPLAY "sgi-l1-display"
+OBJECT_DECLARE_SIMPLE_TYPE(Display, SGI_L1_DISPLAY)
+
 #define SELECT_ADDR7        0x27    /* wire address 0x4e */
 #define SELECT_OFF          0xff    /* every segment off */
 
@@ -64,6 +67,18 @@ struct EnvMonitor {
     uint8_t regs[256];
     uint8_t pointer;
     bool have_pointer;
+};
+
+/* The front-panel display: a byte sink that keeps its last write. */
+#define DISPLAY_ADDR7       0x78    /* wire 0xf0 to write, 0xf1 to read */
+#define DISPLAY_MAX_WRITE   73      /* the longest command: '6' and 72 bytes */
+
+struct Display {
+    SegmentTarget parent_obj;
+
+    uint8_t last[DISPLAY_MAX_WRITE];
+    unsigned len;
+    bool fresh;     /* the next byte starts a new write */
 };
 
 /* Bits 7-4 low enable segments 2-5; bit 3 low and bits 2:0 give 6-13. */
@@ -289,6 +304,87 @@ static void monitor_class_init(ObjectClass *oc, const void *data)
     RESETTABLE_CLASS(oc)->phases.hold = monitor_reset_hold;
 }
 
+static int display_event(I2CSlave *s, enum i2c_event event)
+{
+    if (event == I2C_START_SEND) {
+        SGI_L1_DISPLAY(s)->fresh = true;
+    }
+    return segment_target_event(s, event);
+}
+
+static int display_send(I2CSlave *s, uint8_t data)
+{
+    Display *d = SGI_L1_DISPLAY(s);
+
+    if (d->fresh) {
+        d->len = 0;
+        d->fresh = false;
+    }
+    if (d->len < DISPLAY_MAX_WRITE) {
+        d->last[d->len++] = data;
+    } else {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1-display: write longer than "
+                      "%d bytes, the rest is not kept\n", DISPLAY_MAX_WRITE);
+    }
+    trace_sgi_l1_display_write(data);
+    return 0;
+}
+
+/* The reset read's value is unknown; zero leaves the one-character form off. */
+static uint8_t display_recv(I2CSlave *s)
+{
+    return 0;
+}
+
+/* The last write as hex bytes, command first: a test hook. */
+static char *display_get_last_write(Object *obj, Error **errp)
+{
+    Display *d = SGI_L1_DISPLAY(obj);
+    GString *str = g_string_new(NULL);
+    unsigned i;
+
+    for (i = 0; i < d->len; i++) {
+        g_string_append_printf(str, i ? " %02x" : "%02x", d->last[i]);
+    }
+    return g_string_free(str, false);
+}
+
+static void display_reset_hold(Object *obj, ResetType type)
+{
+    Display *d = SGI_L1_DISPLAY(obj);
+
+    d->len = 0;
+    d->fresh = false;
+}
+
+static const VMStateDescription vmstate_display = {
+    .name = TYPE_SGI_L1_DISPLAY,
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_I2C_SLAVE(parent_obj.parent_obj, Display),
+        VMSTATE_UINT8_ARRAY(last, Display, DISPLAY_MAX_WRITE),
+        VMSTATE_UINT32(len, Display),
+        VMSTATE_BOOL(fresh, Display),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static void display_class_init(ObjectClass *oc, const void *data)
+{
+    I2CSlaveClass *sc = I2C_SLAVE_CLASS(oc);
+    DeviceClass *dc = DEVICE_CLASS(oc);
+
+    sc->event = display_event;
+    sc->send = display_send;
+    sc->recv = display_recv;
+    dc->desc = "SGI L1 board front-panel display";
+    dc->vmsd = &vmstate_display;
+    RESETTABLE_CLASS(oc)->phases.hold = display_reset_hold;
+    object_class_property_add_str(oc, "last-write", display_get_last_write,
+                                  NULL);
+}
+
 /* Chip select 3: only the revision and scratch registers the probe uses. */
 #define USB_WINDOW_SIZE     (64 * KiB)
 #define USB_REVISION_REG    0x18
@@ -415,6 +511,12 @@ static const TypeInfo peer_types[] = {
         .class_init    = monitor_class_init,
     },
     {
+        .name          = TYPE_SGI_L1_DISPLAY,
+        .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
+        .instance_size = sizeof(Display),
+        .class_init    = display_class_init,
+    },
+    {
         .name          = TYPE_SGI_L1_USB_WINDOW,
         .parent        = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(USBWindow),
@@ -462,6 +564,7 @@ static const struct {
 void sgi_l1_cbrick_peers_fit(I2CBus *bus)
 {
     I2CSlave *sel = i2c_slave_new(TYPE_SGI_L1_BUS_SELECT, SELECT_ADDR7);
+    I2CSlave *d;
     int i;
 
     qdev_set_id(DEVICE(sel), g_strdup("l1-bus-select"), &error_abort);
@@ -486,4 +589,7 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus)
                                  &error_abort);
         i2c_slave_realize_and_unref(m, bus, &error_abort);
     }
+    d = i2c_slave_new(TYPE_SGI_L1_DISPLAY, DISPLAY_ADDR7);
+    qdev_set_id(DEVICE(d), g_strdup("l1-display"), &error_abort);
+    i2c_slave_realize_and_unref(d, bus, &error_abort);
 }
