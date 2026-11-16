@@ -831,7 +831,7 @@
               "type": "object",
               "required": ["default", "rating", "reason", "provenance", "sources"],
               "additionalProperties": false,
-              "description": "The default of the l2-controller setting for an Origin 3000 topology whose C-brick L1s have rack-L2 link lines. Authoring it makes every such line name the setting and the offerings list it with this default; a topology that omits it lists the setting only where no R-brick makes the L2 mandatory, off, and leaves the other topologies' links unnamed. The rating is the manual page's word for the default as a launch choice; a default that rests on model runs is an approximation.",
+              "description": "The default of the l2-controller setting for an Origin 3000 topology whose C-brick L1s have rack-L2 link lines. Authoring it makes every such line name the setting and the offerings list it with this default; a topology that omits it lists the setting only on a routerless rack, off, so every rack with L1 links authors it. The rating is the manual page's word for the default as a launch choice; a default that rests on model runs is an approximation.",
               "properties": {
                 "default": { "enum": ["on", "off"] },
                 "rating": { "enum": ["established", "inferred", "approximated"] },

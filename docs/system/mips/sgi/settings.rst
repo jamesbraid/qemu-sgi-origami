@@ -469,7 +469,7 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - the serial lines that name it
      - ``off`` (approximated)
 
-The ``l2-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks`` default ``off`` (approximated); ``onyx3400-ir``, ``origin3400``, ``origin3400-two-partitions`` default ``on`` (approximated). The product's other topologies do not offer it.
+The ``l2-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks``, ``origin3400-two-routers``, ``origin3800``, ``origin3800-64p``, ``origin3800-high-bandwidth`` default ``off`` (approximated); ``onyx3400-ir``, ``origin3400``, ``origin3400-two-partitions`` default ``on`` (approximated). The product's other topologies do not offer it.
 
 ``origin350``
 -------------

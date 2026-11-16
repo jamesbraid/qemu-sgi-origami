@@ -5167,6 +5167,15 @@
           ]
         }
       },
+      "l2_controller": {
+        "default": "off",
+        "provenance": "unsourced",
+        "rating": "approximated",
+        "reason": "Starting the L2 is a launch choice. This topology has never been booted with the L2 attached, so it is not started by default.",
+        "sources": [
+          "qemu:docs/system/mips/sgi/hardware/l1-l2-link.rst"
+        ]
+      },
       "lifecycle": "implemented",
       "machine_name": "origin3000",
       "profile": "origin3800",

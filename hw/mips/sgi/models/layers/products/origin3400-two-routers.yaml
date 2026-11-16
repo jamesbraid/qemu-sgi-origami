@@ -70,6 +70,17 @@ layer:
         choice. The routers answer the model's synthetic diagnostics, which
         no hardware record settles.
       emulation:
+        # A rack with an R-brick holds an L2 (established), but starting
+        # one is a launch choice. Nobody has booted this topology with the
+        # L2 attached, so it stays off.
+        l2_controller:
+          default: "off"
+          rating: approximated
+          reason: >-
+            Starting the L2 is a launch choice. This topology has never been
+            booted with the L2 attached, so it is not started by default.
+          provenance: unsourced
+          sources: ["qemu:docs/system/mips/sgi/hardware/l1-l2-link.rst"]
         bedrock_nodes:
           c0-bedrock: &cbrick-bedrock
             # Product code 0 in bits 15:12 is a C-brick to OpenBSD and the

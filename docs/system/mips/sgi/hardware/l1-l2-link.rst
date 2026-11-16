@@ -78,8 +78,13 @@ controller in the selected topology, the same numbering as
   topologies) name it, off by default. So do the Origin 3400, its
   two-partition form and the Onyx 3400 with InfiniteReality (the
   ``origin3400``, ``origin3400-two-partitions`` and ``onyx3400-ir``
-  topologies), on by default. The other router topologies name no
-  setting. The owner's guides split the cases by rack height: the L2 is
+  topologies), on by default. The two-router Origin 3400 and the Origin
+  3800 topologies (``origin3400-two-routers``, ``origin3800``,
+  ``origin3800-high-bandwidth`` and ``origin3800-64p``) name it too, off
+  by default. ``--set l2-controller=on`` is accepted on them and untested;
+  it was refused as an unknown setting before, and they were never booted
+  with the L2.
+  The owner's guides split the cases by rack height: the L2 is
   included with every tall rack that holds C-bricks, optional in a short
   rack, and required with an R-brick (:src:`007-4311-002 p. 42`,
   :src:`007-4240-002 p. 6, 15, 75, 82-83`, :src:`007-4264-002 p. 24, 26,
@@ -97,8 +102,8 @@ controller in the selected topology, the same numbering as
   Origin 3400 and the Onyx 3400 reached the PROM menu and no further.
   Apart from timing, NIC ids and the interleaving of one boot line, the
   console output matched a run without the L2. The Origin 3800 topologies
-  and the two-router Origin 3400 have never been booted with it and keep
-  no default. This list is written by hand: change it with the
+  and the two-router Origin 3400 have never been booted with it, so they
+  start without it. This list is written by hand: change it with the
   ``l2_controller`` record in the model files.
 
 ``controller-l2-partition-flag.N=<index>=<0 to 3>``

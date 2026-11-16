@@ -1241,7 +1241,7 @@ def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
     a proxy, to be revisited if a routerless tall rack is added. Only the
     optional links name the l2-controller setting that fits them, and so
     do the links of a model that authors the setting's default
-    (@authored), which is how a mandatory L2 is started by default."""
+    (@authored), a default of on or off."""
     optional = not topology["routers"] or authored
     lines = []
     for index, controller in enumerate(topology["controllers"]):

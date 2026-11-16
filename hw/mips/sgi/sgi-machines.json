@@ -36853,7 +36853,8 @@
           "kind": "l2-link",
           "name": "l2-link",
           "node": 0,
-          "property": "controller-l2-chardev.0"
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node1",
@@ -36861,7 +36862,8 @@
           "kind": "l2-link",
           "name": "l2-link-node1",
           "node": 1,
-          "property": "controller-l2-chardev.1"
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node2",
@@ -36869,7 +36871,8 @@
           "kind": "l2-link",
           "name": "l2-link-node2",
           "node": 2,
-          "property": "controller-l2-chardev.2"
+          "property": "controller-l2-chardev.2",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node3",
@@ -36877,7 +36880,8 @@
           "kind": "l2-link",
           "name": "l2-link-node3",
           "node": 3,
-          "property": "controller-l2-chardev.3"
+          "property": "controller-l2-chardev.3",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -36910,6 +36914,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -39992,7 +40002,8 @@
           "kind": "l2-link",
           "name": "l2-link",
           "node": 0,
-          "property": "controller-l2-chardev.0"
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node1",
@@ -40000,7 +40011,8 @@
           "kind": "l2-link",
           "name": "l2-link-node1",
           "node": 1,
-          "property": "controller-l2-chardev.1"
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node2",
@@ -40008,7 +40020,8 @@
           "kind": "l2-link",
           "name": "l2-link-node2",
           "node": 2,
-          "property": "controller-l2-chardev.2"
+          "property": "controller-l2-chardev.2",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node3",
@@ -40016,7 +40029,8 @@
           "kind": "l2-link",
           "name": "l2-link-node3",
           "node": 3,
-          "property": "controller-l2-chardev.3"
+          "property": "controller-l2-chardev.3",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node4",
@@ -40024,7 +40038,8 @@
           "kind": "l2-link",
           "name": "l2-link-node4",
           "node": 4,
-          "property": "controller-l2-chardev.4"
+          "property": "controller-l2-chardev.4",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node5",
@@ -40032,7 +40047,8 @@
           "kind": "l2-link",
           "name": "l2-link-node5",
           "node": 5,
-          "property": "controller-l2-chardev.5"
+          "property": "controller-l2-chardev.5",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node6",
@@ -40040,7 +40056,8 @@
           "kind": "l2-link",
           "name": "l2-link-node6",
           "node": 6,
-          "property": "controller-l2-chardev.6"
+          "property": "controller-l2-chardev.6",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node7",
@@ -40048,7 +40065,8 @@
           "kind": "l2-link",
           "name": "l2-link-node7",
           "node": 7,
-          "property": "controller-l2-chardev.7"
+          "property": "controller-l2-chardev.7",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node8",
@@ -40056,7 +40074,8 @@
           "kind": "l2-link",
           "name": "l2-link-node8",
           "node": 8,
-          "property": "controller-l2-chardev.8"
+          "property": "controller-l2-chardev.8",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node9",
@@ -40064,7 +40083,8 @@
           "kind": "l2-link",
           "name": "l2-link-node9",
           "node": 9,
-          "property": "controller-l2-chardev.9"
+          "property": "controller-l2-chardev.9",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node10",
@@ -40072,7 +40092,8 @@
           "kind": "l2-link",
           "name": "l2-link-node10",
           "node": 10,
-          "property": "controller-l2-chardev.10"
+          "property": "controller-l2-chardev.10",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node11",
@@ -40080,7 +40101,8 @@
           "kind": "l2-link",
           "name": "l2-link-node11",
           "node": 11,
-          "property": "controller-l2-chardev.11"
+          "property": "controller-l2-chardev.11",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node12",
@@ -40088,7 +40110,8 @@
           "kind": "l2-link",
           "name": "l2-link-node12",
           "node": 12,
-          "property": "controller-l2-chardev.12"
+          "property": "controller-l2-chardev.12",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node13",
@@ -40096,7 +40119,8 @@
           "kind": "l2-link",
           "name": "l2-link-node13",
           "node": 13,
-          "property": "controller-l2-chardev.13"
+          "property": "controller-l2-chardev.13",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node14",
@@ -40104,7 +40128,8 @@
           "kind": "l2-link",
           "name": "l2-link-node14",
           "node": 14,
-          "property": "controller-l2-chardev.14"
+          "property": "controller-l2-chardev.14",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node15",
@@ -40112,7 +40137,8 @@
           "kind": "l2-link",
           "name": "l2-link-node15",
           "node": 15,
-          "property": "controller-l2-chardev.15"
+          "property": "controller-l2-chardev.15",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -40145,6 +40171,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -40640,7 +40672,8 @@
           "kind": "l2-link",
           "name": "l2-link",
           "node": 0,
-          "property": "controller-l2-chardev.0"
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node1",
@@ -40648,7 +40681,8 @@
           "kind": "l2-link",
           "name": "l2-link-node1",
           "node": 1,
-          "property": "controller-l2-chardev.1"
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node2",
@@ -40656,7 +40690,8 @@
           "kind": "l2-link",
           "name": "l2-link-node2",
           "node": 2,
-          "property": "controller-l2-chardev.2"
+          "property": "controller-l2-chardev.2",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node3",
@@ -40664,7 +40699,8 @@
           "kind": "l2-link",
           "name": "l2-link-node3",
           "node": 3,
-          "property": "controller-l2-chardev.3"
+          "property": "controller-l2-chardev.3",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node4",
@@ -40672,7 +40708,8 @@
           "kind": "l2-link",
           "name": "l2-link-node4",
           "node": 4,
-          "property": "controller-l2-chardev.4"
+          "property": "controller-l2-chardev.4",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node5",
@@ -40680,7 +40717,8 @@
           "kind": "l2-link",
           "name": "l2-link-node5",
           "node": 5,
-          "property": "controller-l2-chardev.5"
+          "property": "controller-l2-chardev.5",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node6",
@@ -40688,7 +40726,8 @@
           "kind": "l2-link",
           "name": "l2-link-node6",
           "node": 6,
-          "property": "controller-l2-chardev.6"
+          "property": "controller-l2-chardev.6",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node7",
@@ -40696,7 +40735,8 @@
           "kind": "l2-link",
           "name": "l2-link-node7",
           "node": 7,
-          "property": "controller-l2-chardev.7"
+          "property": "controller-l2-chardev.7",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -40729,6 +40769,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
@@ -41176,7 +41222,8 @@
           "kind": "l2-link",
           "name": "l2-link",
           "node": 0,
-          "property": "controller-l2-chardev.0"
+          "property": "controller-l2-chardev.0",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node1",
@@ -41184,7 +41231,8 @@
           "kind": "l2-link",
           "name": "l2-link-node1",
           "node": 1,
-          "property": "controller-l2-chardev.1"
+          "property": "controller-l2-chardev.1",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node2",
@@ -41192,7 +41240,8 @@
           "kind": "l2-link",
           "name": "l2-link-node2",
           "node": 2,
-          "property": "controller-l2-chardev.2"
+          "property": "controller-l2-chardev.2",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node3",
@@ -41200,7 +41249,8 @@
           "kind": "l2-link",
           "name": "l2-link-node3",
           "node": 3,
-          "property": "controller-l2-chardev.3"
+          "property": "controller-l2-chardev.3",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node4",
@@ -41208,7 +41258,8 @@
           "kind": "l2-link",
           "name": "l2-link-node4",
           "node": 4,
-          "property": "controller-l2-chardev.4"
+          "property": "controller-l2-chardev.4",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node5",
@@ -41216,7 +41267,8 @@
           "kind": "l2-link",
           "name": "l2-link-node5",
           "node": 5,
-          "property": "controller-l2-chardev.5"
+          "property": "controller-l2-chardev.5",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node6",
@@ -41224,7 +41276,8 @@
           "kind": "l2-link",
           "name": "l2-link-node6",
           "node": 6,
-          "property": "controller-l2-chardev.6"
+          "property": "controller-l2-chardev.6",
+          "setting": "l2-controller"
         },
         {
           "chardev": "l2_node7",
@@ -41232,7 +41285,8 @@
           "kind": "l2-link",
           "name": "l2-link-node7",
           "node": 7,
-          "property": "controller-l2-chardev.7"
+          "property": "controller-l2-chardev.7",
+          "setting": "l2-controller"
         }
       ],
       "setting-groups": [],
@@ -41265,6 +41319,12 @@
           "default": "0x935",
           "default-provenance": "inferred",
           "name": "fpu-id",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "l2-controller",
           "required": false
         }
       ],
