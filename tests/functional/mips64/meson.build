@@ -323,6 +323,8 @@ test_mips64_timeouts = {
   # own comment in test_xframe_pci.py); 360 keeps the usual 60s margin
   # over that file's own 300s budget.
   'xframe_pci' : 360,
+  # 60 s of wall-clock recording plus start-up and the analysis.
+  'display_realtime' : 300,
 }
 
 tests_mips64_system_quick = [
@@ -342,6 +344,7 @@ tests_mips64_system_quick = [
 ]
 
 tests_mips64_system_thorough = [
+  'display_realtime',
   'origin200_prom',
   'origin200_record_replay',
   'origin200_gigachannel_prom',

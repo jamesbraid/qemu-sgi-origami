@@ -768,6 +768,7 @@ tests/functional/mips64/roms/xkphys.c
 tests/functional/mips64/roms/xtlbvector.c
 tests/functional/mips64/smdk-matrix
 tests/functional/mips64/test_display_probe.py
+tests/functional/mips64/test_display_realtime.py
 tests/functional/mips64/test_graphics_matrix.py
 tests/functional/mips64/test_graphics_matrix_thorough.py
 tests/functional/mips64/test_irix_diag.py
