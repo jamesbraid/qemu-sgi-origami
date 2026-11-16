@@ -1138,6 +1138,23 @@ sees the source go quiet. Writes setting the emulation or fast-clock bits (12,
 receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the
 write, so the write-pending status never reads set.
 
+A command written to the mouse port is answered before anything the
+mouse streamed and the controller has not yet taken: those bytes are
+dropped when the command goes out. A mouse keeps only its latest movement
+packet for the wire and resets its movement counters on every command but
+resend (Adam Chapweske, *The PS/2 Mouse Interface* and *The PS/2
+Mouse/Keyboard Protocol*), so its answer is the next thing it says,
+*inferred*. QEMU's generic mouse would instead queue every packet and put
+its answer behind them. IRIX 6.5.30's kernel probes the mouse with Get
+Device ID after the :term:`PROM` has enabled reporting and a clamp has
+held the mouse, without disabling reporting first, *software
+expectation*. Replies to earlier
+commands still waiting in the device are kept, and so are streamed bytes
+caught behind them. That the stored packet is dropped rather than sent
+after the answer is an *approximation*; a capture of a mouse's line
+across a command sent while it has a packet pending would settle it. The
+keyboard port is unchanged.
+
 On a board without PS/2 ports, such as the Origin 300 IO-8 board, the
 bank still decodes and control reads back what was written, but there is
 no device: transmit writes log ``LOG_UNIMP`` and draw no reply, and

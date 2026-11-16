@@ -140,6 +140,9 @@ static void sgi_ioc3_kbc_fill(SGIIOC3KBCState *s, unsigned int port)
         if (now >= p->ready_at) {
             uint8_t byte = ps2_read_data(ps2);
 
+            if (p->reply) {
+                p->reply--;
+            }
             p->ready_at = now + SGI_IOC3_KBC_CHAR_NS;
             if (p->count >= SGI_IOC3_KBC_RX_SLOTS) {
                 trace_sgi_ioc3_kbc_overflow(port, byte);
@@ -229,6 +232,51 @@ static uint32_t sgi_ioc3_kbc_receive(SGIIOC3KBCState *s, unsigned int port)
     return val;
 }
 
+/*
+ * The guest sends the mouse a command. A mouse keeps only its latest
+ * movement packet for the wire and resets its movement counters on any
+ * command but resend (Adam Chapweske, "The PS/2 Mouse Interface" and "The
+ * PS/2 Mouse/Keyboard Protocol"), so the answer to the command is the next
+ * thing it says. The generic ps2 mouse instead queues every packet it was
+ * given and puts its answer behind them: a mouse that moved while a clamp
+ * held its clock (IRIX's kernel takes over from the PROM that way) would
+ * answer a probe with stale motion, and IRIX's driver, which sends commands
+ * without disabling the stream first, then pairs every later answer with the
+ * wrong command and leaves the pointer dead.
+ *
+ * So what the mouse streamed and the controller has not taken is dropped
+ * before the command goes out. Answers to earlier commands still waiting in
+ * the device are kept, and so is anything streamed behind them, which the
+ * queue cannot reach. Model approximation: that the mouse drops its stored
+ * packet rather than sending it after the answer is inferred from the reset
+ * of its counters.
+ */
+static void sgi_ioc3_kbc_mouse_command(SGIIOC3KBCState *s, uint8_t val)
+{
+    SGIIOC3KBCPort *p = &s->port[SGI_IOC3_KBC_PORT_AUX];
+    PS2State *ps2 = PS2_DEVICE(&s->mouse);
+
+    if (!p->reply && !ps2_queue_empty(ps2)) {
+        unsigned int dropped = 0;
+
+        /* Each pop re-raises the device's line; nothing may land here. */
+        s->filling = true;
+        while (!ps2_queue_empty(ps2)) {
+            ps2_read_data(ps2);
+            dropped++;
+        }
+        s->filling = false;
+        trace_sgi_ioc3_kbc_stream_dropped(dropped);
+    }
+    ps2_write_mouse(&s->mouse, val);
+    /*
+     * Everything the device now holds counts as an answer: the reply to this
+     * command, earlier replies, and any streamed bytes caught behind them,
+     * which are never dropped once a reply stands in front of them.
+     */
+    p->reply = ps2->queue.count;
+}
+
 static uint64_t sgi_ioc3_kbc_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC3KBCState *s = SGI_IOC3_KBC(opaque);
@@ -296,7 +344,7 @@ static void sgi_ioc3_kbc_write(void *opaque, hwaddr addr, uint64_t val,
         if (addr == SGI_IOC3_KBC_KBD_TRANSMIT) {
             ps2_write_keyboard(&s->kbd, val & 0xff);
         } else {
-            ps2_write_mouse(&s->mouse, val & 0xff);
+            sgi_ioc3_kbc_mouse_command(s, val & 0xff);
         }
         return;
 
@@ -397,6 +445,7 @@ static void sgi_ioc3_kbc_reset_hold(Object *obj, ResetType type)
         p->overflow = false;
         p->stopped = false;
         p->ready_at = 0;
+        p->reply = 0;
         if (p->timer) {
             timer_del(p->timer);
         }
@@ -440,6 +489,25 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc_port_timer = {
     }
 };
 
+static bool sgi_ioc3_kbc_reply_needed(void *opaque)
+{
+    SGIIOC3KBCPort *p = opaque;
+
+    return p->reply != 0;
+}
+
+/* Which of the device's characters answer a command decides what it drops. */
+static const VMStateDescription vmstate_sgi_ioc3_kbc_port_reply = {
+    .name = "sgi-ioc3-kbc/port/reply",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc3_kbc_reply_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT16(reply, SGIIOC3KBCPort),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_sgi_ioc3_kbc_port = {
     .name = "sgi-ioc3-kbc/port",
     .version_id = 2,
@@ -454,6 +522,7 @@ static const VMStateDescription vmstate_sgi_ioc3_kbc_port = {
     },
     .subsections = (const VMStateDescription * const []) {
         &vmstate_sgi_ioc3_kbc_port_timer,
+        &vmstate_sgi_ioc3_kbc_port_reply,
         NULL
     }
 };

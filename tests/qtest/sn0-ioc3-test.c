@@ -1611,6 +1611,84 @@ static void test_the_ps2_clamp_after_one_splits_a_reply(const void *data)
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE), ==, 0);
 }
 
+/* One relative mouse move, which the enabled ps2 mouse sends as a packet. */
+static void ps2_mouse_move(QTestState *qts, int dx)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{ 'execute': 'input-send-event', 'arguments': "
+        "{ 'events': [ { 'type': 'rel', 'data': "
+        "{ 'axis': 'x', 'value': %d } } ] } }", dx);
+
+    if (!qdict_haskey(resp, "return")) {
+        g_autoptr(GString) text = qobject_to_json(QOBJECT(resp));
+
+        g_error("input-send-event rel %d failed: %s", dx, text->str);
+    }
+    qobject_unref(resp);
+}
+
+/* One mouse character alone in the oldest slot, with the aux source bit. */
+#define KBC_AUX_ONE(b)    (0x88000000u | ((uint32_t)(b) << 16))
+
+/*
+ * A command to a mouse that streamed while a clamp held it is answered first.
+ * The clamp-after-one stops the mouse after the first byte of its motion; the
+ * read releases the clamp, and the command that follows at once must not be
+ * answered with the rest of that motion. IRIX probes the mouse this way when
+ * its kernel takes over from the PROM, and a stale answer leaves its pointer
+ * dead.
+ */
+static void test_the_ps2_mouse_command_drops_its_stream(const void *data)
+{
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+    qtest_writel(qts, KBC_CONTROL, KBC_M_CLAMP_1);
+
+    /* Enable data reporting. */
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xf4);
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, KBC_AUX_ONE(0xfa));
+
+    /* Two packets: the first byte lands and the clamp holds the other five. */
+    ps2_mouse_move(qts, 10);
+    ps2_mouse_move(qts, 20);
+    qtest_clock_step(qts, KBC_WIRE_NS(1));
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, KBC_AUX_ONE(0x08));
+
+    /* Get device ID: its ACK and ID come next, and nothing streamed after. */
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xf2);
+    qtest_clock_step(qts, KBC_WIRE_NS(1));
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, KBC_AUX_ONE(0xfa));
+    qtest_clock_step(qts, KBC_WIRE_NS(1));
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, KBC_AUX_ONE(0x00));
+    qtest_clock_step(qts, KBC_WIRE_NS(4));
+    g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==, 0);
+}
+
+/*
+ * A command sent before the answer to the last one has been read keeps that
+ * answer: IRIX sets the sample rate while the reset's self-test bytes are
+ * still on their way, and expects them before the new ACK.
+ */
+static void test_the_ps2_mouse_command_keeps_earlier_replies(const void *data)
+{
+    static const uint8_t reply[] = { 0xfa, 0xaa, 0x00, 0xfa };
+    unsigned int i;
+
+    ioc3_reset();
+
+    sn0_ioc3_attach(qts);
+    qtest_writel(qts, KBC_CONTROL, KBC_M_CLAMP_1);
+
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xff);
+    qtest_writel(qts, KBC_AUX_TRANSMIT, 0xf3);
+    for (i = 0; i < ARRAY_SIZE(reply); i++) {
+        qtest_clock_step(qts, KBC_WIRE_NS(1));
+        g_assert_cmphex(qtest_readl(qts, KBC_AUX_RECEIVE), ==,
+                        KBC_AUX_ONE(reply[i]));
+    }
+}
+
 /*
  * A migration in the middle of a backlog must arrive with the interrupt still
  * owed. Everything that decides the next interrupt crosses in the stream: the
@@ -7180,6 +7258,10 @@ int main(int argc, char **argv)
                         test_the_ps2_receive_overflows_without_a_clamp);
     qtest_add_data_func("sn0/ioc3/ps2-clamp-after-one-splits-a-reply", NULL,
                         test_the_ps2_clamp_after_one_splits_a_reply);
+    qtest_add_data_func("sn0/ioc3/ps2-mouse-command-drops-its-stream", NULL,
+                        test_the_ps2_mouse_command_drops_its_stream);
+    qtest_add_data_func("sn0/ioc3/ps2-mouse-command-keeps-earlier-replies",
+                        NULL, test_the_ps2_mouse_command_keeps_earlier_replies);
     qtest_add_data_func("sn0/ioc3/ps2-empty-core", NULL,
                         test_empty_ps2_core);
     qtest_add_data_func("sn0/ioc3/ps2-empty-core-migration", NULL,

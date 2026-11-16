@@ -150,6 +150,12 @@ typedef struct SGIIOC3KBCPort {
      * on a controller that has ports.
      */
     QEMUTimer *timer;
+    /*
+     * Of the characters still in the device, how many at the front answer a
+     * command the guest sent; the rest are what it streamed on its own. Kept
+     * for the mouse port, where a command drops what the mouse streamed.
+     */
+    uint16_t reply;
 } SGIIOC3KBCPort;
 
 struct SGIIOC3KBCState {
