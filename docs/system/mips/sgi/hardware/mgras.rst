@@ -1374,6 +1374,16 @@ VC2 model and the rates SGI's timing compiler records. ``0x072408`` bit 24
 selects another PLL reference that no shipped table uses; the model's 64 MHz
 for it is a placeholder, *unknown*.
 
+The ``1280x1024_60_2f`` timing, a field-sequential stereo format, ships on the
+IRIX 6.5.30 media: a frame table of 2133 lines, 1,791,720 clocks, with the PLL
+at ``r`` 2, ``v`` 4, ``cntl`` ``0x91``, the values our timing-file note gives
+for this format. The shipped file (``1280x1024_60_2f.sdb``, SHA-256 prefix
+``86b511ee8c39``) records a nominal pixel clock of 107.248776 MHz, which gives
+29.929 Hz, *software expectation*. The programmed PLL gives 107.25 MHz and
+29.9293 Hz, *inferred*. The model's period is that rate, not NTSC's 30000/1001
+Hz. Whether the VC3 signals one retrace per pass of the table or one per field
+is *unknown*.
+
 Deriving the period only at the enable write, restarting the phase only
 when the period changes, and running the stock period before any table is
 loaded or for a table that gives no frame or one under 1 ms are
