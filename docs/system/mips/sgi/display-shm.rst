@@ -718,8 +718,26 @@ position into relative motion by closing a loop on the guest cursor:
   nothing on 2 steps in a row stops.
 - The move ends when neither axis has a step left, after 32 steps, or 2
   seconds of guest time after the target was given, however the cursor
-  keeps moving. A new absolute target,
-  or any relative message, replaces a pending one.
+  keeps moving. A relative message ends a pending move.
+- A new absolute target for the same head while a step is in flight moves
+  the target and nothing else: no packet goes out until the guest has
+  answered the step in flight, and the next one is sized for the newest
+  target. Each axis keeps its gain, forgets which steps overshot the old
+  target, and the budget of 32 steps and 2 seconds starts again, so a
+  pointer that keeps moving is followed for as long as it moves.
+- While targets keep arriving (the last within 50 ms of guest time), QEMU
+  aims ahead of the pointer along each axis by 0.6 times the distance the
+  pointer covers in the time a step takes to land (an average of recent
+  steps, at most 150 ms, and the lead at most 200 pixels), with the
+  pointer's speed a running average over its targets at least 4 ms apart
+  (half the old speed, half the newest). A pointer that has stopped is
+  aimed at exactly, as is an axis that moved nothing on its last step (the
+  lead may point past the edge of the screen), and a move that has nothing
+  left to send at the lead is tried again at the target. The factor is an
+  *approximation*: on IRIX 6.5.30 with the VPro, with the pointer moving at
+  600 to 3000 pixels a second, 0.5 to 0.7 cut the mean distance between the
+  guest cursor and the pointer to about 60 to 70 percent of aiming at the
+  target itself, and 0.85 overshot on turns.
 - When the guest cursor is on another head than the target, QEMU does not
   know how the guest arranged its screens, so there is no target to close on.
   It sends the difference from the last absolute position the viewer gave for

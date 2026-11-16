@@ -18,6 +18,12 @@
  * one packet in flight at a time, a gain measured afresh for every step of
  * every target, and on each axis a step never as large as one that already
  * overshot the target, so the steps shrink toward the end.
+ *
+ * A pointer that keeps moving gives a new target faster than the guest
+ * answers. A target that arrives with a step in flight only moves the target:
+ * the next step is sized when the answer comes. QEMU also aims ahead of the
+ * pointer by the distance it covers while a step lands, so the cursor
+ * follows closely instead of behind.
  */
 #include "qemu/osdep.h"
 #include <math.h>
@@ -52,6 +58,17 @@
 
 #define KEY_CODE_MAX 0x2ff
 
+/* A pointer that sent no target for this long has stopped. */
+#define LEAD_QUIET_MS 50
+#define LEAD_MAX 200
+/*
+ * Of the distance the pointer covers in one step's time, how much to aim
+ * ahead. Measured with the pointer moving at 600 to 3000 px/s on IRIX: 0.5 to
+ * 0.7 cut the error to 60 to 70 percent of aiming at the target, and 0.85
+ * started to overshoot on turns.
+ */
+#define LEAD_GAIN 0.6
+
 typedef struct AbsAxis {
     int32_t target;
     int32_t from;               /* the cursor when the last step went out */
@@ -61,6 +78,7 @@ typedef struct AbsAxis {
     double gain;                /* pixels a count moved on the last step */
     int32_t limit;              /* below every step that overshot */
     unsigned held;              /* steps in a row that moved nothing */
+    bool moved_target;          /* the target moved since the step went out */
 } AbsAxis;
 
 static struct {
@@ -71,6 +89,12 @@ static struct {
     AbsAxis ax[2];
     int64_t deadline;
     QEMUTimer *timer;
+    /* The host pointer's recent motion, in guest milliseconds. */
+    int64_t ev_ms;              /* when the last target arrived */
+    int32_t ev_x, ev_y;         /* ... and what it was */
+    double vel[2];              /* px per ms, smoothed */
+    int64_t step_ms;            /* when the step in flight went out */
+    double cycle_ms;            /* how long a step takes to land */
     /* Where the host pointer was last put on each head (host pixels). */
     bool have_host[SGI_SHM_MAX_HEADS];
     int32_t hx[SGI_SHM_MAX_HEADS], hy[SGI_SHM_MAX_HEADS];
@@ -83,6 +107,49 @@ static uint64_t buttons_down;
 static int64_t guest_ms(void)
 {
     return qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+}
+
+/*
+ * Where to aim for one axis: the target, and a little beyond it in the
+ * direction the host pointer is moving, by the distance it covers while a
+ * step lands. A pointer that has stopped (no target for LEAD_QUIET_MS) is aimed
+ * at exactly.
+ */
+static int32_t axis_aim(int i, bool lead_on)
+{
+    double lead;
+
+    /*
+     * An axis that moved nothing on the last step may be pinned at the edge
+     * of the screen by a lead that points past it: aim at the target.
+     */
+    if (!lead_on || loop.ax[i].held ||
+        guest_ms() - loop.ev_ms > LEAD_QUIET_MS) {
+        return loop.ax[i].target;
+    }
+    lead = loop.vel[i] * loop.cycle_ms * LEAD_GAIN;
+    lead = MAX(-LEAD_MAX, MIN(LEAD_MAX, lead));
+    return loop.ax[i].target + (int32_t)lround(lead);
+}
+
+/* A new target from the host: update the pointer's velocity, or restart it. */
+static void note_target(int32_t x, int32_t y, bool first)
+{
+    int64_t now = guest_ms(), dt = now - loop.ev_ms;
+    const int32_t t[2] = { x, y }, p[2] = { loop.ev_x, loop.ev_y };
+
+    if (first || dt > LEAD_QUIET_MS) {
+        loop.vel[0] = loop.vel[1] = 0;
+    } else if (dt >= 4) {
+        for (int i = 0; i < 2; i++) {
+            loop.vel[i] = 0.5 * loop.vel[i] + 0.5 * (t[i] - p[i]) / (double)dt;
+        }
+    } else {
+        return;                 /* a burst: keep the older sample */
+    }
+    loop.ev_ms = now;
+    loop.ev_x = x;
+    loop.ev_y = y;
 }
 
 static void abs_stop(const char *why)
@@ -137,7 +204,7 @@ static void axis_learn(AbsAxis *a, int32_t moved)
         return;
     }
     a->gain = MAX(GAIN_MIN, MIN(GAIN_MAX, (double)moved / a->sent));
-    if (abs(moved) > abs(a->err)) {
+    if (!a->moved_target && abs(moved) > abs(a->err)) {
         /* Past the target: never send that many counts again. */
         a->limit = MAX(1, MIN(a->limit, abs(a->sent) - 1));
     }
@@ -161,18 +228,28 @@ static bool abs_step(void)
         abs_stop("out of time");
         return false;
     }
-    for (int i = 0; i < 2; i++) {
-        AbsAxis *a = &loop.ax[i];
+    /*
+     * A step that has nowhere to go ahead of the pointer is tried again at
+     * the target itself: the move is not over while the cursor is at the
+     * lead and the pointer is not.
+     */
+    for (int pass = 0; pass < 2 && !queued; pass++) {
+        for (int i = 0; i < 2; i++) {
+            AbsAxis *a = &loop.ax[i];
 
-        a->from = c[i];
-        a->err = a->target - c[i];
-        a->sent = axis_step(a);
-        if (a->sent) {
-            a->last = a->sent;
-            qemu_input_queue_rel(NULL, i ? INPUT_AXIS_Y : INPUT_AXIS_X,
-                                 a->sent);
-            queued = true;
+            a->from = c[i];
+            a->err = axis_aim(i, pass == 0) - c[i];
+            a->sent = axis_step(a);
+            if (a->sent) {
+                a->last = a->sent;
+                qemu_input_queue_rel(NULL, i ? INPUT_AXIS_Y : INPUT_AXIS_X,
+                                     a->sent);
+                queued = true;
+            }
         }
+    }
+    for (int i = 0; i < 2; i++) {
+        loop.ax[i].moved_target = false;
     }
     if (!queued) {
         abs_stop(loop.ax[0].err || loop.ax[1].err ? "as close as it gets"
@@ -184,6 +261,11 @@ static bool abs_step(void)
                                (int)(loop.ax[1].gain * 1000));
     loop.steps++;
     loop.answered = false;
+    if (loop.step_ms) {
+        double took = guest_ms() - loop.step_ms;
+        loop.cycle_ms = 0.7 * loop.cycle_ms + 0.3 * MIN(took, 150.0);
+    }
+    loop.step_ms = guest_ms();
     timer_mod(loop.timer, guest_ms() + ABS_ANSWER_MS);
     return true;
 }
@@ -273,6 +355,30 @@ void sgi_display_input_reader_gone(void)
     }
 }
 
+/*
+ * A new target while a step is in flight. Each axis keeps its measured gain
+ * but forgets what overshot the old target, and the budget of steps and time
+ * starts again: a pointer that keeps moving is a new target every time, not a
+ * loop that fails to converge.
+ */
+static void retarget(int32_t x, int32_t y)
+{
+    const int32_t t[2] = { x, y };
+
+    for (int i = 0; i < 2; i++) {
+        AbsAxis *a = &loop.ax[i];
+
+        if (a->target != t[i]) {
+            a->target = t[i];
+            a->limit = STEP_MAX;
+            a->held = 0;
+            a->moved_target = true;
+        }
+    }
+    loop.steps = 0;
+    loop.deadline = guest_ms() + ABS_TTL_MS;
+}
+
 static bool input_absolute(const SGIShmMsgInput *in)
 {
     unsigned head = in->head;
@@ -312,18 +418,35 @@ static bool input_absolute(const SGIShmMsgInput *in)
         if (!loop.timer) {
             loop.timer = timer_new_ms(QEMU_CLOCK_VIRTUAL, abs_timer, NULL);
         }
-        sgi_display_head_cursor(head, &cx, &cy, &on);
-        trace_sgi_display_abs_target(head, in->x, in->y, cx, cy);
-        loop.pending = true;
-        loop.head = head;
-        loop.steps = 0;
-        /* The guest's gain depends on the step, so each target relearns it. */
-        loop.ax[0] = (AbsAxis) { .target = in->x, .gain = 1.0,
-                                 .limit = STEP_MAX };
-        loop.ax[1] = (AbsAxis) { .target = in->y, .gain = 1.0,
-                                 .limit = STEP_MAX };
-        loop.deadline = guest_ms() + ABS_TTL_MS;
-        queued = abs_step();
+        if (loop.pending && loop.head == head) {
+            /*
+             * The host pointer is still moving. A step is in flight, and
+             * until the guest answers it QEMU does not know where its cursor
+             * will be, so a second packet would be sized from a stale
+             * position and pile onto the first. Move the target; the answer
+             * to that step sizes the next one toward it.
+             */
+            note_target(in->x, in->y, false);
+            retarget(in->x, in->y);
+        } else {
+            sgi_display_head_cursor(head, &cx, &cy, &on);
+            trace_sgi_display_abs_target(head, in->x, in->y, cx, cy);
+            note_target(in->x, in->y, true);
+            loop.step_ms = 0;
+            if (loop.cycle_ms < 20) {
+                loop.cycle_ms = 60;
+            }
+            loop.pending = true;
+            loop.head = head;
+            loop.steps = 0;
+            /* The gain depends on the step, so each target relearns it. */
+            loop.ax[0] = (AbsAxis) { .target = in->x, .gain = 1.0,
+                                     .limit = STEP_MAX };
+            loop.ax[1] = (AbsAxis) { .target = in->y, .gain = 1.0,
+                                     .limit = STEP_MAX };
+            loop.deadline = guest_ms() + ABS_TTL_MS;
+            queued = abs_step();
+        }
     }
     loop.have_host[head] = true;
     loop.hx[head] = in->x;

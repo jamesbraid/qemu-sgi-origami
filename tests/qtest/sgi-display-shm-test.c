@@ -1369,6 +1369,12 @@ static int irix_accel(int n)
     return n < 0 ? -(a <= 4 ? a : 2 * a - 4) : (a <= 4 ? a : 2 * a - 4);
 }
 
+/* A guest that moves one pixel a count, as the PROM does. */
+static int linear_accel(int n)
+{
+    return n;
+}
+
 /* A steeper guest: one count is one pixel, n above that 4n - 3. */
 static int steep_accel(int n)
 {
@@ -1572,6 +1578,102 @@ static void test_input_absolute_loop(void)
     qtest_clock_step(qts, ANSWER_MS * 1000 * 1000);
     guest_cursor(qts, 20, 8, true);
     g_assert_false(next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS));
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A viewer whose pointer keeps moving sends a new target before the guest
+ * has answered the step in flight. QEMU holds the next step until that
+ * answer, then sizes it for the newest target, rather than sending a packet
+ * for every target from a cursor position that is already out of date.
+ */
+static void test_input_absolute_retarget(void)
+{
+    static const int moving[][2] = {
+        { 600, 500 }, { 700, 520 }, { 800, 560 }, { 900, 640 }, { 1000, 300 },
+    };
+    int sock, dx, dy;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = irix_accel,
+                   .max_x = HEAD_W - 1, .max_y = HEAD_H - 1,
+                   .x = 640, .y = 512 };
+    uint8_t b[32];
+    Msg m;
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    for (unsigned i = 0; i < ARRAY_SIZE(moving); i++) {
+        fill_input(b, i + 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0,
+                   moving[i][0], moving[i][1]);
+        send_all(sock, b, sizeof(b));
+        expect_msg(sock, &m, 0x85);
+    }
+    /* One packet, for the first target, and no more until it is answered. */
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g_assert_cmpint(dx, ==, 600 - 640);
+    g_assert_cmpint(dy, ==, 500 - 512);
+    g_assert_false(next_packet(qts, &dx, &dy, SETTLE_MS - 1));
+    g.x += irix_accel(dx);
+    g.y += irix_accel(dy);
+    sim_report(&g, g.x, g.y);
+    /* The rest of the move closes on the last target. */
+    sim_run(&g);
+    g_assert_cmpint(g.x, ==, 1000);
+    g_assert_cmpint(g.y, ==, 300);
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A pointer moving at a steady speed is aimed at ahead of itself, by the
+ * distance it covers while a step lands, and a pointer that stops is aimed
+ * at exactly. Targets 10 ms apart at 1 px/ms make a lead of tens of pixels;
+ * the step sized after the answer reaches past the newest target, and once
+ * the targets stop the cursor ends on it.
+ */
+static void test_input_absolute_lead(void)
+{
+    int sock, dx, dy, last_dx = 0;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = linear_accel,
+                   .max_x = HEAD_W - 1, .max_y = HEAD_H - 1,
+                   .x = 100, .y = 100 };
+    uint8_t b[32];
+    Msg m;
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    for (unsigned i = 0; i < 4; i++) {
+        fill_input(b, i + 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0,
+                   200 + 10 * i, 100);
+        send_all(sock, b, sizeof(b));
+        expect_msg(sock, &m, 0x85);
+        if (i < 3) {
+            qtest_clock_step(qts, 10 * 1000 * 1000);
+        }
+    }
+    /* The first step was for the first target, 100 px away. */
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g_assert_cmpint(dx, ==, 100);
+    g.x += linear_accel(dx);
+    sim_report(&g, g.x, g.y);
+    /* The next is for where the pointer is going: past its newest target. */
+    g_assert_true(next_packet(qts, &dx, &dy, ANSWER_MS));
+    g_test_message("lead step %d for a target 30 px on (cursor at %d)", dx,
+                   g.x);
+    g_assert_cmpint(g.x + linear_accel(dx), >, 230);
+    g.x += linear_accel(dx);
+    sim_report(&g, g.x, g.y);
+    /* Then the pointer is quiet and the cursor comes back to it. */
+    qtest_clock_step(qts, 100 * 1000 * 1000);
+    while (next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS)) {
+        last_dx = dx;
+        g.x += linear_accel(dx);
+        sim_report(&g, g.x, g.y);
+    }
+    g_assert_cmpint(last_dx, !=, 0);
+    g_assert_cmpint(g.x, ==, 230);
     close(sock);
     qtest_quit(qts);
 }
@@ -2160,6 +2262,10 @@ int main(int argc, char **argv)
                    test_input_absolute_lagging);
     qtest_add_func("sgi-display-shm/input-absolute-edge",
                    test_input_absolute_edge);
+    qtest_add_func("sgi-display-shm/input-absolute-retarget",
+                   test_input_absolute_retarget);
+    qtest_add_func("sgi-display-shm/input-absolute-lead",
+                   test_input_absolute_lead);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 
