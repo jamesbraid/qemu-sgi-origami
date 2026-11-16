@@ -1154,9 +1154,97 @@ state is outside the machine, so a snapshot could not hold it. The link
 does not refuse ``-incoming``: whether an incoming stream is refused here
 is *unknown*, and a test that sent one would settle it.
 
-The link has no signal chardev, so none of the controller's outputs
-(node power, reset, soft reset or NMI) or its power-button input exist on
-it, and it does not pace bytes or look at the programmed divisor.
+The node link carries no signals and does not pace bytes or look at the
+programmed divisor. The controller's outputs come from the signal link
+below.
+
+.. _sgi-l1-signal-link:
+
+Signal link
+===========
+
+``sgi-l1-signal-link`` is the machine end of the board's lines to and from
+the node, reached over its ``signals`` chardev, a stand-in for the board's
+wiring, not a hardware wire. The chardev must be a socket: closing the link
+on a gap or a refused hello is a disconnect, which does nothing on a pty
+or stdio. ``epoch`` is a 32-bit number the board tells a restart of this
+process by. It defaults to a constant 1, so the launcher must pass a
+different value to each machine process it restarts. The read-only
+``up`` property is 1 while a peer is connected and ``lines`` has bit *n* set
+while line *n + 1* is high as this end last saw it.
+
+The board drives lines 1 to 7: ``node-power``, ``reset-hold``,
+``soft-reset`` and ``nmi`` 0 to 3. They come out as GPIO outputs under the
+names ``sgi-l1`` gives its own, one for ``nmi`` per node board, so a
+machine joins either device to the same sinks. The machine drives lines 8
+and 9, ``power-good`` and ``node-reset-state``, which go in as GPIO inputs;
+they are carried so the format is fixed, and no firmware reader of either
+is established. ``node-reset`` is not carried: the machine derives it from
+the release edge of ``reset-hold``. Which pin of the node each line
+reaches, and its polarity, is *unknown*: a line is a logical event, an
+*approximation*. A pulse is a rise and a fall, two changes.
+
+Every message is 9 bytes, big endian: a kind (1 hello, 2 change, 3 state),
+a 32-bit sequence number, a line byte, a 16-bit level and a check byte, the
+CRC-8 (polynomial ``0x07``, initial value 0) of the first eight bytes.
+After a connect each end sends a hello, whose sequence number is its epoch,
+whose line byte is the version (1) and whose level is its role (1 machine,
+2 board), and then a state: its change counter, the number of lines (9) and
+the levels of its own lines packed with bit *n* for line *n + 1*. A change
+reports one line of the sender and numbers it one above the last; the
+counter runs for the life of the process, across reconnects. A hello of any
+other role or version closes the link. The wire format and the CRC-8 are
+the project's own, an *approximation*. A change is taken before any hello,
+and the state's line count is not checked: the machine reads only the lines
+the board drives.
+
+The receiver acts on the table below. A stream socket neither repeats nor
+reorders, so the change rows matter only when a peer breaks that.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Received
+     - Action
+   * - change, sequence number one above the last
+     - apply it
+   * - change, sequence number at or below the last, as a signed 32-bit
+       difference so the counter can wrap
+     - ignore it, traced ``reject why=stale``
+   * - change, sequence number further above
+     - apply nothing, close the link, traced ``reject why=gap``
+   * - state
+     - apply each line whose level differs from the view; take the state's
+       number as the last
+   * - state after a hello with a new epoch
+     - as above, with ``restart=1`` in the ``resync`` trace
+   * - bad check byte, unknown kind, or a line the peer does not own
+     - skip one byte and look again, traced ``reject why=junk``
+   * - hello of another role or version
+     - close the link, traced ``reject why=hello``
+
+A chardev that reconnects (``reconnect-ms``) does the rest: the closed link
+reconnects and the state restores every level. A change the peer made while
+the link was down shows only as a number the state has run on to. What the
+levels do not account for is the ``lost=`` count of the ``resync`` trace,
+which is 0 when the state's number is not above the last, and it is never
+applied afterwards, so a pulse that came and went while the link was down
+does not reach the node late. The receiver cannot say which line a lost
+change was on. While the link is down each end keeps the other's lines as
+they were. A write that does not complete closes the link, traced ``reject
+why=write``. A half message is dropped when the link closes. These rules
+are an *approximation* of a controller whose cable can be unplugged.
+
+With no ``signals`` chardev set the device adds no migration blocker and
+only holds the machine's two lines. With one set it adds a blocker that
+``query-migrate`` lists in ``blocked-reasons``, removed at unrealize.
+``-incoming`` is not refused by the device, since blockers are consulted
+only when a migration or ``savevm`` starts; that is untested, *unknown*.
+The device has no migration state, so the line levels and counters are not
+saved even with no chardev set. A machine that joins this device to a node
+link must refuse one chardev without the other. That cannot be checked
+here, because neither device sees the other, so it is left to the machine
+option.
 
 Board-side interfaces
 =====================
@@ -1345,7 +1433,8 @@ queue, checks its UART index and recomputes the interrupt line. The peer
 link, ``network-422`` and ``auto-power`` are configuration and are not
 migrated. Migration works only between identical builds. An ``l2`` link
 blocks migration and snapshots, and so does a ``node`` chardev on
-``sgi-l1-link`` (:ref:`sgi-l1-node-link`).
+``sgi-l1-link`` (:ref:`sgi-l1-node-link`) and a ``signals`` chardev on
+``sgi-l1-signal-link`` (:ref:`sgi-l1-signal-link`).
 
 Origin 3000 C-brick, I-brick, N-brick and V-brick profiles
 ==========================================================
@@ -1457,3 +1546,12 @@ the node and the interrupt they raise, a stream larger than the window's
 queue, two transports that do not mix, a silent controller before the peer
 connects, the peer leaving and returning, the migration blocker following
 the chardev and the window's refusals.
+
+``tests/qtest/sgi-l1-signal-link-test.c`` plays the board from a socket the
+test listens on: the hello exchange and the refusal of a wrong role or
+version, each line reaching its GPIO, the machine's lines going out once per
+change, the counter across a reconnect, duplicate and stale changes, a gap
+closing the link and the state restoring it, a pulse lost while the link was
+down and what it counts as lost, a restarted board, the counter wrapping,
+junk and stray bytes between messages, a half message at a close, a write
+that fails against a peer that never reads, and the migration blocker.

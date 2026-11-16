@@ -822,5 +822,12 @@ sgi_l1_link_state(unsigned int transport, bool up) "transport=%u up=%d"
 sgi_l1_link_tx(unsigned int transport, uint8_t byte, bool sent) "transport=%u byte=0x%02x sent=%d"
 sgi_l1_link_rx(unsigned int transport, int size) "transport=%u size=%d"
 
+# sgi-l1-signal-link.c
+sgi_l1_signal_state(bool up) "up=%d"
+sgi_l1_signal_tx(unsigned int kind, uint32_t seq, unsigned int line, unsigned int level) "kind=%u seq=%u line=%u level=0x%x"
+sgi_l1_signal_rx(unsigned int kind, uint32_t seq, unsigned int line, unsigned int level) "kind=%u seq=%u line=%u level=0x%x"
+sgi_l1_signal_reject(const char *why, uint32_t seq) "why=%s seq=%u"
+sgi_l1_signal_resync(uint32_t epoch, unsigned int changed, unsigned int lost, bool restart) "epoch=%u changed=%u lost=%u restart=%d"
+
 # DMA-only Hub buffers and the scalar packet fallback
 sgi_hub_ii_packet_access(uint64_t addr, unsigned size, bool write) "addr=0x%" PRIx64 " size=%u write=%d"
