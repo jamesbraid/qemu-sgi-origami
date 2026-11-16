@@ -697,8 +697,9 @@ The C-brick's polled devices
 ----------------------------
 
 With ``brick-type=cbrick,board-peers=on`` the board also fits the devices
-the firmware's C-brick tables name on segments 0 to 3 of the bus, and the
-management USB controller at ``CS3``, so that its calls are acknowledged
+the firmware's C-brick tables name on segments 0 to 3 of the bus, the
+processor module 0 monitors on segment 4, a front-panel display on segment 0
+and the management USB controller at ``CS3``, so that its calls are acknowledged
 instead of reported as unreadable. Without ``board-peers`` (the default)
 none of this exists and the bus is as described above. ``board-peers``
 needs ``brick-type=cbrick``; there is no I-brick table to fit.
@@ -784,10 +785,10 @@ change is ever reported, because the interrupt wiring is *unknown*.
 
 The processor module presence expander reads ``0xff`` because every bit is an
 input and nothing drives it. The firmware reads that as both processor modules
-absent (*software expectation*). No processor module is fitted, so nothing on
-segments 4 and 5 is, and the model does not invent a module type: the
-codes the firmware accepts for a present module and what each one means are
-*unknown*.
+absent (*software expectation*). No processor module record or presence is
+fitted, and the model does not invent a module type; only the two module 0
+monitors the firmware polls anyway are fitted (below). The codes the firmware
+accepts for a present module and what each one means are *unknown*.
 
 **Monitors.** The three node monitors, wire ``0x58``, ``0x5a`` and ``0x5c``
 on segment 2, are 256-register files of the voltage and temperature monitor
@@ -802,27 +803,80 @@ including the initialisation sequence the firmware sends, so a part's
 self-clearing bits are not modelled either. The alert response address is
 not fitted.
 
-**Not fitted.** Everything on segments 4 to 13: the processor modules'
-power expanders, monitors and records, and the eight memory module records.
-Each call stays unacknowledged, and the firmware's probe of the memory
-modules clears their presence silently (*software expectation*).
+**Processor module 0 monitors.** Two more monitors of the same kind sit at
+wire ``0x5c`` and ``0x5e`` on segment 4, named PIMM0 A and PIMM0 B by the
+firmware's table (*software expectation*). The firmware initialises,
+configures and polls both whether or not a processor module is fitted: its
+probe for an absent module disables monitor entries 5 and 6 by number, which
+are the processor module 1 monitors, and no case disables these two
+(*software expectation*). Fitting them for a board with no processor module is
+therefore a model of that behaviour and not of hardware, an *approximation*.
+Each polls the interrupt status registers ``0x41`` and ``0x42`` and treats a
+zero byte as no event (*software expectation*); the registers read zero and
+nothing sets them, so every poll is quiet. A configuration write that
+is not acknowledged, or that goes to a monitor the firmware has disabled,
+makes it record a configuration error that ``env`` reports as monitoring
+"enabled, but not running". The disabled case needs no bus traffic: a
+processor module 1 that is fitted while module 0 is absent hits it, and the
+model fits no module 1 (*software expectation*). These monitors have no
+EEPROM and the model fits none: the presence expander still reads ``0xff``,
+both modules stay absent (*software expectation*), and no module record is
+served. The part is *inferred* as for the node monitors. The final write of the
+configuration, which clears an interrupt mask bit, depends on a power-state
+test whose inputs are *unknown*; the monitors acknowledge every register write,
+so the result of that test cannot change what the model shows.
+
+**Display.** The firmware's display driver writes to wire ``0xf0`` and reads
+``0xf1`` on segment 0, 7-bit ``0x78``, a part that has no register byte,
+and an access to segment 0 writes no bus select byte (*software
+expectation*). So the part must answer whatever select byte the last access
+to another segment left behind (*inferred*). The model fits one
+device there that acknowledges every byte, keeps the bytes of the last write
+and reads ``0x00``. The firmware writes ``1`` or ``2`` and twelve bytes of
+text, ``6`` and up to 72 bytes for a long second line, or ``3`` or ``4``, a
+position and a character, only if the byte read after its reset is
+``0x10`` or more; the model's ``0x00`` leaves the one-character form unused,
+an *approximation*. The firmware resets the part by clearing and setting bit 7
+of the display control expander, then reads one byte and ignores a failure.
+The model does not connect that bit to the display: the line is not wired, an
+*approximation*. A machine reset clears the kept bytes. What the part does with
+the command bytes is *unknown*, and so is the part itself: it shows nothing,
+and the kept bytes are readable only through the ``last-write`` property of
+the ``sgi-l1-display`` device, a test hook. A write that fails logs "Display
+write error" and a failed reset write "Display reset error", both only
+logged by the firmware; neither disables the display
+(*software expectation*).
+
+**Not fitted.** Everything else on segments 4 to 13: the processor modules'
+power expanders and records, the processor module 1 monitors and the eight
+memory module records. Each call stays unacknowledged, and the firmware's
+probe of the memory modules clears their presence silently
+(*software expectation*).
 
 **Management USB controller.** With ``board-peers`` the 64 KiB window at
 ``CS3`` is a model of the two registers the firmware's probe uses and
 logs the rest as unimplemented. The revision register at offset ``0x18`` is
 read-only and reads ``0x13``; the scratch register at ``0x1b`` stores a
-byte. The probe the firmware runs treats ``0x10``, ``0x11`` and ``0x13``
-as quiet passes, and the published USS-820D data sheet puts the revision
-at ``0x18`` and a scratch register at ``0x1b`` and gives those three as the
-B, C and D revisions (*inferred*, from the sheet's reading of it). Which
-revision is fitted is *unknown*; ``0x13`` is the newest of the three and
-the choice is an *approximation*. The data sheet is not among the cited sources. The
-two offsets, the revision at ``0x18`` and the scratch register at ``0x1b``,
-agree with a public driver header (*inferred*); the mapping of ``0x10``,
-``0x11`` and ``0x13`` to the three revisions rests on the data sheet alone,
-as the firmware sheet summarises it, and is *inferred*. The scratch register of the real part has
-a resume interrupt enable in bit 7 that the model does not act on. Every
-other offset is a logged unimplemented access that reads zero.
+byte; bit 0 of the register at ``0x1c`` reads back the last value written
+and starts clear. The firmware writes ``0x1c`` as zero, then one as the last
+step of its reset sequence, and its periodic check reads that bit
+(*software expectation*); the part's register at that offset is the master
+control and status register of the USS-820D data sheet, with bit 0 the device
+enable (*inferred*), and no other bit is kept. The probe the firmware runs
+treats ``0x10``, ``0x11`` and ``0x13`` as quiet passes, and the published
+USS-820D data sheet puts the revision at ``0x18`` and a scratch register at
+``0x1b`` and gives those three as the B, C and D revisions (*inferred*, from
+the sheet's reading of it). Which revision is fitted is *unknown*; ``0x13`` is
+the newest of the three and the choice is an *approximation*. The data sheet is
+not among the cited sources. The two offsets, the revision at ``0x18`` and the
+scratch register at ``0x1b``, agree with a public driver header (*inferred*);
+the mapping of ``0x10``, ``0x11`` and ``0x13`` to the three revisions rests on
+the data sheet alone, as the firmware sheet summarises it, and is *inferred*.
+The scratch register of the real part has a resume interrupt enable in bit 7
+that the model does not act on. The firmware's reset sequence also writes about
+forty-six other bytes to endpoint, status and interrupt registers; the model
+logs them as unimplemented accesses and ignores them, and what they enable is
+*unknown*. Every other offset is a logged unimplemented access that reads zero.
 
 .. _sgi-l1-board-identity-run:
 
@@ -850,19 +904,21 @@ expectation* and not a statement about a board:
   controls, the connection mode write, the fan, supply and temperature set-up
   of the node and the interrupt-driven rescans of the COM, PORT, POWER and
   FAN expanders and of the node monitors. The management USB probe passes
-  and the controller is registered. Four things remain: the memory module
-  records are probed and not acknowledged, silently; the processor module 0
-  monitors (wire ``0x5c`` and ``0x5e`` on segment 4) are initialised and
-  polled and not acknowledged, because the firmware does not disable them
-  when the module is absent; the display driver, which starts now that its
-  expander answers, calls wire address ``0xf0`` (and reads ``0xf1``) and is
-  not acknowledged, so it prints its reset and write errors; and the USB
-  controller's other registers are written and polled as logged
-  unimplemented accesses. ``power`` prints the supplies at ``0.000V`` with
-  the firmware's default margin values where the empty bus printed an error
-  code for each; ``env`` still reports that monitoring is enabled but not
-  running, as the empty bus did. Whether that is the processor module
-  monitors is *unknown*.
+  and the controller is registered. The processor module 0 monitors, which
+  the firmware initialises and polls whether or not the module is fitted,
+  acknowledge, and so does the display driver, so neither prints a report.
+  One thing is left: the memory module records are probed at ``0xa0`` and not
+  acknowledged, silently. The USB controller's other registers are written
+  and polled as logged unimplemented accesses. ``power`` prints the supplies
+  at ``0.000V`` with the firmware's default margin values where the empty bus
+  printed an error code for each, and ``env`` reports that monitoring is
+  enabled and running, with every supply and fan in the "Wait Pwr" state,
+  both processor modules' supplies not present and their two temperature
+  rows, for the absent module 0, also "Wait Pwr" at -4C/24F because the
+  monitors' registers read zero (a side effect of the fitted-but-absent
+  approximation), and both module 1 temperature rows not present, where with
+  the empty bus it reported the configuration error. The firmware's skip of
+  that restart at boot is *unknown*, so this shows the run and not the cause.
 - With an I-brick's ``POWER`` and ``LOGIC`` records the type stays unknown
   (prompt ``---?---L1>``, ``brick`` prints ``Unknown``), with the serial and
   the source read as NVRAM.
@@ -897,8 +953,9 @@ Start the machine with ``-d unimp`` to see every access, with the window or
 register name and the value. ``-d guest_errors`` adds accesses to addresses
 that are not registers.
 
-- The management USB controller at ``CS3`` (except its revision and scratch
-  registers with ``board-peers``) and the device at ``CS5``.
+- The management USB controller at ``CS3`` (except its revision, scratch and
+  bit 0 of its ``0x1c`` registers with ``board-peers``) and the device at
+  ``CS5``.
 - The two-wire bus has the controller described above but no device on it
   unless the board is given one (:ref:`sgi-l1-board-mbus-peers`): a transfer
   to an address nothing answers is not acknowledged, and the firmware reports
@@ -960,11 +1017,14 @@ keeps its register pointer between reads without stepping it. The USB
 window test programs chip select 3 from test-owned code, then checks the
 firmware probe's reads and writes: the revision at ``0x18``, the scratch
 register at ``0x1b`` holding ``0xb5`` and every even value to ``0xfc``, the
-revision refusing a write, and any other offset logging and reading zero.
-The functional test boots the C-brick with ``board-peers`` and checks which
-reports are gone, which remain, that the supply table reads, and that the only
-addresses the firmware calls without an acknowledge are the memory module
-records, the processor module 0 monitors and the display driver.
+revision refusing a write, bit 0 of ``0x1c`` reading back and clearing on
+reset, and any other offset logging and reading zero. The processor module 0
+monitors are checked on segment 4 for their independence from the node
+monitor at the same wire address, and the display for its write forms, its
+read and its answering under any select byte. The functional test boots the
+C-brick with ``board-peers`` and checks which reports are gone, that the
+supply table reads, what ``env`` prints, and that the only address the
+firmware calls without an acknowledge is the memory module records'.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.
