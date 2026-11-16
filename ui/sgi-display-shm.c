@@ -126,6 +126,7 @@ struct SGIDisplay {
     QSIMPLEQ_HEAD(, SGIDisplayOut) out;
     unsigned out_count;
     bool want_write;
+    bool export_failed;         /* the failure to export was reported */
 #ifdef _WIN32
     HANDLE reader_process;
 #endif
@@ -427,10 +428,22 @@ static bool region_export(SGIDisplay *d, const SGIDisplayRegion *r, int *fd,
         *handle = (uint64_t)(uintptr_t)dup;
     }
 #else
-    *fd = qemu_dup_flags(r->fd, O_CLOEXEC);
+    /*
+     * Not qemu_dup_flags(): it ends in fcntl(F_SETFL), which a POSIX shared
+     * memory descriptor on macOS refuses with ENOTTY. qemu_dup() already
+     * sets close-on-exec.
+     */
+    *fd = qemu_dup(r->fd);
     if (*fd < 0) {
-        error_report("sgi-display-shm: cannot duplicate a region handle: %s",
-                     strerror(errno));
+        /*
+         * A reader that reconnects at once would hit this every time:
+         * say it once.
+         */
+        if (!d->export_failed) {
+            d->export_failed = true;
+            error_report("sgi-display-shm: cannot duplicate a region "
+                         "handle: %s", strerror(errno));
+        }
         return false;
     }
 #endif
