@@ -342,6 +342,12 @@ void *sgi_display_region_alloc(Object *owner, const char *label,
                                SGIDisplayRegion **region);
 /* Release the storage; the pointer it returned is dead. NULL is fine. */
 void sgi_display_region_free(SGIDisplayRegion *region);
+/*
+ * Hand the storage of a region that is plain memory (display-shm is off) to
+ * the caller, who now frees it with g_free(); the region is gone. False, and
+ * nothing changes, for a region the reader maps.
+ */
+bool sgi_display_region_take_local(SGIDisplayRegion *region, void **mem);
 
 /*
  * Bind a scanout's head record. sgi_scanout_init_head() binds every head as

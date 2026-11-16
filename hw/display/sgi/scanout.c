@@ -411,6 +411,29 @@ static void sgi_scanout_publish_mode(SGIScanout *s)
                        (size_t)s->mode.width * sizeof(uint32_t));
 }
 
+static void sgi_scanout_frame_free(pixman_image_t *image, void *mem)
+{
+    g_free(mem);
+}
+
+/* Plain frame memory belongs to the surface: a retained reader keeps it. */
+static DisplaySurface *sgi_scanout_surface(SGIScanout *s, uint32_t w,
+                                           uint32_t h)
+{
+    void *mem;
+
+    if (sgi_display_region_take_local(s->frame_region, &mem)) {
+        pixman_image_t *image = pixman_image_create_bits(PIXMAN_x8r8g8b8, w, h,
+                                                         mem, w * 4);
+
+        pixman_image_set_destroy_function(image, sgi_scanout_frame_free, mem);
+        s->frame_region = NULL;
+        return qemu_create_displaysurface_pixman(image);
+    }
+    return qemu_create_displaysurface_from(w, h, PIXMAN_x8r8g8b8, w * 4,
+                                           (uint8_t *)s->frame);
+}
+
 /* A frame, dirty map and surface for the mode, when its size changed. */
 static void sgi_scanout_alloc(SGIScanout *s)
 {
@@ -440,9 +463,7 @@ static void sgi_scanout_alloc(SGIScanout *s)
         s->frame_width = w;
         s->frame_height = h;
         sgi_scanout_publish_mode(s);
-        qemu_console_set_surface(s->con,
-            qemu_create_displaysurface_from(w, h, PIXMAN_x8r8g8b8, w * 4,
-                                            (uint8_t *)s->frame));
+        qemu_console_set_surface(s->con, sgi_scanout_surface(s, w, h));
     } else if (old) {
         sgi_scanout_publish_mode(s);
         /* Nothing to show, and the old surface must not outlive its frame. */

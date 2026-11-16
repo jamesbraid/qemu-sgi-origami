@@ -1001,6 +1001,16 @@ void sgi_display_region_free(SGIDisplayRegion *r)
     g_free(r);
 }
 
+bool sgi_display_region_take_local(SGIDisplayRegion *r, void **mem)
+{
+    if (!r || !r->local) {
+        return false;
+    }
+    *mem = r->ptr;
+    g_free(r);
+    return true;
+}
+
 /* ---- Heads ------------------------------------------------------------ */
 
 static void layout_begin(SGIDisplayHead *h)

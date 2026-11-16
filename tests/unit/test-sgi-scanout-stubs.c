@@ -29,6 +29,13 @@ void sgi_display_region_free(SGIDisplayRegion *region)
     }
 }
 
+bool sgi_display_region_take_local(SGIDisplayRegion *region, void **mem)
+{
+    *mem = region->ptr;
+    g_free(region);
+    return true;
+}
+
 void sgi_display_head_bind(SGIScanout *s, uint32_t family,
                            uint32_t family_version)
 {

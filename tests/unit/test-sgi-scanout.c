@@ -52,9 +52,17 @@ QemuConsole *qemu_graphic_console_create(DeviceState *dev, uint32_t head,
     return (QemuConsole *)&fake_console;
 }
 
+static void surface_free(DisplaySurface *surface)
+{
+    if (surface && surface->image) {
+        pixman_image_unref(surface->image);
+    }
+    g_free(surface);
+}
+
 void qemu_graphic_console_close(QemuConsole *c)
 {
-    g_free(con.surface);
+    surface_free(con.surface);
     con.surface = NULL;
 }
 
@@ -68,6 +76,16 @@ DisplaySurface *qemu_create_displaysurface_from(int width, int height,
     return g_new0(DisplaySurface, 1);
 }
 
+DisplaySurface *qemu_create_displaysurface_pixman(pixman_image_t *image)
+{
+    DisplaySurface *surface = g_new0(DisplaySurface, 1);
+
+    con.surface_data = (uint8_t *)pixman_image_get_data(image);
+    con.placeholder = false;
+    surface->image = image;
+    return surface;
+}
+
 DisplaySurface *qemu_create_placeholder_surface(int w, int h,
                                                 const char *msg)
 {
@@ -78,7 +96,7 @@ DisplaySurface *qemu_create_placeholder_surface(int w, int h,
 
 void qemu_console_set_surface(QemuConsole *c, DisplaySurface *surface)
 {
-    g_free(con.surface);
+    surface_free(con.surface);
     con.surface = surface;
 }
 
