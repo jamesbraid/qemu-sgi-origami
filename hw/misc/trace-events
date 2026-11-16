@@ -205,7 +205,7 @@ sgi_kona_dma_pool(uint64_t base, uint32_t len, bool registered) "base 0x%" PRIx6
 # preloads these bytes at the recorded address before the kick that
 # consumes them.
 sgi_mgras_dma_chunk(uint64_t sequence, uint64_t addr, unsigned len, const char *hex) "seq %" PRIu64 " addr 0x%" PRIx64 " len %u hex %s"
-sgi_mgras_swap(uint64_t ns, uint64_t retraces) "swap word consumed at virtual %" PRIu64 " ns, retrace %" PRIu64
+sgi_mgras_swap(uint64_t ns, uint64_t retraces, uint64_t host_ns) "swap word consumed at virtual %" PRIu64 " ns, retrace %" PRIu64 ", host %" PRIu64 " ns"
 
 # sgi-odyssey.c
 sgi_odyssey_mmio(uint64_t sequence, uint64_t offset, unsigned size, uint64_t value, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " size %u value 0x%" PRIx64 " write=%d"

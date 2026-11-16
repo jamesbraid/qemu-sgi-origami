@@ -368,6 +368,46 @@ static void test_swap_command_raises_interrupt_10(void)
     g_assert_cmphex(mgras_hub_read(HUB_PI_INT_PEND0) & bit, ==, 0);
 }
 
+/* The swap trace carries the host clock beside the virtual one. */
+static void test_swap_trace_has_host_time(void)
+{
+    g_autofree char *log = NULL, *text = NULL;
+    g_auto(GStrv) lines = NULL;
+    int fd = g_file_open_tmp("sgi-mgras-swap-XXXXXX", &log, NULL);
+    unsigned long long virt[2] = { 0 }, host[2] = { 0 };
+    unsigned swaps = 0;
+    QTestState *qts;
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    qts = qtest_initf(MACHINE_ARGS " -D %s -trace sgi_mgras_swap", log);
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    qtest_clock_step(qts, 5000000);
+    qtest_writel(qts, REG_CONTEXT_COMMAND, MGRAS_SWAP_TOKEN);
+    qtest_quit(qts);
+
+    g_assert(g_file_get_contents(log, &text, NULL, NULL));
+    lines = g_strsplit(text, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        unsigned long long retrace;
+        const char *at = strstr(lines[i], "sgi_mgras_swap ");
+
+        if (at && swaps < 2) {
+            g_assert_cmpint(sscanf(at, "sgi_mgras_swap swap word consumed at "
+                                   "virtual %llu ns, retrace %llu, host %llu "
+                                   "ns", &virt[swaps], &retrace,
+                                   &host[swaps]), ==, 3);
+            swaps++;
+        }
+    }
+    g_assert_cmpuint(swaps, ==, 2);
+    g_assert_cmpuint(virt[1] - virt[0], >=, 5000000);
+    g_assert_cmpuint(host[1], >, host[0]);
+    g_assert_cmpuint(host[0], >, 0);
+    g_unlink(log);
+}
+
 /* A swap word with source 10 disabled latches the source but stays quiet. */
 static void test_swap_command_needs_enable(void)
 {
@@ -749,6 +789,9 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/swap-command-raises-interrupt-10",
         test_swap_command_raises_interrupt_10, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/swap-trace-has-host-time",
+        test_swap_trace_has_host_time, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/swap-command-needs-enable",
         test_swap_command_needs_enable, true);

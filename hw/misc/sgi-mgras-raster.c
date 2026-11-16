@@ -4007,7 +4007,7 @@ static void mgras_raster_command_fifo_dispatch(SGIMgrasState *s)
     if (s->cmd_token_class == MGRAS_CMD_HDR_CLASS_HQ &&
         reg == MGRAS_HQ_OP_SWAP) {
         trace_sgi_mgras_swap(qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
-                             s->retraces);
+                             s->retraces, get_clock());
         sgi_mgras_raise_pending(s, SGI_MGRAS_PENDING_SWAP);
         return;
     }
