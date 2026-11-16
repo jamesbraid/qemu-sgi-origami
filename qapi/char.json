@@ -335,6 +335,18 @@
   'base': 'ChardevCommon' }
 
 ##
+# @ChardevRfc2217:
+#     Configuration info for rfc2217 chardevs.
+#
+# @chardev: name of the socket chardev that carries the line.
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevRfc2217',
+  'data': { 'chardev': 'str' },
+  'base': 'ChardevCommon' }
+
+##
 # @ChardevStdio:
 #     Configuration info for stdio chardevs.
 #
@@ -517,6 +529,9 @@
 #
 # @ycable: serial splitter joining several chardevs (since 11.2)
 #
+# @rfc2217: serial line carried over a socket with RFC 2217
+#     (since 11.2)
+#
 # @msmouse: emulated Microsoft serial mouse (since 1.5)
 #
 # @wctablet: emulated Wacom serial tablet, a Penpartner CT-0045R by
@@ -562,6 +577,7 @@
             'mux',
             'hub',
             'ycable',
+            'rfc2217',
             'msmouse',
             'wctablet',
             { 'name': 'braille', 'if': 'CONFIG_BRLAPI' },
@@ -655,6 +671,16 @@
 ##
 { 'struct': 'ChardevYcableWrapper',
   'data': { 'data': 'ChardevYcable' } }
+
+##
+# @ChardevRfc2217Wrapper:
+#
+# @data: Configuration info for rfc2217 chardevs
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevRfc2217Wrapper',
+  'data': { 'data': 'ChardevRfc2217' } }
 
 ##
 # @ChardevStdioWrapper:
@@ -774,6 +800,7 @@
             'mux': 'ChardevMuxWrapper',
             'hub': 'ChardevHubWrapper',
             'ycable': 'ChardevYcableWrapper',
+            'rfc2217': 'ChardevRfc2217Wrapper',
             'msmouse': 'ChardevCommonWrapper',
             'wctablet': 'ChardevWctabletWrapper',
             'braille': { 'type': 'ChardevCommonWrapper',

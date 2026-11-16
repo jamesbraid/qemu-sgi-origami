@@ -18,6 +18,7 @@ or Hypervisor.Framework.
    keys
    mux-chardev
    ycable-chardev
+   rfc2217-chardev
    monitor
    images
    virtio-net-failover

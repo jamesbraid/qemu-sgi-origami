@@ -245,6 +245,7 @@ OBJECT_DECLARE_TYPE(Chardev, ChardevClass, CHARDEV)
 #define TYPE_CHARDEV_MUX "chardev-mux"
 #define TYPE_CHARDEV_HUB "chardev-hub"
 #define TYPE_CHARDEV_YCABLE "chardev-ycable"
+#define TYPE_CHARDEV_RFC2217 "chardev-rfc2217"
 #define TYPE_CHARDEV_RINGBUF "chardev-ringbuf"
 #define TYPE_CHARDEV_PTY "chardev-pty"
 #define TYPE_CHARDEV_CONSOLE "chardev-console"

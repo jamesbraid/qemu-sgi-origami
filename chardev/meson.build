@@ -5,6 +5,7 @@ chardev_ss.add(files(
   'char-mux.c',
   'char-hub.c',
   'char-ycable.c',
+  'char-rfc2217.c',
   'char-null.c',
   'char-pipe.c',
   'char-ringbuf.c',

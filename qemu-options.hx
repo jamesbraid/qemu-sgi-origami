@@ -4117,6 +4117,7 @@ DEF("chardev", HAS_ARG, QEMU_OPTION_chardev,
     "         [,logfile=PATH][,logappend=on|off]\n"
     "-chardev ycable,id=id,legs.0=id[,legs.N=id]\n"
     "         [,logfile=PATH][,logappend=on|off]\n"
+    "-chardev rfc2217,id=id,chardev=id[,logfile=PATH][,logappend=on|off]\n"
     "-chardev msmouse,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
     "-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]\n"
     "         [,mux=on|off][,logfile=PATH][,logappend=on|off][,encoding=ENCODING]\n"
@@ -4155,8 +4156,8 @@ The general form of a character device option is:
 
 ``-chardev backend,id=id[,mux=on|off][,options]``
     Backend is one of: ``null``, ``socket``, ``udp``, ``msmouse``, ``hub``,
-    ``ycable``, ``vc``, ``ringbuf``, ``file``, ``pipe``, ``console``,
-    ``serial``, ``pty``, ``stdio``, ``braille``, ``parallel``,
+    ``ycable``, ``rfc2217``, ``vc``, ``ringbuf``, ``file``, ``pipe``,
+    ``console``, ``serial``, ``pty``, ``stdio``, ``braille``, ``parallel``,
     ``spicevmc``, ``spiceport``, ``dbus``. The specific backend will
     determine the applicable options.
 
@@ -4362,6 +4363,15 @@ The available backends are:
     parity, stop bits, modem lines, break) go to every leg that accepts
     them. A leg may be any other chardev except a ``hub`` or a ``mux``.
     See :doc:`/system/ycable-chardev`. (Since 11.2)
+
+``-chardev rfc2217,id=id,chardev=id``
+    Carry a serial line over the socket chardev ``chardev`` with the
+    Telnet Com Port Control option (RFC 2217), so the process on the other
+    end sees the speed, parity, data and stop bits, break and DTR/RTS the
+    guest sets. They are sent again whenever the socket reconnects. Modem
+    input lines are not carried back; CTS, DSR and DCD read as
+    asserted. See :doc:`/system/rfc2217-chardev`.
+    (Since 11.2)
 
 ``-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]][,encoding=ENCODING]``
     Connect to a QEMU text console. The implementation and supported feature
