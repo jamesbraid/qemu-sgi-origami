@@ -2057,13 +2057,11 @@ static void test_peers_monitors(void)
     uint8_t v, two[2];
     int i, r;
 
-    /* Not on segment 3, nor on the processor module segments. */
+    /* Not on segment 3, nor on segment 5. */
     select_segment(qts, 0xb8);
     g_assert_false(mon_read(qts, wire[0], 0x20, &v));
-    select_segment(qts, 0xd8);
-    g_assert_false(mon_read(qts, 0x5c, 0x20, &v));
-    g_assert_false(mon_read(qts, 0x5e, 0x20, &v));
     select_segment(qts, 0xe8);
+    g_assert_false(mon_read(qts, 0x5c, 0x20, &v));
     g_assert_false(mon_read(qts, 0x5e, 0x20, &v));
 
     select_segment(qts, 0x78);
@@ -2107,6 +2105,57 @@ static void test_peers_monitors(void)
 
     /* The SMBus alert response address is not fitted. */
     g_assert_false(answers(qts, 0x18));
+    quit_all(qts, &f);
+}
+
+/*
+ * Processor module 0's two monitors, on segment 4 only: the firmware polls
+ * their interrupt status registers with no module fitted, and zero is quiet.
+ */
+static void test_peers_pimm0_monitors(void)
+{
+    static const uint8_t wire[] = { 0x5c, 0x5e };
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+    int i;
+
+    /* Segment 2 has the node monitor at 0x5c and nothing at 0x5e. */
+    select_segment(qts, 0x78);
+    g_assert_false(mon_read(qts, 0x5e, 0x41, &v));
+    g_assert_true(mon_write(qts, 0x5c, 0x43, 0x55));
+
+    select_segment(qts, 0xd8);
+    for (i = 0; i < 2; i++) {
+        g_assert_true(mon_read(qts, wire[i], 0x41, &v));
+        g_assert_cmphex(v, ==, 0);
+        g_assert_true(mon_read(qts, wire[i], 0x42, &v));
+        g_assert_cmphex(v, ==, 0);
+        /* The configuration writes of the temperature record. */
+        g_assert_true(mon_write(qts, wire[i], 0x43, 0xdf));
+        g_assert_true(mon_write(qts, wire[i], 0x39, 0x23));
+        g_assert_true(mon_write(qts, wire[i], 0x3a, 0x19));
+        g_assert_true(mon_read(qts, wire[i], 0x39, &v));
+        g_assert_cmphex(v, ==, 0x23);
+        /* The polls stay quiet after the writes. */
+        g_assert_true(mon_read(qts, wire[i], 0x41, &v));
+        g_assert_cmphex(v, ==, 0);
+        g_assert_true(mon_read(qts, wire[i], 0x42, &v));
+        g_assert_cmphex(v, ==, 0);
+    }
+    /* The segment 4 monitor at 0x5c is not the node monitor. */
+    g_assert_true(mon_read(qts, 0x5c, 0x43, &v));
+    g_assert_cmphex(v, ==, 0xdf);
+    select_segment(qts, 0x78);
+    g_assert_true(mon_read(qts, 0x5c, 0x43, &v));
+    g_assert_cmphex(v, ==, 0x55);
+
+    /* No module EEPROM and no presence: the module is still absent. */
+    select_segment(qts, 0xd8);
+    g_assert_false(answers(qts, 0xa8));
+    select_segment(qts, 0xb8);
+    g_assert_true(byte_read(qts, 0x4b, &v));
+    g_assert_cmphex(v, ==, 0xff);
     quit_all(qts, &f);
 }
 
@@ -2251,6 +2300,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/peers-reset", test_peers_reset);
     qtest_add_func("sgi-l1-board/peers-expanders", test_peers_expanders);
     qtest_add_func("sgi-l1-board/peers-monitors", test_peers_monitors);
+    qtest_add_func("sgi-l1-board/peers-pimm0-monitors",
+                   test_peers_pimm0_monitors);
     qtest_add_func("sgi-l1-board/peers-usb", test_peers_usb);
 
 

@@ -451,8 +451,13 @@ static const struct {
     { 0x4c, 3, 0x40 },  /* fan control */
 };
 
-/* The node monitors, all on segment 2. */
-static const uint8_t monitors[] = { 0x58, 0x5a, 0x5c };
+static const struct {
+    uint8_t wire;
+    uint8_t segment;
+} monitors[] = {
+    { 0x58, 2 }, { 0x5a, 2 }, { 0x5c, 2 },  /* the node monitors */
+    { 0x5c, 4 }, { 0x5e, 4 },               /* processor module 0 A and B */
+};
 
 void sgi_l1_cbrick_peers_fit(I2CBus *bus)
 {
@@ -473,9 +478,10 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus)
         i2c_slave_realize_and_unref(e, bus, &error_abort);
     }
     for (i = 0; i < ARRAY_SIZE(monitors); i++) {
-        I2CSlave *m = i2c_slave_new(TYPE_SGI_L1_MONITOR, monitors[i] >> 1);
+        I2CSlave *m = i2c_slave_new(TYPE_SGI_L1_MONITOR,
+                                    monitors[i].wire >> 1);
 
-        qdev_prop_set_uint8(DEVICE(m), "segment", 2);
+        qdev_prop_set_uint8(DEVICE(m), "segment", monitors[i].segment);
         object_property_set_link(OBJECT(m), "bus-select", OBJECT(sel),
                                  &error_abort);
         i2c_slave_realize_and_unref(m, bus, &error_abort);

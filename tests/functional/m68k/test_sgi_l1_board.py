@@ -132,7 +132,8 @@ class SgiL1Board(QemuSystemTest):
         log = os.path.join(self.workdir, 'l1-board-peers.log')
 
         # The C-brick's polled devices fitted: the select expander, the
-        # expanders, the node monitors and the management USB controller.
+        # expanders, the node and processor module 0 monitors and the
+        # management USB controller.
         self.set_machine('sgi-l1-board')
         self.vm.set_console()
         self.vm.add_args('-machine', 'sgi-l1-board,brick-type=cbrick,'
@@ -160,6 +161,7 @@ class SgiL1Board(QemuSystemTest):
         # reports is printed.
         for gone in ('USS820', 'display I/O expander', 'PIMM PSC',
                      'NODE 0 monitor', 'NODE 1 monitor', 'NODE 2 monitor',
+                     'PIMM0 A monitor', 'PIMM0 B monitor',
                      'Port 0 initialization', 'Port 1 initialization',
                      'USB mode', 'power (5V AUX) monitoring',
                      'NODE 0 power (12 BIAS)', 'NODE 1 power (3.3V L1)',
@@ -168,11 +170,8 @@ class SgiL1Board(QemuSystemTest):
                      'FAN CONTROL', 'monitor NODE', 'uninitialized device',
                      'ERROR (-404)'):
             self.assertNotIn(gone, console)
-        # What is left names a part nothing models: no processor module is
-        # fitted, so its monitors do not answer, and the display driver's
+        # What is left names a part nothing models: the display driver's
         # own part is unknown.
-        self.assertIn('Error initializing the PIMM0 A monitor, '
-                      'no acknowledge', console)
         self.assertIn('Display reset error: no acknowledge', console)
 
         with open(log, encoding='utf-8') as logfile:
@@ -180,11 +179,11 @@ class SgiL1Board(QemuSystemTest):
         self.assertIn('sgi_l1_usb_read offset 0x18 read 0x13', text)
         self.assertIn('sgi_l1_expander_write wire 0x4e segment 0 '
                       'write 0xb8', text)
-        # The calls nothing answers: the memory module records, the
-        # processor module 0 monitors and the display driver.
+        # The calls nothing answers: the memory module records and the
+        # display driver.
         nacked = set(re.findall(
             r'mcf5206e_mbus_byte tx 1 byte (0x[0-9a-f]{2}) nack 1', text))
-        self.assertEqual(nacked, {'0xa0', '0x5c', '0x5e', '0xf0', '0xf1'})
+        self.assertEqual(nacked, {'0xa0', '0xf0', '0xf1'})
 
 
 if __name__ == '__main__':
