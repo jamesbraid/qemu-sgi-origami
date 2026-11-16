@@ -8,6 +8,7 @@
 #define UI_SGI_DISPLAY_PRIV_H
 
 #include "ui/sgi-display-shm.h"
+#include "hw/display/sgi/scanout.h"
 
 /*
  * Queue one INPUT message into the input layer. Returns true when it queued
@@ -27,5 +28,8 @@ bool sgi_display_head_cursor(unsigned head, int32_t *x, int32_t *y,
 /* The head the guest cursor was last shown on, or -1 for none yet. */
 int sgi_display_cursor_head(void);
 unsigned sgi_display_head_count(void);
+
+/* Replace head s's picture with a counting frame code; once, after init. */
+void sgi_display_pattern_start(SGIScanout *s);
 
 #endif

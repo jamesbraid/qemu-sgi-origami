@@ -824,4 +824,8 @@ GPU:
   to the middle, and between far targets, every target lands exactly, one
   packet a step; and a guest that stops its cursor short of the right and
   bottom edges, where the move ends at the edge;
+- ``x-display-shm-test-pattern``, a test-only machine property that makes
+  head 0 a 720 by 486 picture with a frame code that counts at 30 frames a
+  second of virtual time: the next frame number after each period, the
+  code's 16 lines marked and ``content_gen`` bumped, with no guest running;
 - the socket's removal at exit.

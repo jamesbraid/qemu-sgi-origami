@@ -127,6 +127,7 @@ struct SGIDisplay {
     unsigned out_count;
     bool want_write;
     bool export_failed;         /* the failure to export was reported */
+    bool test_pattern;          /* x-display-shm-test-pattern */
 #ifdef _WIN32
     HANDLE reader_process;
 #endif
@@ -1215,6 +1216,13 @@ static void shm_machine_done(Notifier *n, void *data)
     if (!d->nheads) {
         warn_report("sgi-display-shm: this machine has no graphic head");
     }
+    if (d->test_pattern) {
+        if (!d->nheads) {
+            error_report("x-display-shm-test-pattern needs a graphic head");
+            exit(1);
+        }
+        sgi_display_pattern_start(d->heads[0].s);
+    }
     /* Say now, not at the first region, why a GPU request fell back. */
     display_vk(d);
     d->exit.notify = shm_exit;
@@ -1386,8 +1394,21 @@ static char *shm_get_test_cursor(Object *obj, Error **errp)
     return g_strdup("");
 }
 
+static bool shm_get_test_pattern(Object *obj, Error **errp)
+{
+    return shm_display && shm_display->test_pattern;
+}
+
+static void shm_set_test_pattern(Object *obj, bool value, Error **errp)
+{
+    shm_get_display()->test_pattern = value;
+}
+
 void sgi_display_shm_class_add_properties(ObjectClass *oc)
 {
+    object_class_property_add_bool(oc, "x-display-shm-test-pattern",
+                                   shm_get_test_pattern,
+                                   shm_set_test_pattern);
     object_class_property_add_str(oc, "x-display-shm-cursor",
                                   shm_get_test_cursor, shm_set_test_cursor);
     object_class_property_add_str(oc, "display-shm", shm_get_name,

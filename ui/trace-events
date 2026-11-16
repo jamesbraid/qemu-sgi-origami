@@ -218,3 +218,6 @@ sgi_display_abs_target(unsigned head, int tx, int ty, int cx, int cy) "head %u t
 sgi_display_abs_step(int cx, int cy, int sx, int sy, int gx, int gy) "cursor %d,%d step %d,%d counts, gain x1000 %d,%d"
 sgi_display_abs_answer(int cx, int cy, int mx, int my) "cursor %d,%d moved %d,%d"
 sgi_display_abs_stop(int cx, int cy, const char *why) "cursor %d,%d: %s"
+
+# sgi-display-pattern.c
+sgi_display_pattern_frame(uint64_t code, uint64_t ns, uint64_t host_ns) "frame code %" PRIu64 " published at virtual %" PRIu64 " ns, host %" PRIu64 " ns"

@@ -1797,6 +1797,107 @@ static void test_input_absolute_key_behind_click(void)
     qtest_quit(qts);
 }
 
+/* Head 0's frame code: marker, 16-bit number, check; -1 if not there. */
+static int pattern_code(Session *s)
+{
+    const uint8_t *h = head_raw(s, 0);
+    const Region *f = find_region(s, ldl_le_p(h + 80));
+    unsigned bits[32], n = 0, check = 0;
+
+    g_assert_nonnull(f);
+    g_assert_cmpuint(ldl_le_p(h + 84), ==, 1);      /* x8r8g8b8 */
+    for (unsigned i = 0; i < 32; i++) {
+        const uint8_t *px = f->ptr + (16 + 8) * ldl_le_p(h + 104) +
+                            (16 + 16 * i + 8) * 4;
+
+        bits[i] = px[1] >= 128;
+    }
+    for (unsigned i = 0; i < 16; i++) {
+        n = n << 1 | bits[8 + i];
+    }
+    for (unsigned i = 0; i < 8; i++) {
+        check = check << 1 | bits[24 + i];
+    }
+    if (memcmp(bits, (unsigned[]){ 1, 0, 1, 1, 0, 0, 1, 0 }, 8 * 4) ||
+        check != (((n >> 8) ^ n ^ 0xa5) & 0xff)) {
+        return -1;
+    }
+    return n;
+}
+
+/* The test pattern shows frame floor(t * 30) at virtual time t. */
+static void test_pattern_frame_code(void)
+{
+    g_autofree char *log = g_build_filename(sock_dir, "pattern.log", NULL);
+    g_autofree char *text = NULL;
+    g_auto(GStrv) lines = NULL;
+    QTestState *qts;
+    uint64_t words[64], gen;
+    int64_t last_virt = -1, last_host = -1, first_virt = 0;
+    unsigned seen = 0;
+    Session s;
+
+    qts = qtest_initf("-M octane2,display-shm=sgi-dsp-%d,"
+                      "display-shm-socket=%s,x-display-shm-test-pattern=on "
+                      "-m 256M -cpu %s -bios %s -S -display none "
+                      "-serial none -monitor none -D %s "
+                      "-trace sgi_display_pattern_frame",
+                      getpid(), sock_path, OCTANE2_CPU, prom_path, log);
+    session_open(&s, qts);
+    /* The virtual clock only runs with the machine, which has no CPU here. */
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    g_assert_cmpuint(ldl_le_p(head_raw(&s, 0) + 16), ==, 720);
+    g_assert_cmpuint(ldl_le_p(head_raw(&s, 0) + 20), ==, 486);
+    g_assert_cmpuint(ldl_le_p(head_raw(&s, 0) + 24), ==, 30000);
+    g_assert_cmpuint(ldl_le_p(head_raw(&s, 0) + 4), ==, 1);    /* xrgb */
+    g_assert_cmpint(pattern_code(&s), ==, 0);
+    take_dirty(&s, 0, words);
+    gen = content_gen(&s, 0);
+    for (unsigned i = 1; i <= 20; i++) {
+        qtest_clock_step(qts, 100000000);
+        g_assert_cmpint(pattern_code(&s), ==, i * 3);
+        g_assert_cmphex(take_dirty(&s, 0, words), ==, 0xffff0000);
+        g_assert_cmphex(words[0], ==, 0xffff0000);
+        g_assert_cmpuint(content_gen(&s, 0), ==, gen + 3);
+        gen = content_gen(&s, 0);
+    }
+    /* Less than a period moves nothing. */
+    qtest_clock_step(qts, 30000000);
+    g_assert_cmpint(pattern_code(&s), ==, 60);
+    g_assert_cmpuint(content_gen(&s, 0), ==, gen);
+    qtest_clock_step(qts, 3333334);
+    g_assert_cmpint(pattern_code(&s), ==, 61);
+    session_close(&s);
+    qtest_quit(qts);
+
+    /* One event per frame, at its tick, and the host clock never goes back. */
+    g_assert(g_file_get_contents(log, &text, NULL, NULL));
+    lines = g_strsplit(text, "\n", -1);
+    for (unsigned i = 0; lines[i]; i++) {
+        unsigned long long code, virt, host;
+        const char *at = strstr(lines[i], "sgi_display_pattern_frame ");
+
+        if (!at) {
+            continue;
+        }
+        g_assert_cmpint(sscanf(at, "sgi_display_pattern_frame frame code "
+                               "%llu published at virtual %llu ns, host "
+                               "%llu ns", &code, &virt, &host), ==, 3);
+        g_assert_cmpuint(code, ==, seen);
+        if (!seen) {
+            first_virt = virt;
+        }
+        g_assert_cmpint(virt - first_virt, ==,
+                        (int64_t)(seen * 1000000000ull / 30));
+        g_assert_cmpint(host, >, last_host);
+        g_assert_cmpint(virt, >, last_virt);
+        last_virt = virt;
+        last_host = host;
+        seen++;
+    }
+    g_assert_cmpuint(seen, ==, 62);
+}
+
 /* The socket is removed when QEMU exits. */
 static void test_cleanup_on_exit(void)
 {
@@ -2389,6 +2490,7 @@ int main(int argc, char **argv)
                    test_input_absolute_click_after_move);
     qtest_add_func("sgi-display-shm/input-absolute-key-behind-click",
                    test_input_absolute_key_behind_click);
+    qtest_add_func("sgi-display-shm/test-pattern", test_pattern_frame_code);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 
