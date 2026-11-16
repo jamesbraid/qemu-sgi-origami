@@ -220,7 +220,8 @@ system_ss.add(when: 'CONFIG_QCOM_QDSP6SS_CLK', if_true: files('qcom-qdsp6ss-clk.
 
 system_ss.add(when: 'CONFIG_SGI_L1_IDENTITY', if_true: files('sgi-l1-identity.c'))
 system_ss.add(when: 'CONFIG_SGI_L1',
-              if_true: files('sgi-l1.c', 'sgi-l1-env.c', 'sgi-l1-pbay.c'))
+              if_true: files('sgi-l1.c', 'sgi-l1-env.c', 'sgi-l1-pbay.c',
+                             'sgi-l1-link.c'))
 system_ss.add(when: 'CONFIG_SGI_PBAY', if_true: files('sgi-pbay.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_NI',
               if_true: files('sgi-bedrock-ni.c', 'sgi-bedrock-ni-regs.c'))
