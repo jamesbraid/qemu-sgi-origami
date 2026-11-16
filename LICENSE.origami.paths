@@ -436,6 +436,7 @@ include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1-pbay.h
 include/hw/misc/sgi-l1.h
 include/hw/misc/sgi-l1-l2-link.h
+include/hw/misc/sgi-l1-provider.h
 include/hw/misc/sgi-l2-hub.h
 include/hw/misc/sgi-mgras.h
 include/hw/misc/sgi-odyssey-native-mesa.h

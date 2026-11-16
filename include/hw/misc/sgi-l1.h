@@ -6,6 +6,7 @@
 #include "hw/misc/sgi-l1-env.h"
 #include "hw/misc/sgi-l1-l2-link.h"
 #include "hw/misc/sgi-l1-pbay.h"
+#include "hw/misc/sgi-l1-provider.h"
 #include "hw/core/sysbus.h"
 #include "chardev/char-fe.h"
 
@@ -385,6 +386,10 @@ struct SGIL1State {
     char usb_test_descriptor_result[74];
 };
 
+/* Toward the node: room left in a window's queue, and a push into it. */
+unsigned sgi_l1_uart_room(SGIL1UARTState *u);
+bool sgi_l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n);
+
 bool sgi_l1_board_mac(DeviceState *dev, uint8_t mac[6]);
 /*
  * The machine drives a node from this controller's power output: a power
@@ -405,7 +410,7 @@ struct SGIL1UARTState {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     qemu_irq irq;
-    SGIL1State *controller;
+    SGIL1Provider *controller;
     uint8_t transport_index;
     bool thre_pending;
     uint8_t lcr;

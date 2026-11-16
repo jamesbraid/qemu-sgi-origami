@@ -132,14 +132,14 @@ static void l1_uart_update_irq(SGIL1UARTState *u)
     qemu_set_irq(u->irq, l1_uart_irq_cause(u) != 1);
 }
 
-static unsigned l1_uart_room(SGIL1UARTState *u)
+unsigned sgi_l1_uart_room(SGIL1UARTState *u)
 {
     return SGI_L1_QUEUE_SIZE - u->queue_len;
 }
 
-static bool l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
+bool sgi_l1_uart_queue(SGIL1UARTState *u, const uint8_t *bytes, unsigned n)
 {
-    if (n > l1_uart_room(u)) {
+    if (n > sgi_l1_uart_room(u)) {
         qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1: receive queue full\n");
         return false;
     }
@@ -1040,7 +1040,7 @@ static void l1_emit_transport(SGIL1State *s, unsigned transport,
         encoded[n++] = byte;
     }
     encoded[n++] = 0x7e;
-    l1_uart_queue(s->transport[transport], encoded, n);
+    sgi_l1_uart_queue(s->transport[transport], encoded, n);
 }
 
 static void l1_emit_direct(SGIL1State *s, const uint8_t *payload,
@@ -4295,7 +4295,7 @@ static int l1_console_can_receive(void *opaque)
         }
     }
     /* One input byte can expand to an eight-byte escaped console frame. */
-    return uart && l1_uart_room(uart) >= 8;
+    return uart && sgi_l1_uart_room(uart) >= 8;
 }
 
 static void l1_console_receive(void *opaque, const uint8_t *buf, int size)
@@ -5701,7 +5701,8 @@ static uint64_t l1_uart_read(void *opaque, hwaddr offset, unsigned size)
         u->queue_head = (u->queue_head + 1) % SGI_L1_QUEUE_SIZE;
         u->queue_len--;
         l1_uart_update_irq(u);
-        qemu_chr_fe_accept_input(&u->controller->chr);
+        SGI_L1_PROVIDER_GET_CLASS(u->controller)->node_room(u->controller,
+                                                            u->transport_index);
         return value;
     case 8:
         return u->lcr & 0x80 ? u->divisor[1] : u->ier;
@@ -5739,7 +5740,8 @@ static void l1_uart_write(void *opaque, hwaddr offset, uint64_t value,
         } else {
             u->thre_pending = false;
             l1_uart_update_irq(u);
-            l1_parse(u->controller, u->transport_index, value);
+            SGI_L1_PROVIDER_GET_CLASS(u->controller)->node_byte(
+                u->controller, u->transport_index, value);
             u->thre_pending = (u->ier & 2) != 0;
         }
         break;
@@ -7908,10 +7910,60 @@ static char *l1_peer_notice_get(Object *obj, Error **errp)
                            s->notice_power ? "on" : "off");
 }
 
+/* The behavioural controller as a window's provider. */
+
+static bool l1_provider_attach_window(SGIL1Provider *p, unsigned transport,
+                                      SGIL1UARTState *window, Error **errp)
+{
+    SGIL1State *s = SGI_L1(p);
+
+    if (s->transport[transport]) {
+        if (transport == 0) {
+            error_setg(errp, "L1 controller already has a UART window");
+        } else {
+            error_setg(errp,
+                       "L1 UART transport index is invalid or already used");
+        }
+        return false;
+    }
+    if (DEVICE(s)->realized && l1_is_cxbrick(s) &&
+        !l1_cx_fitted_board(s, transport)) {
+        error_setg(errp, "L1 UART transport index names no fitted Cx-brick "
+                   "board");
+        return false;
+    }
+    s->transport[transport] = window;
+    if (transport == 0) {
+        s->uart = window;
+    }
+    return true;
+}
+
+static void l1_provider_window_reset(SGIL1Provider *p, unsigned transport)
+{
+    SGIL1State *s = SGI_L1(p);
+
+    memset(&s->frame[transport], 0, sizeof(s->frame[transport]));
+    memset(&s->irouter[transport * SGI_L1_IROUTER_CHANNELS], 0,
+           SGI_L1_IROUTER_CHANNELS * sizeof(s->irouter[0]));
+}
+
+static void l1_provider_node_byte(SGIL1Provider *p, unsigned transport,
+                                  uint8_t byte)
+{
+    l1_parse(SGI_L1(p), transport, byte);
+}
+
+static void l1_provider_node_room(SGIL1Provider *p, unsigned transport)
+{
+    qemu_chr_fe_accept_input(&SGI_L1(p)->chr);
+}
+
 static void l1_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
     ResettableClass *rc = RESETTABLE_CLASS(klass);
+    SGIL1ProviderClass *pc = SGI_L1_PROVIDER_CLASS(klass);
 
     dc->desc = "SGI L1 system controller";
     dc->realize = l1_realize;
@@ -7921,6 +7973,10 @@ static void l1_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, l1_properties);
     rc->phases.enter = l1_reset_enter;
     rc->phases.hold = l1_reset_hold;
+    pc->attach_window = l1_provider_attach_window;
+    pc->window_reset = l1_provider_window_reset;
+    pc->node_byte = l1_provider_node_byte;
+    pc->node_room = l1_provider_node_room;
     object_class_property_add_bool(klass, "l2-link-up", l1_l2_link_up_get,
                                    NULL);
     object_class_property_add_str(klass, "display-line-1", l1_display_first_get,
@@ -7973,13 +8029,13 @@ static void l1_finalize(Object *obj)
 static void l1_uart_reset_enter(Object *obj, ResetType type)
 {
     SGIL1UARTState *u = SGI_L1_UART(obj);
+    SGIL1ProviderClass *pc;
 
     if (u->controller && u->transport_index < SGI_L1_IROUTER_TRANSPORTS) {
-        memset(&u->controller->frame[u->transport_index], 0,
-               sizeof(u->controller->frame[u->transport_index]));
-        memset(&u->controller->irouter[
-                   u->transport_index * SGI_L1_IROUTER_CHANNELS], 0,
-               SGI_L1_IROUTER_CHANNELS * sizeof(u->controller->irouter[0]));
+        pc = SGI_L1_PROVIDER_GET_CLASS(u->controller);
+        if (pc->window_reset) {
+            pc->window_reset(u->controller, u->transport_index);
+        }
     }
 
     u->lcr = u->ier = u->mcr = u->scratch = 0;
@@ -8032,10 +8088,8 @@ static const Property l1_uart_properties[] = {
 static void l1_uart_controller_check(const Object *obj, const char *name,
                                      Object *value, Error **errp)
 {
-    SGIL1State *controller = SGI_L1(value);
-
     (void)obj;
-    if (!controller) {
+    if (!value) {
         error_setg(errp, "%s cannot be set to NULL", name);
     }
 }
@@ -8048,27 +8102,12 @@ static void l1_uart_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "L1 UART window needs a controller link");
         return;
     }
-    if (u->transport_index >= SGI_L1_IROUTER_TRANSPORTS ||
-        u->controller->transport[u->transport_index]) {
-        if (u->transport_index == 0 && u->controller->transport[0]) {
-            error_setg(errp, "L1 controller already has a UART window");
-        } else {
-            error_setg(errp,
-                       "L1 UART transport index is invalid or already used");
-        }
+    if (u->transport_index >= SGI_L1_IROUTER_TRANSPORTS) {
+        error_setg(errp, "L1 UART transport index is invalid or already used");
         return;
     }
-    if (DEVICE(u->controller)->realized &&
-        l1_is_cxbrick(u->controller) &&
-        !l1_cx_fitted_board(u->controller, u->transport_index)) {
-        error_setg(errp, "L1 UART transport index names no fitted Cx-brick "
-                   "board");
-        return;
-    }
-    u->controller->transport[u->transport_index] = u;
-    if (u->transport_index == 0) {
-        u->controller->uart = u;
-    }
+    SGI_L1_PROVIDER_GET_CLASS(u->controller)->attach_window(
+        u->controller, u->transport_index, u, errp);
 }
 
 static void l1_uart_init(Object *obj)
@@ -8079,7 +8118,7 @@ static void l1_uart_init(Object *obj)
                           SGI_L1_SIZE);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &u->mmio);
     qdev_init_gpio_out_named(DEVICE(obj), &u->irq, "uart", 1);
-    object_property_add_link(obj, "controller", TYPE_SGI_L1,
+    object_property_add_link(obj, "controller", TYPE_SGI_L1_PROVIDER,
                              (Object **)&u->controller,
                              l1_uart_controller_check, OBJ_PROP_LINK_STRONG);
 }
@@ -8106,6 +8145,15 @@ static const TypeInfo l1_types[] = {
         .instance_init = l1_init,
         .instance_finalize = l1_finalize,
         .class_init = l1_class_init,
+        .interfaces = (const InterfaceInfo[]) {
+            { TYPE_SGI_L1_PROVIDER },
+            { }
+        },
+    },
+    {
+        .name = TYPE_SGI_L1_PROVIDER,
+        .parent = TYPE_INTERFACE,
+        .class_size = sizeof(SGIL1ProviderClass),
     },
     {
         .name = TYPE_SGI_L1_UART,
