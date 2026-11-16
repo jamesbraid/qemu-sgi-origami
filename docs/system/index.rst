@@ -17,6 +17,7 @@ or Hypervisor.Framework.
    device-emulation
    keys
    mux-chardev
+   ycable-chardev
    monitor
    images
    virtio-net-failover

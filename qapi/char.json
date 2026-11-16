@@ -322,6 +322,19 @@
   'base': 'ChardevCommon' }
 
 ##
+# @ChardevYcable:
+#     Configuration info for ycable chardevs.
+#
+# @legs: IDs of the chardevs joined to the line (maximum 4).  Guest
+#     output goes to every leg and their output reaches the guest.
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevYcable',
+  'data': { 'legs': ['str'] },
+  'base': 'ChardevCommon' }
+
+##
 # @ChardevStdio:
 #     Configuration info for stdio chardevs.
 #
@@ -502,6 +515,8 @@
 #
 # @hub: (since 10.0)
 #
+# @ycable: serial splitter joining several chardevs (since 11.2)
+#
 # @msmouse: emulated Microsoft serial mouse (since 1.5)
 #
 # @wctablet: emulated Wacom serial tablet, a Penpartner CT-0045R by
@@ -546,6 +561,7 @@
             'null',
             'mux',
             'hub',
+            'ycable',
             'msmouse',
             'wctablet',
             { 'name': 'braille', 'if': 'CONFIG_BRLAPI' },
@@ -629,6 +645,16 @@
 ##
 { 'struct': 'ChardevHubWrapper',
   'data': { 'data': 'ChardevHub' } }
+
+##
+# @ChardevYcableWrapper:
+#
+# @data: Configuration info for ycable chardevs
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevYcableWrapper',
+  'data': { 'data': 'ChardevYcable' } }
 
 ##
 # @ChardevStdioWrapper:
@@ -747,6 +773,7 @@
             'null': 'ChardevCommonWrapper',
             'mux': 'ChardevMuxWrapper',
             'hub': 'ChardevHubWrapper',
+            'ycable': 'ChardevYcableWrapper',
             'msmouse': 'ChardevCommonWrapper',
             'wctablet': 'ChardevWctabletWrapper',
             'braille': { 'type': 'ChardevCommonWrapper',

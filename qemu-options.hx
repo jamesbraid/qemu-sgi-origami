@@ -4115,6 +4115,8 @@ DEF("chardev", HAS_ARG, QEMU_OPTION_chardev,
     "-chardev udp,id=id[,host=host],port=port[,localaddr=localaddr]\n"
     "         [,localport=localport][,ipv4=on|off][,ipv6=on|off][,mux=on|off]\n"
     "         [,logfile=PATH][,logappend=on|off]\n"
+    "-chardev ycable,id=id,legs.0=id[,legs.N=id]\n"
+    "         [,logfile=PATH][,logappend=on|off]\n"
     "-chardev msmouse,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
     "-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]\n"
     "         [,mux=on|off][,logfile=PATH][,logappend=on|off][,encoding=ENCODING]\n"
@@ -4153,8 +4155,8 @@ The general form of a character device option is:
 
 ``-chardev backend,id=id[,mux=on|off][,options]``
     Backend is one of: ``null``, ``socket``, ``udp``, ``msmouse``, ``hub``,
-    ``vc``, ``ringbuf``, ``file``, ``pipe``, ``console``, ``serial``,
-    ``pty``, ``stdio``, ``braille``, ``parallel``,
+    ``ycable``, ``vc``, ``ringbuf``, ``file``, ``pipe``, ``console``,
+    ``serial``, ``pty``, ``stdio``, ``braille``, ``parallel``,
     ``spicevmc``, ``spiceport``, ``dbus``. The specific backend will
     determine the applicable options.
 
@@ -4351,6 +4353,15 @@ The available backends are:
 
     Several frontend devices is not supported. Stacking of multiplexers
     and hub devices is not supported as well.
+
+``-chardev ycable,id=id,legs.0=id[,legs.N=id]``
+    Join up to 4 chardevs (the legs) to one frontend as a serial
+    splitter. Everything the guest writes goes to every leg, and what
+    each leg sends reaches the guest one read at a time, so two legs
+    never interleave inside a read. Serial line settings (speed,
+    parity, stop bits, modem lines, break) go to every leg that accepts
+    them. A leg may be any other chardev except a ``hub`` or a ``mux``.
+    See :doc:`/system/ycable-chardev`. (Since 11.2)
 
 ``-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]][,encoding=ENCODING]``
     Connect to a QEMU text console. The implementation and supported feature

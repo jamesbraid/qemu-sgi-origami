@@ -1041,6 +1041,18 @@ QemuOptsList qemu_chardev_opts = {
         },{
             .name = "chardevs.3",
             .type = QEMU_OPT_STRING,
+        },{
+            .name = "legs.0",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "legs.1",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "legs.2",
+            .type = QEMU_OPT_STRING,
+        },{
+            .name = "legs.3",
+            .type = QEMU_OPT_STRING,
         },
 
         {
