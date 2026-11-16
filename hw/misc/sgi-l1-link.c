@@ -1,12 +1,14 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * An L1 outside this process, reached over a chardev per UART window. With no
- * peer the controller is silent: the node's bytes are dropped, never kept.
+ * An L1 outside this process, reached over a chardev per UART window, and the
+ * signal link that carries its lines. With no peer the controller is silent:
+ * the node's bytes are dropped, never kept.
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "chardev/char-fe.h"
+#include "exec/icount.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/blocker.h"
@@ -28,6 +30,7 @@ struct SGIL1LinkState {
     SGIL1LinkNode node[SGI_L1_IROUTER_TRANSPORTS];
     /* Bit n: transport n has a peer connected. */
     uint8_t nodes_up;
+    DeviceState *signal_link;
     Error *blocker;
 };
 
@@ -89,6 +92,14 @@ static void link_node_room(SGIL1Provider *p, unsigned transport)
     qemu_chr_fe_accept_input(&SGI_L1_LINK(p)->node[transport].chr);
 }
 
+static bool signals_connected(SGIL1LinkState *s)
+{
+    g_autofree char *id = object_property_get_str(OBJECT(s->signal_link),
+                                                  "signals", &error_abort);
+
+    return *id;
+}
+
 static void link_realize(DeviceState *dev, Error **errp)
 {
     SGIL1LinkState *s = SGI_L1_LINK(dev);
@@ -97,7 +108,21 @@ static void link_realize(DeviceState *dev, Error **errp)
     for (unsigned i = 0; i < SGI_L1_IROUTER_TRANSPORTS; i++) {
         linked |= qemu_chr_fe_backend_connected(&s->node[i].chr);
     }
-    if (!linked) {
+    if (linked != signals_connected(s)) {
+        error_setg(errp, "sgi-l1-link: a node chardev and a signals chardev "
+                   "must be given together");
+        return;
+    }
+    if (linked && icount_enabled()) {
+        /* A device cannot see -icount's sleep or align, so allow none. */
+        error_setg(errp, "sgi-l1-link: -icount is not allowed with an "
+                   "external controller: the machine's virtual time must not "
+                   "run ahead of a separate controller process, whose board "
+                   "uses its own fixed -icount");
+        return;
+    }
+    /* Realized even when inert: a machine wires its lines either way. */
+    if (!qdev_realize(s->signal_link, NULL, errp) || !linked) {
         return;
     }
     /* The peer's state is outside the machine, so it is not saved. */
@@ -106,6 +131,7 @@ static void link_realize(DeviceState *dev, Error **errp)
                "processes and the bytes in flight between them are outside "
                "this machine");
     if (migrate_add_blocker(&s->blocker, errp) < 0) {
+        qdev_unrealize(s->signal_link);
         return;
     }
     for (unsigned i = 0; i < SGI_L1_IROUTER_TRANSPORTS; i++) {
@@ -127,7 +153,13 @@ static void link_unrealize(DeviceState *dev)
     if (s->blocker) {
         migrate_del_blocker(&s->blocker);
     }
+    qdev_unrealize(s->signal_link);
 }
+
+static const char *const signal_gpios[] = {
+    "node-power", "reset-hold", "soft-reset", "nmi", "power-good",
+    "node-reset-state",
+};
 
 static void link_init(Object *obj)
 {
@@ -139,6 +171,18 @@ static void link_init(Object *obj)
     }
     object_property_add_uint8_ptr(obj, "nodes-up", &s->nodes_up,
                                   OBJ_PROP_FLAG_READ);
+
+    /* The board's lines come out under the names sgi-l1 gives its own. */
+    s->signal_link = qdev_new("sgi-l1-signal-link");
+    s->signal_link->id = g_strdup("signal-link");
+    object_property_add_child(obj, "signal-link", OBJECT(s->signal_link));
+    object_unref(OBJECT(s->signal_link));
+    object_property_add_alias(obj, "signals", OBJECT(s->signal_link),
+                              "signals");
+    object_property_add_alias(obj, "epoch", OBJECT(s->signal_link), "epoch");
+    for (unsigned i = 0; i < ARRAY_SIZE(signal_gpios); i++) {
+        qdev_pass_gpios(s->signal_link, DEVICE(obj), signal_gpios[i]);
+    }
 }
 
 static const Property link_properties[] = {

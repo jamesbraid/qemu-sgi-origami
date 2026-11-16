@@ -1145,18 +1145,54 @@ and traced, an *approximation*. A byte dropped mid-frame loses that frame
 at the receiver: the window cannot push back, because its transmit-ready
 bit is always set, so back-pressure is the board-side pacing's job.
 
-With no ``node`` chardev set the link is inert: it is silent in the same
-way and adds no migration blocker. With one set, the link adds a
-migration blocker that ``query-migrate`` lists in ``blocked-reasons``,
-and removes it when the device is unrealized. A blocker is process-wide,
-so ``savevm`` names only the first blocker in the process. The peer's
-state is outside the machine, so a snapshot could not hold it. The link
-does not refuse ``-incoming``: whether an incoming stream is refused here
-is *unknown*, and a test that sent one would settle it.
+With neither chardev set the link is inert: it is silent in the same way
+and adds no migration blocker. With both set, the link adds a migration
+blocker that ``query-migrate`` lists in ``blocked-reasons``, and removes it
+when the device is unrealized. A blocker is process-wide, so ``savevm``
+names only the first blocker in the process. The peer's state is outside
+the machine, so a snapshot could not hold it. The link does not refuse
+``-incoming``: whether an incoming stream is refused here is *unknown*, and
+a test that sent one would settle it.
 
 The node link carries no signals and does not pace bytes or look at the
 programmed divisor. The controller's outputs come from the signal link
-below.
+below, which ``sgi-l1-link`` owns (:ref:`sgi-l1-link-signals`).
+
+.. _sgi-l1-link-signals:
+
+Signals through the link
+------------------------
+
+``sgi-l1-link`` creates an ``sgi-l1-signal-link`` as its child
+(``signal-link``), so a machine wires a link provider the way it wires an
+``sgi-l1``. The child's ``signals`` and ``epoch`` properties are the link's
+own, set on ``sgi-l1-link``. Its GPIOs come out of the link under the names
+:ref:`sgi-l1-signal-link` lists: outputs ``node-power``, ``reset-hold``,
+``soft-reset`` and ``nmi`` (four lines), and inputs ``power-good`` and
+``node-reset-state``. ``sgi-l1`` has more names that the link does not
+carry: a machine derives ``node-reset`` from the release edge of
+``reset-hold``, the project's line set has no ``power-button`` (a design
+choice, not a hardware measurement), and the Cx-brick outputs
+``board-reset`` and ``board-soft-reset`` are not on the wire. The child is
+realized with the link even when no chardev is set, and is then inert.
+
+The link refuses at realize a ``node`` chardev without a ``signals``
+chardev, and the reverse: one wire without the other is a configuration
+error, so the device checks rather than leaving it to the machine. With
+neither the link is inert. With both, the node link and the signal link each
+add their own migration blocker, listed separately in ``blocked-reasons``
+and removed at unrealize.
+
+The link also refuses ``-icount`` when it has chardevs, and says why: the
+machine's virtual time must not run ahead of a separate controller process,
+whose board runs with its own fixed ``-icount`` (a choice of the project's
+design for attaching the real firmware, not a hardware fact). A device
+cannot read ``-icount``'s ``sleep`` or ``align`` settings, which are private
+to the instruction-counting code, so the refusal covers every counting mode,
+an *approximation*; allowing one would need those settings exposed to
+models. Whether some counting mode keeps virtual time safely behind the
+peer's is *unknown*, and a run against a real peer would settle it. With no
+chardev set the link accepts ``-icount``.
 
 .. _sgi-l1-signal-link:
 
@@ -1241,10 +1277,10 @@ only holds the machine's two lines. With one set it adds a blocker that
 ``-incoming`` is not refused by the device, since blockers are consulted
 only when a migration or ``savevm`` starts; that is untested, *unknown*.
 The device has no migration state, so the line levels and counters are not
-saved even with no chardev set. A machine that joins this device to a node
-link must refuse one chardev without the other. That cannot be checked
-here, because neither device sees the other, so it is left to the machine
-option.
+saved even with no chardev set. ``sgi-l1-link`` carries this device as its
+child and refuses one chardev without the other
+(:ref:`sgi-l1-link-signals`); a machine that joins the two by hand must do
+the same.
 
 Board-side interfaces
 =====================
@@ -1545,7 +1581,10 @@ test listens on: bytes from the node to the peer, bytes from the peer to
 the node and the interrupt they raise, a stream larger than the window's
 queue, two transports that do not mix, a silent controller before the peer
 connects, the peer leaving and returning, the migration blocker following
-the chardev and the window's refusals.
+the chardev and the window's refusals. It also plays the board on the signals
+socket: lines coming out of the link and going in under ``sgi-l1``'s names,
+the aliased properties, a chardev without its pair refused, and ``-icount``
+refused with its reason and accepted when inert.
 
 ``tests/qtest/sgi-l1-signal-link-test.c`` plays the board from a socket the
 test listens on: the hello exchange and the refusal of a wrong role or
