@@ -58,6 +58,12 @@
 
 #define KEY_CODE_MAX 0x2ff
 
+/* The farthest point an absolute target may name on a head with no mode. */
+#define ABS_NO_MODE_MAX 32767
+
+/* The largest relative delta the reader may send on an axis. */
+#define REL_MAX 32767
+
 /* A pointer that sent no target for this long has stopped. */
 #define LEAD_QUIET_MS 50
 #define LEAD_MAX 200
@@ -72,7 +78,7 @@
 typedef struct AbsAxis {
     int32_t target;
     int32_t from;               /* the cursor when the last step went out */
-    int32_t err;                /* the target less that */
+    int64_t err;                /* the target less that */
     int32_t sent;               /* this step, in counts */
     int32_t last;               /* the last step that was not 0 */
     double gain;                /* pixels a count moved on the last step */
@@ -124,9 +130,31 @@ static struct {
     } q[BTN_DEFER_MAX];
 } deferred;
 
+/* Events queued since the last guest report (sync). */
+static bool unsynced;
+
 static int64_t guest_ms(void)
 {
     return qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
+}
+
+/* End the guest report in progress, if there is one. */
+void sgi_display_input_sync(void)
+{
+    if (unsynced) {
+        unsynced = false;
+        qemu_input_event_sync();
+    }
+}
+
+/*
+ * Relative motion, clamped to what a PS/2 mouse's counts can carry so no
+ * arithmetic downstream sees an extreme.
+ */
+static void queue_rel(InputAxis axis, int64_t v)
+{
+    qemu_input_queue_rel(NULL, axis, MAX(-REL_MAX, MIN(REL_MAX, v)));
+    unsynced = true;
 }
 
 /*
@@ -172,6 +200,11 @@ static void note_target(int32_t x, int32_t y, bool first)
     loop.ev_y = y;
 }
 
+/*
+ * A button change is a guest report of its own. The PS/2 mouse packs a
+ * report's buttons and motion into one packet, so a press and release in
+ * one report would reach the guest as no click at all.
+ */
 static void button_apply(unsigned button, bool down)
 {
     if (down) {
@@ -179,7 +212,10 @@ static void button_apply(unsigned button, bool down)
     } else {
         buttons_down &= ~(1ull << button);
     }
+    sgi_display_input_sync();
     qemu_input_queue_btn(NULL, button, down);
+    unsynced = true;
+    sgi_display_input_sync();
 }
 
 static void key_apply(unsigned code, bool down)
@@ -195,6 +231,7 @@ static void key_apply(unsigned code, bool down)
         keys_down[code / 8] &= ~(1 << (code % 8));
     }
     qemu_input_event_send(NULL, &evt);
+    unsynced = true;
 }
 
 /* Send what waited for the move, a packet each so none is merged away. */
@@ -206,7 +243,7 @@ static void buttons_flush(void)
         } else {
             button_apply(deferred.q[i].code, deferred.q[i].down);
         }
-        qemu_input_event_sync();
+        sgi_display_input_sync();
     }
     deferred.n = 0;
 }
@@ -243,14 +280,14 @@ static void abs_stop(const char *why)
  */
 static int32_t axis_step(AbsAxis *a)
 {
-    long v;
+    int64_t v;
 
     if (!a->err || a->held >= ABS_HELD_STEPS) {
         return 0;
     }
-    v = (long)ceil(abs(a->err) / a->gain - 0.5);
+    v = (int64_t)ceil(llabs(a->err) / a->gain - 0.5);
     if (v < 1) {
-        if (abs(a->last) == 1) {
+        if (llabs(a->last) == 1) {
             /* One count moves more than twice the error: this is as close. */
             return 0;
         }
@@ -262,7 +299,7 @@ static int32_t axis_step(AbsAxis *a)
 }
 
 /* What the last step did on one axis: moved pixels for its counts. */
-static void axis_learn(AbsAxis *a, int32_t moved)
+static void axis_learn(AbsAxis *a, int64_t moved)
 {
     /*
      * A move of nothing or against the step is not its answer: the axis is
@@ -278,9 +315,9 @@ static void axis_learn(AbsAxis *a, int32_t moved)
         return;
     }
     a->gain = MAX(GAIN_MIN, MIN(GAIN_MAX, (double)moved / a->sent));
-    if (!a->moved_target && abs(moved) > abs(a->err)) {
+    if (!a->moved_target && llabs(moved) > llabs(a->err)) {
         /* Past the target: never send that many counts again. */
-        a->limit = MAX(1, MIN(a->limit, abs(a->sent) - 1));
+        a->limit = MAX(1, MIN(a->limit, llabs(a->sent) - 1));
     }
 }
 
@@ -312,12 +349,11 @@ static bool abs_step(void)
             AbsAxis *a = &loop.ax[i];
 
             a->from = c[i];
-            a->err = axis_aim(i, pass == 0) - c[i];
+            a->err = (int64_t)axis_aim(i, pass == 0) - c[i];
             a->sent = axis_step(a);
             if (a->sent) {
                 a->last = a->sent;
-                qemu_input_queue_rel(NULL, i ? INPUT_AXIS_Y : INPUT_AXIS_X,
-                                     a->sent);
+                queue_rel(i ? INPUT_AXIS_Y : INPUT_AXIS_X, a->sent);
                 queued = true;
             }
         }
@@ -360,15 +396,15 @@ static void abs_timer(void *opaque)
         abs_stop("no head");
         return;
     }
-    trace_sgi_display_abs_answer(cx, cy, cx - loop.ax[0].from,
-                                 cy - loop.ax[1].from);
-    axis_learn(&loop.ax[0], cx - loop.ax[0].from);
-    axis_learn(&loop.ax[1], cy - loop.ax[1].from);
+    trace_sgi_display_abs_answer(cx, cy, (int64_t)cx - loop.ax[0].from,
+                                 (int64_t)cy - loop.ax[1].from);
+    axis_learn(&loop.ax[0], (int64_t)cx - loop.ax[0].from);
+    axis_learn(&loop.ax[1], (int64_t)cy - loop.ax[1].from);
     if (deferred.n && guest_ms() - deferred.since >= BTN_DEFER_MS) {
         buttons_flush();
     }
     if (abs_step()) {
-        qemu_input_event_sync();
+        sgi_display_input_sync();
     }
 }
 
@@ -400,8 +436,6 @@ void sgi_display_input_cursor_moved(unsigned head)
 
 void sgi_display_input_reader_gone(void)
 {
-    bool queued = false;
-
     loop.pending = false;
     deferred.n = 0;
     if (loop.timer) {
@@ -417,20 +451,19 @@ void sgi_display_input_reader_gone(void)
             };
 
             qemu_input_event_send(NULL, &evt);
-            queued = true;
+            unsynced = true;
         }
     }
     for (unsigned b = 0; b < INPUT_BUTTON__MAX; b++) {
         if (buttons_down & (1ull << b)) {
+            sgi_display_input_sync();
             qemu_input_queue_btn(NULL, b, false);
-            queued = true;
+            unsynced = true;
         }
     }
     memset(keys_down, 0, sizeof(keys_down));
     buttons_down = 0;
-    if (queued) {
-        qemu_input_event_sync();
-    }
+    sgi_display_input_sync();
 }
 
 /*
@@ -457,17 +490,26 @@ static void retarget(int32_t x, int32_t y)
     loop.deadline = guest_ms() + ABS_TTL_MS;
 }
 
-static bool input_absolute(const SGIShmMsgInput *in)
+static void input_absolute(const SGIShmMsgInput *in)
 {
     unsigned head = in->head;
     int cur = sgi_display_cursor_head();
-    bool queued = false;
+    uint32_t w, ht;
+    int32_t x, y;
 
     if (head >= sgi_display_head_count()) {
         warn_report_once("sgi-display-shm: absolute input names head %u, "
                          "which does not exist; dropped", head);
-        return false;
+        return;
     }
+    /*
+     * Clamp to the head's mode as QEMU holds it. A head with no mode has no
+     * screen to name a point on: it takes any point a signed 16-bit axis
+     * counts, which keeps every sum below in range.
+     */
+    sgi_display_head_mode(head, &w, &ht);
+    x = MAX(0, MIN(in->x, w ? (int64_t)w - 1 : ABS_NO_MODE_MAX));
+    y = MAX(0, MIN(in->y, ht ? (int64_t)ht - 1 : ABS_NO_MODE_MAX));
     if (cur >= 0 && (unsigned)cur != head) {
         /*
          * The guest cursor is on another head and QEMU does not know how
@@ -478,15 +520,14 @@ static bool input_absolute(const SGIShmMsgInput *in)
             abs_stop("other head");
         }
         if (loop.have_host[head]) {
-            int32_t dx = in->x - loop.hx[head], dy = in->y - loop.hy[head];
+            int64_t dx = (int64_t)x - loop.hx[head];
+            int64_t dy = (int64_t)y - loop.hy[head];
 
             if (dx) {
-                qemu_input_queue_rel(NULL, INPUT_AXIS_X, dx);
-                queued = true;
+                queue_rel(INPUT_AXIS_X, dx);
             }
             if (dy) {
-                qemu_input_queue_rel(NULL, INPUT_AXIS_Y, dy);
-                queued = true;
+                queue_rel(INPUT_AXIS_Y, dy);
             }
         }
     } else {
@@ -504,12 +545,12 @@ static bool input_absolute(const SGIShmMsgInput *in)
              * position and pile onto the first. Move the target; the answer
              * to that step sizes the next one toward it.
              */
-            note_target(in->x, in->y, false);
-            retarget(in->x, in->y);
+            note_target(x, y, false);
+            retarget(x, y);
         } else {
             sgi_display_head_cursor(head, &cx, &cy, &on);
-            trace_sgi_display_abs_target(head, in->x, in->y, cx, cy);
-            note_target(in->x, in->y, true);
+            trace_sgi_display_abs_target(head, x, y, cx, cy);
+            note_target(x, y, true);
             loop.step_ms = 0;
             if (loop.cycle_ms < 20) {
                 loop.cycle_ms = 60;
@@ -518,65 +559,60 @@ static bool input_absolute(const SGIShmMsgInput *in)
             loop.head = head;
             loop.steps = 0;
             /* The gain depends on the step, so each target relearns it. */
-            loop.ax[0] = (AbsAxis) { .target = in->x, .gain = 1.0,
+            loop.ax[0] = (AbsAxis) { .target = x, .gain = 1.0,
                                      .limit = STEP_MAX };
-            loop.ax[1] = (AbsAxis) { .target = in->y, .gain = 1.0,
+            loop.ax[1] = (AbsAxis) { .target = y, .gain = 1.0,
                                      .limit = STEP_MAX };
             loop.deadline = guest_ms() + ABS_TTL_MS;
-            queued = abs_step();
+            abs_step();
         }
     }
     loop.have_host[head] = true;
-    loop.hx[head] = in->x;
-    loop.hy[head] = in->y;
-    return queued;
+    loop.hx[head] = x;
+    loop.hy[head] = y;
 }
 
-bool sgi_display_input_apply(const SGIShmMsgInput *in)
+void sgi_display_input_apply(const SGIShmMsgInput *in)
 {
     switch (in->kind) {
     case SGI_SHM_INPUT_KEY:
         if (in->code < 1 || in->code > KEY_CODE_MAX) {
             warn_report_once("sgi-display-shm: key code 0x%x is outside "
                              "1..0x%x; dropped", in->code, KEY_CODE_MAX);
-            return false;
+        } else if (deferred.n) {
+            defer_push(true, in->code, in->value != 0);
         } else {
-            if (deferred.n) {
-                defer_push(true, in->code, in->value != 0);
-                return false;
-            }
             key_apply(in->code, in->value != 0);
-            return true;
         }
+        return;
     case SGI_SHM_INPUT_BUTTON:
         if (in->code >= INPUT_BUTTON__MAX) {
             warn_report_once("sgi-display-shm: button %u is not an "
                              "InputButton; dropped", in->code);
-            return false;
-        }
-        if (loop.pending) {
+        } else if (loop.pending) {
             defer_push(false, in->code, in->value != 0);
-            return false;
+        } else {
+            button_apply(in->code, in->value != 0);
         }
-        button_apply(in->code, in->value != 0);
-        return true;
+        return;
     case SGI_SHM_INPUT_RELATIVE:
         /* The user moved the pointer: an absolute target is stale. */
         if (loop.pending) {
             abs_stop("relative input");
         }
         if (in->x) {
-            qemu_input_queue_rel(NULL, INPUT_AXIS_X, in->x);
+            queue_rel(INPUT_AXIS_X, in->x);
         }
         if (in->y) {
-            qemu_input_queue_rel(NULL, INPUT_AXIS_Y, in->y);
+            queue_rel(INPUT_AXIS_Y, in->y);
         }
-        return in->x || in->y;
+        return;
     case SGI_SHM_INPUT_ABSOLUTE:
-        return input_absolute(in);
+        input_absolute(in);
+        return;
     default:
         warn_report_once("sgi-display-shm: input kind %u is unknown; "
                          "dropped", in->kind);
-        return false;
+        return;
     }
 }

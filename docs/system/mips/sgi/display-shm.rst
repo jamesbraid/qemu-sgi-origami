@@ -681,12 +681,15 @@ Input
 
 ``INPUT`` messages feed QEMU's input layer directly, much faster than QMP
 ``input-send-event``. Everything one read of the socket returns is applied
-in order, then QEMU sends one input sync, so a batch of events from one host
-frame is one guest report. When any message in the batch has bit 0 of
+in order, then QEMU sends one input sync. Each button change is a guest
+report of its own: QEMU ends the report in progress before it and sends
+another after it, so a press and a release in one read reach the guest as
+two reports, in order. The other events one read returns, keys and motion,
+are one report. A read's boundaries are not guaranteed, so a viewer does not
+rely on which events share one. When any message in the batch has bit 0 of
 ``flags`` set, QEMU sends one ``INPUT_ACK`` with the ``seq`` of the last such
-message. Messages that arrive before the ``HELLO``, or an unknown ``kind``,
-are errors; a code or button outside the ranges below is dropped and logged
-once.
+message. A message before the ``HELLO`` is an error. An unknown ``kind``,
+and a code or button outside the ranges below, is dropped and logged once.
 
 An SGI machine has one PS/2 keyboard and one PS/2 mouse, so keys and
 buttons name no head and go to the machine's own handlers. When the viewer
@@ -699,20 +702,25 @@ disconnects, QEMU releases every key and button it still holds down.
      - Meaning
    * - 1, key
      - ``code`` is a Linux evdev key code in 1 to ``0x2ff``; ``value`` 1 is
-       down, 0 is up. QEMU maps it to the guest's scan codes. Codes outside
-       the range are dropped.
+       down, 0 is up (any other value is down). QEMU maps it to the guest's
+       scan codes. Codes outside the range are dropped.
    * - 2, button
      - ``code`` is a QAPI ``InputButton`` below ``INPUT_BUTTON__MAX``;
-       ``value`` 1 is down, 0 is up. Others are dropped.
+       ``value`` 0 is up and any other value is down. Others are dropped.
    * - 3, relative
      - ``x`` and ``y`` are deltas in guest pointer counts; positive ``y``
-       is down.
+       is down. QEMU clamps each to -32,767 to 32,767.
    * - 4, absolute
      - ``head`` and the position ``x``, ``y`` in that head's pixels. A head
-       that does not exist is dropped.
+       that does not exist is dropped. QEMU clamps the position to the head's
+       mode, 0 to ``width`` - 1 and 0 to ``height`` - 1 (to 0 to 32,767
+       while the head has no mode), using the mode it wrote itself and not
+       what the shared block says now.
 
 Every SGI pointer is a relative PS/2 mouse, so QEMU turns an absolute
-position into relative motion by closing a loop on the guest cursor:
+position into relative motion by closing a loop on the guest cursor. The
+numbers below describe what QEMU does and were measured on IRIX 6.5.30 with
+the VPro; they are informative, and a viewer does not depend on them:
 
 - The target is the position in the head's pixels. The cursor is what
   the head publishes in ``cursor_x`` and ``cursor_y`` (the origin, before the

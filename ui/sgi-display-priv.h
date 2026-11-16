@@ -11,10 +11,15 @@
 #include "hw/display/sgi/scanout.h"
 
 /*
- * Queue one INPUT message into the input layer. Returns true when it queued
- * an event, so the caller owes one qemu_input_event_sync() after the batch.
+ * Queue one INPUT message into the input layer. Events it queues join the
+ * guest report in progress; the caller ends the report after the batch with
+ * sgi_display_input_sync(). A button change is a report of its own and ends
+ * the one before it.
  */
-bool sgi_display_input_apply(const SGIShmMsgInput *in);
+void sgi_display_input_apply(const SGIShmMsgInput *in);
+
+/* End the guest report in progress, if any event was queued for it. */
+void sgi_display_input_sync(void);
 
 /* The reader's connection ended: forget what it asked for. */
 void sgi_display_input_reader_gone(void);
@@ -25,6 +30,12 @@ void sgi_display_input_cursor_moved(unsigned head);
 /* The cursor QEMU last saw on a head; false for a head that is not bound. */
 bool sgi_display_head_cursor(unsigned head, int32_t *x, int32_t *y,
                              bool *on);
+/*
+ * The size of the mode QEMU last wrote for a head, as it keeps it itself and
+ * not as the reader could have changed it in the shared block. 0 by 0 for a
+ * head with no mode.
+ */
+void sgi_display_head_mode(unsigned head, uint32_t *width, uint32_t *height);
 /* The head the guest cursor was last shown on, or -1 for none yet. */
 int sgi_display_cursor_head(void);
 unsigned sgi_display_head_count(void);

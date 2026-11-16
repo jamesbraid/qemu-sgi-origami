@@ -216,7 +216,7 @@ egl_init_d3d11_device(void *p) "d3d device: %p"
 # sgi-display-input.c
 sgi_display_abs_target(unsigned head, int tx, int ty, int cx, int cy) "head %u target %d,%d from cursor %d,%d"
 sgi_display_abs_step(int cx, int cy, int sx, int sy, int gx, int gy) "cursor %d,%d step %d,%d counts, gain x1000 %d,%d"
-sgi_display_abs_answer(int cx, int cy, int mx, int my) "cursor %d,%d moved %d,%d"
+sgi_display_abs_answer(int cx, int cy, int64_t mx, int64_t my) "cursor %d,%d moved %" PRId64 ",%" PRId64
 sgi_display_abs_stop(int cx, int cy, const char *why) "cursor %d,%d: %s"
 
 # sgi-display-pattern.c

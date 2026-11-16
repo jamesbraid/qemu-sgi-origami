@@ -90,6 +90,7 @@ struct SGIDisplayHead {
     uint32_t cursor_gen;
     bool bound;
     bool presented;             /* lines marked since content_gen last moved */
+    uint32_t width, height;     /* the mode QEMU last wrote, for the input */
     SGIDisplayRegion *cursor_region;
     uint8_t *cursor_image;
     int32_t cursor_x, cursor_y;
@@ -594,7 +595,7 @@ static bool client_hello(SGIDisplay *d, const SGIShmMsgHello *m)
 static void client_read(void *opaque)
 {
     SGIDisplay *d = opaque;
-    bool queued = false, ack = false;
+    bool ack = false;
     uint32_t ack_seq = 0;
     size_t off = 0;
     ssize_t n;
@@ -649,7 +650,7 @@ static void client_read(void *opaque)
                 return;
             }
             memcpy(&m, d->in_buf + off, sizeof(m));
-            queued |= sgi_display_input_apply(&m);
+            sgi_display_input_apply(&m);
             if (m.hdr.flags & SGI_SHM_MSGF_ACK) {
                 ack = true;
                 ack_seq = m.hdr.seq;
@@ -659,9 +660,7 @@ static void client_read(void *opaque)
     }
     d->in_len -= off;
     memmove(d->in_buf, d->in_buf + off, d->in_len);
-    if (queued) {
-        qemu_input_event_sync();
-    }
+    sgi_display_input_sync();
     if (ack) {
         send_header_only(d, SGI_SHM_MSG_INPUT_ACK, ack_seq);
     }
@@ -977,6 +976,8 @@ void sgi_display_head_unbind(SGIScanout *s)
 static void head_write_mode(SGIDisplayHead *h, uint32_t width,
                             uint32_t height, uint32_t refresh_mhz)
 {
+    h->width = width;
+    h->height = height;
     qatomic_set(&h->rec->width, width);
     qatomic_set(&h->rec->height, height);
     qatomic_set(&h->rec->refresh_mhz, refresh_mhz);
@@ -1166,6 +1167,18 @@ bool sgi_display_head_cursor(unsigned head, int32_t *x, int32_t *y, bool *on)
     *y = d->heads[head].cursor_y;
     *on = d->heads[head].cursor_on;
     return true;
+}
+
+void sgi_display_head_mode(unsigned head, uint32_t *width, uint32_t *height)
+{
+    SGIDisplay *d = shm_display;
+
+    if (!d || head >= d->nheads || !d->heads[head].bound) {
+        *width = *height = 0;
+        return;
+    }
+    *width = d->heads[head].width;
+    *height = d->heads[head].height;
 }
 
 int sgi_display_cursor_head(void)

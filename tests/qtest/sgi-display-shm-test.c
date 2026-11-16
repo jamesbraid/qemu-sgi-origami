@@ -1253,8 +1253,9 @@ static void test_input_mouse(void)
     enable_mouse(qts);
 
     /*
-     * One write, three messages: one batch, one guest report, one ack with
-     * the last sequence. x +5, y +3 (QEMU's y is down) and the left button.
+     * One write, three messages, one ack with the last sequence. x +5, y +3
+     * (QEMU's y is down) and the left button. The motion is one guest
+     * report and the button another: a button change never shares one.
      */
     fill_input(b, 1, true, SGI_SHM_INPUT_RELATIVE, 0, 0, 0, 5, 3);
     fill_input(b + 32, 2, false, SGI_SHM_INPUT_BUTTON, 0,
@@ -1264,10 +1265,13 @@ static void test_input_mouse(void)
     expect_msg(sock, &m, 0x85);
     g_assert_cmpuint(ldl_le_p(m.b + 4), ==, 3);
     g_assert_false(recv_msg(sock, &m, QUIET_MS));
-    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 3);
-    g_assert_cmphex(buf[0] & 0x09, ==, 0x09);   /* left button, always-1 */
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 6);
+    g_assert_cmphex(buf[0] & 0x09, ==, 0x08);   /* no button, always-1 */
     g_assert_cmphex(buf[1], ==, 5);
     g_assert_cmphex(buf[2], ==, 0xfd);          /* -3, PS/2 y is up */
+    g_assert_cmphex(buf[3] & 0x09, ==, 0x09);   /* left button, always-1 */
+    g_assert_cmphex(buf[4], ==, 0);
+    g_assert_cmphex(buf[5], ==, 0);
 
     /* An unknown button is dropped. */
     fill_input(b, 4, true, SGI_SHM_INPUT_BUTTON, 0, 999, 1, 0, 0);
@@ -1898,6 +1902,125 @@ static void test_pattern_frame_code(void)
     g_assert_cmpuint(seen, ==, 62);
 }
 
+/*
+ * A press and a release that arrive in one read are two guest reports. The
+ * PS/2 packet carries the buttons as they stand at the report, so one
+ * report would show a button that never went down.
+ */
+static void test_input_click_in_one_write(void)
+{
+    uint8_t buf[16], b[64];
+    int sock;
+    QTestState *qts = input_start(&sock);
+    Msg m;
+
+    enable_mouse(qts);
+    fill_input(b, 1, false, SGI_SHM_INPUT_BUTTON, 0,
+               0 /* INPUT_BUTTON_LEFT */, 1, 0, 0);
+    fill_input(b + 32, 2, true, SGI_SHM_INPUT_BUTTON, 0, 0, 0, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 6);
+    g_assert_cmphex(buf[0] & 0x09, ==, 0x09);   /* down */
+    g_assert_cmphex(buf[3] & 0x09, ==, 0x08);   /* up */
+
+    /* Motion before a button is a report of its own too, in order. */
+    fill_input(b, 3, false, SGI_SHM_INPUT_RELATIVE, 0, 0, 0, 4, 0);
+    fill_input(b + 32, 4, true, SGI_SHM_INPUT_BUTTON, 0, 0, 1, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 6);
+    g_assert_cmphex(buf[0] & 0x09, ==, 0x08);
+    g_assert_cmphex(buf[1], ==, 4);
+    g_assert_cmphex(buf[3] & 0x09, ==, 0x09);
+    close(sock);
+    qtest_quit(qts);
+}
+
+/* Read and drop whatever QEMU has sent, until the socket is quiet. */
+static void discard_messages(int sock)
+{
+    Msg m;
+
+    while (recv_msg(sock, &m, QUIET_MS)) {
+        if (m.fd >= 0) {
+            close(m.fd);
+        }
+    }
+}
+
+static void vpro_set_size(QTestState *qts, uint32_t w, uint32_t h)
+{
+    qtest_writel(qts, VPRO_SHORT + ODSY_BACKEND_SELECT,
+                 ODSY_BACKEND_HDR(0x2802, 5));
+    qtest_writel(qts, VPRO_SHORT + ODSY_BACKEND_SELECT, w);
+    qtest_writel(qts, VPRO_SHORT + ODSY_BACKEND_SELECT, h);
+    for (int i = 0; i < 3; i++) {
+        qtest_writel(qts, VPRO_SHORT + ODSY_BACKEND_SELECT, 0);
+    }
+}
+
+/*
+ * Coordinates the reader sends are clamped to the head's mode, and a
+ * relative delta to +-32767, before any arithmetic: the extremes of each
+ * field leave QEMU running (the sanitizer build would stop it on an
+ * overflow) and move the pointer only as far as the clamp allows.
+ */
+static void test_input_extremes(void)
+{
+    uint8_t buf[16], b[32];
+    int sock;
+    QTestState *qts = input_start(&sock);
+    Msg m;
+
+    vpro_set_size(qts, 1280, 720);
+    discard_messages(sock);
+    enable_mouse(qts);
+
+    /* At the far corner, a target beyond it is the corner: no motion. */
+    guest_cursor(qts, 1279, 719, true);
+    fill_input(b, 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, INT32_MAX,
+               INT32_MAX);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 0);
+
+    /* A target before the origin is the origin: one full step toward it. */
+    fill_input(b, 2, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, INT32_MIN,
+               INT32_MIN);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 3);
+    g_assert_cmphex(buf[1], ==, 0x81);          /* -127 */
+    g_assert_cmphex(buf[2], ==, 0x7f);          /* y up by 127 */
+
+    /* A mixed pair, once the guest's silence has ended that move. */
+    qtest_clock_step(qts, (ANSWER_MS + SETTLE_MS) * 1000000LL);
+    guest_cursor(qts, 0, 0, true);
+    fill_input(b, 3, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, INT32_MIN,
+               INT32_MAX);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, sizeof(buf)), ==, 3);
+    g_assert_cmphex(buf[1], ==, 0);
+    g_assert_cmphex(buf[2], ==, 0x81);          /* y down by 127 */
+
+    /* Relative deltas become at most 32767 counts, 127 to a packet. */
+    fill_input(b, 4, true, SGI_SHM_INPUT_RELATIVE, 0, 0, 0, INT32_MAX,
+               INT32_MIN);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, AUX_RECEIVE, buf, 6), ==, 6);
+    g_assert_cmphex(buf[1], ==, 127);
+    g_assert_cmphex(buf[2], ==, 0x7f);          /* y: -32767, up */
+    fill_input(b, 5, true, SGI_SHM_INPUT_RELATIVE, 0, 0, 0, INT32_MIN,
+               INT32_MAX);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    close(sock);
+    qtest_quit(qts);
+}
+
 /* The socket is removed when QEMU exits. */
 static void test_cleanup_on_exit(void)
 {
@@ -2491,6 +2614,9 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-display-shm/input-absolute-key-behind-click",
                    test_input_absolute_key_behind_click);
     qtest_add_func("sgi-display-shm/test-pattern", test_pattern_frame_code);
+    qtest_add_func("sgi-display-shm/input-click-in-one-write",
+                   test_input_click_in_one_write);
+    qtest_add_func("sgi-display-shm/input-extremes", test_input_extremes);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 
