@@ -1325,6 +1325,8 @@ static void test_input_absolute(void)
  * False when none starts in @wait_ms of virtual time. The controller
  * shifts the bytes in over time, so a started packet is read to its end.
  */
+static unsigned pkt_buttons;    /* the buttons the last packet carried */
+
 static bool next_packet(QTestState *qts, int *dx, int *dy, int wait_ms)
 {
     uint8_t p[3];
@@ -1349,6 +1351,7 @@ static bool next_packet(QTestState *qts, int *dx, int *dy, int wait_ms)
     }
     g_assert_cmpuint(n, ==, 3);
     g_assert_cmphex(p[0] & 0x08, ==, 0x08);
+    pkt_buttons = p[0] & 7;
     /* At most 127 counts, so the 8-bit value is the whole delta. */
     *dx = (int8_t)p[1];
     *dy = -(int8_t)p[2];
@@ -1626,6 +1629,62 @@ static void test_input_absolute_retarget(void)
 }
 
 /*
+ * A click belongs where the pointer is, not where the guest cursor has got
+ * to: a button sent while the move is still closing on its target waits for
+ * the move to end, and then goes out as a press and a release in separate
+ * packets.
+ */
+static void test_input_absolute_click_after_move(void)
+{
+    int sock, dx, dy;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = irix_accel,
+                   .max_x = HEAD_W - 1, .max_y = HEAD_H - 1,
+                   .x = 640, .y = 512 };
+    bool pressed = false, released = false;
+    uint8_t b[32];
+    Msg m;
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    fill_input(b, 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, 900, 700);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    /* Press and release while the first step is in flight. */
+    fill_input(b, 2, true, SGI_SHM_INPUT_BUTTON, 0, 0, 1, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    fill_input(b, 3, true, SGI_SHM_INPUT_BUTTON, 0, 0, 0, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g_assert_cmpint(pkt_buttons, ==, 0);
+    g_assert_false(next_packet(qts, &dx, &dy, 20));
+    g.x += irix_accel(dx);
+    g.y += irix_accel(dy);
+    sim_report(&g, g.x, g.y);
+    while (next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS)) {
+        if (pkt_buttons == 1) {
+            /* The press arrives with the cursor on the target. */
+            g_assert_false(pressed);
+            g_assert_cmpint(g.x, ==, 900);
+            g_assert_cmpint(g.y, ==, 700);
+            pressed = true;
+        } else if (pressed && pkt_buttons == 0) {
+            released = true;
+        }
+        g.x += irix_accel(dx);
+        g.y += irix_accel(dy);
+        sim_report(&g, g.x, g.y);
+    }
+    g_assert_true(pressed);
+    g_assert_true(released);
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
  * A pointer moving at a steady speed is aimed at ahead of itself, by the
  * distance it covers while a step lands, and a pointer that stops is aimed
  * at exactly. Targets 10 ms apart at 1 px/ms make a lead of tens of pixels;
@@ -1674,6 +1733,66 @@ static void test_input_absolute_lead(void)
     }
     g_assert_cmpint(last_dx, !=, 0);
     g_assert_cmpint(g.x, ==, 230);
+    close(sock);
+    qtest_quit(qts);
+}
+
+/*
+ * A key sent behind a click that is waiting for the move waits too: the
+ * guest must not see a modifier change before the click it belongs to.
+ * The key reaches the keyboard only after the press has reached the mouse.
+ */
+static void test_input_absolute_key_behind_click(void)
+{
+    int sock, dx, dy;
+    QTestState *qts = input_start(&sock);
+    SimGuest g = { .qts = qts, .accel = irix_accel,
+                   .max_x = HEAD_W - 1, .max_y = HEAD_H - 1,
+                   .x = 640, .y = 512 };
+    bool pressed = false, keyed = false;
+    uint8_t buf[16], b[32];
+    Msg m;
+
+    enable_mouse(qts);
+    sim_report(&g, g.x, g.y);
+    fill_input(b, 1, true, SGI_SHM_INPUT_ABSOLUTE, 0, 0, 0, 900, 700);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    fill_input(b, 2, true, SGI_SHM_INPUT_BUTTON, 0, 0, 1, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    /* KEY_A down: PS/2 make code 0x1c. */
+    fill_input(b, 3, true, SGI_SHM_INPUT_KEY, 0, 30, 1, 0, 0);
+    send_all(sock, b, sizeof(b));
+    expect_msg(sock, &m, 0x85);
+    g_assert_cmpuint(drain(qts, KBD_RECEIVE, buf, sizeof(buf)), ==, 0);
+
+    g_assert_true(next_packet(qts, &dx, &dy, 0));
+    g.x += irix_accel(dx);
+    g.y += irix_accel(dy);
+    sim_report(&g, g.x, g.y);
+    while (next_packet(qts, &dx, &dy, ANSWER_MS + SETTLE_MS)) {
+        unsigned n = drain(qts, KBD_RECEIVE, buf, sizeof(buf));
+
+        if (pkt_buttons == 1) {
+            pressed = true;
+        }
+        if (n) {
+            /* Not before the press. */
+            g_assert_true(pressed);
+            g_assert_cmphex(buf[0], ==, 0x1c);
+            keyed = true;
+        }
+        g.x += irix_accel(dx);
+        g.y += irix_accel(dy);
+        sim_report(&g, g.x, g.y);
+    }
+    if (drain(qts, KBD_RECEIVE, buf, sizeof(buf))) {
+        g_assert_cmphex(buf[0], ==, 0x1c);
+        keyed = true;
+    }
+    g_assert_true(pressed);
+    g_assert_true(keyed);
     close(sock);
     qtest_quit(qts);
 }
@@ -2266,6 +2385,10 @@ int main(int argc, char **argv)
                    test_input_absolute_retarget);
     qtest_add_func("sgi-display-shm/input-absolute-lead",
                    test_input_absolute_lead);
+    qtest_add_func("sgi-display-shm/input-absolute-click-after-move",
+                   test_input_absolute_click_after_move);
+    qtest_add_func("sgi-display-shm/input-absolute-key-behind-click",
+                   test_input_absolute_key_behind_click);
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 

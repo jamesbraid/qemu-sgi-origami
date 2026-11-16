@@ -104,6 +104,26 @@ static struct {
 static uint8_t keys_down[(KEY_CODE_MAX + 8) / 8];
 static uint64_t buttons_down;
 
+/*
+ * Buttons the reader sent while a move was still closing on its target: the
+ * click belongs where the pointer is, not where the guest cursor has got to,
+ * so each waits for the move to end. In order, and one packet each. A key
+ * that arrives behind a waiting button waits too, so a modifier cannot
+ * overtake the click it belongs to.
+ */
+#define BTN_DEFER_MAX 16
+/* A press does not wait longer than this for a pointer that keeps moving. */
+#define BTN_DEFER_MS 150
+static struct {
+    unsigned n;
+    int64_t since;
+    struct {
+        bool key;               /* a key, not a button */
+        unsigned code;
+        bool down;
+    } q[BTN_DEFER_MAX];
+} deferred;
+
 static int64_t guest_ms(void)
 {
     return qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL);
@@ -152,6 +172,59 @@ static void note_target(int32_t x, int32_t y, bool first)
     loop.ev_y = y;
 }
 
+static void button_apply(unsigned button, bool down)
+{
+    if (down) {
+        buttons_down |= 1ull << button;
+    } else {
+        buttons_down &= ~(1ull << button);
+    }
+    qemu_input_queue_btn(NULL, button, down);
+}
+
+static void key_apply(unsigned code, bool down)
+{
+    QemuInputEvent evt = {
+        .type = INPUT_EVENT_KIND_KEY,
+        .key = { .key = code, .down = down },
+    };
+
+    if (down) {
+        keys_down[code / 8] |= 1 << (code % 8);
+    } else {
+        keys_down[code / 8] &= ~(1 << (code % 8));
+    }
+    qemu_input_event_send(NULL, &evt);
+}
+
+/* Send what waited for the move, a packet each so none is merged away. */
+static void buttons_flush(void)
+{
+    for (unsigned i = 0; i < deferred.n; i++) {
+        if (deferred.q[i].key) {
+            key_apply(deferred.q[i].code, deferred.q[i].down);
+        } else {
+            button_apply(deferred.q[i].code, deferred.q[i].down);
+        }
+        qemu_input_event_sync();
+    }
+    deferred.n = 0;
+}
+
+static void defer_push(bool key, unsigned code, bool down)
+{
+    if (deferred.n == BTN_DEFER_MAX) {
+        buttons_flush();
+    }
+    if (!deferred.n) {
+        deferred.since = guest_ms();
+    }
+    deferred.q[deferred.n].key = key;
+    deferred.q[deferred.n].code = code;
+    deferred.q[deferred.n].down = down;
+    deferred.n++;
+}
+
 static void abs_stop(const char *why)
 {
     int32_t cx = 0, cy = 0;
@@ -161,6 +234,7 @@ static void abs_stop(const char *why)
     trace_sgi_display_abs_stop(cx, cy, why);
     loop.pending = false;
     timer_del(loop.timer);
+    buttons_flush();
 }
 
 /*
@@ -290,6 +364,9 @@ static void abs_timer(void *opaque)
                                  cy - loop.ax[1].from);
     axis_learn(&loop.ax[0], cx - loop.ax[0].from);
     axis_learn(&loop.ax[1], cy - loop.ax[1].from);
+    if (deferred.n && guest_ms() - deferred.since >= BTN_DEFER_MS) {
+        buttons_flush();
+    }
     if (abs_step()) {
         qemu_input_event_sync();
     }
@@ -326,6 +403,7 @@ void sgi_display_input_reader_gone(void)
     bool queued = false;
 
     loop.pending = false;
+    deferred.n = 0;
     if (loop.timer) {
         timer_del(loop.timer);
     }
@@ -463,17 +541,11 @@ bool sgi_display_input_apply(const SGIShmMsgInput *in)
                              "1..0x%x; dropped", in->code, KEY_CODE_MAX);
             return false;
         } else {
-            QemuInputEvent evt = {
-                .type = INPUT_EVENT_KIND_KEY,
-                .key = { .key = in->code, .down = in->value != 0 },
-            };
-
-            if (in->value) {
-                keys_down[in->code / 8] |= 1 << (in->code % 8);
-            } else {
-                keys_down[in->code / 8] &= ~(1 << (in->code % 8));
+            if (deferred.n) {
+                defer_push(true, in->code, in->value != 0);
+                return false;
             }
-            qemu_input_event_send(NULL, &evt);
+            key_apply(in->code, in->value != 0);
             return true;
         }
     case SGI_SHM_INPUT_BUTTON:
@@ -482,12 +554,11 @@ bool sgi_display_input_apply(const SGIShmMsgInput *in)
                              "InputButton; dropped", in->code);
             return false;
         }
-        if (in->value) {
-            buttons_down |= 1ull << in->code;
-        } else {
-            buttons_down &= ~(1ull << in->code);
+        if (loop.pending) {
+            defer_push(false, in->code, in->value != 0);
+            return false;
         }
-        qemu_input_queue_btn(NULL, in->code, in->value != 0);
+        button_apply(in->code, in->value != 0);
         return true;
     case SGI_SHM_INPUT_RELATIVE:
         /* The user moved the pointer: an absolute target is stale. */

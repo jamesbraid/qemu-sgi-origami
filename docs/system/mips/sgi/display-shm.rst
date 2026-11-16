@@ -738,6 +738,12 @@ position into relative motion by closing a loop on the guest cursor:
   600 to 3000 pixels a second, 0.5 to 0.7 cut the mean distance between the
   guest cursor and the pointer to about 60 to 70 percent of aiming at the
   target itself, and 0.85 overshot on turns.
+- A button message that arrives while a move is pending waits until the move
+  ends (or 150 ms of guest time, whichever is first) so the click lands where
+  the pointer is, and is then sent as a packet of its own for each message, in
+  order. A key message that arrives while a button waits waits behind it, so
+  a modifier change cannot overtake the click. At most 16 wait; the 17th sends
+  them first.
 - When the guest cursor is on another head than the target, QEMU does not
   know how the guest arranged its screens, so there is no target to close on.
   It sends the difference from the last absolute position the viewer gave for
