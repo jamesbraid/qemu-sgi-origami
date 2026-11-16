@@ -251,7 +251,6 @@ typedef struct SGIShmMsgWelcome {       /* 64 bytes */
 } SGIShmMsgWelcome;
 
 #define SGI_SHM_REGION_DEDICATED    (1u << 0)
-#define SGI_SHM_REGION_MODEL_ONLY   (1u << 1)
 
 typedef struct SGIShmMsgRegion {        /* 56 bytes */
     SGIShmMsgHeader hdr;

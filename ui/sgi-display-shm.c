@@ -533,8 +533,17 @@ static void wake_bh(void *opaque)
     }
 }
 
+/*
+ * Ask for a WAKE if the reader is armed. The full barrier orders the
+ * generation store the caller just made before the load of armed: the
+ * reader stores armed and then re-reads the generations, and without it
+ * both sides can miss the other's store and the reader sleeps through a
+ * change. One barrier a publish, not a pixel.
+ */
 static void head_wake(SGIDisplayHead *h)
 {
+    /* The caller's generation store before the load of armed below. */
+    smp_mb();
     if (qatomic_read(&h->rec->armed) == 1) {
         qemu_bh_schedule(h->d->wake_bh);
     }
@@ -847,6 +856,8 @@ static void head_mouse_set(DisplayChangeListener *dcl, int x, int y, bool on)
     if (on) {
         h->d->cursor_head = h->idx;
     }
+    /* The position is visible before the generation that announces it. */
+    smp_wmb();
     /* Two, so the generation stays even: odd means the image is changing. */
     h->cursor_gen += 2;
     qatomic_set(&h->rec->cursor_gen, h->cursor_gen);
@@ -1107,7 +1118,7 @@ void sgi_display_head_presented(SGIScanout *s, int first, int count)
 
     if (h && h->family == SGI_SHM_FAMILY_XRGB) {
         dirty_mark(h->rec, first, count);
-        h->presented = true;
+        qatomic_set(&h->presented, true);
     }
 }
 
@@ -1133,8 +1144,8 @@ void sgi_display_head_published(SGIScanout *s)
 {
     SGIDisplayHead *h = s->dhead;
 
-    if (h && h->presented) {
-        h->presented = false;
+    if (h && qatomic_read(&h->presented) &&
+        qatomic_xchg(&h->presented, false)) {
         /* The marks are visible before the generation that announces them. */
         smp_wmb();
         qatomic_inc(&h->rec->content_gen);

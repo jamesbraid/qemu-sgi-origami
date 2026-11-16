@@ -292,7 +292,8 @@ control block's handle.
    * - 40
      - u32
      - ``flags``: bit 0, dedicated allocation (backends 1 and 2): the import
-       must be a dedicated allocation for a buffer. Bit 1 is reserved and 0.
+       must be a dedicated allocation for a buffer. The other bits are
+       reserved and 0.
    * - 44
      - u32
      - reserved, 0
@@ -494,6 +495,11 @@ Rules
 then bumps ``content_gen``. Everything else in the block is QEMU's. A viewer
 treats what it reads as untrusted.
 
+**Reading a seqlock.** Load the generation with acquire semantics and
+retry while it is odd; read the fields; then an acquire fence, reload the
+generation and compare it with the first. For the family state, retry while
+``state_gen`` is odd or changed.
+
 **Layout seqlock.** ``layout_gen`` is odd while QEMU rewrites ``active``,
 ``family``, ``family_version``, ``width``, ``height``, ``refresh_mhz``,
 ``flags``, ``plane[]``, ``table[]`` and ``cursor_image``. The other fields
@@ -512,10 +518,11 @@ to line 4,095).
 4. Compose the family over the dirty lines.
 5. Check ``layout_gen`` again, and redo the frame in full if it moved.
 
-**Dirty lines.** Bit 0 of ``flags`` means every line that changed since the
-viewer last cleared the bitmap has its bit set; a bit can also be set for a
-line that did not change. When it is clear, which is so for a head taller
-than 4,096 lines, any change in ``content_gen`` means a full frame.
+**Dirty lines.** A bit at or past ``height`` is ignored. Bit 0 of ``flags``
+means every line that changed since the viewer last cleared the bitmap has
+its bit set; a bit can also be set for a line that did not change. When it
+is clear, which is so for a head taller than 4,096 lines, any change in
+``content_gen`` means a full frame.
 
 For the xrgb family QEMU resolves each dirty line into a spare row first
 and compares it with the frame. It stores the line and sets its bit only
@@ -523,19 +530,26 @@ when the pixels differ, so a line that the model re-resolved to the same
 pixels stays clear and the pixels are in place by the time a bit is set. For the other
 families QEMU sets them when the model's planes change.
 
-**Waking.** A viewer that sleeps between frames writes 1 to ``armed``, then
-re-checks ``content_gen``, and waits for ``WAKE``. QEMU clears ``armed``
-when it sends the message. Wake-ups are best effort: a viewer that has not
-armed gets none.
+**Waking.** A viewer that sleeps between frames stores 1 to ``armed`` with a
+sequentially consistent store (or a store followed by a full fence), then
+re-checks ``content_gen``, ``cursor_gen`` and ``layout_gen``, and sleeps
+only if all three are unchanged; it then waits for ``WAKE``. QEMU puts a
+full barrier between making a change visible and reading ``armed``, so one
+side or the other sees the other's store. QEMU clears ``armed`` when it
+sends the message. Wake-ups are best effort: a viewer that has not armed
+gets none.
 
 **Cursor.** ``cursor_x``, ``cursor_y`` and ``cursor_on`` change as the guest
 moves its cursor. Every such change, and every change of the image, its size
 or its hot spot, bumps ``cursor_gen`` and wakes an armed viewer. A move adds
 2, so the generation stays even; QEMU makes it odd while it writes the
-image. To read the image: read ``cursor_gen``, retry while it is odd, copy
-the image, read it again and retry if it moved. A viewer that only follows
-the pointer reads the position when ``cursor_gen`` changes. The host cursor
-is the guest's, so a viewer that shows it never repaints for it.
+image. QEMU writes the position before it advances ``cursor_gen``. To read
+the image: read ``cursor_gen`` first, before the size, hot spot and image,
+retry while it is odd, copy them, and read it again and retry if it moved.
+A viewer that only follows the pointer reads the position when
+``cursor_gen`` changes. The image's alpha is straight, not premultiplied.
+The host cursor is the guest's, so a viewer that shows it never repaints for
+it.
 A model that draws its cursor into its own pixels (the InfiniteReality, the
 VPro, the IMPACT and the O2's GBE) keeps ``cursor_on`` 0, so a viewer shows
 no second cursor, and still publishes ``cursor_x`` and ``cursor_y`` for
@@ -546,6 +560,14 @@ position is the glyph's top-left pixel, and the pointer lands the hot spot's
 offset in the glyph away from the target (*approximation*). The IMPACT
 reports at its next retrace, because its two coordinates are separate
 register writes.
+
+**Reading pixels.** The X byte of an ``X8R8G8B8`` pixel is undefined and a
+viewer ignores it. A viewer that has just connected has no earlier frame and
+draws every line, whatever the bitmap says. In version 3 a GPU reader (Vulkan,
+Direct3D 12, Metal) reads memory that QEMU may be writing, with no
+synchronisation, so it can read a line while QEMU writes it; the Vulkan memory
+model does not allow that. This is a limitation of version 3, not something a
+viewer can fix.
 
 **Order of channels.** The control block and the socket are separate
 channels. A plane or the cursor image can name a region before the viewer
@@ -602,6 +624,12 @@ memory. Memory for a region is made like this:
   not device local, which on a discrete GPU is the PCIe window;
 - the driver may require a dedicated allocation for such a buffer, and
   ``REGION.flags`` bit 0 says so;
+- the importing buffer must have the same ``size`` (``REGION.size``), usage
+  (storage buffer and transfer source), flags (none) and sharing mode
+  (exclusive) as the exporting one, and be created for the same handle type;
+  a successful ``OPAQUE_FD`` import takes ownership of the descriptor, so the
+  viewer does not close it afterwards, and closes it itself if the import
+  fails;
 - QEMU allocates with the export info, maps the whole allocation, zeroes it
   and takes the handle.
 
