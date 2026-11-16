@@ -26,8 +26,10 @@ suits one consumer cannot quietly break another:
   install CD through the raw volume device and compares each checksum
   with the image's, finds the install CD mounted by the media daemon and
   reads a distribution from it with inst;
-- the Origin 200 PROM's "Install System Software" loads the miniroot from
-  the install CD, and inst in the miniroot reads a distribution from it;
+- the Origin 200 and Octane2 PROMs' "Install System Software" loads the
+  miniroot from the install CD, and inst in the miniroot reads a
+  distribution from it. The Octane2 has no graphics board, so the test
+  sets the serial console first, as a serial-console install must;
 - the OpenBSD 6.9 installer, booted from its CD by the Octane2 PROM,
   mounts the CD and hashes its base set, which must match the release's
   signed SHA256 list. A drive that powers on at 512 fails here: OpenBSD
@@ -213,14 +215,14 @@ class SgiCdrom(QemuSystemTest):
         launch_paused(self.vm)
         self.prom_sash('origin200-sash', 'dksc(0,6,{})', 'sash64')
 
-    def octane2(self, image):
+    def octane2(self, image, *extra):
         # The Octane PROM probes targets 1 to 3 on its first controller and
         # every target on the second (docs/system/mips/sgi/ip30.rst).
         self.set_machine('octane2')
         self.vm.set_console()
         self.vm.add_args('-bios', str(self.ASSET_IP30.fetch()),
                          '-audio', 'none', '-nic', 'none',
-                         *self.cd_args('scsi.1', 4, image))
+                         *self.cd_args('scsi.1', 4, image), *extra)
         launch_paused(self.vm)
 
     @skipBigDataTest()
@@ -337,6 +339,37 @@ class SgiCdrom(QemuSystemTest):
         self.assertTrue(
             'Default distribution to install from: /CDROM/dist' in transcript,
             'the miniroot did not start inst from the CD')
+
+    @skipBigDataTest()
+    @skipSlowTest()
+    @skipIfMissingEnv('QEMU_TEST_SGI_ASSET_DIR')
+    def test_octane2_prom_installs_miniroot_from_cd(self):
+        # A fresh Octane2 NVRAM holds console=g. With no graphics board the
+        # PROM falls back to the serial port, but sash64's install path
+        # still takes the graphics console's and panics on a null pointer
+        # (docs/system/mips/sgi/hardware/scsi-cdrom.rst). console=d is
+        # what a serial-console install sets first. The disk's swap
+        # partition takes the miniroot; any disk with an SGI volume
+        # header will do.
+        disk = self.ASSET_DISK.fetch()
+        self.octane2(self.ASSET_CD.fetch(),
+                     '-drive', f'if=none,id=disk0,file={disk},format=qcow2,'
+                     'snapshot=on',
+                     '-device', 'scsi-hd,bus=scsi.0,scsi-id=1,drive=disk0')
+        steps = [
+            ('Option\\? ', '5\r'),
+            ('>> ', 'setenv console d\r'),
+            ('>> ', 'exit\r'),
+            ('Option\\? ', '2\r'),
+            ('or <enter> to start: ', '\r'),
+            ('Insert the installation CD-ROM, then press <enter>: ', '\r'),
+            ('Inst> ', 'from /CDROM/dist/sysmon_6522m\r'),
+        ]
+        transcript = self.drive('octane2-miniroot-cd', steps,
+                                r'Reading product descriptions[\s\S]*Inst> ')
+        self.assertTrue(
+            'Default distribution to install from: /CDROM/dist' in transcript,
+            'the Octane2 miniroot did not start inst from the CD')
 
 
 if __name__ == '__main__':

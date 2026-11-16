@@ -162,12 +162,22 @@ found; with the daemon disabled no MODE SELECT reaches the drive.
 On the model, with the drive powered on at 2048 or at 512, IRIX reads an
 install CD, an SGI-labelled CD and an ISO 9660 disc whole through the raw
 volume device, mounts EFS and ISO 9660 discs, runs inst from a mounted CD
-and installs from a CD through the Origin 200 and Origin 300 PROMs. The
-Octane2 PROM's Install System Software loads sash64 from the CD and then
-panics in it with a read TLB miss, at either power-on length and with the
-IRIX 6.5.22 and 6.5.30 CDs, on a machine with no graphics head; the
-cause is not known and the block length does not change it. One case
-differs. A disc with
+and installs from a CD through the Origin 200, Origin 300 and Octane2
+PROMs. The Octane2 install needs the console chosen to match the
+machine. A fresh Octane2 NVRAM holds ``console=g``; with no graphics board
+the PROM cannot open its graphics console, records ``NoAutoLoad=CONSOLE
+OPEN FAILED.`` and carries on with ``ConsoleOut=serial(0)``, leaving
+``console=g`` set. Install System Software then loads sash64 from the CD,
+sash64 reads the target disk's volume header, writes ``ESC [35h`` to the
+serial port and panics with a read TLB miss at address ``0x38``, before it
+copies the miniroot, at either power-on length and with the IRIX 6.5.22
+and 6.5.30 CDs. With ``setenv console d`` first, or with a graphics board
+fitted and ``console=g``, the same install copies the miniroot from the
+CD and inst reads the distribution from it. These are runs on the model,
+with the stock IP30 PROM and sash64; the panic follows the console
+setting, not the drive or the block length, so it is a guest behaviour
+rather than a fault of this model, which is *inferred*: no physical
+Octane without graphics has been tried. One case differs. A disc with
 neither an SGI volume header nor a filesystem IRIX knows, read through
 the raw volume device with the drive at 2048 and the daemon running,
 returns only its first quarter: IRIX sizes it in 2048-byte sectors at

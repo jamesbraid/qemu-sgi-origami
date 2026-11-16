@@ -166,9 +166,10 @@ test_mips64_timeouts = {
   # keeps a 60s margin under this.
   'irix_installed_boot' : 960,
   # Every consumer of the CD-ROM contract: four PROM boots from IRIX CDs,
-  # an IRIX boot that reads two CDs whole, a miniroot load from a CD and
-  # the OpenBSD installer reading its CD. All seven took 421s when last
-  # measured; 1200 covers a loaded host.
+  # an IRIX boot that reads two CDs whole, miniroot loads from a CD on the
+  # Origin 200 and the Octane2 and the OpenBSD installer reading its CD.
+  # The first seven took 421s when last measured and the Octane2 miniroot
+  # load 74s alone; 1200 covers a loaded host.
   'sgi_cdrom' : 1200,
   # Power off the installed IRIX disk on the Origin 200, the two-module
   # Origin 200 and the Origin 2000 and require QEMU to exit with status 0,
