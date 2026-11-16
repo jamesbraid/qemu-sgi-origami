@@ -95,8 +95,8 @@ Parts and placement
    * - Onyx 3000, Origin 3200, Origin 3400, Origin 3800, Onyx 3400 with InfiniteReality3, Origin 3900
      - IOC3 on the I-brick's IO7 (:ref:`sgi-bricks-ibrick`)
      - ``m48t35``
-     - 32 KiB; the offset is not stated here
-     - 1968
+     - 32 KiB at IOC3 BAR offset ``0x80000`` (model; the offset IRIX expects)
+     - 1968 (IRIX base, see below)
    * - Origin 350, Onyx 350, Tezro, Onyx4 host
      - IOC4 byte bus
      - ``ds1744``
@@ -133,6 +133,15 @@ model therefore fits the same M48T35-compatible 32 KiB window to those
 boards, an *approximation* with no aliasing at multiples of ``0x800``. The
 same holds for the IO9 board: the DS1744 is a compatibility choice, and the
 fitted package and the address wiring behind IOC4 are *unknown*.
+
+The I-brick IO7 holds an IOC3 (:src:`108-0264-004 p. 2-5`;
+:src:`007-4311-002 p. 29`), *established*. The diagnostics guide tests the
+IOC3 as part of the IO7 and the block diagram groups "TOD/NVRAM" beside the
+USB and 1394 parts, but neither names the clock, so its part and capacity are
+*unknown*. The ``0x80000`` offset
+and the M48T35 map come from IRIX's expectation (see
+:ref:`sgi-timekeepers-m48t35-layout`). The M48T35-compatible window there is an
+*approximation*, the same compatibility choice as the Origin 300 IO8.
 
 .. _sgi-timekeepers-m48t35:
 
@@ -223,6 +232,31 @@ and agree with OpenBSD's ``dsrtc.c`` and Linux's ``rtc-m48t35.c``, *software
 expectation*. A battery-backed part has no reset value for the clock; the
 model keeps cells and time across a machine reset.
 
+.. _sgi-timekeepers-m48t35-layout:
+
+Layout selected by IRIX
+-----------------------
+
+IRIX 6.5.30 chooses the cell map at run time on an IOC3, and the choice does
+not come from the part's name. It writes ``0`` to byte ``0xb``, ``0xff`` to
+byte ``0x6`` and ``0x80`` to byte ``0xb`` of the clock window, then reads byte
+``0x6``. A read of ``0xff`` selects layout 1, the map in the register table
+above: the freeze byte at ``0x7ff8``, BCD seconds at ``0x7ff9`` through the
+year at ``0x7fff``. Any other read selects layout 2, a DS1286-like map that
+the model does not implement. The probe and its outcome are *software
+expectation*, from the IRIX 6.5.30m kernel (``unix.IP35``, sha256
+``412a1aae553a348376bc30cacbaf65044de1745d30222f02ec5f88297dcb1dfa``): the
+probe is at ``0xc00000000006a7a8``, ``0xc00000000006a7b0`` and
+``0xc00000000006a7b8``, with the read-back at ``0xc00000000006a7bc``. The
+probe addresses the window at the ``0x80000`` offset IRIX uses, as in the
+parts table above.
+
+The M48T35 keeps byte ``0x6`` as an ordinary storage cell, so the model
+returns ``0xff`` after the probe and IRIX takes layout 1. The
+``sn/builder/origin3200/io7-clock-layout-probe`` qtest runs this sequence on
+the I-brick IO7. Which layout the IO7's real part answers to is *unknown*: the
+probe shows what IRIX expects, not what the part does.
+
 Reading and writing the clock
 -----------------------------
 
@@ -276,6 +310,23 @@ with nothing else looking wrong. The base is the ``year-base`` property:
 one: Fuel, Origin 300, and the I-brick IO7 of the Onyx 3000, Origin 3200,
 Origin 3400, Origin 3800, Onyx 3400 with InfiniteReality3 and Origin 3900.
 Any other value is refused at realize.
+
+The IP35 :term:`PROM` reads the year cell as 1970 plus the cell, while the
+IRIX 6.5.30 kernel reads and writes it with 1968 as the base. The PROM and
+IRIX therefore disagree about the same cell, and a year that IRIX writes shows
+two years later in the PROM. This is so on real hardware too, not only in the
+model (*software expectation*). The stock IP35 PROM is version 6.210 (banner
+"IP35 PROM SGI Version 6.210 built 02:33:51 PM Aug 26, 2004", in the IRIX
+6.5.30 Installation Tools and Overlays file ``usr/cpu/firmware/ip35prom.img``,
+sha256 ``d74b4b7ef9c11c66692019db9af698104595be7a0573a86feae8a83441921318``).
+Its I/O monitor is a gzipped ELF64 at image offset ``0x8cbb0``, loaded at
+``0xc000000013000000``. The year base is the ``addiu`` at ``0xc0000000130405c8``,
+in the time-of-day read routine at ``0xc000000013040560``. The IRIX 6.5.30m
+kernel base is the ``addiu`` at ``0xc00000000006a5b4``, in the clock read
+routine, and its write path subtracts 1968 at ``0xc00000000006abdc`` and
+``0xc00000000006ad04``. The part has no century digit to tell them apart. The
+I-brick IO7 model keeps the IRIX base, 1968, so a year set from IRIX is right
+in IRIX and two years later in the PROM.
 
 The part corrects for months of 28 to 31 days and states its leap-year
 correction as valid until 2100 :src:`st-m48t35-rev-10 p. 8`, *established*.

@@ -300,7 +300,9 @@ Model limits:
   since TI does not say which decoder answers.
 * The IO7's time-of-day part is unidentified, so its :term:`IOC3` carries the
   Origin 300's M48T35-compatible Timekeeper as a compatibility choice
-  (*approximation*), with blank storage on every start.
+  (*approximation*), with blank storage on every start. IRIX's run-time
+  layout probe on that IOC3 selects the M48T35 map, and the year base is
+  1968, the IRIX base (:ref:`sgi-timekeepers-m48t35-layout`).
 * Head E's PCI slots are empty. The I-brick's XBridge revision is the
   model's.
 

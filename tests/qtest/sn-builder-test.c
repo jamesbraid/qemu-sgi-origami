@@ -12550,6 +12550,66 @@ static void test_origin3200_fibre_channel_card(void)
     g_unlink(prom);
 }
 
+/*
+ * The IO7's IOC3 at head F device 4. The XBridge's device window for
+ * device 4 is the 1 MB window after device 3's, and the IOC3 BAR and the
+ * device register are programmed the way the Fibre Channel card's are.
+ */
+#define IO7_IOC3_DEVICE 4
+#define IO7_IOC3_MMIO 0x18000000u
+#define IO7_IOC3_WINDOW (CBRICK_WIDGET(15) + 0x800000)
+#define IO7_IOC3_BYTEBUS (IO7_IOC3_WINDOW + 0x80000)
+#define IO7_CLOCK_SECONDS 0x7ff9
+#define IO7_LAYOUT_PROBE_LOW 0x6
+#define IO7_LAYOUT_PROBE_SELECT 0xb
+
+static void io7_ioc3_attach(QTestState *qts)
+{
+    uint64_t config = CBRICK_CONFIG(15, IO7_IOC3_DEVICE);
+
+    qtest_writel(qts, config + PCI_BASE_ADDRESS_0, IO7_IOC3_MMIO);
+    qtest_writel(qts, config + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    qtest_writel(qts, ORIGIN3200_XBRIDGE_REG(
+                     ORIGIN3200_XBRIDGE_DEVICE(IO7_IOC3_DEVICE)),
+                 ORIGIN3200_XBRIDGE_DEVICE_MEMORY |
+                 (IO7_IOC3_MMIO >> 20));
+}
+
+/*
+ * IRIX picks the clock layout at run time: it writes 0, 0xff and 0x80 to
+ * bytes 0xb, 0x6 and 0xb of the window, then reads byte 0x6 back. An M48T35
+ * keeps that byte as ordinary storage and reads 0xff, so IRIX takes the
+ * M48T35 map. The byte is first set to 0 so that a read which ignores the
+ * writes cannot pass, and the window is checked first so that an unmapped
+ * read (0xff) cannot pass either.
+ */
+static void test_origin3200_io7_clock_layout_probe(void)
+{
+    g_autofree char *prom = NULL;
+    QTestState *qts = origin3200_start(&prom);
+    g_autofree char *rtc = qom_child_type(qts, "/machine/module2/io7/ioc3",
+                                          "rtc");
+    uint8_t seconds;
+
+    g_assert_cmpstr(rtc, ==, "m48t35");
+    io7_ioc3_attach(qts);
+
+    seconds = qtest_readb(qts, IO7_IOC3_BYTEBUS + IO7_CLOCK_SECONDS) & 0x7f;
+    g_assert_cmphex(seconds & 0x0f, <=, 9);
+    g_assert_cmphex(seconds >> 4, <=, 5);
+
+    qtest_writeb(qts, IO7_IOC3_BYTEBUS + IO7_LAYOUT_PROBE_LOW, 0x00);
+    qtest_writeb(qts, IO7_IOC3_BYTEBUS + IO7_LAYOUT_PROBE_SELECT, 0x00);
+    qtest_writeb(qts, IO7_IOC3_BYTEBUS + IO7_LAYOUT_PROBE_LOW, 0xff);
+    qtest_writeb(qts, IO7_IOC3_BYTEBUS + IO7_LAYOUT_PROBE_SELECT, 0x80);
+    g_assert_cmphex(qtest_readb(qts, IO7_IOC3_BYTEBUS +
+                                IO7_LAYOUT_PROBE_LOW), ==, 0xff);
+
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
 static uint16_t origin3200_fc_mailbox(QTestState *qts, const uint16_t *in,
                                       unsigned int count, unsigned int out)
 {
@@ -15082,6 +15142,8 @@ int main(int argc, char **argv)
                    test_cbrick_r14000_refuses_other_parts);
     qtest_add_func("sn/builder/origin3200/io7-timekeeper",
                    test_origin3200_io7_timekeeper);
+    qtest_add_func("sn/builder/origin3200/io7-clock-layout-probe",
+                   test_origin3200_io7_clock_layout_probe);
     qtest_add_func("sn/builder/origin3200/fibre-channel-doubleword-dma",
                    test_origin3200_fibre_channel_doubleword_dma);
     qtest_add_func("sn/builder/origin3200/fibre-channel-card",
