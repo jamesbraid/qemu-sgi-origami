@@ -34,8 +34,8 @@
 #define LB_REVISION UINT64_C(0x600000)
 #define LB_SCRATCH2 UINT64_C(0x608010)
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
-#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
-#define MD_BANK0_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3100))
+#define MD_INSTALLED_PAIR0 (UINT64_C(0x33))
+#define MD_BANK0_PAIR0 (UINT64_C(0x31))
 #define MD_BANK1_BASE UINT64_C(0x40000000)
 #define REVISION_NODE_SHIFT 32
 #define REVISION_NODE_MASK (UINT64_C(0xff) << REVISION_NODE_SHIFT)
@@ -128,8 +128,8 @@ static QTestState *machine_start(void)
     g_autofree char *quoted = g_shell_quote(prom_path);
     QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s", quoted);
 
-    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
-    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_PAIR0);
     peer_access(qts, LB_SCRATCH2, true, SCRATCH1);
     qtest_writeq(qts, BEDROCK_LOCAL + LB_SCRATCH2, SCRATCH0);
     qtest_writeq(qts, PROBE, WORD0);
@@ -708,7 +708,7 @@ static void test_bte_memory_route(const void *data)
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + LB_REVISION, UINT64_C(2) << 32);
     for (unsigned node = 0; node < 2; node++) {
         bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                       MD_INSTALLED_SELECT2);
+                       MD_INSTALLED_PAIR0);
         /* BTE memory has no inbound widget/device identity. */
         bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
     }
@@ -773,7 +773,7 @@ static void test_bte_memory_route(const void *data)
         g_assert_cmphex(bte_cpu_readq(qts, node * 2,
             own + 0x60000), ==, 0);
     }
-    /* SELECT2 places the second fitted bank in its own sparse window. */
+    /* PAIR0 places the second fitted bank in its own sparse window. */
     for (unsigned node = 0; node < 2; node++) {
         uint64_t own = NODE(node ? 2 : 0);
         uint64_t peer = NODE(node ? 0 : 2);
@@ -875,7 +875,7 @@ static void test_bte_memory_route(const void *data)
         g_assert_true(qtest_memwrite_cpu(qts, (1 - node) * 2,
             peer + MD_BANK1_BASE + 0x60000, marker, sizeof(marker)));
         bte_cpu_writeq(qts, (1 - node) * 2,
-            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_SELECT2);
+            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_BANK0_PAIR0);
         memset(bytes, 0x32 + node, 128);
         g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
             peer + 0x60000, result, 128));
@@ -891,7 +891,7 @@ static void test_bte_memory_route(const void *data)
                 own + MD_BANK1_BASE + 0x70000), ==, failed);
         }
         bte_cpu_writeq(qts, (1 - node) * 2,
-            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+            BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
         g_assert_true(qtest_memread_cpu(qts, (1 - node) * 2,
             peer + MD_BANK1_BASE + 0x60000, result, sizeof(marker)));
         g_assert_cmpmem(result, sizeof(marker), marker, sizeof(marker));
@@ -922,7 +922,7 @@ static void test_bte_memory_route(const void *data)
                         (UINT64_C(1) << 16) | 1);
     }
     bte_cpu_writeq(qts, 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                   MD_INSTALLED_SELECT2);
+                   MD_INSTALLED_PAIR0);
     g_assert_true(qtest_memread_cpu(qts, 2, NODE(2) + 0x20000,
                                     result, sizeof(result)));
     g_assert_cmpmem(result, sizeof(result), bytes, sizeof(bytes));
@@ -1005,7 +1005,7 @@ static void unpowered_program_node(QTestState *qts, unsigned int node,
                                    bool routed)
 {
     bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                   MD_INSTALLED_SELECT2);
+                   MD_INSTALLED_PAIR0);
     bte_cpu_writeq(qts, node * 2, BEDROCK_LOCAL + 0x400118, 0);
     if (routed) {
         bte_cpu_writeq(qts, node * 2,
@@ -1807,8 +1807,8 @@ static void test_prom_copy_range_leaves_at_handoff(void)
     quoted = g_shell_quote(prom);
     qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
                       "-no-shutdown -S", quoted);
-    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
-    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_PAIR0);
     write_handoff_loop(qts, 0);
     qtest_writeq(qts, HANDOFF_NODE_TAG, 0);
     qtest_writeq(qts, HANDOFF_GO, 0);
@@ -1961,8 +1961,8 @@ static void test_prom_copy_live_node(gconstpointer opaque)
     quoted = g_shell_quote(prom);
     qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
                       "-no-shutdown -S", quoted);
-    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
-    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_PAIR0);
     qtest_writeq(qts, HANDOFF_NODE_TAG, 0);
     qtest_writeq(qts, PROM_DATA_WINDOW, WORD0);
     write_copy_probe(qts, 0, COPY_OTHER_MARKER);
@@ -2159,8 +2159,8 @@ static void test_remote_reader_in_the_directory(void)
     quoted = g_shell_quote(prom);
     qts = qtest_initf(MACHINE_ARGS " -bios %s -accel tcg,thread=multi "
                       "-no-shutdown -S", quoted);
-    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
-    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
+    peer_access(qts, MD_MEMORY_CONFIG, true, MD_INSTALLED_PAIR0);
     qtest_writeq(qts, DIRECTORY_TAG, 0);
     qtest_writeq(qts, DIRECTORY_GO, 0);
     qtest_writeq(qts, DIRECTORY_DONE, 0);
@@ -3804,7 +3804,7 @@ static void test_restart_keeps_the_survivors(void)
     g_assert_cmphex(peer_access(qts, LB_SCRATCH1, false, 0), ==, 0x88);
     g_assert_cmphex(peer_access(qts, LB_SCRATCH2, false, 0), ==, SCRATCH1);
     g_assert_cmphex(peer_access(qts, MD_MEMORY_CONFIG, false, 0), !=,
-                    MD_INSTALLED_SELECT2);
+                    MD_INSTALLED_PAIR0);
     g_assert_cmphex(peer_access(qts, LB_REVISION, false, 0), ==, revision1);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_REVISION), ==,
                     revision0);
@@ -3812,7 +3812,7 @@ static void test_restart_keeps_the_survivors(void)
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + LB_SCRATCH2), ==,
                     SCRATCH0);
     g_assert_cmphex(qtest_readq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG), ==,
-                    MD_INSTALLED_SELECT2);
+                    MD_INSTALLED_PAIR0);
     g_assert_cmphex(qtest_readq(qts, PROBE), ==, WORD0);
     qtest_quit(qts);
 }
@@ -4461,7 +4461,7 @@ static void check_cycle_rearms_the_cache_as_ram_window(unsigned int node,
                       MACHINE_ARGS, quoted, trace);
     /* The spin loop of the node's first pass: beq zero, zero, self; nop. */
     bte_cpu_writeq(qts, cpu, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                   MD_INSTALLED_SELECT2);
+                   MD_INSTALLED_PAIR0);
     bte_cpu_writeq(qts, cpu, CAR_SPIN, UINT64_C(0x1000ffff00000000));
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
 

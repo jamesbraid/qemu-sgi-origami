@@ -757,7 +757,7 @@ static const RtRam octane_banks_ram[] = {
  * aliases the destination rebuilds after loading.
  */
 static const RtStep bedrock_banks_23[] = {
-    W64(BEDROCK_MD(0x8), (UINT64_C(2) << 32) | 0x3300),
+    W64(BEDROCK_MD(0x8), 0x33),
     M64(BEDROCK_MD(0x8)),
     RT_DONE
 };

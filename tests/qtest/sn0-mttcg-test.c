@@ -1586,7 +1586,7 @@ static void test_masked_interrupt_keeps_flag_elsewhere(const void *data)
 #define GH_HUB_COUNT        (HUB_LOCAL + 0x030100)
 #define SN1_BEDROCK_LOCAL   (SPACE_IO + UINT64_C(0x01000000))
 #define SN1_MD_MEMORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x780008)
-#define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define SN1_MD_INSTALLED_PAIR0 (UINT64_C(0x33))
 #define SN1_STATE_GUEST     (UINT64_C(0x9000000000000000) | STATE_PHYS)
 #define SN1_STATE_HOST      (SPACE_HUB + STATE_PHYS)
 
@@ -2334,7 +2334,7 @@ static void test_gdb_sn1_hold(const void *data)
                       "-chardev socket,path=%s,server=on,wait=off,id=gdb0 "
                       "-gdb chardev:gdb0 -S", image, socket_path);
     /* Map software bank zero to the installed memory before the CPUs run. */
-    qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_PAIR0);
     gdb = gdb_peer_socket(socket_path);
     gdb_peer_command(gdb, "?", reply, sizeof(reply));
     g_assert_true(reply[0] == 'T' || reply[0] == 'S');
@@ -2426,7 +2426,7 @@ static void test_gdb_sn1_hold(const void *data)
         uint64_t status;
 
         qtest_system_reset(qts);
-        qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+        qtest_writeq(qts, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_PAIR0);
         gdb_peer_command(gdb, "Hg1", reply, sizeof(reply));
         g_assert_cmpstr(reply, ==, "OK");
         /* Compare must be CPU A's first instruction after reset. */

@@ -57,8 +57,13 @@ static void io8_board_default_vector(uint8_t out[80])
 #define BEDROCK_WINDOW_SIZE UINT64_C(0x800000)
 #define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x780008)
 #define BEDROCK_MD_CURRENT_CELL UINT64_C(0x780000)
-#define BEDROCK_MD_INSTALLED UINT64_C(0x3300)
-#define BEDROCK_MD_INSTALLED_SELECT2 \
+#define BEDROCK_MD_INSTALLED UINT64_C(0x33)
+#define BEDROCK_MD_INSTALLED_PAIR0 BEDROCK_MD_INSTALLED
+/*
+ * Select 2 moves fitted locational banks 0 and 1 into software banks 2 and
+ * 3 and leaves software banks 0 and 1 on the empty locational banks 2 and 3.
+ */
+#define BEDROCK_MD_INSTALLED_REMAPPED \
     ((UINT64_C(2) << 32) | BEDROCK_MD_INSTALLED)
 
 #define PI_CPU_NUMBER UINT64_C(0x20)
@@ -157,7 +162,7 @@ static void io8_board_default_vector(uint8_t out[80])
 #define DIRECTORY_LINE_1A00000 UINT64_C(0x340000)
 #define DIRECTORY_LAST_FITTED UINT64_C(0x1fffff0)
 #define DIRECTORY_FIRST_ABSENT UINT64_C(0x2000000)
-#define DIRECTORY_PROTECTION_BANK1_HIGH UINT64_C(0xf800408)
+#define DIRECTORY_PROTECTION_BANK2_HIGH UINT64_C(0x17800408)
 #define DIRECTORY_APERTURE UINT64_C(0x40000000)
 
 #define NMI_READY_MARKER UINT64_C(0x1400)
@@ -547,7 +552,7 @@ static QTestState *machine_start(void)
 static void machine_configure_memory(QTestState *qts)
 {
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED_SELECT2);
+                 BEDROCK_MD_INSTALLED_PAIR0);
 }
 
 static void expect_console_text(int fd, const char *expected)
@@ -777,7 +782,7 @@ static void test_ram_and_hub_alias(const void *data)
     assert_flat_view_is_execution_storage(qts, 1 * GiB + 0x1000);
     assert_flat_view_is_io(qts, 256 * MiB);
     qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
-                 BEDROCK_MD_INSTALLED);
+                 BEDROCK_MD_INSTALLED_REMAPPED);
     assert_flat_view_is_io(qts, 0x1000);
     assert_flat_view_is_execution_storage(qts, 2 * GiB + 0x1000);
     assert_flat_view_is_execution_storage(qts, 3 * GiB + 0x1000);
@@ -4203,11 +4208,11 @@ static void test_directory_protection(const void *data)
     const uint64_t pattern = UINT64_C(0x599a599a599a599a);
     QTestState *qts = machine_start_with(prom_path, "-m 512M");
 
-    qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_PROTECTION_BANK1_HIGH,
+    qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_PROTECTION_BANK2_HIGH,
                  pattern);
     g_assert_cmphex(qtest_readq(qts,
                                HUB_DIRECTORY +
-                               DIRECTORY_PROTECTION_BANK1_HIGH),
+                               DIRECTORY_PROTECTION_BANK2_HIGH),
                     !=, pattern);
 
     qtest_writeq(qts, HUB_DIRECTORY + DIRECTORY_FIRST_ABSENT, UINT64_MAX);
@@ -4940,7 +4945,7 @@ static void test_own_node_ii_handshake(const void *data)
         unsigned nasid = node ? own : 0;
         uint8_t program[sizeof(ii_handshake_code)];
 
-        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_PAIR0);
         g_assert_true(qtest_memwrite_cpu(qts, node * 2,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, sizeof(bytes)));
         for (unsigned i = 0; i < ARRAY_SIZE(ii_handshake_code); i++) {
@@ -5159,7 +5164,7 @@ static void test_remote_ram_cross_page_execution(const void *data)
         uint64_t base = (uint64_t)node << 33;
         uint8_t readback[sizeof(code)];
 
-        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_PAIR0);
         g_assert_true(qtest_memwrite_cpu(qts, node * 2,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
         for (unsigned i = 0; i < ARRAY_SIZE(code); i++) {
@@ -5315,7 +5320,7 @@ static QTestState *routed_memory_start_machine_type(const char *prom,
     for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
         routed_memory_writeq(qts, cpu,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-            BEDROCK_MD_INSTALLED_SELECT2);
+            BEDROCK_MD_INSTALLED_PAIR0);
     }
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_NI + 0x1010, 5);
     routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
@@ -5773,7 +5778,7 @@ static void test_routed_memory_cached_md(const void *data)
     g_assert_cmpuint(actual.result, ==, callback.result);
     g_assert_cmphex(actual.value, ==, callback.value);
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-                          BEDROCK_MD_INSTALLED_SELECT2);
+                          BEDROCK_MD_INSTALLED_PAIR0);
     actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
     g_assert_cmpuint(actual.ram, ==, 1);
     g_assert_cmphex(actual.value, ==, UINT64_C(0x67de000134111100));
@@ -5815,7 +5820,7 @@ static void test_routed_memory_cached_md(const void *data)
     routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_LB,
                           UINT64_C(2) << 32);
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-                          BEDROCK_MD_INSTALLED_SELECT2);
+                          BEDROCK_MD_INSTALLED_PAIR0);
     routed_memory_writeq(qts, 2, BEDROCK_LOCAL + BEDROCK_NI + 0x1000, 3);
     actual = routed_memory_request(qts, 0x400000, 8, 0, 0, 5);
     g_assert_cmpuint(actual.ram, ==, 1);
@@ -5993,7 +5998,7 @@ static void test_routed_memory_sparse_banks(const void *data)
             /* Retain fitted bank0 while disabling only bank1. */
             routed_memory_writeq(qts, home_cpu,
                 BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-                (UINT64_C(2) << 32) | UINT64_C(0x3100));
+                UINT64_C(0x31));
         }
         alias = routed_memory_request_cpu(qts, address, 8, 0, 0, 5, reader_cpu);
         callback = routed_memory_request_cpu(qts, address, 8, 0, 2, 5,
@@ -6085,8 +6090,8 @@ static void test_routed_memory_sparse_fetch(const void *data)
     /* The second invocation must not reuse the translated bank1 code. */
     routed_memory_writeq(qts, home,
         BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-        remap ? BEDROCK_MD_INSTALLED :
-                (UINT64_C(2) << 32) | UINT64_C(0x3100));
+        remap ? BEDROCK_MD_INSTALLED_REMAPPED :
+                UINT64_C(0x31));
     routed_memory_writeq(qts, reader,
         BEDROCK_LOCAL + BEDROCK_IO + IO_SCRATCH0 + 8, 2);
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
@@ -6150,9 +6155,9 @@ static void test_routed_memory_boundaries(const void *data)
             }
         }
     }
-    /* Select 0 moves fitted locational bank2 into software bank2. */
+    /* Select 2 moves fitted locational bank 0 into software bank 2. */
     routed_memory_writeq(qts, 0, BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG,
-                          BEDROCK_MD_INSTALLED);
+                          BEDROCK_MD_INSTALLED_REMAPPED);
     for (unsigned cca = 2; cca <= 5; cca += 3) {
         for (unsigned size = 1; size <= 8; size *= 2) {
             const uint64_t bank = UINT64_C(0x80000000);
@@ -6407,7 +6412,7 @@ static void test_routed_instruction_translation(const void *data)
     for (unsigned node = 0; node < 2; node++) {
         uint64_t base = (uint64_t)(node ? 2 : 0) << 33;
 
-        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_PAIR0);
         g_assert_true(qtest_memwrite_cpu(qts, node * 2,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
         for (unsigned page = 0; page < 2; page++) {
@@ -6561,7 +6566,7 @@ static void test_mmio_execution_state(const void *data)
                                    readback, 8));
     g_assert_cmphex((ldq_be_p(readback) >> 32) & 0x7f, ==, own);
     for (unsigned node = 0; node < 2; node++) {
-        stq_be_p(bytes, BEDROCK_MD_INSTALLED_SELECT2);
+        stq_be_p(bytes, BEDROCK_MD_INSTALLED_PAIR0);
         g_assert_true(qtest_memwrite_cpu(qts, node * 2,
             BEDROCK_LOCAL + BEDROCK_MD_MEMORY_CONFIG, bytes, 8));
     }

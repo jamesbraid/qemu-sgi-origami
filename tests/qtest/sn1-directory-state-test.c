@@ -31,7 +31,7 @@
 
 #define SN1_MD_MEMORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x780008)
 /* Software bank zero on the installed memory, as the stock PROM leaves it. */
-#define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define SN1_MD_INSTALLED_PAIR0 (UINT64_C(0x33))
 
 /* The memory unit's directory configuration: bit 0 selects premium. */
 #define SN1_MD_DIRECTORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x7c0000)
@@ -265,7 +265,7 @@ static QTestState *start_scenario(const Scenario *sc, char **prom)
     s = qtest_initf("-M origin300 -cpu R14000 -smp %s -m 512M -bios %s "
                     "-accel tcg,thread=multi -no-shutdown -S %s", sc->cpus,
                     quoted, sc->extra ? sc->extra : "");
-    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_PAIR0);
     if (sc->premium || sc->ignore_ecc) {
         qtest_writeq(s, SN1_MD_DIRECTORY_CONFIG,
                      (sc->premium ? 1 : 0) | (sc->ignore_ecc ? 2 : 0));
@@ -1163,7 +1163,7 @@ static void test_reset_forgets_watching(void)
     g_assert_true(flat_view_type_is(s, LINE_PHYS, "i/o"));
     /* The processors restart and wait on a step that never comes. */
     qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
-    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_PAIR0);
     g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));
     qtest_readq(s, LINE_DIRECTORY);
     g_assert_true(flat_view_type_is(s, LINE_PHYS, "ram"));

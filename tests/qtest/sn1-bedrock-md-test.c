@@ -63,18 +63,18 @@
 /* Bedrock's own registers through the XIO form. */
 #define BEDROCK_LOCAL_REGISTERS UINT64_C(0x20001000000)
 #define SELFTEST_MACHINE(_x) (BEDROCK_LOCAL_REGISTERS + 0x780000 + (_x))
-#define PROTECTION_MACHINE_BANK2 \
-    (PROTECTION_MACHINE_BASE + UINT64_C(0x10000408))
-#define PROTECTION_MACHINE_BANK2_ALIAS \
-    (PROTECTION_MACHINE_BASE + UINT64_C(0x12000408))
-#define PROTECTION_MACHINE_BANK3 \
-    (PROTECTION_MACHINE_BASE + UINT64_C(0x18000408))
-#define PROTECTION_MACHINE_BANK3_ALIAS \
-    (PROTECTION_MACHINE_BASE + UINT64_C(0x1a000408))
 #define PROTECTION_MACHINE_BANK0 \
     (PROTECTION_MACHINE_BASE + UINT64_C(0x00000408))
-#define DIRECTORY_MACHINE_BANK2_FIRST_ABSENT \
-    (PROTECTION_MACHINE_BASE + UINT64_C(0x12000000))
+#define PROTECTION_MACHINE_BANK0_ALIAS \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x02000408))
+#define PROTECTION_MACHINE_BANK1 \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x08000408))
+#define PROTECTION_MACHINE_BANK1_ALIAS \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x0a000408))
+#define PROTECTION_MACHINE_BANK2 \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x10000408))
+#define DIRECTORY_MACHINE_BANK1_FIRST_ABSENT \
+    (PROTECTION_MACHINE_BASE + UINT64_C(0x0a000000))
 #define NODE_MEMORY_512M \
     "-object memory-backend-ram,id=node-memory,size=512M "
 
@@ -470,7 +470,7 @@ static void test_selftest_negative_carriers(void)
 }
 
 /*
- * Origin 300 installs locational banks two and three. Temporary descriptors
+ * Origin 300 installs locational banks zero and one. Temporary descriptors
  * for the other selectors must not consume their dense RAM; checking every
  * selector in both phases distinguishes installed population from guest
  * configuration alone.
@@ -496,7 +496,7 @@ static void test_selftest_origin300_installed_population(void)
                      ((uint64_t)bank_select << 32) |
                      memory_bank_config(configured_bank, 3));
         for (unsigned phase = 0; phase < 2; phase++) {
-            bool installed = selector == 2 || selector == 3;
+            bool installed = selector == 0 || selector == 1;
             uint64_t expected_status = installed ?
                 SELFTEST_DONE | SELFTEST_PASSED : SELFTEST_DONE;
             uint64_t expected_error = installed ?
@@ -586,19 +586,19 @@ static void test_origin300_memory_aperture(void)
                     UINT64_C(0x0123456789abcdef));
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(0x8)), ==, 0);
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
-                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
-    qtest_writeq(s, 0, UINT64_C(0x599a599a599a599a));
-    g_assert_cmphex(qtest_readq(s, 0), !=, UINT64_C(0x599a599a599a599a));
-    qtest_writeq(s, UINT64_C(0x80000000), UINT64_C(0x0123456789abcdef));
-    qtest_writeq(s, UINT64_C(0xc0000000), UINT64_C(0xfedcba9876543210));
-    g_assert_cmphex(qtest_readq(s, UINT64_C(0x80000000)), ==,
-                    UINT64_C(0x0123456789abcdef));
-    g_assert_cmphex(qtest_readq(s, UINT64_C(0xc0000000)), ==,
+                 memory_bank_config(0, 3) | memory_bank_config(1, 3));
+    qtest_writeq(s, UINT64_C(0x80000000), UINT64_C(0x599a599a599a599a));
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x80000000)), !=,
+                    UINT64_C(0x599a599a599a599a));
+    qtest_writeq(s, 0, UINT64_C(0x0123456789abcdef));
+    qtest_writeq(s, UINT64_C(0x40000000), UINT64_C(0xfedcba9876543210));
+    g_assert_cmphex(qtest_readq(s, 0), ==, UINT64_C(0x0123456789abcdef));
+    g_assert_cmphex(qtest_readq(s, UINT64_C(0x40000000)), ==,
                     UINT64_C(0xfedcba9876543210));
-    qtest_writeb(s, UINT64_C(0x8fffffff), 0xa5);
-    g_assert_cmphex(qtest_readb(s, UINT64_C(0x8fffffff)), ==, 0xa5);
-    qtest_writeb(s, UINT64_C(0x90000000), 0x5a);
-    g_assert_cmphex(qtest_readb(s, UINT64_C(0x90000000)), !=, 0x5a);
+    qtest_writeb(s, UINT64_C(0x0fffffff), 0xa5);
+    g_assert_cmphex(qtest_readb(s, UINT64_C(0x0fffffff)), ==, 0xa5);
+    qtest_writeb(s, UINT64_C(0x10000000), 0x5a);
+    g_assert_cmphex(qtest_readb(s, UINT64_C(0x10000000)), !=, 0x5a);
     qtest_quit(s);
     unlink(prom);
 }
@@ -1296,38 +1296,38 @@ static void test_protection_capacity_probe(void)
     g_autofree char *quoted_prom = g_shell_quote(prom);
     g_autofree char *log = log_file_new();
     g_autofree char *contents = NULL;
-    const uint64_t bank2 = UINT64_C(0xa55aa55aa55aa55a);
-    const uint64_t bank3 = UINT64_C(0x5aa55aa55aa55aa5);
+    const uint64_t bank0 = UINT64_C(0xa55aa55aa55aa55a);
+    const uint64_t bank1 = UINT64_C(0x5aa55aa55aa55aa5);
     const uint64_t absent = UINT64_C(0x599a599a599a599a);
     const uint64_t selected_lanes = UINT64_C(0x0000ffff0000ffff);
     QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
                                 "-m 512M -bios %s -S -d guest_errors -D %s",
                                 quoted_prom, log);
 
-    qtest_writeq(s, PROTECTION_MACHINE_BANK2, bank2);
-    qtest_writeq(s, PROTECTION_MACHINE_BANK3, bank3);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2), ==, bank2);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2_ALIAS), ==, bank2);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3), ==, bank3);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3_ALIAS), ==, bank3);
+    qtest_writeq(s, PROTECTION_MACHINE_BANK0, bank0);
+    qtest_writeq(s, PROTECTION_MACHINE_BANK1, bank1);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK0), ==, bank0);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK0_ALIAS), ==, bank0);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK1), ==, bank1);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK1_ALIAS), ==, bank1);
     qtest_writeq(s, SELFTEST_MACHINE(0x8), UINT64_C(1) << 32);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2), ==, bank3);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK3), ==, bank2);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK0), ==, bank1);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK1), ==, bank0);
 
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
-                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
-    qtest_writeq(s, PROTECTION_MACHINE_BANK0, absent);
-    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK0) &
+                 memory_bank_config(0, 3) | memory_bank_config(1, 3));
+    qtest_writeq(s, PROTECTION_MACHINE_BANK2, absent);
+    g_assert_cmphex(qtest_readq(s, PROTECTION_MACHINE_BANK2) &
                     selected_lanes, !=, absent & selected_lanes);
-    qtest_writeq(s, DIRECTORY_MACHINE_BANK2_FIRST_ABSENT, UINT64_MAX);
-    g_assert_cmphex(qtest_readq(s, DIRECTORY_MACHINE_BANK2_FIRST_ABSENT),
+    qtest_writeq(s, DIRECTORY_MACHINE_BANK1_FIRST_ABSENT, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(s, DIRECTORY_MACHINE_BANK1_FIRST_ABSENT),
                     ==, 0);
     qtest_quit(s);
 
     contents = log_file_take(log);
     g_assert_null(strstr(contents, "protection"));
     g_assert_nonnull(strstr(contents,
-                           "directory write at offset 0x12000000"));
+                           "directory write at offset 0xa000000"));
     unlink(prom);
 }
 
@@ -1880,9 +1880,8 @@ static void test_memory_installed_migration(void)
         g_dir_make_tmp("sn1-md-memory-migration-XXXXXX", &error);
     g_autofree char *socket = NULL;
     g_autofree char *uri = NULL;
-    uint64_t config = (UINT64_C(2) << 32) |
-                      memory_bank_config(2, 3) |
-                      memory_bank_config(3, 3);
+    uint64_t config = memory_bank_config(0, 3) |
+                      memory_bank_config(1, 3);
     g_autofree char *prom = empty_prom_new();
     g_autofree char *quoted_prom = g_shell_quote(prom);
     QTestState *from, *to;
@@ -2511,8 +2510,7 @@ static void test_origin300_fetchop(void)
                                 "-m 512M -bios %s -S", quoted_prom);
 
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
-                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
-                 memory_bank_config(3, 3));
+                 memory_bank_config(0, 3) | memory_bank_config(1, 3));
     qtest_writeq(s, UINT64_C(0x506000), 3);
     g_assert_cmphex(qtest_readq(s, FETCHOP_MACHINE_BASE + 0x506000), ==, 3);
     qtest_writeq(s, FETCHOP_MACHINE_BASE + 0x506000, 9);
@@ -2585,22 +2583,21 @@ static void test_origin300_selftest_fill(void)
     QTestState *s = qtest_initf("-M origin300 -cpu R14000 -smp 2 "
                                 "-m 512M -bios %s -S", quoted_prom);
     /*
-     * Bank select 0, as the PROM has it for the test: selector 3 is
-     * locational and software bank 3. The PROM later selects 2, which puts
-     * this doubleword at 0x40800008, where the coherency diagnostic read it.
+     * Bank select 0: selector 1 is locational and software bank 1, the
+     * higher of the two fitted banks.
      */
-    const uint64_t address = 3 * MEMORY_BANK_SIZE + 0x800008;
+    const uint64_t address = MEMORY_BANK_SIZE + 0x800008;
     const uint64_t carrier = ECC_BASE + ((address / 8) ^ 7);
-    const uint64_t other_bank = 2 * MEMORY_BANK_SIZE + 0x506000;
+    const uint64_t other_bank = 0x506000;
     const uint64_t directory = PROTECTION_MACHINE_BASE +
-                               3 * DIRECTORY_BANK_SIZE +
+                               DIRECTORY_BANK_SIZE +
                                ((address & (MEMORY_BANK_SIZE - 1)) >> 3 &
                                 ~UINT64_C(0xf));
     const uint64_t data = UINT64_C(0x0f0f0f0f0f0f0f0f);
 
     ensure_clock_running(s);
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
-                 memory_bank_config(2, 3) | memory_bank_config(3, 3));
+                 memory_bank_config(0, 3) | memory_bank_config(1, 3));
     qtest_writeq(s, address, data);
     qtest_writeq(s, other_bank, UINT64_C(0x0123456789abcdef));
     qtest_writeb(s, carrier, 0x81);
@@ -2612,7 +2609,7 @@ static void test_origin300_selftest_fill(void)
 
     /* A nonzero pattern's write phase leaves the mark and the data. */
     qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_DATA), 0xc5);
-    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (3 << 4) | 1);
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (1 << 4) | 1);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
@@ -2620,7 +2617,7 @@ static void test_origin300_selftest_fill(void)
 
     /* The zero-pattern write phase clears the bank, mark and data. */
     qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_DATA), 0x80);
-    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (3 << 4) | 1);
+    qtest_writeq(s, SELFTEST_MACHINE(SELFTEST_CONTROL), (1 << 4) | 1);
     qtest_clock_step(s, SELFTEST_INTERVAL_NS);
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(SELFTEST_STATUS)), ==,
                     SELFTEST_DONE | SELFTEST_PASSED);
@@ -2632,7 +2629,7 @@ static void test_origin300_selftest_fill(void)
                     ==, 0);
     /* The line's directory entry was rewritten, so the read checks none. */
     g_assert_cmphex(qtest_readq(s, SELFTEST_MACHINE(DIRECTORY_ERROR)), ==, 0);
-    /* The fill stays in selector 3's bank; bank 2 keeps its data. */
+    /* The fill stays in selector 1's bank; bank 0 keeps its data. */
     g_assert_cmphex(qtest_readq(s, other_bank), ==,
                     UINT64_C(0x0123456789abcdef));
     qtest_quit(s);
@@ -2802,8 +2799,7 @@ static void test_origin300_directory_ecc_check(void)
     const uint64_t carrier = PROTECTION_MACHINE_BASE + word;
 
     qtest_writeq(s, SELFTEST_MACHINE(0x8),
-                 (UINT64_C(2) << 32) | memory_bank_config(2, 3) |
-                 memory_bank_config(3, 3));
+                 memory_bank_config(0, 3) | memory_bank_config(1, 3));
     qtest_writeq(s, line, UINT64_C(0xabcd));
     qtest_writeq(s, SELFTEST_MACHINE(DIRECTORY_CONFIG), 3);
     qtest_writeq(s, carrier, UINT64_C(0x0000001f00000000));
@@ -2826,12 +2822,11 @@ static void test_origin300_directory_ecc_check(void)
 #define BEDROCK_NODE0 (SPACE_IO + UINT64_C(0x01800000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
 /*
- * Origin 300's installed memory occupies locational banks 2 and 3, not bank
- * 0: map software bank 0 onto them so the guest's low-memory coordination
- * state (its completion flag included) lands in backed RAM instead of an I/O
- * hole.
+ * Origin 300's installed memory occupies locational banks 0 and 1, 256 MiB
+ * each: enable them so the guest's low-memory coordination state (its
+ * completion flag included) lands in backed RAM instead of an I/O hole.
  */
-#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define MD_INSTALLED_PAIR0 UINT64_C(0x33)
 
 static void emit(uint8_t *image, unsigned *offset, uint32_t instruction)
 {
@@ -2941,7 +2936,7 @@ static void test_cpu_halfword_stores(void)
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                     "-accel tcg,thread=single -no-shutdown -S", quoted);
-    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
     wait_for_guest_done(s);
@@ -2962,12 +2957,11 @@ static void test_cpu_halfword_stores(void)
  * last fitted 64-byte line of installed memory. Its residue 0x30 (ECC carrier
  * offset 0) selects source bits 31:16, the slice the first-line cases above
  * never exercise.
- * Origin 300's installed memory occupies locational banks 2 and 3, 256 MiB
- * each (see MD_INSTALLED_SELECT2 above), not one 512 MiB bank at slot 0. The
+ * Origin 300's installed memory occupies locational banks 0 and 1, 256 MiB
+ * each (see MD_INSTALLED_PAIR0 above), not one 512 MiB bank at slot 0. The
  * last fitted line sits in the second (higher) of those two banks: software
- * bank 1, which the 2-selector routes to locational bank 3, at device offset
- * 0x9fffff8, that bank's own last 64-byte line, 0x1fffff8, past its dense
- * base of 0x2000000 (bank 2's own 0x2000000 ECC bytes).
+ * bank 1, at device offset 0x9fffff8, that bank's own last 64-byte line
+ * 0x1fffff8 past the ECC window's software bank 1 base of 0x8000000.
  */
 static char *create_prom_top_line(void)
 {
@@ -3039,7 +3033,7 @@ static void test_cpu_halfword_stores_top_line(void)
 
     s = qtest_initf("-M origin300 -cpu R14000 -smp 2 -bios %s "
                     "-accel tcg,thread=single -no-shutdown -S", quoted);
-    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_SELECT2);
+    qtest_writeq(s, BEDROCK_NODE0 + MD_MEMORY_CONFIG, MD_INSTALLED_PAIR0);
     qtest_qmp_assert_success(s, "{'execute':'cont'}");
 
     wait_for_guest_done(s);

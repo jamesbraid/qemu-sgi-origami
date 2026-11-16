@@ -63441,10 +63441,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -63453,7 +63453,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [
@@ -63546,10 +63546,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -63558,7 +63558,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [
@@ -63961,10 +63961,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -63973,7 +63973,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [
@@ -64296,10 +64296,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -64308,7 +64308,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [
@@ -64391,10 +64391,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -64403,7 +64403,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [
@@ -64625,10 +64625,10 @@
           ],
           "asic-kind": "bedrock",
           "bank-mib": [
-            0,
-            0,
             256,
             256,
+            0,
+            0,
             0,
             0,
             0,
@@ -64637,7 +64637,7 @@
           "bedrock": {
             "board-id-word": 32769,
             "initiator-region": 0,
-            "installed-bank-mask": 12,
+            "installed-bank-mask": 3,
             "local-region": 0
           },
           "cpu-slots": [

@@ -189,10 +189,10 @@ its total. The bank positions are model choices unless stated.
      - Banks (MiB) at positions
      - Basis
    * - Origin 300
-     - 256, 256 at banks 2 and 3
-     - *approximation*; two 256 MB DIMMs give the guide's 512 MB minimum.
-       The positions follow the example SPD records reported at DIMM 2
-       and DIMM 3 (:src:`007-4365-001 p. 9-11, 75-76`).
+     - 256, 256 at banks 0 and 1
+     - *approximation*; two 256 MB DIMMs give the guide's 512 MB minimum,
+       placed in DIMM pair 0 (:src:`007-4365-001 p. 60`); the factory fill
+       is *unknown*; see :ref:`sgi-ip35-dimm-pair`.
    * - Fuel
      - 256, 256 at banks 0 and 1
      - *observed* software bank numbers of a revision F Fuel
@@ -204,6 +204,41 @@ takes four DDR sockets in equal pairs, pair 1 in sockets 0 and 2, up to
 4 GiB (:src:`007-4480-001 p. 60`). Both *established*. Larger and unequal
 populations are not offered. The Bedrock's memory banks are described on
 :doc:`hardware/bedrock`.
+
+.. _sgi-ip35-dimm-pair:
+
+Origin 300 DIMM pair
+~~~~~~~~~~~~~~~~~~~~
+
+The guide defines DIMM pair 0 as banks 0 and 1 and pair 1 as banks 2 and
+3 (:src:`007-4365-001 p. 57`, :src:`007-4365-002 p. 11`), and says that
+"if only one pair of DIMMs is installed, banks 0 and 1 must be populated"
+(:src:`007-4365-001 p. 60`). All *established* as the guide's statements.
+The model fits the Origin 300's two DIMMs in pair 0 on that rule.
+
+What a factory 512 MB unit shipped with is *unknown*. The guide's L1
+transcript of a 512 MB system reports no hardware at DIMM 0 and DIMM 1 and
+SPD records for DIMM 2 and DIMM 3 (:src:`007-4365-001 p. 75-76`), but the
+guide does not say which locational banks those DIMM numbers are. The
+upgrade order, slots 1 and 3 before slots 2 and 4 (:src:`007-4365-002
+p. 56`), names slots, not banks. An earlier model version placed the DIMMs
+in pair 1 on the transcript's numbering; that reading is withdrawn. A real
+Origin 300 L1 ``dimm`` or ``config`` capture, or a photograph of a factory
+512 MB unit, would settle the factory fill.
+
+With only pair 1 fitted, the stock :term:`PROM` swaps bank 0 with bank 2
+(*observed* on the model) and writes bank-select 2 to the Bedrock
+(:ref:`sgi-bedrock-md-banks`). IRIX follows the swap. OpenBSD 6.9 does not:
+its ``kl_add_memory_ip35`` places the configuration's bank sizes by
+locational index and ignores the selector, so its memory lands on the
+empty banks and the install kernel panics with a data bus error in
+``malloc`` (*software expectation*; a limit of that guest, not a hardware
+fact). With pair 0 fitted the PROM does not swap, and both IRIX 6.5.30 and
+OpenBSD 6.9 boot (*observed* on the model).
+
+The DIMM identity records the model can serve (``spd-eeprom``) were
+reviewed against DIMM 2 and DIMM 3, not the pair-0 DIMMs; the model serves
+none by default.
 
 .. _sgi-ip35-devices:
 

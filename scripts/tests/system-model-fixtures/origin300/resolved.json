@@ -825,10 +825,10 @@
       ],
       "memory_bank_mib_per_node": [
         [
-          0,
-          0,
           256,
           256,
+          0,
+          0,
           0,
           0,
           0,
@@ -1274,7 +1274,7 @@
           "initiator_region": 0,
           "installed_bank_mask": {
             "mode": "fixed",
-            "value": 12
+            "value": 3
           },
           "local_region": 0,
           "notes": "Preserves existing emulator initialization. This policy adds no physical hardware claim.",

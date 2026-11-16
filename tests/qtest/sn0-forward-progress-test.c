@@ -134,14 +134,14 @@ typedef struct {
 } Recipe;
 
 #define BEDROCK_MD_MEMORY_CONFIG UINT64_C(0x20001f80008)
-#define ORIGIN300_MD_INSTALLED_SELECT2 \
-    ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define ORIGIN300_MD_INSTALLED_PAIR0 \
+    (UINT64_C(0x33))
 
 static void prepare_origin300(QTestState *qts)
 {
     /* Map the installed banks over the synthetic guest's low-memory state. */
     qtest_writeq(qts, BEDROCK_MD_MEMORY_CONFIG,
-                 ORIGIN300_MD_INSTALLED_SELECT2);
+                 ORIGIN300_MD_INSTALLED_PAIR0);
 }
 
 /*

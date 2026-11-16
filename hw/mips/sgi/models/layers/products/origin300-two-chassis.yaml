@@ -26,7 +26,7 @@ layer:
   # Each chassis carries the one-chassis product's 512 MB kit, the smallest
   # memory Table 1-2 allows for the pair (1 GB). Larger banks wait on the
   # memory and directory contract for 1 GB banks.
-  memory_kits_per_node: [kit-512-at-banks-2-3, kit-512-at-banks-2-3]
+  memory_kits_per_node: [kit-512-at-banks-0-1, kit-512-at-banks-0-1]
   data:
     machine:
       name: Two-chassis Origin 300
@@ -56,7 +56,7 @@ layer:
             board_id_word: 32769
             local_region: 0
             initiator_region: 0
-            installed_bank_mask: {mode: fixed, value: 12}
+            installed_bank_mask: {mode: fixed, value: 3}
             provenance: derived
             sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.
@@ -64,7 +64,7 @@ layer:
             board_id_word: 32769
             local_region: 0
             initiator_region: 0
-            installed_bank_mask: {mode: fixed, value: 12}
+            installed_bank_mask: {mode: fixed, value: 3}
             provenance: derived
             sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.

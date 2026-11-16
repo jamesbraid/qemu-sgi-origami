@@ -22,7 +22,7 @@
 #define BEDROCK_LOCAL (SPACE_IO + UINT64_C(0x01000000))
 #define HUB_ECC (SPACE_HUB + UINT64_C(0x140000000))
 #define MD_MEMORY_CONFIG 0x780008
-#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define MD_INSTALLED_PAIR0 (UINT64_C(0x33))
 #define PI_PENDING_MODIFY 0x90
 #define IRQ_BIT 17
 #define IRQ_MASK (UINT64_C(1) << IRQ_BIT)
@@ -281,7 +281,7 @@ static void setup_routes(Tigon *t)
     cpu_writeq(t->qts, 2, BEDROCK_LOCAL + 0x600000, UINT64_C(2) << 32);
     for (unsigned node = 0; node < 2; node++) {
         cpu_writeq(t->qts, node * 2, BEDROCK_LOCAL + MD_MEMORY_CONFIG,
-                   MD_INSTALLED_SELECT2);
+                   MD_INSTALLED_PAIR0);
     }
     /*
      * Named chassis ports: master one, slave six, expansion four.

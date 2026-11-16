@@ -286,7 +286,7 @@ class SystemModelResolutionTests(unittest.TestCase):
         self.assertEqual(population["memory_mib_per_node"], [512])
         self.assertEqual(
             population["memory_bank_mib_per_node"],
-            [[0, 0, 256, 256, 0, 0, 0, 0]])
+            [[256, 256, 0, 0, 0, 0, 0, 0]])
 
     def test_memory_kits_rejects_bank_positions_with_the_wrong_count(self):
         def short_positions(document):
@@ -665,7 +665,7 @@ class SystemModelResolutionTests(unittest.TestCase):
         self.assertEqual(model["population"]["memory_mib_per_node"], [512])
         self.assertEqual(
             model["population"]["memory_bank_mib_per_node"],
-            [[0, 0, 256, 256, 0, 0, 0, 0]],
+            [[256, 256, 0, 0, 0, 0, 0, 0]],
         )
         component_ids = {component["id"] for component in model["components"]}
         self.assertTrue(
@@ -1417,7 +1417,7 @@ class SystemModelResolutionTests(unittest.TestCase):
                 document["layer"]["topology"].update(fields)
             return change
 
-        fitted = [0, 0, 256, 256, 0, 0, 0, 0]
+        fitted = [256, 256, 0, 0, 0, 0, 0, 0]
         model = self.load_layer_changes([(product, topology(
             supported_processors=[
                 {"part": "r14000", "clock_mhz": 500, "cache_mib": 2}],
@@ -1436,7 +1436,7 @@ class SystemModelResolutionTests(unittest.TestCase):
                 ({"supported_bank_mib_per_node": [
                     [0, 0, 512, 512, 0, 0, 0, 0]]},
                  r"product 'origin300' does not support node 0 memory banks "
-                 r"\[0, 0, 256, 256, 0, 0, 0, 0\]"),
+                 r"\[256, 256, 0, 0, 0, 0, 0, 0\]"),
                 ({"supported_bank_mib_per_node": []},
                  "supported_bank_mib_per_node needs a non-empty list"),
         ):

@@ -31,7 +31,7 @@
 
 /* Install node zero's memory as the stock PROM leaves it. */
 #define SN1_MD_MEMORY_CONFIG (SPACE_IO + UINT64_C(0x01800000) + 0x780008)
-#define SN1_MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define SN1_MD_INSTALLED_PAIR0 (UINT64_C(0x33))
 
 #define POLL_INTERVAL_US 10000
 
@@ -155,7 +155,7 @@ static QTestState *start(const char *prom, unsigned int cpus)
     /* The accelerator named here wins over the -accel qtest one. */
     s = qtest_initf("-M origin300 -cpu R14000 -smp %u -m 512M -bios %s "
                     "-accel tcg,thread=multi -no-shutdown -S", cpus, quoted);
-    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_SELECT2);
+    qtest_writeq(s, SN1_MD_MEMORY_CONFIG, SN1_MD_INSTALLED_PAIR0);
     return s;
 }
 

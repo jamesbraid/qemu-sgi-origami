@@ -40,8 +40,8 @@ layer:
     - cpu1
     - cpu3
   memory_kits_per_node:
-  - kit-512-at-banks-2-3
-  - kit-512-at-banks-2-3
+  - kit-512-at-banks-0-1
+  - kit-512-at-banks-0-1
   data:
     machine:
       name: Origin 300 routed NUMAlink and PCI expansion
@@ -76,7 +76,7 @@ layer:
             initiator_region: 0
             installed_bank_mask:
               mode: fixed
-              value: 12
+              value: 3
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c
@@ -89,7 +89,7 @@ layer:
             initiator_region: 0
             installed_bank_mask:
               mode: fixed
-              value: 12
+              value: 3
             provenance: derived
             sources:
             - hw/mips/sgi/sn1-node.c

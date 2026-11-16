@@ -699,6 +699,9 @@ sgi_qtests = \
    config_all_devices.has_key('CONFIG_SGI_SN1') and
    config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['sgi-identity-props-test'] : []) + \
+  (config_all_devices.has_key('CONFIG_SGI_SN0') and
+   config_all_devices.has_key('CONFIG_SGI_SN1') ?
+    ['sgi-origin300-memory-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_ODYSSEY') and
    config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-odyssey-test', 'sn1-odyssey-query-test'] : []) + \

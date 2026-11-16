@@ -31,7 +31,7 @@ from qemu_test import QemuSystemTest
 # memory as the stock PROM leaves it. The loader device writes it on every
 # reset, before any processor runs: nothing here runs the PROM that would.
 SN1_MD_MEMORY_CONFIG = 0x20001800000 + 0x780008
-SN1_MD_INSTALLED_SELECT2 = (2 << 32) | 0x3300
+SN1_MD_INSTALLED_PAIR0 = 0x33
 
 # Lines the processors flush, one per slice, and their shared results.
 LINE_PHYS = 0x580000
@@ -295,7 +295,7 @@ class SN1SystemRequest(QemuSystemTest):
             '-accel', 'tcg,thread=multi', '-no-shutdown',
             '-device',
             f'loader,addr={SN1_MD_MEMORY_CONFIG:#x},'
-            f'data={SN1_MD_INSTALLED_SELECT2:#x},data-len=8,data-be=on,'
+            f'data={SN1_MD_INSTALLED_PAIR0:#x},data-len=8,data-be=on,'
             'cpu-num=0',
             *extra)
         launch_paused(self.vm)

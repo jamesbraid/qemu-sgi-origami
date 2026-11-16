@@ -663,7 +663,7 @@ class BedrockConfigurationTests(unittest.TestCase):
         node = topology["nodes"][0]
         self.assertEqual(node["bedrock"]["board-id-word"], 0x9001)
         self.assertEqual(node["bedrock"]["local-region"], 3)
-        self.assertEqual(node["bedrock"]["installed-bank-mask"], 0x0c)
+        self.assertEqual(node["bedrock"]["installed-bank-mask"], 0x03)
         self.assertEqual(node["identity"]["widget-revision"], 3)
         self.assertEqual(topology["controllers"][0]["l1"], {
             "reported-type": 0x35,
@@ -3538,7 +3538,7 @@ class OriginThreeHundredMatchesTodaysGeneratedInputTests(unittest.TestCase):
 
     def test_bank_and_accepted_memory(self):
         node = self.entry["nodes"][0]
-        self.assertEqual(node["bank_mib"], [0, 0, 256, 256, 0, 0, 0, 0])
+        self.assertEqual(node["bank_mib"], [256, 256, 0, 0, 0, 0, 0, 0])
         self.assertEqual(node["accepted_memory_mib"], [512])
 
     def test_flash(self):

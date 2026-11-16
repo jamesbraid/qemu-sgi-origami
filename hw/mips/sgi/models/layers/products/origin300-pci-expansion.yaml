@@ -23,7 +23,7 @@ layer:
   cpu_selection:
     default: {clock_mhz: 500, cache_mib: 2}
     slots: [cpu0, cpu2, cpu1, cpu3]
-  memory_kits_per_node: [kit-512-at-banks-2-3]
+  memory_kits_per_node: [kit-512-at-banks-0-1]
   data:
     machine:
       name: Origin 300 with PCI expansion module
@@ -60,7 +60,7 @@ layer:
             board_id_word: 32769
             local_region: 0
             initiator_region: 0
-            installed_bank_mask: {mode: fixed, value: 12}
+            installed_bank_mask: {mode: fixed, value: 3}
             provenance: derived
             sources: [qemu:hw/mips/sgi/sn1-node.c, qemu:docs/system/mips/sgi/ip35.rst#sgi-ip35-memory, qemu:hw/mips/sgi/sn-machine.c]
             notes: Preserves existing emulator initialization. This policy adds no physical hardware claim.

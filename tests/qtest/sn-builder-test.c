@@ -6923,7 +6923,7 @@ static void test_expansion_composed_adapters(void)
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     /* CPU memory follows the configured MD bank map, as on one chassis. */
     qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
-                 (UINT64_C(2) << 32) | 0x3300);
+                 0x33);
     for (unsigned head = 0; head < G_N_ELEMENTS(widgets); head++) {
         uint64_t base = remote + ((uint64_t)widgets[head] << 24);
         uint64_t target = 0x8000 + head * 0x1000;
@@ -7086,8 +7086,7 @@ static void test_expansion_dma_memory_decode(void)
         STORAGE_BINDING, image, prom, log);
     expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     /* Software bank 1 uses dense backing at 256 MiB, not physical 1 GiB. */
-    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
-                 (UINT64_C(2) << 32) | 0x3300);
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008, 0x33);
     expansion_card_write(qts, base + 0x24,
                          (expansion_card_read(qts, base + 0x24, 4) & ~15U) |
                          0xe, 4);
@@ -7124,11 +7123,9 @@ static void test_expansion_dma_memory_decode(void)
     expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
     /* A disabled installed bank also refuses a formerly valid address. */
     expansion_card_write(qts, base + 0x10000, target | 0x21 | (0xa << 8), 8);
-    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
-                 (UINT64_C(2) << 32) | 0x300);
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008, 0x03);
     expansion_card_write(qts, bar + DMA_REG_GO, 1, 4);
-    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
-                 (UINT64_C(2) << 32) | 0x3300);
+    qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008, 0x33);
     g_assert_true(qtest_memread_cpu(qts, 1, target, bytes, sizeof(bytes)));
     g_assert_cmpmem(bytes, sizeof(bytes), written, sizeof(written));
     qtest_quit(qts);
@@ -7236,17 +7233,17 @@ static void test_compute_memory_projection(gconstpointer opaque)
                 ((uint64_t)nasid << 32));
         }
         for (unsigned mapping = 0; mapping < 2; mapping++) {
-            /* Installed locational banks 2 and 3 have 256 MiB each. */
+            /* Installed locational banks 0 and 1 have 256 MiB each. */
             unsigned swap = mapping ? 0 : 2;
-            uint64_t first = node + ((uint64_t)(2 ^ swap) << 30);
-            uint64_t second = node + ((uint64_t)(3 ^ swap) << 30);
+            uint64_t first = node + ((uint64_t)(0 ^ swap) << 30);
+            uint64_t second = node + ((uint64_t)(1 ^ swap) << 30);
             uint8_t bytes[8];
             uint64_t values[] = { UINT64_C(0x1122334455667788),
                                   UINT64_C(0x8877665544332211) };
             uint64_t addresses[] = { first + 0x40000, second + 0x40000 };
 
             qtest_writeq(qts, UINT64_C(0x20001000000) + 0x780008,
-                         ((uint64_t)swap << 32) | 0x3300);
+                         ((uint64_t)swap << 32) | 0x33);
             for (unsigned bank = 0; bank < G_N_ELEMENTS(addresses); bank++) {
                 stq_be_p(bytes, values[bank]);
                 g_assert_true(qtest_memwrite_cpu(qts, 0, addresses[bank],
@@ -7292,7 +7289,7 @@ static void test_compute_memory_projection(gconstpointer opaque)
         assert_compute_direct_aliases(qts, cpus, false);
         for (unsigned cpu = 0; cpu < cpus; cpu++) {
             assert_compute_memory_projection(qts, cpu,
-                                              named + 0x80040000, "i/o");
+                                              named + 0x40000, "i/o");
         }
         qtest_writeq(qts, EXPANSION_LB_LOCAL + EXPANSION_LB_REVISION, revision);
         assert_compute_direct_aliases(qts, cpus, true);
@@ -7303,7 +7300,7 @@ static void test_compute_memory_projection(gconstpointer opaque)
         assert_compute_direct_aliases(qts, cpus, true);
         for (unsigned cpu = 0; cpu < cpus; cpu++) {
             assert_compute_memory_projection(qts, cpu,
-                                              named + 0x80040000, "ram");
+                                              named + 0x40000, "ram");
         }
     }
     qtest_quit(qts);
@@ -8268,7 +8265,7 @@ static void routed_memory_seed(QTestState *qts)
     g_assert_true(qtest_memwrite_cpu(qts, 2,
         EXPANSION_LB_LOCAL + 0x600000, bytes, 8));
     for (unsigned cpu = 0; cpu < 4; cpu += 2) {
-        stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+        stq_be_p(bytes, 0x33);
         g_assert_true(qtest_memwrite_cpu(qts, cpu,
             EXPANSION_LB_LOCAL + 0x780008, bytes, 8));
     }
@@ -8654,7 +8651,7 @@ static void test_routed_compute_dma(void)
     uint8_t bytes[8], expected[8], untouched[8];
 
     for (unsigned cpu = 0; cpu <= 2; cpu += 2) {
-        stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+        stq_be_p(bytes, 0x33);
         g_assert_true(qtest_memwrite_cpu(qts, cpu,
             EXPANSION_LB_LOCAL + 0x780008, bytes, sizeof(bytes)));
     }
@@ -8783,7 +8780,7 @@ static void test_compute_md_special_windows(const void *data)
     g_assert_true(qtest_memwrite_cpu(qts, 0, directory, bytes, sizeof(bytes)));
     g_assert_true(nasid_test_cpu_readq(qts, 0, directory, &value));
     qtest_writeq(qts, EXPANSION_LB_LOCAL + 0x780008,
-                 (UINT64_C(2) << 32) | 0x3300);
+                 0x33);
     stw_be_p(bytes, 0xa55a);
     g_assert_true(qtest_memwrite_cpu(qts, 0, ecc, bytes, 2));
     g_assert_true(qtest_memread_cpu(qts, 0, ecc, bytes, 2));
@@ -8870,12 +8867,12 @@ static void test_routed_cpu_ecc_store(void)
         uint8_t config[8];
         uint64_t value;
 
-        stq_be_p(config, (UINT64_C(2) << 32) | 0x3300);
+        stq_be_p(config, 0x33);
         g_assert_true(qtest_memwrite_cpu(qts, cpu,
             EXPANSION_LB_LOCAL + 0x780008, config, sizeof(config)));
         g_assert_true(nasid_test_cpu_readq(qts, cpu,
             EXPANSION_LB_LOCAL + 0x780008, &value));
-        g_assert_cmphex(value, ==, (UINT64_C(2) << 32) | 0x3300);
+        g_assert_cmphex(value, ==, 0x33);
     }
     qtest_qmp_assert_success(qts, "{'execute':'cont'}");
     deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
@@ -8929,7 +8926,7 @@ static void test_expansion_compute_dma(const void *data)
     if (expansion) {
         expansion_vector(qts, EXPANSION_LB_REVISION, true, UINT64_C(1) << 32);
     }
-    stq_be_p(bytes, (UINT64_C(2) << 32) | 0x3300);
+    stq_be_p(bytes, 0x33);
     g_assert_true(qtest_memwrite_cpu(qts, 0, EXPANSION_LB_LOCAL + 0x780008,
                                      bytes, sizeof(bytes)));
     expansion_card_write(qts, base + 0x24,

@@ -42,7 +42,7 @@
  * 0: map software bank 0 onto them so the request and response rings, both
  * under 4 MiB, land in backed RAM instead of an I/O hole.
  */
-#define MD_INSTALLED_SELECT2 ((UINT64_C(2) << 32) | UINT64_C(0x3300))
+#define MD_INSTALLED_PAIR0 (UINT64_C(0x33))
 
 /* Head F carries the IO-8 board, and the adapter is device 1 on it. */
 #define IO8_WIDGET 0xf
@@ -230,7 +230,7 @@ typedef struct MachineConfig {
 } MachineConfig;
 
 static const MachineConfig origin300 = {
-    MACHINE_ARGS, MD_INSTALLED_SELECT2,
+    MACHINE_ARGS, MD_INSTALLED_PAIR0,
 };
 
 /* Match sn1-fuel-test.c's explicit synthetic inputs, not factory records. */

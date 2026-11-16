@@ -1272,6 +1272,7 @@ tests/qtest/sgi-mace-video-test.c
 tests/qtest/sgi-machine-init-test.c
 tests/qtest/sgi-identity-props-test.c
 tests/qtest/sgi-machine-storage-test.c
+tests/qtest/sgi-origin300-memory-test.c
 tests/qtest/sgi-display-shm-test.c
 tests/qtest/sgi-store-format-test.c
 tests/qtest/sgi-o2-product-fixture.h
