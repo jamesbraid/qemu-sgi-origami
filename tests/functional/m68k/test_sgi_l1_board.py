@@ -152,7 +152,14 @@ class SgiL1Board(QemuSystemTest):
         # The supply table reads the monitors it can now reach: zero volts,
         # where an empty bus gave an error code for every supply.
         exec_command_and_wait_for_pattern(
-            self, 'power', 'DIMM    off    0.000V  default   136')
+            self, 'power', 'DIMM    off    0.000V  default   136',
+            failure_message='ERROR (-')
+        # Every monitor the configuration reaches acknowledges, so the
+        # environment state is no longer the configuration error.
+        exec_command_and_wait_for_pattern(
+            self, 'env', 'Environmental monitoring is enabled and running.',
+            failure_message='but not running')
+        wait_for_console_pattern(self, '3 PIMM1 B        <not present>')
         self.vm.shutdown()
 
         with open(self.console_log_name, encoding='utf-8') as logfile:
@@ -169,12 +176,14 @@ class SgiL1Board(QemuSystemTest):
                      'NODE 0 fan monitoring', 'NODE 1 fan monitoring',
                      'COM CONTROL', 'PORT CONTROL', 'POWER CONTROL',
                      'FAN CONTROL', 'monitor NODE', 'uninitialized device',
-                     'ERROR (-404)'):
+                     'ERROR (-404)', 'configuration error', 'not running'):
             self.assertNotIn(gone, console)
 
         with open(log, encoding='utf-8') as logfile:
             text = logfile.read()
         self.assertIn('sgi_l1_usb_read offset 0x18 read 0x13', text)
+        # The display driver's first line write: command 2 and its text.
+        self.assertIn('sgi_l1_display_write write 0x32', text)
         self.assertIn('sgi_l1_expander_write wire 0x4e segment 0 '
                       'write 0xb8', text)
         # The only calls nothing answers are the memory module records.
