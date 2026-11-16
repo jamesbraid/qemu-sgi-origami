@@ -2308,6 +2308,24 @@ static void test_peers_usb(void)
     g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1b), ==, 0x34);
     qtest_writel(qts, USB_BASE + 0x18, 0x11223355);
     g_assert_cmphex(qtest_readl(qts, USB_BASE + 0x18), ==, 0x13000055);
+    /*
+     * The activity check reads bit 0 of 0x1c back: the reset writes zero,
+     * then one. Only that bit is kept.
+     */
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 0);
+    qtest_writeb(qts, USB_BASE + 0x1c, 0x01);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 1);
+    qtest_writeb(qts, USB_BASE + 0x1c, 0x00);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 0);
+    qtest_writeb(qts, USB_BASE + 0x1c, 0xfe);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 0);
+    qtest_writeb(qts, USB_BASE + 0x1c, 0xff);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 1);
+    /* A machine reset clears it. */
+    qtest_writel(qts, DONE, 0);
+    qtest_system_reset(qts);
+    wait_for(qts, DONE, 1);
+    g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x1c), ==, 0);
     /* Anything else is unmodelled, reads zero and is logged. */
     qtest_writeb(qts, USB_BASE + 0x11, 0x55);
     g_assert_cmphex(qtest_readb(qts, USB_BASE + 0x11), ==, 0);

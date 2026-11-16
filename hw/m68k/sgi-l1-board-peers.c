@@ -385,10 +385,11 @@ static void display_class_init(ObjectClass *oc, const void *data)
                                   NULL);
 }
 
-/* Chip select 3: only the revision and scratch registers the probe uses. */
+/* Chip select 3: the probe's registers and the activity bit. */
 #define USB_WINDOW_SIZE     (64 * KiB)
 #define USB_REVISION_REG    0x18
 #define USB_SCRATCH_REG     0x1b
+#define USB_MCSR_REG        0x1c
 /* Of the three revisions the firmware passes quietly, the newest. */
 #define USB_REVISION        0x13
 
@@ -399,6 +400,7 @@ struct USBWindow {
 
     MemoryRegion mmio;
     uint8_t scratch;
+    uint8_t mcsr;       /* only bit 0 is kept */
 };
 
 static uint64_t usb_window_read(void *opaque, hwaddr addr, unsigned size)
@@ -412,6 +414,9 @@ static uint64_t usb_window_read(void *opaque, hwaddr addr, unsigned size)
         break;
     case USB_SCRATCH_REG:
         val = u->scratch;
+        break;
+    case USB_MCSR_REG:
+        val = u->mcsr;
         break;
     default:
         qemu_log_mask(LOG_UNIMP, "usb-controller-slot0: read of offset 0x%"
@@ -434,6 +439,10 @@ static void usb_window_write(void *opaque, hwaddr addr, uint64_t val,
         return;
     case USB_SCRATCH_REG:
         u->scratch = val;
+        trace_sgi_l1_usb_write(addr, val);
+        return;
+    case USB_MCSR_REG:
+        u->mcsr = val & 1;
         trace_sgi_l1_usb_write(addr, val);
         return;
     default:
@@ -465,14 +474,16 @@ static void usb_window_init(Object *obj)
 static void usb_window_reset_hold(Object *obj, ResetType type)
 {
     SGI_L1_USB_WINDOW(obj)->scratch = 0;
+    SGI_L1_USB_WINDOW(obj)->mcsr = 0;
 }
 
 static const VMStateDescription vmstate_usb_window = {
     .name = TYPE_SGI_L1_USB_WINDOW,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT8(scratch, USBWindow),
+        VMSTATE_UINT8(mcsr, USBWindow),
         VMSTATE_END_OF_LIST()
     },
 };
