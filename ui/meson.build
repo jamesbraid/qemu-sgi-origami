@@ -1,6 +1,14 @@
 system_ss.add(files('sgi-renderer.c'))
 system_ss.add(files('sgi-display-shm.c', 'sgi-display-input.c',
                     'sgi-display-vk.c', 'sgi-display-pattern.c'))
+if host_os != 'windows'
+  system_ss.add(files('display-shm.c', 'display-shm-transport.c',
+                      'display-shm-storage.c', 'display-shm-input.c',
+                      'display-shm-steer.c', 'display-shm-test.c',
+                      'display-shm-surface.c'))
+else
+  system_ss.add(files('display-shm-stub.c'))
+endif
 # The Vulkan loader is opened at run time, never linked; only dlopen needs a
 # library on hosts whose C library keeps it separate.
 if host_os not in ['windows', 'darwin']
