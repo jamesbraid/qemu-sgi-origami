@@ -338,6 +338,7 @@ tests_mips64_system_quick = [
   'sn0_warm_reset',
   'sn0_smp_rendezvous',
   'origin2000_cache_reset',
+  'display_probe',
 ]
 
 tests_mips64_system_thorough = [

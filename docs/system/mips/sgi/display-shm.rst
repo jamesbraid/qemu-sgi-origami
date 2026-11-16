@@ -829,3 +829,20 @@ GPU:
   second of virtual time: the next frame number after each period, the
   code's 16 lines marked and ``content_gen`` bumped, with no guest running;
 - the socket's removal at exit.
+
+Measuring a display
+===================
+
+``scripts/sgi-display-probe.py`` is a viewer with no window, written from
+this page with only the Python standard library, for Linux. ``record``
+follows ``content_gen`` and ``WAKE`` and writes one JSON line for each
+update: the host clock (``CLOCK_MONOTONIC``, the clock QEMU's ``get_clock()``
+reads) and the test pattern's frame code, read at its fixed position.
+``analyze`` and the end of ``record`` report frame rate, skipped codes,
+repeats and frame-interval percentiles.
+
+With QEMU's log (``-D FILE`` and ``-trace sgi_display_pattern_frame``) the
+probe also tells a code QEMU never published from one it published and the
+probe was too slow to see, and reports how long after QEMU stamped each
+frame the probe saw it. The probe reads no dirty bits, so it never writes
+the bitmap: Python has no atomic exchange.

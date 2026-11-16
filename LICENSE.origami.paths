@@ -488,6 +488,7 @@ scripts/ci/sgi-docs-model-check.py
 scripts/ci/sgi-register-tables.py
 scripts/ci/test_sgi_check.py
 scripts/performance/compare-system.py
+scripts/sgi-display-probe.py
 scripts/sgi-model.py
 scripts/sgi-offering-fingerprints.py
 scripts/sgi-replay-convert.py
@@ -766,6 +767,7 @@ tests/functional/mips64/roms/xcontext.c
 tests/functional/mips64/roms/xkphys.c
 tests/functional/mips64/roms/xtlbvector.c
 tests/functional/mips64/smdk-matrix
+tests/functional/mips64/test_display_probe.py
 tests/functional/mips64/test_graphics_matrix.py
 tests/functional/mips64/test_graphics_matrix_thorough.py
 tests/functional/mips64/test_irix_diag.py
