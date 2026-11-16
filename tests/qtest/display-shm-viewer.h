@@ -10,12 +10,18 @@
 #define TESTS_QTEST_DISPLAY_SHM_VIEWER_H
 
 #include "qemu/osdep.h"
+#ifndef _WIN32
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <poll.h>
+#endif
 #include "qemu/bswap.h"
 #include "ui/display-shm-proto.h"
+
+#ifndef MSG_NOSIGNAL
+#define MSG_NOSIGNAL 0
+#endif
 
 #define V_WAIT_MS   10000
 #define V_QUIET_MS  300
@@ -23,17 +29,28 @@
 #define V_REGIONS   128
 #define V_MAX_PENDING 40000
 
+/* A passed descriptor, or on Windows a section handle valid in this process */
+#ifdef _WIN32
+typedef HANDLE VHandle;
+#define V_NO_HANDLE NULL
+#define V_HANDLE_OK(h) ((h) != NULL)
+#else
+typedef int VHandle;
+#define V_NO_HANDLE (-1)
+#define V_HANDLE_OK(h) ((h) >= 0)
+#endif
+
 typedef struct VMsg {
     uint16_t type, flags;
     uint32_t len;
     uint8_t *d;
-    int fd;
+    VHandle h;
 } VMsg;
 
 typedef struct VRegion {
     uint32_t id, kind, access;
     uint64_t size;
-    int fd;
+    VHandle h;
     uint8_t *map;               /* mapped read-only on demand */
     bool gone;
 } VRegion;
@@ -64,8 +81,10 @@ typedef struct Viewer {
     uint32_t state_region, feedback_region, max_viewers;
     VRegion reg[V_REGIONS];
     VHead head[V_HEADS];
+#ifndef _WIN32
     int fdq[256];
     unsigned fdq_n;
+#endif
     VMsg pending[V_MAX_PENDING];
     unsigned n_pending;
     uint8_t *in;
@@ -75,6 +94,8 @@ typedef struct Viewer {
     size_t state_size;
     unsigned test_idx, steer_idx, steer_block_off;
     uint64_t handles_parsed;
+    uint64_t handles_taken;     /* trailing fields read, Windows */
+    uint32_t last_orphans;      /* entries of the last ORPHANS, Windows */
     bool closed;
     bool ready;
 } Viewer;
@@ -108,7 +129,7 @@ static inline void v_send(Viewer *v, const void *buf, size_t len)
     const uint8_t *p = buf;
 
     while (len) {
-        ssize_t n = send(v->fd, p, len, MSG_NOSIGNAL);
+        ssize_t n = send(v->fd, (const void *)p, len, MSG_NOSIGNAL);
 
         g_assert_cmpint(n, >, 0);
         p += n;
@@ -133,14 +154,35 @@ static inline void v_send_msg(Viewer *v, uint16_t type, uint16_t flags,
     g_free(b);
 }
 
+static inline void v_handle_close(VHandle h)
+{
+    if (V_HANDLE_OK(h)) {
+#ifdef _WIN32
+        CloseHandle(h);
+#else
+        close(h);
+#endif
+    }
+}
+
 static inline void v_msg_free(VMsg *m)
 {
     g_free(m->d);
-    if (m->fd >= 0) {
-        close(m->fd);
-    }
+    v_handle_close(m->h);
     m->d = NULL;
-    m->fd = -1;
+    m->h = V_NO_HANDLE;
+}
+
+static inline void v_unmap(VRegion *r)
+{
+    if (r->map) {
+#ifdef _WIN32
+        UnmapViewOfFile(r->map);
+#else
+        munmap(r->map, r->size);
+#endif
+        r->map = NULL;
+    }
 }
 
 static inline VRegion *v_region(Viewer *v, uint32_t id)
@@ -159,10 +201,18 @@ static inline uint8_t *v_map(Viewer *v, uint32_t id, bool writable)
 
     g_assert_nonnull(r);
     if (!r->map) {
+#ifdef _WIN32
+        void *p = MapViewOfFile(r->h, writable ? FILE_MAP_READ |
+                                FILE_MAP_WRITE : FILE_MAP_READ, 0, 0,
+                                r->size);
+
+        g_assert(p);
+#else
         void *p = mmap(NULL, r->size, writable ? PROT_READ | PROT_WRITE :
-                       PROT_READ, MAP_SHARED, r->fd, 0);
+                       PROT_READ, MAP_SHARED, r->h, 0);
 
         g_assert(p != MAP_FAILED);
+#endif
         r->map = p;
     }
     return r->map;
@@ -192,9 +242,25 @@ static inline void v_apply_head(Viewer *v, const uint8_t *d)
     vh->credit = le32(d + 116);
 }
 
+/* Whether the socket has something to read within ms. */
+static inline bool v_readable(Viewer *v, int ms)
+{
+#ifdef _WIN32
+    WSAPOLLFD p = { .fd = _get_osfhandle(v->fd), .events = POLLIN };
+
+    return WSAPoll(&p, 1, ms) == 1;
+#else
+    struct pollfd p = { .fd = v->fd, .events = POLLIN };
+
+    return poll(&p, 1, ms) == 1;
+#endif
+}
+
 /* Read more bytes, collecting passed descriptors. 0: nothing, -1: closed. */
 static inline int v_fill(Viewer *v, int ms)
 {
+    ssize_t n;
+#ifndef _WIN32
     union {
         struct cmsghdr align;
         char buf[CMSG_SPACE(sizeof(int) * 32)];
@@ -204,15 +270,21 @@ static inline int v_fill(Viewer *v, int ms)
     struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1,
                          .msg_control = ctl.buf,
                          .msg_controllen = sizeof(ctl.buf) };
-    struct pollfd p = { .fd = v->fd, .events = POLLIN };
-    ssize_t n;
+#endif
 
     if (v->closed) {
         return -1;
     }
-    if (poll(&p, 1, ms) != 1) {
+    if (!v_readable(v, ms)) {
         return 0;
     }
+#ifdef _WIN32
+    n = recv(v->fd, (char *)v->in + v->in_len, DSHM_MSG_MAX - v->in_len, 0);
+    if (n <= 0) {
+        v->closed = true;
+        return -1;
+    }
+#else
     n = recvmsg(v->fd, &mh, MSG_CMSG_CLOEXEC);
     if (n <= 0) {
         v->closed = true;
@@ -230,6 +302,7 @@ static inline int v_fill(Viewer *v, int ms)
             }
         }
     }
+#endif
     v->in_len += n;
     return 1;
 }
@@ -253,15 +326,22 @@ static inline bool v_parse(Viewer *v, VMsg *m)
     m->flags = le16(v->in + 2);
     m->len = len;
     m->d = g_memdup2(v->in, len);
-    m->fd = -1;
+    m->h = V_NO_HANDLE;
     memmove(v->in, v->in + len, v->in_len - len);
     v->in_len -= len;
     if (m->flags & DSHM_F_HANDLE) {
         g_assert_cmpuint(len, >=, 16);
+#ifdef _WIN32
+        /* taken when the field is read; the value is ours to close */
+        m->h = (HANDLE)(uintptr_t)le64(m->d + len - 8);
+        g_assert_true(V_HANDLE_OK(m->h));
+        v->handles_taken++;
+#else
         g_assert_cmpuint(v->fdq_n, >, 0);
-        m->fd = v->fdq[0];
+        m->h = v->fdq[0];
         memmove(v->fdq, v->fdq + 1, --v->fdq_n * sizeof(int));
         g_assert_cmpuint(le64(m->d + len - 8), ==, 0);
+#endif
         v->handles_parsed++;
     }
     switch (m->type) {
@@ -272,17 +352,13 @@ static inline bool v_parse(Viewer *v, VMsg *m)
             r = !v->reg[i].id || v->reg[i].gone ? &v->reg[i] : NULL;
         }
         g_assert_nonnull(r);
-        g_assert_cmpint(m->fd, >=, 0);
-        if (r->map) {
-            munmap(r->map, r->size);
-        }
-        if (r->fd > 0) {
-            close(r->fd);
-        }
+        g_assert_true(V_HANDLE_OK(m->h));
+        v_unmap(r);
+        v_handle_close(r->h);
         *r = (VRegion) { .id = le32(m->d + 8), .kind = le32(m->d + 12),
                          .access = le32(m->d + 20),
-                         .size = le64(m->d + 24), .fd = m->fd };
-        m->fd = -1;
+                         .size = le64(m->d + 24), .h = m->h };
+        m->h = V_NO_HANDLE;
         break;
     }
     case DSHM_MSG_REGION_GONE: {
@@ -312,7 +388,7 @@ static inline void v_stash(Viewer *v, const VMsg *m)
 static inline bool v_pump(Viewer *v, int ms)
 {
     gint64 end = g_get_monotonic_time() + (gint64)ms * 1000;
-    VMsg m;
+    VMsg m = { };
 
     for (;;) {
         gint64 left;
@@ -399,6 +475,8 @@ typedef struct VOpts {
     bool test, steer;
     uint32_t max_w, max_h;
     const char *name;
+    uint32_t prev_id;           /* the last connection, for ORPHANS */
+    uint64_t prev_taken, prev_session;
 } VOpts;
 
 /* HELLO, WELCOME, regions, heads, READY. */
@@ -408,11 +486,11 @@ static inline Viewer *v_open(const char *path, VOpts o)
     uint8_t hello[120 + 80 + 8] = { };
     size_t len = 120, off;
     unsigned n_ext = 0;
-    VMsg m;
+    VMsg m = { };
 
     v->in = g_malloc(DSHM_MSG_MAX);
     for (unsigned i = 0; i < V_REGIONS; i++) {
-        v->reg[i].fd = -1;
+        v->reg[i].h = V_NO_HANDLE;
     }
     v->fd = v_connect_fd(path);
     v->credit_asked = o.credit ? o.credit : 1;
@@ -425,6 +503,9 @@ static inline Viewer *v_open(const char *path, VOpts o)
     stl_le_p(hello + 80, v->credit_asked);
     stl_le_p(hello + 84, o.max_w);
     stl_le_p(hello + 88, o.max_h);
+    stl_le_p(hello + 92, o.prev_id);
+    stq_le_p(hello + 104, o.prev_taken);
+    stq_le_p(hello + 112, o.prev_session);
     off = 120;
     if (o.test) {
         snprintf((char *)hello + off, 32, "qemu.test");
@@ -485,25 +566,55 @@ static inline Viewer *v_open(const char *path, VOpts o)
     return v;
 }
 
+/*
+ * Windows does not tell the peer about a close while unread data is queued,
+ * so say goodbye and drain first.
+ */
+static inline void v_fd_close(int fd)
+{
+#ifdef _WIN32
+    gint64 end = g_get_monotonic_time() + 500000;
+    char buf[512];
+    bool drained = false;
+
+    shutdown(fd, SD_SEND);
+    while (g_get_monotonic_time() < end) {
+        fd_set rf;
+        struct timeval tv = { .tv_usec = 50000 };
+
+        FD_ZERO(&rf);
+        FD_SET((SOCKET)_get_osfhandle(fd), &rf);
+        if (select(0, &rf, NULL, NULL, &tv) > 0 &&
+            recv(fd, buf, sizeof(buf), 0) <= 0) {
+            drained = true;
+            break;
+        }
+    }
+    if (!drained) {
+        g_printerr("display-shm viewer: no close from the producer in "
+                   "500 ms\n");
+    }
+#endif
+    close(fd);
+}
+
 static inline void v_close(Viewer *v)
 {
     if (v->fd >= 0) {
-        close(v->fd);
+        v_fd_close(v->fd);
     }
     for (unsigned i = 0; i < V_REGIONS; i++) {
-        if (v->reg[i].map) {
-            munmap(v->reg[i].map, v->reg[i].size);
-        }
-        if (v->reg[i].fd > 0) {
-            close(v->reg[i].fd);
-        }
+        v_unmap(&v->reg[i]);
+        v_handle_close(v->reg[i].h);
     }
     for (unsigned i = 0; i < v->n_pending; i++) {
         v_msg_free(&v->pending[i]);
     }
+#ifndef _WIN32
     for (unsigned i = 0; i < v->fdq_n; i++) {
         close(v->fdq[i]);
     }
+#endif
     g_free(v->in);
     g_free(v);
 }
@@ -548,7 +659,7 @@ static inline void v_frame_parse(const VMsg *m, VFrame *f)
 
 static inline bool v_frame(Viewer *v, VFrame *f, int ms)
 {
-    VMsg m;
+    VMsg m = { };
 
     if (!v_take(v, DSHM_MSG_FRAME, &m, ms)) {
         return false;
@@ -693,7 +804,7 @@ static inline uint32_t v_control(Viewer *v, unsigned op, unsigned head,
                           unsigned target, unsigned arg)
 {
     uint8_t b[16] = { };
-    VMsg m;
+    VMsg m = { };
     uint32_t r;
 
     stl_le_p(b, op);
@@ -716,7 +827,7 @@ typedef struct VStats {
 
 static inline VStats v_stats(Viewer *v)
 {
-    VMsg m;
+    VMsg m = { };
     VStats s;
 
     v_send_msg(v, v_ext(v, DSHM_TEST_STATS_REQUEST), 0, NULL, 0);
@@ -813,7 +924,7 @@ typedef struct VEcho {
 
 static inline bool v_echo(Viewer *v, VEcho *e, int ms)
 {
-    VMsg m;
+    VMsg m = { };
 
     if (!v_take(v, v_ext(v, DSHM_TEST_INPUT_ECHO), &m, ms)) {
         return false;

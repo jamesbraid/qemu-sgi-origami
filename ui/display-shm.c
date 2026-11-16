@@ -330,7 +330,7 @@ static void vh_send_head(DShmVH *vh)
         }
     }
     vh_build_head(vh, &m);
-    dshm_queue(vh->v, &m, sizeof(m), -1, false);
+    dshm_queue(vh->v, &m, sizeof(m), DSHM_NO_HANDLE, false);
     dshm_flush(vh->v);
 }
 
@@ -565,7 +565,7 @@ void dshm_viewer_join(DShmViewer *v)
     {
         DShmHdr ready = { .type = DSHM_MSG_READY, .flags = DSHM_F_MUST };
 
-        dshm_queue(v, &ready, sizeof(ready), -1, false);
+        dshm_queue(v, &ready, sizeof(ready), DSHM_NO_HANDLE, false);
     }
     v->ready = true;
     dshm_flush(v);
@@ -1076,7 +1076,7 @@ static void vh_deliver(DShmVH *vh)
     f->damage_kind = kind;
     f->damage_count = count;
     total = ROUND_UP(sizeof(*f) + dlen, 8);
-    o = dshm_queue(v, buf, total, -1, false);
+    o = dshm_queue(v, buf, total, DSHM_NO_HANDLE, false);
     if (!o) {
         return;
     }
@@ -1371,7 +1371,7 @@ void dshm_head_state_cursor_notify(DShmHead *h)
                                    .cursor_seq = h->cursor_seq };
 
             vh->req.cursor = false;
-            dshm_queue(d->viewers[i], &m, sizeof(m), -1, false);
+            dshm_queue(d->viewers[i], &m, sizeof(m), DSHM_NO_HANDLE, false);
             dshm_flush(d->viewers[i]);
         }
     }
@@ -1403,7 +1403,7 @@ static void send_cursor_image(DShmViewer *v, DShmHead *h)
     if (px) {
         memcpy(buf + sizeof(*m), h->cursor_pixels, px);
     }
-    dshm_queue(v, buf, len, -1, false);
+    dshm_queue(v, buf, len, DSHM_NO_HANDLE, false);
     dshm_flush(v);
 }
 

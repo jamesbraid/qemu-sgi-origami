@@ -17,7 +17,7 @@ runs the rules below against a producer. Version 3 (the machine property
 A version 3 viewer that connects here is closed.
 
 All integers are little endian. The producer refuses to start on a
-big-endian host, and, for now, on Windows.
+big-endian host.
 
 Starting it
 ===========
@@ -116,6 +116,24 @@ its set, needs-write moves it to a writable set, too-large marks the head
 ``TOO_LARGE`` for it, and the rest end the session because no other class
 exists.
 
+On Windows a slot is an unnamed, pagefile-backed section. The producer
+copies the handle into the viewer's process (the socket's peer, found with
+``SIO_AF_UNIX_GETPEERPID`` and required to run as the producer's user) just
+before the first byte of the ``REGION`` goes out, with only the access the
+region allows, and writes the value into the message's last eight bytes. A
+message that never started takes its copy back. A closed connection keeps the
+handles it started after the viewer's acknowledged count for 60 seconds (at
+most 8 connections), and a ``HELLO`` that names ``prev_viewer_id``,
+``prev_session_id`` and its taken count is answered with ``ORPHANS``. Only
+``path`` listens; an inherited ``fd`` is refused. The socket is not given an
+owner-only ACL, so keep it in a directory only the user can write.
+A read-only handle stops the viewer mapping a region for write by mistake.
+It is not a barrier: a viewer running as the producer's user can open the
+producer's process, so it is trusted not to write what it was given
+read-only. A viewer closed with input unread sees its connection reset, so
+an ``ERROR`` sent just before the close, such as ``LIMIT`` for a full output
+queue, can be lost.
+
 Input
 =====
 
@@ -160,7 +178,7 @@ bytes), then the u32 ``sets`` at 88 and ``max_queued`` at 92.
 Not yet
 =======
 
-Windows, macOS (not built or run), the ``vk.external-memory``,
+macOS (not built or run), the ``vk.external-memory``,
 ``linux.dmabuf`` and ``sgi.raw-scanout`` extensions, leaving the cursor out
 of the picture, horizontal damage extents, a console created after a viewer
 connected (it becomes a head, or an unsupported one, at the next connection), and the held-sample ``CONTROL``

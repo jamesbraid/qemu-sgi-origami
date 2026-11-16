@@ -28,6 +28,22 @@ typedef struct DShmSet DShmSet;
 typedef struct DShmSlot DShmSlot;
 typedef struct DShmOut DShmOut;
 
+/* A handle value that went into the viewer's process, and its count. */
+typedef struct DShmSent {
+    uint64_t ordinal, value;
+} DShmSent;
+
+/* A descriptor on POSIX hosts, a section handle on Windows. */
+#ifdef _WIN32
+typedef HANDLE DShmHandle;
+#define DSHM_NO_HANDLE NULL
+#define DSHM_HANDLE_OK(h) ((h) != NULL)
+#else
+typedef int DShmHandle;
+#define DSHM_NO_HANDLE (-1)
+#define DSHM_HANDLE_OK(h) ((h) >= 0)
+#endif
+
 /* One shared allocation with one handle. */
 typedef struct DShmRegion {
     uint32_t id;
@@ -35,7 +51,7 @@ typedef struct DShmRegion {
     uint32_t access;            /* DSHM_ACCESS_* for the viewer's handle */
     size_t size;
     uint8_t *ptr;
-    int fd;
+    DShmHandle h;
     unsigned refs;
 } DShmRegion;
 
@@ -102,7 +118,10 @@ struct DShmOut {
     QTAILQ_ENTRY(DShmOut) next;
     uint8_t *buf;
     size_t len, off;
-    int fd;
+    DShmHandle h;               /* ours until the first byte goes */
+#ifdef _WIN32
+    uint64_t staged;            /* the copy already made in the viewer */
+#endif
     uint16_t type;
     bool urgent;                /* sent even while writes are held */
     uint32_t region;            /* REGION, FRAME: the region it names */
@@ -120,6 +139,11 @@ struct DShmOut {
 struct DShmViewer {
     DisplayShm *d;
     int fd;
+#ifdef _WIN32
+    HANDLE peer_process;        /* handles are copied into it */
+    DWORD peer_pid;
+    DShmSent started[DSHM_HANDLE_WINDOW];
+#endif
     uint32_t id;
     bool hello, ready, closing;
     bool doomed;                /* a close is scheduled */
@@ -211,6 +235,19 @@ struct DShmHead {
     void *test;
 };
 
+#ifdef _WIN32
+/* What a departed viewer left open in its process, for ORPHANS. */
+typedef struct DShmDeparted {
+    uint32_t viewer_id;
+    DWORD pid;
+    uint64_t seen, started;
+    int64_t at_ns;
+    DShmSent entry[DSHM_HANDLE_WINDOW];
+} DShmDeparted;
+#define DSHM_DEPARTED_MAX 8
+#define DSHM_DEPARTED_NS (60 * NANOSECONDS_PER_SECOND)
+#endif
+
 typedef struct DShmSteerQ {
     bool key;
     unsigned code;
@@ -257,6 +294,10 @@ struct DisplayShm {
     unsigned n_heads;
     DShmViewer *viewers[DSHM_VIEWERS_MAX];
     unsigned n_viewers;
+#ifdef _WIN32
+    DShmDeparted departed[DSHM_DEPARTED_MAX];
+    unsigned n_departed;
+#endif
     DShmViewer **pending;       /* connections before their HELLO */
     unsigned n_pending;
     uint64_t retained;
@@ -320,25 +361,36 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
                             bool writable_by_viewer, Error **errp);
 void dshm_region_ref(DShmRegion *r);
 void dshm_region_unref(DisplayShm *d, DShmRegion *r);
-int dshm_region_dup(const DShmRegion *r);
+DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access);
 
 /* display-shm-transport.c */
 void dshm_transport_start(DisplayShm *d, Error **errp);
 void dshm_transport_stop(DisplayShm *d);
-DShmOut *dshm_queue(DShmViewer *v, const void *msg, size_t len, int fd,
+DShmOut *dshm_queue(DShmViewer *v, const void *msg, size_t len, DShmHandle h,
                     bool tail_handle);
 DShmOut *dshm_queue_ext(DShmViewer *v, const void *msg, size_t len,
                         bool urgent);
 void dshm_viewer_close(DShmViewer *v, uint32_t code, const char *text);
 void dshm_viewer_doom(DShmViewer *v, uint32_t code, const char *text);
 void dshm_out_remove(DShmViewer *v, DShmOut *o);
-void dshm_out_free(DShmOut *o);
+void dshm_out_free(DShmViewer *v, DShmOut *o);
 void dshm_flush(DShmViewer *v);
 bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access);
 void dshm_region_forget(DShmViewer *v, DShmRegion *r);
 DShmViewer *dshm_viewer_by_id(DisplayShm *d, uint32_t id);
 unsigned dshm_live_viewers(DisplayShm *d);
 void dshm_message(DShmViewer *v, const DShmHdr *hdr, const uint8_t *msg);
+
+#ifdef _WIN32
+/* display-shm-win32.c */
+bool dshm_win_peer(DShmViewer *v);
+bool dshm_win_stage(DShmViewer *v, DShmOut *o);
+void dshm_win_discard(DShmViewer *v, DShmOut *o);
+void dshm_win_started(DShmViewer *v, DShmOut *o);
+void dshm_win_depart(DShmViewer *v);
+bool dshm_win_hello(DShmViewer *v, const DShmHello *h);
+void dshm_win_viewer_free(DShmViewer *v);
+#endif
 
 /* display-shm-input.c */
 void dshm_input_message(DShmViewer *v, const DShmHdr *hdr,

@@ -44,7 +44,7 @@ void dshm_echo(DisplayShm *d, uint32_t head, uint32_t kind, uint32_t code,
         };
 
         if (v->ext_test) {
-            dshm_queue(v, &m, sizeof(m), -1, false);
+            dshm_queue(v, &m, sizeof(m), DSHM_NO_HANDLE, false);
             dshm_flush(v);
         }
     }
@@ -326,7 +326,7 @@ void dshm_input_ack_state(DShmViewer *v)
                          .flags = v->d->owner == v,
                          .leds = v->d->leds };
 
-    dshm_queue(v, &m, sizeof(m), -1, false);
+    dshm_queue(v, &m, sizeof(m), DSHM_NO_HANDLE, false);
     dshm_flush(v);
 }
 
@@ -420,7 +420,7 @@ void dshm_input_message(DShmViewer *v, const DShmHdr *hdr, const uint8_t *msg)
             DShmInputAck a = { .hdr = { .type = DSHM_MSG_INPUT_ACK },
                                .serial = m.serial };
 
-            dshm_queue(v, &a, sizeof(a), -1, false);
+            dshm_queue(v, &a, sizeof(a), DSHM_NO_HANDLE, false);
             dshm_flush(v);
         }
         return;

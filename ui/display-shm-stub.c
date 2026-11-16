@@ -1,8 +1,5 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
-/*
- * The display-shm producer is not built for Windows. Its sources still call
- * the API, so these do nothing.
- */
+/* Stands in for the producer in unit tests that link a source without it. */
 #include "qemu/osdep.h"
 #include "ui/display-shm.h"
 

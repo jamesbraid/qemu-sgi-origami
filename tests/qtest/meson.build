@@ -668,7 +668,7 @@ sgi_qtests = \
     ['octane-vpro-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and host_os != 'windows' ?
     ['sgi-display-shm-test'] : []) + \
-  (host_os != 'windows' ? ['display-shm-test'] : []) + \
+  ['display-shm-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MALTA') and
    config_all_devices.has_key('CONFIG_VGA') and host_os != 'windows' ?

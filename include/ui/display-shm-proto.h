@@ -172,6 +172,17 @@ typedef struct DShmHandlesSeen {        /* 16 bytes */
     uint64_t count;
 } DShmHandlesSeen;
 
+typedef struct DShmOrphans {            /* 16 bytes, then 16 per entry */
+    DShmHdr hdr;
+    uint32_t count;
+    uint32_t reserved;
+} DShmOrphans;
+
+typedef struct DShmOrphan {
+    uint64_t ordinal;
+    uint64_t value;
+} DShmOrphan;
+
 typedef struct DShmSetStorage {         /* 48 bytes */
     DShmHdr hdr;
     uint32_t head;
@@ -471,6 +482,8 @@ DSHM_CHECK(DShmRequest, flags, 28);
 QEMU_BUILD_BUG_ON(sizeof(DShmImportFailed) != 16);
 QEMU_BUILD_BUG_ON(sizeof(DShmHandlesSeen) != 16);
 DSHM_CHECK(DShmHandlesSeen, count, 8);
+QEMU_BUILD_BUG_ON(sizeof(DShmOrphans) != 16);
+QEMU_BUILD_BUG_ON(sizeof(DShmOrphan) != 16);
 QEMU_BUILD_BUG_ON(sizeof(DShmSetStorage) != 48);
 DSHM_CHECK(DShmSetStorage, storage, 16);
 QEMU_BUILD_BUG_ON(sizeof(DShmInputClaim) != 16);

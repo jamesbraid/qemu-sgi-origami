@@ -3,8 +3,7 @@
  * The conformance rows of docs/interop/display-shm.rst that QEMU can run:
  * the display protocol version 4 producer, read as an external viewer would,
  * on a machine with no guest. The picture comes from qemu.test stimuli, so
- * every frame can be checked against the function that defines it. POSIX
- * hosts only.
+ * every frame can be checked against the function that defines it.
  */
 #include "qemu/osdep.h"
 #include <fcntl.h>
@@ -113,19 +112,19 @@ static void test_regions_sealed(void)
     regs[n++] = v_region(v, v->feedback_region);
     regs[n++] = v_region(v, h->slot[0]);
     for (unsigned i = 0; i < n; i++) {
-        int seals = fcntl(regs[i]->fd, F_GET_SEALS);
+        int seals = fcntl(regs[i]->h, F_GET_SEALS);
         const unsigned want = F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_SEAL;
 
         g_assert_cmpint(seals, >=, 0);
         g_assert_cmpuint(seals & want, ==, want);
-        g_assert_cmpint(ftruncate(regs[i]->fd, regs[i]->size / 2), ==, -1);
-        g_assert_cmpint(ftruncate(regs[i]->fd, regs[i]->size * 2), ==, -1);
+        g_assert_cmpint(ftruncate(regs[i]->h, regs[i]->size / 2), ==, -1);
+        g_assert_cmpint(ftruncate(regs[i]->h, regs[i]->size * 2), ==, -1);
     }
     /* what the viewer may not write, it cannot map writable */
     for (unsigned i = 0; i < 3; i++) {
-        int seals = fcntl(regs[i]->fd, F_GET_SEALS);
+        int seals = fcntl(regs[i]->h, F_GET_SEALS);
         void *p = mmap(NULL, regs[i]->size, PROT_READ | PROT_WRITE,
-                       MAP_SHARED, regs[i]->fd, 0);
+                       MAP_SHARED, regs[i]->h, 0);
 
         if (i == 1) {
             /* the feedback region is the viewer's */
@@ -152,10 +151,10 @@ static void test_rw_pixels_set(void)
     int seals;
 
     g_assert_cmpuint(r->access, ==, DSHM_ACCESS_READ | DSHM_ACCESS_WRITE);
-    seals = fcntl(r->fd, F_GET_SEALS);
+    seals = fcntl(r->h, F_GET_SEALS);
     g_assert_cmpuint(seals & F_SEAL_FUTURE_WRITE, ==, 0);
     g_assert_cmpuint(seals & F_SEAL_SEAL, ==, F_SEAL_SEAL);
-    p = mmap(NULL, r->size, PROT_READ | PROT_WRITE, MAP_SHARED, r->fd, 0);
+    p = mmap(NULL, r->size, PROT_READ | PROT_WRITE, MAP_SHARED, r->h, 0);
     g_assert_true(p != MAP_FAILED);
     munmap(p, r->size);
     v_close(v);
@@ -475,7 +474,7 @@ static void test_mode_change(void)
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
     VFrame f, g;
-    VMsg m;
+    VMsg m = { };
     uint32_t serial;
 
     g_assert_true(next_frame(v, 0, 0, &f, V_WAIT_MS));
@@ -505,7 +504,7 @@ static void test_heads(void)
 {
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
-    VMsg m;
+    VMsg m = { };
     VFrame f;
 
     g_assert_false(v->head[1].seen);
@@ -540,7 +539,7 @@ static void test_slot_list_changes(void)
     Viewer *a = open_v(2, 0), *b;
     VFrame f0, f1, g;
     uint32_t hash0, hash1, before;
-    VMsg m;
+    VMsg m = { };
 
     v_pattern(a, 0, 3, 8, 0);
     g_assert_true(next_frame(a, 0, 0, &f0, V_WAIT_MS));
@@ -622,7 +621,7 @@ static void test_rehome_keeps_lease(void)
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
     VFrame f, g;
-    VMsg m;
+    VMsg m = { };
     uint8_t b[8] = { };
     uint32_t old_region;
     uint32_t hash;
@@ -658,7 +657,7 @@ static void test_rehome_serves_recorded_request(void)
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
     VFrame f, g;
-    VMsg m;
+    VMsg m = { };
     uint8_t b[8] = { };
 
     g_assert_true(next_frame(v, 0, 0, &f, V_WAIT_MS));
@@ -682,7 +681,7 @@ static void test_import_too_large(void)
 {
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
-    VMsg m;
+    VMsg m = { };
     uint8_t b[8] = { };
 
     v_stimulus(v, 0, 5, 0, 0, 1);
@@ -709,7 +708,7 @@ static void test_import_failed_class(void)
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
     uint8_t b[8] = { };
-    VMsg m;
+    VMsg m = { };
 
     stl_le_p(b, v->head[0].slot[0]);
     stl_le_p(b + 4, DSHM_IMPORT_CLASS);
@@ -729,7 +728,7 @@ static void test_disconnect_retires(void)
     uint8_t *held;
     uint32_t hash;
     uint64_t seen = 0;
-    VMsg m;
+    VMsg m = { };
     VStats s;
 
     v_pattern(a, 0, 3, 31, 0);
@@ -737,7 +736,7 @@ static void test_disconnect_retires(void)
     held = v_map(a, f.region, false);
     hash = slot_hash(a, &f);
     /* the viewer goes without releasing; its mapping lives on */
-    close(a->fd);
+    v_fd_close(a->fd);
     a->fd = -1;
     g_assert_true(v_take(b, DSHM_MSG_HEAD, &m, V_WAIT_MS));
     v_msg_free(&m);
@@ -764,7 +763,7 @@ static void test_cancellation(void)
     QTestState *qts = start();
     Viewer *a = open_v(1, 0), *c = open_v(1, 0);
     VFrame f, g;
-    VMsg m;
+    VMsg m = { };
     uint32_t region;
 
     v_pattern(a, 0, 3, 13, 0);
@@ -802,7 +801,7 @@ static void test_cursor(void)
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
     VStateCursor c0, c1;
-    VMsg m;
+    VMsg m = { };
 
     c0 = v_state_cursor(v, 0);
     g_assert_cmpuint(c0.seq & 1, ==, 0);
@@ -842,7 +841,7 @@ static void test_cursor(void)
 
 static void expect_error(Viewer *v, uint32_t code)
 {
-    VMsg m;
+    VMsg m = { };
 
     g_assert_true(v_take(v, DSHM_MSG_ERROR, &m, V_WAIT_MS));
     g_assert_cmpuint(le32(m.d + 8), ==, code);
@@ -856,7 +855,7 @@ static Viewer *raw(void)
     v->in = g_malloc(DSHM_MSG_MAX);
     v->fd = v_connect_fd(sock_path);
     for (unsigned i = 0; i < V_REGIONS; i++) {
-        v->reg[i].fd = -1;
+        v->reg[i].h = V_NO_HANDLE;
     }
     return v;
 }
@@ -867,7 +866,7 @@ static void test_framing(void)
     Viewer *v = open_v(1, 0);
     VFrame f;
     uint8_t req[32] = { };
-    VMsg m;
+    VMsg m = { };
 
     /* a request in pieces */
     stw_le_p(req, DSHM_MSG_REQUEST);
@@ -986,7 +985,7 @@ static void test_connections(void)
     QTestState *qts = start_with(",max-viewers=2");
     Viewer *a = open_v(1, 0), *idle = raw(), *b = open_v(1, 0), *c;
     VFrame f;
-    VMsg m;
+    VMsg m = { };
 
     g_assert_true(next_frame(a, 0, 0, &f, V_WAIT_MS));
     g_assert_true(next_frame(b, 0, 0, &f, V_WAIT_MS));
@@ -1045,7 +1044,7 @@ static void expect_step(Viewer *v, int32_t dx, int32_t dy)
 
 static void wait_ack(Viewer *v, uint32_t serial)
 {
-    VMsg m;
+    VMsg m = { };
 
     v_sync(v, true, serial);
     g_assert_true(v_take(v, DSHM_MSG_INPUT_ACK, &m, V_WAIT_MS));
@@ -1064,7 +1063,7 @@ static void test_input_reports(void)
 {
     QTestState *qts = start();
     Viewer *v = open_input(1);
-    VMsg m;
+    VMsg m = { };
 
     /* the first viewer with INPUT owns it, and is told */
     g_assert_true(v_take(v, DSHM_MSG_INPUT_STATE, &m, V_WAIT_MS));
@@ -1178,7 +1177,7 @@ static void test_input_ownership(void)
     QTestState *qts = start();
     Viewer *a = open_input(1), *b = open_input(1);
     uint8_t claim[8] = { 1 };
-    VMsg m;
+    VMsg m = { };
 
     /* only the owner is heard */
     v_key(b, 0, 40, 1);
@@ -1222,7 +1221,7 @@ static void test_input_ownership(void)
     wait_ack(b, 3);
     expect_echo(a, 1, 44, 1, 0);
     expect_echo(a, 5, 0, 0, 0);
-    close(b->fd);
+    v_fd_close(b->fd);
     b->fd = -1;
     expect_echo(a, 1, 44, 0, 0);
     v_close(b);
@@ -1241,7 +1240,7 @@ static void guest_cursor(Viewer *v, int x, int y)
 
 static void expect_done(Viewer *v, uint32_t reason, int32_t x, int32_t y)
 {
-    VMsg m;
+    VMsg m = { };
 
     g_assert_true(v_take(v, v_steer_ext(v, DSHM_STEER_STEER_DONE), &m,
                          V_WAIT_MS));
@@ -1484,7 +1483,7 @@ static void test_head_removal_frees(void)
 {
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
-    VMsg m;
+    VMsg m = { };
     VFrame f;
     VStats before, after;
 
@@ -1517,7 +1516,7 @@ static void test_import_failed_moves(void)
     Viewer *v = open_v(1, DSHM_FEAT_RW_PIXELS), *w = open_v(1, 0);
     uint8_t b[8] = { };
     uint32_t old;
-    VMsg m;
+    VMsg m = { };
 
     for (unsigned i = 0; i < 3; i++) {
         old = v->head[0].slot[0];
@@ -1558,7 +1557,7 @@ static void test_set_storage(void)
     Viewer *v = open_v(1, 0);
     uint8_t b[40] = { };
     uint32_t old = v->head[0].slot[0];
-    VMsg m;
+    VMsg m = { };
 
     stl_le_p(b, 0xffffffffu);
     stl_le_p(b + 8, 1);
@@ -1582,7 +1581,7 @@ static void test_held_key_head(void)
     QTestState *qts = start();
     Viewer *v = open_input(1);
     uint8_t reset[1] = { };
-    VMsg m;
+    VMsg m = { };
     VEcho e = { };
 
     v_stimulus(v, 0, 5, 0, 0, 1);
@@ -1675,7 +1674,7 @@ static void test_mode_too_large(void)
 {
     QTestState *qts = start();
     Viewer *v = open_v(1, 0);
-    VMsg m;
+    VMsg m = { };
     VFrame f;
 
     v_stimulus(v, 0, 4, 20000 | (8ull << 16), 0, 0);
@@ -1704,20 +1703,121 @@ static void test_unimplemented_refused(void)
     for (unsigned i = 0; i < ARRAY_SIZE(bad); i++) {
         g_autofree char *out = NULL;
         g_autofree char *err = NULL;
-        g_autofree char *line = g_strdup_printf(
-            "%s -machine none -nodefaults -display none "
-            "-device display-shm,path=%s%s", getenv("QTEST_QEMU_BINARY"),
-            sock_path, bad[i]);
-        g_auto(GStrv) argv = NULL;
+        g_autofree char *dev = g_strdup_printf("display-shm,path=%s%s",
+                                               sock_path, bad[i]);
+        char *argv[] = { getenv("QTEST_QEMU_BINARY"), (char *)"-machine",
+                         (char *)"none", (char *)"-nodefaults",
+                         (char *)"-display", (char *)"none",
+                         (char *)"-device", dev, NULL };
         int status;
 
-        g_assert_true(g_shell_parse_argv(line, NULL, &argv, NULL));
         g_assert_true(g_spawn_sync(NULL, argv, NULL, G_SPAWN_DEFAULT, NULL,
                                    NULL, &out, &err, &status, NULL));
+#ifdef _WIN32
+        g_assert_cmpint(status, !=, 0);
+#else
         g_assert_true(!WIFEXITED(status) || WEXITSTATUS(status));
+#endif
         g_assert_nonnull(strstr(err, "not implemented"));
     }
 }
+
+#ifdef _WIN32
+/* A read-only section handle cannot be mapped for write. */
+static void test_regions_rights(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_v(1, DSHM_FEAT_RW_PIXELS);
+    VRegion *regs[3] = { v_region(v, v->state_region),
+                         v_region(v, v->feedback_region),
+                         v_region(v, v->head[0].slot[0]) };
+
+    g_assert_cmpuint(v->handles_taken, ==, v->handles_parsed);
+    for (unsigned i = 0; i < 3; i++) {
+        MEMORY_BASIC_INFORMATION mbi;
+        bool writable = i == 1 || regs[i]->access & DSHM_ACCESS_WRITE;
+        void *p = MapViewOfFile(regs[i]->h, FILE_MAP_WRITE, 0, 0, 0);
+
+        g_assert_cmpint(p != NULL, ==, writable);
+        if (p) {
+            UnmapViewOfFile(p);
+        } else {
+            g_assert_cmpuint(GetLastError(), ==, ERROR_ACCESS_DENIED);
+        }
+        p = MapViewOfFile(regs[i]->h, FILE_MAP_READ, 0, 0, 0);
+        g_assert_nonnull(p);
+        g_assert_cmpuint(VirtualQuery(p, &mbi, sizeof(mbi)), ==, sizeof(mbi));
+        g_assert_cmpuint(mbi.RegionSize, ==, regs[i]->size);
+        UnmapViewOfFile(p);
+    }
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* Handles sent past the viewer's taken count come back in ORPHANS. */
+static void test_orphans(void)
+{
+    QTestState *qts = start();
+    Viewer *a = open_v(1, 0), *b;
+    uint64_t taken, session = a->session;
+    uint32_t id = a->id, n;
+    VMsg m = { };
+
+    v_stimulus(a, 0, 4, 96 | (48u << 16), 0, 0);
+    v_request(a, 0, DSHM_REQ_FRAME, 0, 0, 0);
+    g_usleep(300000);
+    taken = a->handles_taken;
+    v_fd_close(a->fd);
+    a->fd = -1;
+    b = v_open(sock_path, (VOpts) { .credit = 1, .test = true, .prev_id = id,
+                                    .prev_taken = taken,
+                                    .prev_session = session });
+    g_assert_true(v_take(b, DSHM_MSG_ORPHANS, &m, V_WAIT_MS));
+    n = le32(m.d + 8);
+    g_assert_cmpuint(n, >=, 1);
+    g_assert_cmpuint(m.len, ==, 16 + 16 * n);
+    for (uint32_t i = 0; i < n; i++) {
+        HANDLE h = (HANDLE)(uintptr_t)le64(m.d + 24 + 16 * i);
+        DWORD flags;
+
+        g_assert_cmpuint(le64(m.d + 16 + 16 * i), ==, taken + 1 + i);
+        g_assert_true(GetHandleInformation(h, &flags));
+        CloseHandle(h);
+    }
+    v_msg_free(&m);
+    v_close(a);
+    v_close(b);
+    qtest_quit(qts);
+}
+
+/* A taken count above what was sent is a protocol error, not an orphan. */
+static void test_orphans_bad_count(void)
+{
+    QTestState *qts = start();
+    Viewer *a = open_v(1, 0), *b = raw();
+    uint8_t hello[120] = { };
+
+    v_stimulus(a, 0, 4, 96 | (48u << 16), 0, 0);
+    v_request(a, 0, DSHM_REQ_FRAME, 0, 0, 0);
+    g_usleep(300000);
+    stw_le_p(hello, DSHM_MSG_HELLO);
+    stw_le_p(hello + 2, DSHM_F_MUST);
+    stl_le_p(hello + 4, 120);
+    stw_le_p(hello + 8, 4);
+    stl_le_p(hello + 48, 1);
+    stl_le_p(hello + 80, 1);
+    stl_le_p(hello + 92, a->id);
+    stq_le_p(hello + 104, a->handles_taken + 1000);
+    stq_le_p(hello + 112, a->session);
+    v_fd_close(a->fd);
+    a->fd = -1;
+    v_send(b, hello, 120);
+    expect_error(b, DSHM_ERR_PROTOCOL);
+    v_close(a);
+    v_close(b);
+    qtest_quit(qts);
+}
+#endif
 
 int main(int argc, char **argv)
 {
@@ -1732,6 +1832,11 @@ int main(int argc, char **argv)
 #ifdef CONFIG_LINUX
     qtest_add_func("display-shm/regions-sealed", test_regions_sealed);
     qtest_add_func("display-shm/rw-pixels-set", test_rw_pixels_set);
+#endif
+#ifdef _WIN32
+    qtest_add_func("display-shm/regions-rights", test_regions_rights);
+    qtest_add_func("display-shm/orphans", test_orphans);
+    qtest_add_func("display-shm/orphans-bad-count", test_orphans_bad_count);
 #endif
     qtest_add_func("display-shm/still-head-on-connect",
                    test_still_head_on_connect);
@@ -1793,6 +1898,6 @@ int main(int argc, char **argv)
     qtest_add_func("display-shm/connections", test_connections);
     ret = g_test_run();
 
-    rmdir(sock_dir);
+    g_rmdir(sock_dir);
     return ret;
 }

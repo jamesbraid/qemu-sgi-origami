@@ -120,7 +120,7 @@ static void done_send(Steer *st, unsigned reason)
         .head = st->head, .reason = reason,
         .x = h->fb_x, .y = h->fb_y,
     };
-    dshm_queue(v, &m, sizeof(m), -1, false);
+    dshm_queue(v, &m, sizeof(m), DSHM_NO_HANDLE, false);
     dshm_flush(v);
 }
 

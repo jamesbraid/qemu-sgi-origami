@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The shm storage class of the display-shm producer: a sealed memfd on
- * Linux, an unlinked POSIX shared-memory object elsewhere. See
- * docs/interop/display-shm.rst.
+ * Linux, an unlinked POSIX shared-memory object elsewhere, a pagefile-backed
+ * section on Windows. See docs/interop/display-shm.rst.
  */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
@@ -10,12 +10,15 @@
 #include "qemu/bswap.h"
 #include "ui/display-shm-priv.h"
 
+#ifndef _WIN32
 #include <sys/mman.h>
+#endif
 
 #ifndef F_SEAL_FUTURE_WRITE
 #define F_SEAL_FUTURE_WRITE 0x0010
 #endif
 
+#ifndef _WIN32
 #ifdef CONFIG_LINUX
 static bool seal(int fd, unsigned seals, Error **errp)
 {
@@ -65,20 +68,40 @@ static int object_create(DisplayShm *d, size_t size, Error **errp)
 #endif
 }
 
-/* A zeroed region of immutable size, read-only to the viewer unless told. */
-DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
-                            bool writable_by_viewer, Error **errp)
+#endif /* !_WIN32 */
+
+#ifdef _WIN32
+static DShmRegion *region_map(size_t size, Error **errp)
+{
+    DShmRegion *r = g_new0(DShmRegion, 1);
+
+    r->h = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                              (DWORD)((uint64_t)size >> 32),
+                              (DWORD)(size & 0xffffffffu), NULL);
+    if (!r->h) {
+        error_setg(errp, "cannot create shared memory: error %lu",
+                   GetLastError());
+        g_free(r);
+        return NULL;
+    }
+    r->ptr = MapViewOfFile(r->h, FILE_MAP_ALL_ACCESS, 0, 0, size);
+    if (!r->ptr) {
+        error_setg(errp, "cannot map shared memory: error %lu",
+                   GetLastError());
+        CloseHandle(r->h);
+        g_free(r);
+        return NULL;
+    }
+    return r;
+}
+#else
+static DShmRegion *region_map(DisplayShm *d, size_t size, bool writable,
+                              Error **errp)
 {
     DShmRegion *r;
     void *p;
-    int fd;
+    int fd = object_create(d, size, errp);
 
-    size = ROUND_UP(MAX(size, 1), DSHM_REGION_ALIGN);
-    if (d->retained + size > d->max_retained) {
-        error_setg(errp, "display-shm: max-retained-bytes reached");
-        return NULL;
-    }
-    fd = object_create(d, size, errp);
     if (fd < 0) {
         return NULL;
     }
@@ -91,21 +114,43 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
 #ifdef CONFIG_LINUX
     /* FUTURE_WRITE only after our mapping; SEAL stops viewer-added seals. */
     if (!seal(fd, F_SEAL_SHRINK | F_SEAL_GROW |
-              (writable_by_viewer ? 0 : F_SEAL_FUTURE_WRITE) | F_SEAL_SEAL,
-              errp)) {
+              (writable ? 0 : F_SEAL_FUTURE_WRITE) | F_SEAL_SEAL, errp)) {
         munmap(p, size);
         close(fd);
         return NULL;
     }
 #endif
     r = g_new0(DShmRegion, 1);
+    r->ptr = p;
+    r->h = fd;
+    return r;
+}
+#endif
+
+/* A zeroed region of immutable size, read-only to the viewer unless told. */
+DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
+                            bool writable_by_viewer, Error **errp)
+{
+    DShmRegion *r;
+
+    size = ROUND_UP(MAX(size, 1), DSHM_REGION_ALIGN);
+    if (d->retained + size > d->max_retained) {
+        error_setg(errp, "display-shm: max-retained-bytes reached");
+        return NULL;
+    }
+#ifdef _WIN32
+    r = region_map(size, errp);
+#else
+    r = region_map(d, size, writable_by_viewer, errp);
+#endif
+    if (!r) {
+        return NULL;
+    }
     r->id = d->next_region_id++;
     r->kind = kind;
     r->access = writable_by_viewer ? DSHM_ACCESS_READ | DSHM_ACCESS_WRITE
                                    : DSHM_ACCESS_READ;
     r->size = size;
-    r->ptr = p;
-    r->fd = fd;
     r->refs = 1;
     d->retained += size;
     return r;
@@ -122,13 +167,32 @@ void dshm_region_unref(DisplayShm *d, DShmRegion *r)
     if (--r->refs) {
         return;
     }
+#ifdef _WIN32
+    UnmapViewOfFile(r->ptr);
+    CloseHandle(r->h);
+#else
     munmap(r->ptr, r->size);
-    close(r->fd);
+    close(r->h);
+#endif
     d->retained -= r->size;
     g_free(r);
 }
 
-int dshm_region_dup(const DShmRegion *r)
+/* A handle the queue owns, with no more rights than the viewer is given. */
+DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access)
 {
-    return qemu_dup(r->fd);
+#ifdef _WIN32
+    HANDLE self = GetCurrentProcess(), dup;
+    DWORD rights = SECTION_MAP_READ | SECTION_QUERY;
+
+    if (access & DSHM_ACCESS_WRITE) {
+        rights |= SECTION_MAP_WRITE;
+    }
+    if (!DuplicateHandle(self, r->h, self, &dup, rights, FALSE, 0)) {
+        return NULL;
+    }
+    return dup;
+#else
+    return qemu_dup(r->h);
+#endif
 }

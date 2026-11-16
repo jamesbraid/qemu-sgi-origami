@@ -378,7 +378,7 @@ void dshm_test_message(DShmViewer *v, unsigned local, const uint8_t *msg,
         DShmStats s;
 
         dshm_stats_fill(v->d, v, &s);
-        dshm_queue(v, &s, sizeof(s), -1, false);
+        dshm_queue(v, &s, sizeof(s), DSHM_NO_HANDLE, false);
         dshm_flush(v);
         return;
     }

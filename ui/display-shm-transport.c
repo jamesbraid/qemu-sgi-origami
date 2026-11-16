@@ -13,12 +13,17 @@
 #include "qemu/bswap.h"
 #include "ui/display-shm-priv.h"
 
-#include <sys/socket.h>
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <sys/socket.h>
 #include <sys/un.h>
+#endif
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
+#endif
+#ifndef MSG_DONTWAIT
+#define MSG_DONTWAIT 0
 #endif
 #ifndef MSG_CMSG_CLOEXEC
 #define MSG_CMSG_CLOEXEC 0
@@ -31,11 +36,15 @@ static void viewer_unref(DShmViewer *v);
 
 /* ---- The output queue ------------------------------------------------- */
 
-void dshm_out_free(DShmOut *o)
+void dshm_out_free(DShmViewer *v, DShmOut *o)
 {
-    if (o->fd >= 0) {
-        close(o->fd);
+#ifdef _WIN32
+    dshm_win_discard(v, o);
+#else
+    if (DSHM_HANDLE_OK(o->h)) {
+        close(o->h);
     }
+#endif
     g_free(o->saved_damage);
     g_free(o->buf);
     g_free(o);
@@ -51,7 +60,7 @@ void dshm_out_remove(DShmViewer *v, DShmOut *o)
     }
     QTAILQ_REMOVE(&v->out, o, next);
     v->out_bytes -= o->len;
-    dshm_out_free(o);
+    dshm_out_free(v, o);
 }
 
 static void viewer_update_handler(DShmViewer *v)
@@ -71,7 +80,7 @@ static bool out_sendable(DShmViewer *v, DShmOut *o)
     if (v->hold_writes && !o->urgent) {
         return false;
     }
-    if (o->fd >= 0 &&
+    if (DSHM_HANDLE_OK(o->h) &&
         v->handles_started - v->handles_seen >= DSHM_HANDLE_WINDOW) {
         return false;
     }
@@ -104,6 +113,9 @@ static DShmOut *out_pick(DShmViewer *v)
 
 static ssize_t out_send(DShmViewer *v, const DShmOut *o)
 {
+#ifdef _WIN32
+    return send(v->fd, (const char *)o->buf + o->off, o->len - o->off, 0);
+#else
     struct iovec iov = { .iov_base = (void *)(o->buf + o->off),
                          .iov_len = o->len - o->off };
     struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1 };
@@ -112,7 +124,7 @@ static ssize_t out_send(DShmViewer *v, const DShmOut *o)
         char buf[CMSG_SPACE(sizeof(int))];
     } ctl;
 
-    if (o->fd >= 0 && !o->off) {
+    if (DSHM_HANDLE_OK(o->h) && !o->off) {
         struct cmsghdr *c;
 
         memset(&ctl, 0, sizeof(ctl));
@@ -122,9 +134,10 @@ static ssize_t out_send(DShmViewer *v, const DShmOut *o)
         c->cmsg_level = SOL_SOCKET;
         c->cmsg_type = SCM_RIGHTS;
         c->cmsg_len = CMSG_LEN(sizeof(int));
-        memcpy(CMSG_DATA(c), &o->fd, sizeof(int));
+        memcpy(CMSG_DATA(c), &o->h, sizeof(int));
     }
     return sendmsg(v->fd, &mh, MSG_NOSIGNAL);
+#endif
 }
 
 void dshm_flush(DShmViewer *v)
@@ -133,7 +146,15 @@ void dshm_flush(DShmViewer *v)
 
     while (!v->closing && !v->doomed && (o = out_pick(v))) {
         bool first = !o->off;
-        ssize_t n = out_send(v, o);
+        ssize_t n;
+
+#ifdef _WIN32
+        if (first && DSHM_HANDLE_OK(o->h) && !dshm_win_stage(v, o)) {
+            dshm_viewer_doom(v, DSHM_ERR_INTERNAL, "cannot pass a handle");
+            return;
+        }
+#endif
+        n = out_send(v, o);
 
         if (n < 0) {
             if (errno == EINTR) {
@@ -150,10 +171,14 @@ void dshm_flush(DShmViewer *v)
             return;
         }
         if (n > 0 && first) {
-            if (o->fd >= 0) {
-                close(o->fd);
-                o->fd = -1;
+            if (DSHM_HANDLE_OK(o->h)) {
+#ifdef _WIN32
+                dshm_win_started(v, o);
+#else
+                close(o->h);
+                o->h = DSHM_NO_HANDLE;
                 v->handles_started++;
+#endif
             }
             if (o->type == DSHM_MSG_FRAME) {
                 dshm_frame_started(v, o);
@@ -194,7 +219,7 @@ DShmOut *dshm_queue_ext(DShmViewer *v, const void *msg, size_t len,
     o = g_new0(DShmOut, 1);
     o->buf = g_memdup2(msg, len);
     o->len = len;
-    o->fd = -1;
+    o->h = DSHM_NO_HANDLE;
     o->urgent = urgent;
     v->urgent_queued += urgent;
     o->type = lduw_le_p(o->buf);
@@ -204,27 +229,34 @@ DShmOut *dshm_queue_ext(DShmViewer *v, const void *msg, size_t len,
     return o;
 }
 
-/* Queue msg; a duplicate fd, if given, is owned by the queue and sent. */
-DShmOut *dshm_queue(DShmViewer *v, const void *msg, size_t len, int fd,
+static void handle_drop(DShmHandle h)
+{
+    if (DSHM_HANDLE_OK(h)) {
+#ifdef _WIN32
+        CloseHandle(h);
+#else
+        close(h);
+#endif
+    }
+}
+
+/* Queue msg; a duplicate handle, if given, is owned by the queue and sent. */
+DShmOut *dshm_queue(DShmViewer *v, const void *msg, size_t len, DShmHandle h,
                     bool tail_handle)
 {
     DShmOut *o;
 
     if (v->closing || v->doomed) {
-        if (fd >= 0) {
-            close(fd);
-        }
+        handle_drop(h);
         return NULL;
     }
     o = dshm_queue_ext(v, msg, len, false);
     if (!o) {
-        if (fd >= 0) {
-            close(fd);
-        }
+        handle_drop(h);
         return NULL;
     }
-    if (fd >= 0) {
-        o->fd = fd;
+    if (DSHM_HANDLE_OK(h)) {
+        o->h = h;
         stw_le_p(o->buf + 2, lduw_le_p(o->buf + 2) | DSHM_F_HANDLE);
         if (tail_handle) {
             stq_le_p(o->buf + len - 8, 0);
@@ -277,13 +309,18 @@ void dshm_viewer_close(DShmViewer *v, uint32_t code, const char *text)
             }
             memcpy(buf + sizeof(DShmError), text, tl);
             /* Best effort: the viewer may read it or may not. */
-            if (send(v->fd, buf, len, MSG_NOSIGNAL | MSG_DONTWAIT) < 0) {
+            if (send(v->fd, (const char *)buf, len,
+                     MSG_NOSIGNAL | MSG_DONTWAIT) < 0) {
                 /* a closing connection has nothing to wait for */
             }
         }
     }
     v->closing = true;
     qemu_set_fd_handler(v->fd, NULL, NULL, NULL);
+#ifdef _WIN32
+    /* A plain close is not seen by the peer on a Windows AF_UNIX socket. */
+    shutdown(v->fd, SD_BOTH);
+#endif
     close(v->fd);
     v->fd = -1;
     viewer_unlist(v);
@@ -293,10 +330,13 @@ void dshm_viewer_close(DShmViewer *v, uint32_t code, const char *text)
         v->out_bytes -= o->len;
         v->urgent_queued -= o->urgent;
         /* A FRAME dropped here was never sent: its lease goes with the rest. */
-        dshm_out_free(o);
+        dshm_out_free(v, o);
     }
     if (v->hello) {
         dshm_viewer_leave(v);
+#ifdef _WIN32
+        dshm_win_depart(v);
+#endif
     }
     aio_bh_schedule_oneshot(qemu_get_aio_context(), viewer_release_bh, v);
 }
@@ -307,6 +347,9 @@ static void viewer_unref(DShmViewer *v)
         return;
     }
     g_hash_table_destroy(v->announced);
+#ifdef _WIN32
+    dshm_win_viewer_free(v);
+#endif
     g_free(v->in);
     g_free(v->vh);
     g_free(v);
@@ -360,13 +403,13 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
                         .size = r->size };
     uint8_t buf[sizeof(m) + 8] = { };
     DShmOut *o;
-    int fd = dshm_region_dup(r);
+    DShmHandle h = dshm_region_dup(r, access);
 
-    if (fd < 0) {
+    if (!DSHM_HANDLE_OK(h)) {
         return false;
     }
     memcpy(buf, &m, sizeof(m));
-    o = dshm_queue(v, buf, sizeof(buf), fd, true);
+    o = dshm_queue(v, buf, sizeof(buf), h, true);
     if (!o) {
         return false;
     }
@@ -418,7 +461,7 @@ void dshm_region_forget(DShmViewer *v, DShmRegion *r)
         DShmRegionGone g = { .hdr = { .type = DSHM_MSG_REGION_GONE },
                              .id = r->id };
 
-        dshm_queue(v, &g, sizeof(g), -1, false);
+        dshm_queue(v, &g, sizeof(g), DSHM_NO_HANDLE, false);
     }
     for (unsigned h = find_first_bit(heads, DSHM_FEEDBACK_HEADS);
          h < DSHM_FEEDBACK_HEADS && !v->closing;
@@ -647,7 +690,12 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
         stl_le_p(wb + pos + 4, DSHM_STEER_BLOCK_BYTES);
         pos += 8;
     }
-    dshm_queue(v, wb, wlen, -1, false);
+    dshm_queue(v, wb, wlen, DSHM_NO_HANDLE, false);
+#ifdef _WIN32
+    if (!dshm_win_hello(v, &h)) {
+        return;
+    }
+#endif
     dshm_region_announce(v, d->state, DSHM_ACCESS_READ);
     dshm_region_announce(v, v->feedback, DSHM_ACCESS_READ | DSHM_ACCESS_WRITE);
     dshm_viewer_join(v);
@@ -751,6 +799,7 @@ static void viewer_read(void *opaque)
 {
     DShmViewer *v = opaque;
     DisplayShm *d = v->d;
+#ifndef _WIN32
     union {
         struct cmsghdr align;
         char buf[CMSG_SPACE(sizeof(int) * 8)];
@@ -759,12 +808,17 @@ static void viewer_read(void *opaque)
     struct msghdr mh = { .msg_iov = &iov, .msg_iovlen = 1,
                          .msg_control = ctl.buf,
                          .msg_controllen = sizeof(ctl.buf) };
+#endif
     size_t off = 0;
     ssize_t n;
 
+#ifdef _WIN32
+    n = recv(v->fd, (char *)v->in + v->in_len, DSHM_MSG_MAX - v->in_len, 0);
+#else
     iov.iov_base = v->in + v->in_len;
     iov.iov_len = DSHM_MSG_MAX - v->in_len;
     n = recvmsg(v->fd, &mh, MSG_CMSG_CLOEXEC);
+#endif
     if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK &&
                    errno != EINTR)) {
         dshm_viewer_close(v, 0, NULL);
@@ -773,6 +827,7 @@ static void viewer_read(void *opaque)
     if (n < 0) {
         return;
     }
+#ifndef _WIN32
     for (struct cmsghdr *c = CMSG_FIRSTHDR(&mh); c; c = CMSG_NXTHDR(&mh, c)) {
         if (c->cmsg_level == SOL_SOCKET && c->cmsg_type == SCM_RIGHTS) {
             size_t cnt = (c->cmsg_len - CMSG_LEN(0)) / sizeof(int);
@@ -785,6 +840,7 @@ static void viewer_read(void *opaque)
             }
         }
     }
+#endif
     v->in_len += n;
     while (!v->closing && v->in_len - off >= sizeof(DShmHdr)) {
         DShmHdr hdr;
@@ -816,6 +872,7 @@ static void viewer_read(void *opaque)
 
 /* ---- Listening -------------------------------------------------------- */
 
+#ifndef _WIN32
 static bool peer_ok(DisplayShm *d, int fd)
 {
 #ifdef CONFIG_LINUX
@@ -848,36 +905,53 @@ static bool peer_ok(DisplayShm *d, int fd)
     return euid == geteuid();
 #endif
 }
+#endif /* !_WIN32 */
 
 static void accept_ready(void *opaque)
 {
     DisplayShm *d = opaque;
     int fd = qemu_accept(d->listen_fd, NULL, NULL);
     DShmViewer *v;
+    bool ok;
 
     if (fd < 0) {
         return;
     }
     qemu_set_blocking(fd, false, NULL);
-    if (!peer_ok(d, fd)) {
-        const DShmError e = { .hdr = { .type = DSHM_MSG_ERROR,
-                                       .length = sizeof(DShmError) },
-                              .code = DSHM_ERR_PERMISSION };
-
-        if (send(fd, &e, sizeof(e), MSG_NOSIGNAL | MSG_DONTWAIT) < 0) {
-            /* refused either way */
-        }
-        close(fd);
-        return;
-    }
-    if (d->n_pending >= DSHM_PENDING_MAX) {
-        close(fd);
-        return;
-    }
     v = g_new0(DShmViewer, 1);
     v->refs = 1;
     v->d = d;
     v->fd = fd;
+#ifdef _WIN32
+    ok = dshm_win_peer(v);
+#else
+    ok = peer_ok(d, fd);
+#endif
+    if (!ok) {
+        const DShmError e = { .hdr = { .type = DSHM_MSG_ERROR,
+                                       .length = sizeof(DShmError) },
+                              .code = DSHM_ERR_PERMISSION };
+
+        if (send(fd, (const char *)&e, sizeof(e),
+                 MSG_NOSIGNAL | MSG_DONTWAIT) < 0) {
+            /* refused either way */
+        }
+        close(fd);
+        v->refs = 0;
+#ifdef _WIN32
+        dshm_win_viewer_free(v);
+#endif
+        g_free(v);
+        return;
+    }
+    if (d->n_pending >= DSHM_PENDING_MAX) {
+        close(fd);
+#ifdef _WIN32
+        dshm_win_viewer_free(v);
+#endif
+        g_free(v);
+        return;
+    }
     v->in = g_malloc(DSHM_MSG_MAX);
     v->announced = g_hash_table_new(NULL, NULL);
     QTAILQ_INIT(&v->out);
@@ -892,7 +966,11 @@ static bool dir_ok(const char *path, Error **errp)
     struct stat st;
 
     if (stat(dir, &st) < 0 && errno == ENOENT) {
+#ifdef _WIN32
+        if (g_mkdir_with_parents(dir, 0700) < 0) {
+#else
         if (mkdir(dir, 0700) < 0) {
+#endif
             error_setg_errno(errp, errno, "cannot create %s", dir);
             return false;
         }
@@ -901,7 +979,12 @@ static bool dir_ok(const char *path, Error **errp)
         error_setg_errno(errp, errno, "cannot stat %s", dir);
         return false;
     }
+#ifdef _WIN32
+    /* No owner or mode bits here: the peer's token is checked at accept. */
+    if (!S_ISDIR(st.st_mode)) {
+#else
     if (!S_ISDIR(st.st_mode) || st.st_uid != geteuid() || (st.st_mode & 022)) {
+#endif
         error_setg(errp, "display-shm: %s must be a directory owned by this "
                    "user that no one else can write", dir);
         return false;
@@ -912,11 +995,18 @@ static bool dir_ok(const char *path, Error **errp)
 void dshm_transport_start(DisplayShm *d, Error **errp)
 {
     if (d->listen_fd_prop >= 0) {
+#ifdef _WIN32
+        error_setg(errp, "display-shm: fd is not supported on Windows, "
+                   "use path");
+        return;
+#endif
         d->listen_fd = d->listen_fd_prop;
         qemu_set_blocking(d->listen_fd, false, NULL);
     } else {
         int probe;
+#ifndef _WIN32
         struct stat st;
+#endif
 
         if (!d->path || !*d->path) {
             error_setg(errp, "display-shm needs fd or path");
@@ -931,19 +1021,26 @@ void dshm_transport_start(DisplayShm *d, Error **errp)
             error_setg(errp, "display-shm: %s is in use", d->path);
             return;
         }
+#ifdef _WIN32
+        /* Nothing answered the probe: a file left by a crash blocks bind. */
+        unlink(d->path);
+#else
         if (lstat(d->path, &st) == 0 && S_ISSOCK(st.st_mode)) {
             unlink(d->path);
         }
+#endif
         d->listen_fd = unix_listen(d->path, errp);
         if (d->listen_fd < 0) {
             return;
         }
+#ifndef _WIN32
         if (chmod(d->path, 0600) < 0) {
             error_setg_errno(errp, errno, "cannot restrict %s", d->path);
             close(d->listen_fd);
             d->listen_fd = -1;
             return;
         }
+#endif
         d->bound_path = g_strdup(d->path);
     }
     qemu_set_fd_handler(d->listen_fd, accept_ready, NULL, d);
