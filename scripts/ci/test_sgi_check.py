@@ -134,6 +134,25 @@ class ChdIotestSelection(unittest.TestCase):
             self.assertEqual(sgi_check.select_chd_iotest('origin/x'), [])
 
 
+class RustDevices(unittest.TestCase):
+    def test_the_ci_build_enables_rust(self):
+        self.assertIn('--enable-rust', sgi_check.CONFIGURE_ARGS)
+
+    def test_the_build_must_select_the_rust_devices(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = Path(tmp) / 'mips64-softmmu-config-devices.mak'
+            config.write_text('CONFIG_SGI_BIC_BOARD_INTERFACE_C=y\n')
+            with self.assertRaises(SystemExit):
+                sgi_check.check_rust_devices(Path(tmp))
+            config.write_text('\n'.join(sgi_check.RUST_DEVICE_CONFIGS) + '\n')
+            sgi_check.check_rust_devices(Path(tmp))
+
+    def test_the_rust_device_qtests_have_sources(self):
+        for name in sgi_check.RUST_DEVICE_QTESTS:
+            stem = name.split('/', 1)[1]
+            self.assertTrue((SOURCE / 'tests/qtest' / f'{stem}.c').is_file())
+
+
 class QtestShards(unittest.TestCase):
     DURATIONS = {'a': 600, 'b': 300, 'c': 300, 'd': 100, 'e': 50}
 
@@ -605,9 +624,11 @@ class SmokeQtestSetup(unittest.TestCase):
         runs = {logbase: kw for logbase, _, kw in calls if logbase != 'list'}
         rom = sorted(f'smoke-{logbase}' for _, logbase, *_
                      in sgi_check.GENERATED_ROM_FUNCTIONAL)
-        self.assertEqual(sorted(runs), sorted(['smoke-qtest', 'smoke-unit']
-                                              + rom))
+        self.assertEqual(sorted(runs), sorted(['smoke-qtest', 'smoke-unit',
+                                               'smoke-device-qtest',
+                                               'smoke-rust'] + rom))
         self.assertEqual(runs['smoke-qtest']['setup'], 'qemu:quick')
+        self.assertEqual(runs['smoke-device-qtest']['setup'], 'qemu:quick')
         self.assertNotIn('setup', runs['smoke-unit'])
 
     def test_only_the_tests_quick_keeps_are_named(self):

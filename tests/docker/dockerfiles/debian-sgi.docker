@@ -7,15 +7,20 @@ FROM docker.io/library/debian:trixie-slim
 # gdb-multiarch drives the functional tests' reverse-debugging cases.
 # python3-sphinx and python3-sphinx-rtd-theme build the manual, which the
 # script suites check with warnings treated as errors.
+# rustc, cargo, rustfmt, bindgen and libclang-dev build and check the Rust
+# devices (configure --enable-rust); rustc includes rustdoc.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
         binutils-mips64-linux-gnuabi64 \
+        bindgen \
         build-essential \
         ca-certificates \
+        cargo \
         ccache \
         gcc-mips64-linux-gnuabi64 \
         gdb-multiarch \
         git \
+        libclang-dev \
         libegl-dev \
         libegl-mesa0 \
         libegl1 \
@@ -41,6 +46,8 @@ RUN apt-get update && \
         python3-venv \
         python3-wheel \
         python3-yaml \
+        rustc \
+        rustfmt \
         zlib1g-dev && \
     rm -rf /var/lib/apt/lists/*
 
