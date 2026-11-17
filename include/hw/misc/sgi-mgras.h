@@ -664,6 +664,13 @@ struct SGIMgrasState {
      * not an observed one.
      */
     uint8_t dac_gamma[3][256];
+    /* Derived by the scanout resolve from dac_gamma and the pixel mask. */
+    struct {
+        uint8_t src[3][256];
+        uint8_t src_mask;
+        uint8_t lut[3][256];
+        bool identity;
+    } gamma_cache;
     /* DAC registers addressed through DAC_LUT_INDEX, data at DAC_LUT_DATA_2. */
     uint8_t dac_reg[SGI_MGRAS_DAC_REGS];
     uint32_t config_table[SGI_MGRAS_CONFIG_TABLE_WORDS];

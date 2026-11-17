@@ -234,13 +234,118 @@ static void mgras_cursor_row(SGIMgrasState *s, unsigned y, uint32_t *dst)
     }
 }
 
-/* A native 0x00BBGGRR pixel through the DAC's mask and gamma, as 0x00RRGGBB. */
-static inline uint32_t mgras_gamma_rgb(const SGIMgrasState *s, uint32_t bgr,
-                                       uint8_t mask)
+/* Fold the pixel mask into the gamma tables; rebuilt only when they change. */
+static void mgras_gamma_sync(SGIMgrasState *s)
 {
-    return ((uint32_t)s->dac_gamma[0][bgr & mask] << 16) |
-           ((uint32_t)s->dac_gamma[1][(bgr >> 8) & mask] << 8) |
-           s->dac_gamma[2][(bgr >> 16) & mask];
+    uint8_t mask = s->dac_reg[SGI_MGRAS_DAC_REG_PIXEL_MASK];
+
+    if (mask == s->gamma_cache.src_mask &&
+        !memcmp(s->gamma_cache.src, s->dac_gamma, sizeof(s->dac_gamma))) {
+        return;
+    }
+    memcpy(s->gamma_cache.src, s->dac_gamma, sizeof(s->dac_gamma));
+    s->gamma_cache.src_mask = mask;
+    s->gamma_cache.identity = true;
+    for (int c = 0; c < 3; c++) {
+        for (int i = 0; i < 256; i++) {
+            uint8_t v = s->dac_gamma[c][i & mask];
+
+            s->gamma_cache.lut[c][i] = v;
+            s->gamma_cache.identity &= v == i;
+        }
+    }
+}
+
+typedef struct MgrasSpan {
+    const uint32_t *omap;
+    bool back;
+    uint32_t base, bits;
+    const uint8_t *overlay, *format, *back_format;
+    const uint32_t *front, *bank1, *slot;
+    const uint8_t (*lut)[256];
+} MgrasSpan;
+
+/* A native 0x00BBGGRR pixel through the cached gamma, as 0x00RRGGBB. */
+static inline QEMU_ALWAYS_INLINE uint32_t mgras_gamma_rgb(const MgrasSpan *p,
+                                                          bool identity,
+                                                          uint32_t bgr)
+{
+    if (identity) {
+        return mgras_bgr_to_rgb(bgr);
+    }
+    return ((uint32_t)p->lut[0][bgr & 0xff] << 16) |
+           ((uint32_t)p->lut[1][(bgr >> 8) & 0xff] << 8) |
+           p->lut[2][(bgr >> 16) & 0xff];
+}
+
+/* A direct 0x??RRGGBB word through the cached gamma. */
+static inline QEMU_ALWAYS_INLINE uint32_t mgras_gamma_word(const MgrasSpan *p,
+                                                           bool identity,
+                                                           uint32_t word)
+{
+    if (identity) {
+        return word & 0x00ffffff;
+    }
+    return ((uint32_t)p->lut[0][(word >> 16) & 0xff] << 16) |
+           ((uint32_t)p->lut[1][(word >> 8) & 0xff] << 8) |
+           p->lut[2][word & 0xff];
+}
+
+static inline QEMU_ALWAYS_INLINE void mgras_resolve_pixels(SGIMgrasState *s,
+                                                           const MgrasSpan *p,
+                                                           bool identity,
+                                                           unsigned int n,
+                                                           uint32_t *dst)
+{
+    const uint64_t all_rgb = SGI_MGRAS_PIXEL_FORMAT_RGB * 0x0101010101010101ull;
+    unsigned int k = 0;
+
+    if (!p->omap && !p->back) {
+        while (k < n) {
+            /* Eight direct-colour pixels need no per-pixel format test. */
+            if (k + 8 <= n && ldq_he_p(p->format + k) == all_rgb) {
+                for (unsigned int e = k + 8; k < e; k++) {
+                    dst[k] = mgras_gamma_word(p, identity, p->front[k]);
+                }
+                continue;
+            }
+            dst[k] = p->format[k] == SGI_MGRAS_PIXEL_FORMAT_RGB ?
+                     mgras_gamma_word(p, identity, p->front[k]) :
+                     mgras_gamma_rgb(p, identity,
+                                     mgras_bank_bgr(s, p->front[k],
+                                                    p->format[k], p->base,
+                                                    p->bits));
+            k++;
+        }
+        return;
+    }
+    for (; k < n; k++) {
+        uint32_t word = p->front[k];
+        uint8_t format = p->format[k];
+
+        if (p->omap && p->overlay[k]) {
+            uint32_t entry = p->omap[p->overlay[k]];
+
+            dst[k] = mgras_gamma_rgb(p, identity,
+                                     ((entry & 0xff00) << 8) |
+                                     ((entry >> 8) & 0xff00) | (entry >> 24));
+            continue;
+        }
+        if (p->back) {
+            if (p->slot[k] & SGI_MGRAS_SLOT_WRITTEN) {
+                word = p->slot[k];
+                format = SGI_MGRAS_PIXEL_FORMAT_RGB;
+            } else {
+                word = p->bank1[k];
+                format = p->back_format[k];
+            }
+        }
+        dst[k] = format == SGI_MGRAS_PIXEL_FORMAT_RGB ?
+                 mgras_gamma_word(p, identity, word) :
+                 mgras_gamma_rgb(p, identity,
+                                 mgras_bank_bgr(s, word, format, p->base,
+                                                p->bits));
+    }
 }
 
 /* Resolve n pixels from first that share a main and an overlay display ID. */
@@ -249,43 +354,26 @@ static void mgras_resolve_span(SGIMgrasState *s, unsigned int first,
                                uint8_t overlay_did, uint32_t *dst)
 {
     uint32_t omode = s->xmap[0].overlay_mode[overlay_did];
-    const uint32_t *omap = (omode & 1) ?
-                           &s->cmap[((omode >> 3) & 0x1f) * 256] : NULL;
-    bool back = (s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1;
     uint32_t mode = s->xmap[0].mode[main_did & 0x1f];
-    uint32_t base = ((mode >> 5) & 0x1f) * 256;
-    uint32_t bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
-                    0xfff : 0xff;
-    uint8_t mask = s->dac_reg[SGI_MGRAS_DAC_REG_PIXEL_MASK];
-    const uint8_t *overlay = s->overlay + first, *format = s->format + first;
-    const uint8_t *back_format = s->back_format + first;
-    const uint32_t *front = s->front + first, *bank1 = s->back + first;
-    const uint32_t *slot = s->slot[0] + first;
+    MgrasSpan p = {
+        .omap = (omode & 1) ? &s->cmap[((omode >> 3) & 0x1f) * 256] : NULL,
+        .back = (s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1,
+        .base = ((mode >> 5) & 0x1f) * 256,
+        .bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
+                0xfff : 0xff,
+        .overlay = s->overlay + first,
+        .format = s->format + first,
+        .back_format = s->back_format + first,
+        .front = s->front + first,
+        .bank1 = s->back + first,
+        .slot = s->slot[0] + first,
+        .lut = s->gamma_cache.lut,
+    };
 
-    if (!omap && !back) {
-        for (unsigned int k = 0; k < n; k++) {
-            dst[k] = mgras_gamma_rgb(s, mgras_bank_bgr(s, front[k], format[k],
-                                                       base, bits), mask);
-        }
-        return;
-    }
-    for (unsigned int k = 0; k < n; k++) {
-        uint32_t bgr;
-
-        if (omap && overlay[k]) {
-            uint32_t entry = omap[overlay[k]];
-
-            bgr = ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) |
-                  (entry >> 24);
-        } else if (!back) {
-            bgr = mgras_bank_bgr(s, front[k], format[k], base, bits);
-        } else if (slot[k] & SGI_MGRAS_SLOT_WRITTEN) {
-            bgr = mgras_bank_bgr(s, slot[k], SGI_MGRAS_PIXEL_FORMAT_RGB, base,
-                                 bits);
-        } else {
-            bgr = mgras_bank_bgr(s, bank1[k], back_format[k], base, bits);
-        }
-        dst[k] = mgras_gamma_rgb(s, bgr, mask);
+    if (s->gamma_cache.identity) {
+        mgras_resolve_pixels(s, &p, true, n, dst);
+    } else {
+        mgras_resolve_pixels(s, &p, false, n, dst);
     }
 }
 
@@ -306,6 +394,7 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         memset(dst, 0, s->width * sizeof(*dst));
         return;
     }
+    mgras_gamma_sync(s);
     mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did, s->width);
     mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did, s->width);
     for (unsigned int x = 0, end; x < s->width; x = end) {
