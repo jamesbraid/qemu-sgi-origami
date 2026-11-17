@@ -288,8 +288,8 @@ pub unsafe extern "C" fn sgi_mace_id_reset(core: *mut c_void) -> bool {
 
 #[no_mangle]
 /// # Safety
-/// `core` must be live and `value` must point to a writable `u64`; QEMU holds
-/// the BQL for this call.
+/// `core` must be live; `value` must point to a writable `u64` and not overlap
+/// `core`. QEMU holds the BQL for this call.
 pub unsafe extern "C" fn sgi_mace_id_read(
     core: *mut c_void,
     now: i64,
@@ -351,8 +351,8 @@ pub unsafe extern "C" fn sgi_mace_id_write(
 
 #[no_mangle]
 /// # Safety
-/// `core` must be live and `out` must point to writable migration state; QEMU
-/// holds the BQL for this call.
+/// `core` must be live; `out` must point to writable migration state and not
+/// overlap `core`. QEMU holds the BQL for this call.
 pub unsafe extern "C" fn sgi_mace_id_export(core: *mut c_void, out: *mut MigrationState) {
     let state = unsafe { &*core.cast::<Core>() };
     unsafe {
@@ -368,7 +368,7 @@ pub unsafe extern "C" fn sgi_mace_id_export(core: *mut c_void, out: *mut Migrati
 #[no_mangle]
 /// # Safety
 /// `core` must be live and exclusively accessed, and `input` must point to
-/// readable migration state; QEMU holds the BQL for this call.
+/// readable, non-overlapping migration state; QEMU holds the BQL for this call.
 pub unsafe extern "C" fn sgi_mace_id_import(
     core: *mut c_void,
     input: *const MigrationState,
