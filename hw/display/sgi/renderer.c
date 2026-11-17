@@ -420,6 +420,7 @@ static bool sgi_render_rules_supported(const SGIRasterRules *rules)
 {
     return rules->subpixel_bits == 8 &&
            rules->rounding == SGI_ROUND_HALF_AWAY &&
+           rules->colour_store == SGI_COLOUR_STORE_NEAREST &&
            rules->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            rules->arith == SGI_ARITH_DOUBLE;
 }

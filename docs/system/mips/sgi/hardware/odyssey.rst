@@ -64,6 +64,9 @@ Sources
   backing-store transfer forms, the ``0x0a5a`` fence word and one DMA
   header bit. Every other register role on this
   page is stated as what the model does.
+- Reference frames rendered by the board vendor's own software model of the
+  board. This page credits them only for the colour store, a *software
+  expectation*, and the vertex snap, *inferred* (:ref:`sgi-odyssey-raster-rules`).
 - The same software run on the model, recorded with QEMU's
   ``sgi_odyssey_mmio`` trace event: what the guest sent the model, not
   what a board does.
@@ -629,6 +632,32 @@ interrupt are the model's (*approximation*). The write uses the
 machine's physical address space directly, not an XIO DMA path
 (*approximation*).
 
+.. _sgi-odyssey-raster-rules:
+
+Raster rules
+============
+
+The rasterizer follows two rules where the board's rounding is not set by
+OpenGL:
+
+- A vertex's window position snaps to the 1/256-pixel grid by truncation
+  toward minus infinity, not by rounding. The rule reproduces the
+  vendor's reference frames exactly, but only one frame separates it from
+  rounding, and that frame also fixes the texel and perspective rules, so
+  the snap is *inferred*. The case that tells it from round-to-nearest is a
+  128 by 64 textured perspective scene, where rounding leaves 5 pixels
+  different.
+- A colour component c in [0, 1] is stored in eight bits as
+  min(255, floor(256 c)), not as round(255 c). The rule matches all six
+  byte values of the reference flat-colour frames, where round(255 c)
+  misses three; whether the board matches is not measured, a *software
+  expectation*.
+
+Alpha, dithered colour and texture filtering keep the model's own
+rounding, each an *approximation*. The OpenGL stream's primitives, rectangle
+fills and points included, take these rules; the Mesa renderer refuses
+them (:ref:`sgi-odyssey-mesa`).
+
 .. _sgi-odyssey-dma:
 
 DMA
@@ -786,16 +815,19 @@ and the board has no hot spot, so that is the position reported, an
 Mesa renderer
 =============
 
-``x-mesa-renderer=on`` sends OpenGL primitives in RGBA modes to a host
-Mesa renderer that draws into the two colour buffers. Each primitive is
-drawn wholly by Mesa or, when the adapter refuses it, wholly by the
-model's own software rasterizer, before the command returns. Colour-index
-drawing always takes the software path. If the host has no usable
-renderer, realize warns once and every draw takes the software path;
-any other renderer creation failure fails realize. The option changes
-host drawing only: guest-visible registers, planes and interrupts are
-the same either way. It is off by default, the ``x-`` prefix marks it
-experimental, and both ends of a migration must set it the same way.
+``x-mesa-renderer=on`` creates a host Mesa renderer, but the adapter
+rounds the vertex snap and the colour store to nearest, so it refuses every
+Odyssey draw under the board's raster rules
+(:ref:`sgi-odyssey-raster-rules`), counted under the reason ``rules``, or
+``host-driver`` when the host renderer is not the reference llvmpipe build,
+which refuses first. The model's own software rasterizer draws it before the
+command returns.
+``x-mesa-draws`` stays 0. Colour-index drawing is refused too. If the host
+has no usable renderer, realize warns once; any other renderer creation
+failure fails realize. The option changes host drawing only: guest-visible
+registers, planes and interrupts are the same either way. It is off by
+default, the ``x-`` prefix marks it experimental, and both ends of a
+migration must set it the same way.
 
 The read-only properties ``x-mesa-unavailable``, ``x-mesa-draws`` and
 ``x-mesa-fallbacks-<reason>`` report whether the host renderer was
@@ -1003,7 +1035,9 @@ covers the context switch and shadow page. The ``gl`` group and the
 ``texture``, ``texture-1d-clamp``, ``texture-1d-stored``,
 ``texture-1d-wide``, ``texture-2d-clamp``, ``texture-2d-stored`` and
 ``texture-3d`` groups cover the OpenGL command stream. ``tests/qtest/sn1-odyssey-query-test.c``
-covers the current-attribute query records.
+covers the current-attribute query records. The ``gl`` group's
+``command-fifo-gl-raster-rules`` draws a triangle whose left edge and flat
+colour give other words under rounding than under the two raster rules.
 ``tests/qtest/octane-vpro-test.c`` covers the board's reset by a
 ``0x100c`` pulse and by a link reset in the Octane2's graphics port.
 

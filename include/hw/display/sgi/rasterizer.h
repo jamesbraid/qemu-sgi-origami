@@ -23,6 +23,12 @@ typedef enum SGIRounding {
     SGI_ROUND_HALF_AWAY,        /* llround() */
 } SGIRounding;
 
+/* How a colour component in [0, 1] is stored in color_bits. */
+typedef enum SGIColourStore {
+    SGI_COLOUR_STORE_NEAREST,   /* round(c * max) */
+    SGI_COLOUR_STORE_FLOOR,     /* min(max, floor(c * 2^bits)) */
+} SGIColourStore;
+
 /* The arithmetic attributes are interpolated in. */
 typedef enum SGIArith {
     SGI_ARITH_FIXED16,
@@ -138,6 +144,7 @@ typedef struct SGIRasterRules {
      */
     uint8_t stencil_bits;
     uint8_t rounding;           /* SGIRounding, for snapping and depth */
+    uint8_t colour_store;       /* SGIColourStore, for stored colour */
     uint8_t tie_rule;           /* SGITieRule */
     uint8_t arith;              /* SGIArith */
     uint8_t line_rule;          /* SGILineRule */

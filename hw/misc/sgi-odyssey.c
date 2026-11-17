@@ -6046,7 +6046,9 @@ static bool odyssey_image_burst_fmt(uint32_t reg, uint32_t *fmt)
  * work). Odyssey's own subpixel grid and interpolated-colour depth are
  * unmeasured; an Odyssey rule set of its own waits on a hardware capture.
  * The depth word is the board's unsigned float (odyssey_gl_rules); the
- * far-plane cut point is a model choice.
+ * far-plane cut point is a model choice. The vertex snap (floor) is inferred
+ * and the colour store (floor(256 c)) a software expectation; see the manual
+ * page.
  *
  * Lines follow SGI_LINE_CENTRE_SAMPLED, the rule SGI's C simulator of the
  * board draws by: the field diagnostics' stored line frames, which SGI
@@ -6064,7 +6066,8 @@ static const SGIRasterRules odyssey_gl_rules = {
     .color_bits = 8,
     .depth_bits = 24,
     .stencil_bits = 8,
-    .rounding = SGI_ROUND_HALF_AWAY,
+    .rounding = SGI_ROUND_FLOOR,
+    .colour_store = SGI_COLOUR_STORE_FLOOR,
     .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
     .arith = SGI_ARITH_DOUBLE,
     .line_rule = SGI_LINE_CENTRE_SAMPLED,
@@ -11772,7 +11775,7 @@ static void odyssey_query_finish(SGIOdysseyState *s, uint32_t sequence)
     }
 }
 
-/* Match the shared rasterizer's eight-bit channel conversion. */
+/* The board's colour store, as odyssey_gl_rules gives the rasterizer. */
 static uint32_t odyssey_float_channel(uint32_t bits)
 {
     double c = odyssey_f32(bits);
@@ -11783,7 +11786,7 @@ static uint32_t odyssey_float_channel(uint32_t bits)
     if (c >= 1.0) {
         return 255;
     }
-    return (uint32_t)(c * 255 + 0.5);
+    return (uint32_t)(c * 256);
 }
 
 /*

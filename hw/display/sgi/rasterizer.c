@@ -339,6 +339,7 @@ bool sgi_raster_rules_supported(const SGIRasterRules *r)
            r->stencil_bits <= 16 && r->alpha_bits <= 10 &&
            r->alpha_test_bits <= 16 &&
            r->rounding <= SGI_ROUND_HALF_AWAY &&
+           r->colour_store <= SGI_COLOUR_STORE_FLOOR &&
            r->tie_rule == SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN &&
            r->arith == SGI_ARITH_DOUBLE &&
            (r->line_rule == SGI_LINE_COVERAGE_DOUBLE ||
@@ -519,7 +520,8 @@ static double sgi_soft_row_depth(const SGIRasterRules *rules, double z,
 /*
  * A component clamped to [0, 1] and scaled to the rules' colour bits, a
  * fraction of a step rounded half up, whatever the rules' rounding: the
- * sum is truncated (OpenGL 1.2.1, 2.13.9).
+ * sum is truncated (OpenGL 1.2.1, 2.13.9). SGI_COLOUR_STORE_FLOOR scales by
+ * 2^bits and truncates instead.
  */
 static inline uint32_t sgi_soft_channel(const SGIRasterRules *r, double c)
 {
@@ -530,6 +532,9 @@ static inline uint32_t sgi_soft_channel(const SGIRasterRules *r, double c)
     }
     if (c >= 1.0) {
         return max;
+    }
+    if (r->colour_store == SGI_COLOUR_STORE_FLOOR) {
+        return (uint32_t)(c * (max + 1.0));
     }
     return (uint32_t)(c * max + 0.5);
 }

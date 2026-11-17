@@ -7810,13 +7810,39 @@ static void test_command_fifo_gl_flat_shading(void)
 
     push_user_words(qts, smooth_tri, ARRAY_SIZE(smooth_tri));
     g_assert_cmphex(odsy_test_pixel(qts, 288, 340), ==, 0x545952ffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 265, 376), ==, 0xee0e02ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 265, 376), ==, 0xef0e02ffu);
 
     /* The flat triangle's words with bit 12 clear blend instead. */
     push_user_words(qts, smooth_tri, 2);
     push_user_words(qts, flat_tri + 2, ARRAY_SIZE(flat_tri) - 2);
     g_assert_cmphex(odsy_test_pixel(qts, 352, 360), !=, 0xffffffffu);
 
+    board_quit(qts);
+}
+
+/*
+ * The left edge sits 0.75/256 pixel past the centre of column 40, so only
+ * a floor snap covers it; (0.3, 0.1, 0.9) stores as 0x4c19e6 under
+ * floor(256 c), where round(255 c) gives 0x4d1ae5.
+ */
+static void test_command_fifo_gl_raster_rules(void)
+{
+    static const uint32_t tri[] = {
+        ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT,
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        ODSY_GL_COLOR_3F, 0x3e99999a, 0x3dcccccd, 0x3f666666,
+        ODSY_GL_VERTEX_2F, 0xbebbfa00, 0x3f2efbe7,
+        ODSY_GL_VERTEX_2F, 0xbebbfa00, 0xbf110419,
+        ODSY_GL_VERTEX_2F, 0x3f000000, 0,
+        ODSY_CMD_GL_END,
+    };
+    QTestState *qts = board_start("");
+
+    probe_window(qts);
+    push_user_words(qts, tri, ARRAY_SIZE(tri));
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 39, 256 + 50), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 40, 256 + 50), ==, 0x4c19e6ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 256 + 41, 256 + 50), ==, 0x4c19e6ff);
     board_quit(qts);
 }
 
@@ -7988,12 +8014,12 @@ static void test_command_fifo_gl_fog_curve(void)
     push_fog(qts, 0x7c0000, 0, 0x1000ab, 0x055000);
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT | ODSY_MODE_FOG);
     push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
-    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0xbf0040ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0xc0003fff);
 
     /* Reversing the cubic makes the same pixel mostly fog blue. */
     push_fog(qts, 0x7c0000, 0, 0x000055, 0x0ab100);
     push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
-    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0x4000bfff);
+    g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, 0x3f00c0ff);
 
     set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
     push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
@@ -8015,7 +8041,7 @@ static void test_command_fifo_gl_fog_native_packets(void)
         uint8_t red[3];
     } cases[] = {
         { 0x808000, 0,    0x1000aa, 0x055000, { 255, 191,   0 } },
-        { 0x808000, 0,    0x000055, 0x0aa100, {   0,  64, 255 } },
+        { 0x808000, 0,    0x000055, 0x0aa100, {   0,  63, 255 } },
         { 0x7c99e8, 0x20, 0x100fe1, 0x021005, { 163,  98,  20 } },
         { 0x80ea5b, 0x45, 0x1000e8, 0xff3008, { 197,  99,   8 } },
     };
@@ -8065,7 +8091,7 @@ static void test_command_fifo_gl_fog_migration(void)
     sgi_wait_migration(to, "completed");
     probe_window(to);
     push_triangle_3f(to, ODSY_F_ONE, 0, 0, odsy_near_yellow);
-    g_assert_cmphex(odsy_test_pixel(to, 326, 340), ==, 0xbf0040ff);
+    g_assert_cmphex(odsy_test_pixel(to, 326, 340), ==, 0xc0003fff);
     board_quit(to);
     board_quit(from);
     g_assert_cmpint(unlink(path), ==, 0);
@@ -9619,8 +9645,8 @@ static void test_command_fifo_gl_program_record_lit(void)
     push_program(qts, 0, 0x5cb, 0x5d8, 0x5e5);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
     g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe37139ffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x090402ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe37138ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x080402ffu);
 
     push_user_words(qts, reload, ARRAY_SIZE(reload));
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
@@ -9664,7 +9690,7 @@ static void test_command_fifo_gl_program_records_lit(void)
         push_user_words(qts, odsy_lit_triangle,
                         ARRAY_SIZE(odsy_lit_triangle));
         g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
-        g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x090402ffu);
+        g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x080402ffu);
     }
 
     log = lit_finish(qts, log_path);
@@ -9953,15 +9979,15 @@ static void test_command_fifo_gl_program_list_lit(void)
     push_constants(qts, odsy_light2_list, ARRAY_SIZE(odsy_light2_list));
     push_program(qts, 1, 0x290, 0x4c5, 0x4c5);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd4663bffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06237ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd5663affu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06236ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
 
     push_user_words(qts, light1_off, ARRAY_SIZE(light1_off));
     push_constants(qts, one_light, ARRAY_SIZE(one_light));
     push_program(qts, 0, 0x5cb, 0x5d8, 0x5e5);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd4663bffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd5663affu);
     g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
 
     log = lit_finish(qts, log_path);
@@ -9989,15 +10015,15 @@ static void test_command_fifo_gl_program_older_numbering(void)
     push_program(qts, 0, 0x568, 0x575, 0x582);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
     g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xfe7f3fffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe37139ffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x090402ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe37138ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x080402ffu);
 
     push_user_words(qts, odsy_light2_data, ARRAY_SIZE(odsy_light2_data));
     push_constants(qts, light2_list, ARRAY_SIZE(light2_list));
     push_program(qts, 1, 0x290, 0x462, 0x462);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd4663bffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06237ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd5663affu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06236ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
 
     log = lit_finish(qts, log_path);
@@ -10057,9 +10083,9 @@ static void test_command_fifo_gl_program_list_lit_local_viewer(void)
     push_constants(qts, list, ARRAY_SIZE(list));
     push_program(qts, 1, 0x281, 0x4c5, 0x4c5);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xc55429ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xc65428ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xc45428ffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652916ffu);
 
     log = lit_finish(qts, log_path);
     g_assert_null(strstr(log, "geometry program"));
@@ -10091,13 +10117,13 @@ static void test_command_fifo_gl_program_list_lit_positional(void)
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
     g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xea7140ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xe56d3cffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x74321affu);
+    g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x74311affu);
 
     push_user_words(qts, odsy_light2_light1_narrow,
                      ARRAY_SIZE(odsy_light2_light1_narrow));
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd4663bffu);
-    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06237ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xd5663affu);
+    g_assert_cmphex(odsy_test_pixel(qts, 300, 360), ==, 0xd06236ffu);
     g_assert_cmphex(odsy_test_pixel(qts, 312, 276), ==, 0x652a16ffu);
 
     log = lit_finish(qts, log_path);
@@ -13317,7 +13343,7 @@ static const char *const odsy_mesa_fallback_reasons[] = {
     "resource", "store-width", "blend", "blend-overlap", "texture",
     "provider", "raster-op", "mixed-frame", "host-viewport",
     "host-point-size", "host-program", "host-probe", "host-staging",
-    "snapshot", "precision",
+    "host-driver", "index-clipped", "snapshot", "precision",
 };
 
 static uint64_t odsy_mesa_fallbacks(QTestState *qts, const char *reason)
@@ -13340,9 +13366,9 @@ static uint64_t odsy_mesa_fallback_total(QTestState *qts)
 /*
  * The probe window's plane pixels after an RGBA triangle, and after a
  * colour-index triangle over it. With x-mesa-renderer=on, @mesa says the
- * renderer exists; the RGBA triangle is then drawn on Mesa and the
- * colour-index one, which Mesa refuses, on the scalar path, counted once
- * by its reason.
+ * renderer exists; it refuses both draws, the RGBA one because the board's
+ * snap and colour store differ from Mesa's ("rules", or "host-driver" first
+ * off the reference llvmpipe build), so each is drawn on the scalar path.
  */
 static void mesa_fallback_scene(QTestState *qts, bool mesa,
                                 uint32_t *rgba, uint32_t *index)
@@ -13351,8 +13377,8 @@ static void mesa_fallback_scene(QTestState *qts, bool mesa,
     push_captured_triangle(qts);
     odsy_test_pixels(qts, 256, 256, 128, 128, rgba);
     if (mesa) {
-        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 1);
-        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 0);
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 0);
+        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 1);
     }
     user_cmd_push(qts, ODSY_GL_MODE_INDEX_A);
     user_cmd_push(qts, ODSY_CMD_GL_COLOR_INDEX);
@@ -13360,9 +13386,9 @@ static void mesa_fallback_scene(QTestState *qts, bool mesa,
     push_bare_triangle(qts);
     odsy_test_pixels(qts, 256, 256, 128, 128, index);
     if (mesa) {
-        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 1);
+        g_assert_cmpuint(odsy_qom_get_uint(qts, "x-mesa-draws"), ==, 0);
         g_assert_cmpuint(odsy_mesa_fallbacks(qts, "colour-index"), ==, 1);
-        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 1);
+        g_assert_cmpuint(odsy_mesa_fallback_total(qts), ==, 2);
     }
 }
 
@@ -14715,8 +14741,8 @@ static void test_command_fifo_gl_float_colour_integer_vertices(void)
     user_cmd_push(qts, 0x3f000000);
     user_cmd_push(qts, 0x3f400000);
     push_integer_quad(qts, 30, 10, 40, 30);
-    g_assert_cmphex(odsy_test_pixel(qts, 330, 212), ==, 0x4080bfff);
-    g_assert_cmphex(odsy_test_pixel(qts, 339, 227), ==, 0x4080bfff);
+    g_assert_cmphex(odsy_test_pixel(qts, 330, 212), ==, 0x4080c0ff);
+    g_assert_cmphex(odsy_test_pixel(qts, 339, 227), ==, 0x4080c0ff);
     g_assert_cmphex(odsy_test_pixel(qts, 335, 211), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 335, 228), ==, 0);
     g_assert_cmphex(odsy_test_pixel(qts, 30, 10), ==, 0);
@@ -14741,7 +14767,7 @@ static void test_command_fifo_gl_float_colour_integer_vertices(void)
     cmd_push(qts, ODSY_DEST_ID_PLANES);
     cmd_push(qts, 0);
     push_integer_quad(qts, 30, 10, 40, 30);
-    g_assert_cmphex(odsy_test_pixel(qts, 330, 212), ==, 0x4080bfff);
+    g_assert_cmphex(odsy_test_pixel(qts, 330, 212), ==, 0x4080c0ff);
     colour_index_fill(qts, 5, 30, 10, 40, 30);
     g_assert_cmphex(odsy_shown(qts, 330, 212), ==, 0x804020ff);
     g_assert_cmphex(odsy_shown(qts, 339, 227), ==, 0x804020ff);
@@ -14999,7 +15025,7 @@ static void test_command_fifo_gl_float_colour_integer_conversion(void)
         { ODSY_GL_COLOR_3F, { 0xbf800000, 0x40000000, 0x3f000000 },
           0x00ff80ff },
         { ODSY_GL_COLOR_3F, { 0x3e800000, 0x3f000000, 0x3f400000 },
-          0x4080bfff },
+          0x4080c0ff },
         { ODSY_GL_COLOR_3F, { 0x80000000, 0x00000001, 0x3f800000 },
           0x0000ffff },
         { ODSY_GL_COLOR_3I, { ODSY_I32_ONE, 0x3fffffff, 0 }, 0xff8000ff },
@@ -15284,7 +15310,7 @@ static void test_command_fifo_gl_program_window_local_viewer(void)
     push_constants(qts, list, ARRAY_SIZE(list));
     push_program(qts, 0, 0x738, 0x75b, 0x77d);
     push_user_words(qts, odsy_lit_triangle, ARRAY_SIZE(odsy_lit_triangle));
-    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xc55429ffu);
+    g_assert_cmphex(odsy_test_pixel(qts, 272, 367), ==, 0xc65428ffu);
 
     log = lit_finish(qts, log_path);
     g_assert_null(strstr(log, "geometry program"));
@@ -17871,19 +17897,20 @@ static void texture_public_border_sample_3d(bool linear)
      * The stored grid values are (0,1,1) and (1,1,1), so red is
      * halfway between 16 and 17 while G/B stay 1. Permit that one
      * red byte to round either way. The s=0.125 control gives weights
-     * 0.25/0.75 and a non-tie result. The positive-edge cases mirror
-     * those weights with stored grid values (2,2,2) and (3,2,2).
+     * 0.25/0.75; floor(256 c) takes 16.75 to 0x10 and G or B of 0.75 to 0.
+     * The positive-edge cases mirror those weights with stored grid values
+     * (2,2,2) and (3,2,2).
      */
     static const struct {
         float s, t, r;
         uint32_t expected, alternate;
     } linear_border[] = {
         { 0.0f, 0.25f, 0.25f, 0x100101ff, 0x110101ff },
-        { 0.125f, 0.25f, 0.25f, 0x110101ff, 0 },
+        { 0.125f, 0.25f, 0.25f, 0x100101ff, 0 },
         { 1.0f, 0.75f, 0.75f, 0x120202ff, 0x130202ff },
         { 0.875f, 0.75f, 0.75f, 0x120202ff, 0 },
-        { 0.125f, 0.125f, 0.25f, 0x110101ff, 0 },
-        { 0.125f, 0.125f, 0.125f, 0x110101ff, 0 },
+        { 0.125f, 0.125f, 0.25f, 0x100001ff, 0 },
+        { 0.125f, 0.125f, 0.125f, 0x100000ff, 0 },
     };
     QTestState *qts = board_start("");
     const unsigned (*points)[3] = linear ? interior : nearest;
@@ -19839,7 +19866,7 @@ static void test_texture_adapter_components_environment(void)
     } cases[] = {
         { 0x13000000, 1, 0x80402080 },
         { 0x13000000, 2, 0x80400080 },
-        { 0x13000000, 3, 0xbf9f10ff },
+        { 0x13000000, 3, 0xc09f10ff },
         { 0x12800000, 1, 0x804020ff },
         { 0x12800000, 3, 0x804020ff },
         { 0x11000000, 1, 0x808080ff },
@@ -20611,7 +20638,7 @@ static void test_texture_adapter_level_zero_3d(void)
         texture_adapter_bind_3d(qts, 0x190000, 32, 4, 2, 2, 2);
         texture_adapter_point_3d_rgba(qts, 14, 10, 0.25f, 0.25f, 0.875f,
                                       colour);
-        g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, 0x8040bf80);
+        g_assert_cmphex(odsy_test_pixel(qts, 14, 10), ==, 0x8040c080);
 
         for (uint32_t environment = 3; environment <= 4; environment++) {
             uint32_t x = 12 + environment;
@@ -25936,6 +25963,8 @@ int main(int argc, char **argv)
              test_command_fifo_gl_combined_carries_modelview);
     add_case("sn1/odyssey/scanout-main-id-0-uses-its-own-mode",
              test_scanout_main_id_0_uses_its_own_mode);
+    add_case("sn1/odyssey/command-fifo-gl-raster-rules",
+             test_command_fifo_gl_raster_rules);
     add_case("sn1/odyssey/command-fifo-gl-flat-shading",
              test_command_fifo_gl_flat_shading);
     add_case("sn1/odyssey/command-fifo-gl-vertex-3i",
