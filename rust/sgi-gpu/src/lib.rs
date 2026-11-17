@@ -9,5 +9,7 @@ mod device;
 mod plane;
 
 mod frame;
+#[cfg(all(test, target_os = "linux"))]
+mod frame_viewer_test;
 mod scanout;
 mod vpro;
