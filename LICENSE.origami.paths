@@ -378,6 +378,8 @@ include/hw/audio/sgi-rad1-audio-pcm.h
 include/hw/audio/sgi-rad1-audio.h
 include/hw/char/sgi-ioc-serial-dma.h
 include/hw/char/sgi-ioc3-parallel.h
+include/hw/display/sgi-gpu-vpro.h
+include/hw/display/sgi-gpu.h
 include/hw/display/sgi/board-memory.h
 include/hw/display/sgi/command-fetch.h
 include/hw/display/sgi/gl-context.h
