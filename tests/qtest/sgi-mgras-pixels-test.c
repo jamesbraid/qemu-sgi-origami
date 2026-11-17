@@ -158,6 +158,129 @@ static void test_display_resolve_equivalence(void)
     }
 }
 
+#define REG_DAC_LUT_DATA MGRAS_REG(0x071890)
+
+/* Load a gamma ramp: red, green, blue per row, each in the high byte. */
+static void mgras_test_load_gamma(const uint8_t ramp[3][256])
+{
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0);
+    for (unsigned int row = 0; row < 256; row++) {
+        for (unsigned int c = 0; c < 3; c++) {
+            qtest_writew(qts, REG_DAC_LUT_DATA, (uint16_t)ramp[c][row] << 8);
+        }
+    }
+}
+
+/* A gamma ramp and pixel mask applied to a direct-colour pixel. */
+static void test_display_gamma_lut(void)
+{
+    static const uint8_t masks[] = { 0xff, 0xfe, 0xf0, 0x0f, 0x00 };
+    GRand *rng = g_rand_new_with_seed(0x2189);
+    uint8_t ramp[3][256];
+    uint32_t plain, r, g, b;
+
+    mgras_reset();
+    mgras_tag_wid(qts, 0, 0, 1279, 1023, 0);
+    mgras_enter_gl_window(qts, 0, 0, 1280, 1024, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 1280, 1024);
+    gl_clear_color(qts, 0.8f, 0.4f, 0.2f, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_FLUSH);
+    /* The reset ramp is the identity, so this is the stored colour. */
+    plain = mgras_test_display_pixel(qts, 10, 10);
+    g_assert_cmphex(plain, !=, 0);
+    r = plain >> 16 & 0xff;
+    g = plain >> 8 & 0xff;
+    b = plain & 0xff;
+
+    for (int c = 0; c < 3; c++) {
+        for (int i = 0; i < 256; i++) {
+            ramp[c][i] = g_rand_int(rng);
+        }
+    }
+    mgras_test_load_gamma(ramp);
+    for (unsigned int m = 0; m < ARRAY_SIZE(masks); m++) {
+        qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0400);
+        qtest_writeb(qts, REG_DAC_LUT_DATA_2, masks[m]);
+        g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==,
+                        (ramp[0][r & masks[m]] << 16) |
+                        (ramp[1][g & masks[m]] << 8) |
+                        ramp[2][b & masks[m]]);
+    }
+    /* A single changed entry must show: the lookup is not keyed on loads. */
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0400);
+    qtest_writeb(qts, REG_DAC_LUT_DATA_2, 0xff);
+    ramp[1][g] ^= 0x55;
+    mgras_test_load_gamma(ramp);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 10, 10), ==,
+                    (ramp[0][r] << 16) | (ramp[1][g] << 8) | ramp[2][b]);
+    g_rand_free(rng);
+}
+
+/* An overlay pixel and a CI8 pixel, each through a non-identity ramp. */
+static void test_display_overlay_gamma_lut(void)
+{
+    GRand *rng = g_rand_new_with_seed(0x2190);
+    uint8_t ramp[3][256];
+    uint32_t main_rgb = 0x40a0e000, overlay_rgb = 0xd02070;
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    /* Display ID 0 shows CI8 through map 30 and an overlay through map 29. */
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, 30 << 5);
+    qtest_writel(qts, REG_XMAP_OVERLAY_MODE, 29 << 3 | 1);
+    mgras_write_cmap_entry(qts, 30, 0x44, main_rgb);
+    mgras_write_cmap_entry(qts, 29, 3, overlay_rgb << 8);
+
+    /* Main planes: CI8 0x44 over (0,0)-(3,1), then overlay index 3 at x 2. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0x00ffffff));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, MGRAS_LOGIC_OP_COPY << 26));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLMODE, MGRAS_FILLMODE_RECT_FILL_VALUE));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x44));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (0u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (3u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKLSBSA, 0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_DRBPOINTERS, 0x000101c0));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_COLORMASKMSBS, 0x70));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_FILLCOLOR_R, 0x03));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (2u << 16) | 0u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (2u << 16) | 1u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, MGRAS_COMMAND(REG_FILLMODE, 0));
+    g_assert_cmphex(mgras_test_overlay(qts, 2, 1), ==, 0x03);
+    g_assert_cmphex(mgras_test_pixel(qts, 0, 0), ==, 0x44);
+
+    for (int c = 0; c < 3; c++) {
+        for (int i = 0; i < 256; i++) {
+            ramp[c][i] = g_rand_int(rng);
+        }
+    }
+    mgras_test_load_gamma(ramp);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 0, 0), ==,
+                    (ramp[0][main_rgb >> 24] << 16) |
+                    (ramp[1][main_rgb >> 16 & 0xff] << 8) |
+                    ramp[2][main_rgb >> 8 & 0xff]);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 2, 1), ==,
+                    (ramp[0][overlay_rgb >> 16] << 16) |
+                    (ramp[1][overlay_rgb >> 8 & 0xff] << 8) |
+                    ramp[2][overlay_rgb & 0xff]);
+    g_rand_free(rng);
+}
+
 /* Microseconds per pass of n writes of DAC register reg, each then read. */
 static double mgras_test_dac_pass(uint16_t reg, int n)
 {
@@ -171,11 +294,12 @@ static double mgras_test_dac_pass(uint16_t reg, int n)
     return (double)(g_get_monotonic_time() - start) / n;
 }
 
-/* Bench, registered only with SGI_MGRAS_RESOLVE_BENCH=N; best of seven. */
+/* Bench, best of seven; SGI_MGRAS_RESOLVE_BENCH=N sets the passes (4). */
 static void test_display_resolve_bench(void)
 {
     double draw = 1e9, idle = 1e9;
-    int n = atoi(getenv("SGI_MGRAS_RESOLVE_BENCH"));
+    const char *env = getenv("SGI_MGRAS_RESOLVE_BENCH");
+    int n = env ? atoi(env) : 4;
 
     mgras_reset();
     mgras_tag_wid(qts, 0, 0, 1279, 1023, 0);
@@ -7336,11 +7460,15 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/display-resolve-equivalence",
         test_display_resolve_equivalence, true);
-    if (getenv("SGI_MGRAS_RESOLVE_BENCH")) {
-        mgras_qtest_add_func(
-            "sn0/origin2000/mgras/display-resolve-bench",
-            test_display_resolve_bench, true);
-    }
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-resolve-bench",
+        test_display_resolve_bench, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-gamma-lut",
+        test_display_gamma_lut, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-overlay-gamma-lut",
+        test_display_overlay_gamma_lut, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-map-slot-registers",
         test_dma_map_slot_registers, true);
