@@ -15,6 +15,7 @@
 
 #include "hw/mips/sgi/xio-board.h"
 #include "hw/1wire/onewire.h"
+#include "hw/display/sgi-gpu-board.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/gl-context.h"
 #include "hw/display/sgi/head-work.h"
@@ -1334,6 +1335,10 @@ struct SGIKonaState {
     bool raster_bands;
     /* Host-only qtest band threshold (x-test-raster-band-pixels). */
     uint32_t raster_band_pixels;
+    /* x-gpu: flat fills on the host GPU (hw/misc/sgi-kona-gpu.c). */
+    bool gpu_enabled;
+    uint32_t gpu_min_pixels;
+    SgiBoardGpu *gpu;
     bool renderer_failed;
     bool mesa_failed;
     /* Pending host-only test arm; cleared on reset/load, not migrated. */
@@ -2162,5 +2167,13 @@ void sgi_kona_fb_store_direct(SGIKonaState *s, int x, int y, uint32_t word);
  */
 void sgi_kona_invalidate_plane(SGIKonaState *s, const SGIPlane *p,
                                int y0, int y1);
+/* The same, from a software draw that has let go of the big lock. */
+void sgi_kona_invalidate_store(SGIKonaState *s, const SGIPlane *p, int y);
+
+/* hw/misc/sgi-kona-gpu.c */
+bool sgi_kona_gpu_realize(SGIKonaState *s, Error **errp);
+/* Offer a draw's target the GPU hooks, if this draw may use them. */
+void sgi_kona_gpu_target(SGIKonaState *s, SGIRasterTarget *t);
+void sgi_kona_gpu_instance_init(Object *obj);
 
 #endif

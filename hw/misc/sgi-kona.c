@@ -774,8 +774,7 @@ void sgi_kona_invalidate_plane(SGIKonaState *s, const SGIPlane *p,
  * stored so far one refresh late; the lines are marked before the
  * command completes, so what the display shows afterwards is the same.
  */
-static void sgi_kona_invalidate_store(SGIKonaState *s, const SGIPlane *p,
-                                      int y)
+void sgi_kona_invalidate_store(SGIKonaState *s, const SGIPlane *p, int y)
 {
     static __thread const SGIKonaState *memo_state;
     static __thread uint64_t memo_op;
@@ -1082,6 +1081,9 @@ static void sgi_kona_managed_layout(SGIKonaState *s)
     }
     /* Every size reaching here passed sgi_kona_managed_fits(). */
     assert(fits);
+    if (s->gpu) {
+        sgi_board_gpu_resize(s->gpu, s->fb_width, s->fb_height);
+    }
     /* Made again, at the new size, on the next accumulation operation. */
     sgi_board_memory_cleanup(&s->accum_mem);
     sgi_kona_mesa_resize_board_views(s->mesa_provider);
@@ -6998,6 +7000,9 @@ scalar:
     sgi_kona_gl_target_bands(s, &t);
     sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
+    if (unlocked) {
+        sgi_kona_gpu_target(s, &t);
+    }
     ret = sgi_soft_draw(&rules, &t, d);
     sgi_kona_work_relock(s, unlocked);
     sgi_kona_invalidate_flush(s);
@@ -7067,6 +7072,9 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
     sgi_kona_gl_target_bands(s, &t);
     sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
+    if (unlocked) {
+        sgi_kona_gpu_target(s, &t);
+    }
     sgi_soft_raster(&rules, &t, op);
     sgi_kona_work_relock(s, unlocked);
     sgi_kona_invalidate_flush(s);
@@ -21006,6 +21014,9 @@ static bool sgi_kona_finish_realize(SGIXioBoardState *board, Error **errp)
     s->cfg_width = SGI_KONA_FB_WIDTH;
     s->cfg_height = SGI_KONA_FB_HEIGHT;
     sgi_kona_board_memory_init(s);
+    if (s->gpu_enabled && !sgi_kona_gpu_realize(s, errp)) {
+        return false;
+    }
     planes = (SGIKonaMesaPlanes) {
         .front = s->plane_front,
         .back = s->plane_back,
@@ -21232,6 +21243,8 @@ static char *sgi_kona_test_plane_digest(SGIKonaState *s, unsigned plane)
     unsigned id = plane < s->mem.nplanes ? plane : plane - s->mem.nplanes;
     const SGIPlane *p = DEVICE(s)->realized ?
                         sgi_board_memory_plane(memory, id) : NULL;
+
+    sgi_board_gpu_sync_all(s->gpu);
 
     if (!p || !memory->bytes || p->base > memory->bytes_len ||
         p->len > memory->bytes_len - p->base) {
@@ -21651,6 +21664,7 @@ static void sgi_kona_instance_init(Object *obj)
     object_property_add(obj, "x-test-texture-curve-valid", "bool", NULL,
                         sgi_kona_test_get_texture_curve_valid,
                         NULL, NULL, NULL);
+    sgi_kona_gpu_instance_init(obj);
     object_property_add(obj, "x-test-pixel", "uint32", NULL,
                         sgi_kona_test_get_pixel, NULL, NULL, NULL);
     object_property_add(obj, "x-test-pixel-row", "str", NULL,
@@ -21739,6 +21753,9 @@ static void sgi_kona_instance_finalize(Object *obj)
     sgi_kona_texture_upload_clear(s);
     sgi_kona_renderer_stop(s);
     sgi_kona_mesa_provider_free(s->mesa_provider);
+    s->mem.gpu = NULL;
+    sgi_board_gpu_free(s->gpu);
+    s->gpu = NULL;
     if (s->scanout.con) {
         sgi_scanout_cleanup(&s->scanout);
     }
@@ -22030,6 +22047,10 @@ static const Property sgi_kona_properties[] = {
     /* Host-only qtest: draws of at least this many pixels run in bands. */
     DEFINE_PROP_UINT32("x-test-raster-band-pixels", SGIKonaState,
                        raster_band_pixels, 0),
+    /* Flat fills and colour clears draw on the host GPU. */
+    DEFINE_PROP_BOOL("x-gpu", SGIKonaState, gpu_enabled, false),
+    DEFINE_PROP_UINT32("x-gpu-min-pixels", SGIKonaState, gpu_min_pixels,
+                       4096),
     DEFINE_PROP_LINK("fabric", SGIKonaState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     /* The node whose processor interfaces count the board's credits. */
@@ -22089,6 +22110,8 @@ static int sgi_kona_pre_save(void *opaque)
     sgi_kona_work_drain(s, UINT64_MAX);
     sgi_head_work_leave();
     sgi_kona_renderer_stop(s);
+    /* The planes saved are the CPU's, so every row the GPU drew comes down. */
+    sgi_board_gpu_sync_all(s->gpu);
     return 0;
 }
 
@@ -22501,6 +22524,8 @@ static int sgi_kona_post_load(void *opaque, int version_id)
     SGIKonaState *s = opaque;
     int result = sgi_kona_post_load_validate(opaque, version_id);
 
+    /* The planes loaded are the CPU's; drop the GPU's copies. */
+    sgi_board_gpu_reset(s->gpu);
     if (!result) {
         result = sgi_kona_channels_match_modes(s);
     }
