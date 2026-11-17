@@ -950,6 +950,10 @@ struct SGIMgrasState {
     uint32_t gl_render_create_fault; /* Host-only qtest creation result. */
     /* Host-only: GL draws may run in bands of rows (x-raster-bands). */
     bool raster_bands;
+    /* Host-only: plain DrawPixels rows skip the queue (x-pixel-rows). */
+    bool pixel_rows;
+    /* Host-only qtest count of rows drawn that way (x-pixel-rows-drawn). */
+    uint64_t pixel_rows_drawn;
     /* Host-only qtest band threshold (x-test-raster-band-pixels). */
     uint32_t raster_band_pixels;
     /* The current checked command ended on Mesa, accepted or failed. */

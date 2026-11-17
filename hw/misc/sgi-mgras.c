@@ -2682,6 +2682,8 @@ static const Property mgras_properties[] = {
      * are the same either way.
      */
     DEFINE_PROP_BOOL("x-raster-bands", SGIMgrasState, raster_bands, true),
+    /* Off queues every DrawPixels fragment; the pixels are the same. */
+    DEFINE_PROP_BOOL("x-pixel-rows", SGIMgrasState, pixel_rows, true),
     /*
      * Host-only qtest: draws and clears of at least this many pixels run
      * in bands, in place of the rasterizer's threshold; 0 keeps it.
@@ -3019,6 +3021,8 @@ static void mgras_instance_init(Object *obj)
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint64_ptr(obj, "x-test-retraces", &s->retraces,
                                    OBJ_PROP_FLAG_READ);
+    object_property_add_uint64_ptr(obj, "x-pixel-rows-drawn",
+                                   &s->pixel_rows_drawn, OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error", &s->error,
                                    OBJ_PROP_FLAG_READ);
     object_property_add_uint32_ptr(obj, "x-test-error-addr",

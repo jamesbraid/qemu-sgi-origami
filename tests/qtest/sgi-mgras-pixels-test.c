@@ -3981,6 +3981,76 @@ static void test_gl_pixels_states(gconstpointer data)
     g_assert_cmphex(mgras_qom_get_uint(qts, "x-test-error"), ==, 0);
 }
 
+/* A DMA image of w by h pixels at (x0, y0): GL_RGBA, GL_ABGR_EXT or GL_RGB. */
+static void pixrows_image(QTestState *qts, unsigned form, uint32_t w,
+                          uint32_t h, uint32_t x0, uint32_t y0)
+{
+    uint32_t bpp = form == 2 ? 3 : 4;
+    g_autofree uint8_t *image = g_malloc(bpp * w * h);
+
+    for (uint32_t i = 0; i < bpp * w * h; i++) {
+        image[i] = i * 37 + (i >> 3) * 11 + form;
+    }
+    gl_pixels_program(qts, form == 2 ? GL_PIX_3UB : GL_PIX_4UB, bpp * w, x0,
+                      y0, x0 + w - 1, y0 + h - 1, 1);
+    if (form == 1) {
+        gl_one(qts, GL_HQ_PIXEL_FORMAT, GL_HQ_PIXEL_ABGR);
+    }
+    gl_pixels_draw_as(qts, DIV_ROUND_UP(bpp * w, 4), GL_PIXELS_BY_DMA);
+    gl_pixels_dma(qts, image, bpp * w * h, bpp * w, h, bpp * w, 0xa7);
+    if (form == 1) {
+        gl_one(qts, GL_HQ_PIXEL_FORMAT, GL_HQ_PIXEL_REST);
+    }
+}
+
+static void pixrows_scene(QTestState *qts, int state)
+{
+    gl_pixels_context(qts, 0);
+    pixrun_state(qts, state);
+    /* Rows inside the window, and ones starting and ending outside it. */
+    pixrows_image(qts, 0, 30, 4, 10, 10);
+    pixrows_image(qts, 1, 25, 3, 50, 20);
+    pixrows_image(qts, 2, 17, 5, 20, 40);
+    pixrows_image(qts, 0, 200, 3, (uint32_t)-40, 70);
+    pixrows_image(qts, 2, 150, 2, 30, 100);
+    pixrun_image(qts, 3, 40, 3, 60, 60, false);
+    pixrun_image(qts, 4, 31, 2, 5, 90, true);
+}
+
+/* The whole-row path on and off leaves the same window under each state. */
+static void test_gl_pixels_rows_match_the_queue(gconstpointer data)
+{
+    int state = GPOINTER_TO_INT(data);
+    QTestState *on = qtest_init(MACHINE_ARGS);
+    QTestState *off = qtest_init("-M origin2000 -device sgi-mgras,slot=io3,"
+                                 "x-pixel-rows=off");
+    unsigned drawn = 0;
+
+    pixrows_scene(on, state);
+    pixrows_scene(off, state);
+    for (int y = 0; y < 128; y++) {
+        g_autofree uint32_t *a = gl_window_row(on, 0, y, 128);
+        g_autofree uint32_t *b = gl_window_row(off, 0, y, 128);
+
+        for (int x = 0; x < 128; x++) {
+            g_assert_cmphex(a[x], ==, b[x]);
+            drawn += a[x] != 0;
+        }
+    }
+    if (state == PIXRUN_COPY) {
+        g_assert_cmpuint(drawn, >, 1000);
+    }
+    /* The states that draw a plain store take the path; the others decline. */
+    if (state == PIXRUN_COPY || state == PIXRUN_SCISSOR) {
+        g_assert_cmpuint(mgras_qom_get_uint(on, "x-pixel-rows-drawn"), >, 0);
+    }
+    g_assert_cmpuint(mgras_qom_get_uint(off, "x-pixel-rows-drawn"), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(on, "x-test-error"), ==, 0);
+    g_assert_cmphex(mgras_qom_get_uint(off, "x-test-error"), ==, 0);
+    qtest_quit(on);
+    qtest_quit(off);
+}
+
 /*
  * A row wider than the window and than any batch the model keeps: the
  * pixels past the window's edge are clipped one at a time and those
@@ -7664,6 +7734,15 @@ int main(int argc, char **argv)
                 mgras_qtest_add_data_func(path, GINT_TO_POINTER(i << 1 | dma),
                                           test_gl_pixels_states, true);
             }
+        }
+        for (int i = 0; i < PIXRUN_STATES; i++) {
+            g_autofree char *path = g_strdup_printf(
+                "sn0/origin2000/mgras/gl-pixels-rows-match-queue-%s",
+                names[i]);
+
+            mgras_qtest_add_data_func(path, GINT_TO_POINTER(i),
+                                      test_gl_pixels_rows_match_the_queue,
+                                      false);
         }
         for (int i = PIXRUN_MASK_RED; i <= PIXRUN_XOR; i++) {
             g_autofree char *path = g_strdup_printf(

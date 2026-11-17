@@ -5376,12 +5376,54 @@ static bool mgras_gl_pixels_float_component(SGIMgrasState *s,
     return true;
 }
 
+/* A whole unzoomed, untextured row of a plain draw, in one rasterizer call. */
+static bool mgras_gl_pixels_row_plain(SGIMgrasState *s, SGIMgrasGLPixels *px,
+                                      const uint8_t *bytes, uint32_t n)
+{
+    static const int8_t channel[][4] = {
+        [MGRAS_GL_PIXELS_ABGR8] = { 3, 2, 1, 0 },
+        [MGRAS_GL_PIXELS_RGBA8] = { 0, 1, 2, 3 },
+        [MGRAS_GL_PIXELS_RGB8] = { 0, 1, 2, -1 },
+    };
+    SGIGLContext *c = mgras_gl(s);
+    SGIGLTexImage image;
+    SGIRasterTarget t;
+    SGIRasterRow row;
+
+    if (!s->pixel_rows || px->format > MGRAS_GL_PIXELS_RGB8 || px->zoom_x ||
+        px->row_step || px->col || px->ncarry || n != px->w * px->bpp ||
+        px->bpp != (px->format == MGRAS_GL_PIXELS_RGB8 ? 3 : 4) ||
+        sgi_mgras_texture_pixel_image(s, &image)) {
+        return false;
+    }
+    if (!s->gl_selection[s->gl_current].active) {
+        t = mgras_gl_raster_target(s);
+        row = (SGIRasterRow) {
+            .state = &c->cur, .x = px->x, .y = mgras_gl_pixels_y(px),
+            .z = c->raster_pos[2], .n = px->w, .bpp = px->bpp,
+            .bytes = bytes,
+        };
+        memcpy(row.channel, channel[px->format], sizeof(row.channel));
+        row.ntargets = sgi_gl_draw_targets(&c->cur, row.targets);
+        if (!sgi_soft_pixel_row(&mgras_gl_raster_rules, &t, &row)) {
+            return false;
+        }
+        s->dirty = true;
+        s->pixel_rows_drawn++;
+    }
+    px->col = px->w;
+    return true;
+}
+
 static void mgras_gl_pixels_bytes(SGIMgrasState *s, const uint8_t *bytes,
                                   uint32_t n)
 {
     SGIMgrasGLPixels *px = mgras_gl_pixels(s);
     MgrasGLPixelRun run;
 
+    if (mgras_gl_pixels_row_plain(s, px, bytes, n)) {
+        return;
+    }
     run.n = 0;
     run.texture_taken = false;
     for (uint32_t i = 0; i < n && px->col < px->w; i++) {
