@@ -359,7 +359,8 @@ pub unsafe extern "C" fn sgi_mace_ps2_free(core: *mut c_void) {
 }
 
 /// # Safety
-/// `core` must be live and exclusively accessed; `value` must be writable.
+/// `core` must be live and exclusively accessed.
+/// `value` must be writable and not overlap `core`.
 #[no_mangle]
 pub unsafe extern "C" fn sgi_mace_ps2_read(
     core: *mut c_void,
@@ -394,7 +395,8 @@ pub unsafe extern "C" fn sgi_mace_ps2_write(
 }
 
 /// # Safety
-/// `core` must be live and exclusively accessed; `data` must be writable.
+/// `core` must be live and exclusively accessed.
+/// `data` must be writable and not overlap `core`.
 #[no_mangle]
 pub unsafe extern "C" fn sgi_mace_ps2_next_action(
     core: *mut c_void,
@@ -446,7 +448,8 @@ pub extern "C" fn sgi_mace_ps2_stream_dropped(count: u32) {
 }
 
 /// # Safety
-/// `core` must be live and exclusively accessed; output pointers must be writable.
+/// `core` must be live and exclusively accessed.
+/// `irq` and `poll` must be distinct writable pointers outside `core`.
 #[no_mangle]
 pub unsafe extern "C" fn sgi_mace_ps2_outputs(
     core: *mut c_void,
@@ -476,7 +479,8 @@ pub unsafe extern "C" fn sgi_mace_ps2_reset(core: *mut c_void) {
 }
 
 /// # Safety
-/// `core` must be live and exclusively accessed; `out` points to two writable entries.
+/// `core` must be live and exclusively accessed.
+/// `out` must point to two writable entries and not overlap `core`.
 #[no_mangle]
 pub unsafe extern "C" fn sgi_mace_ps2_export(core: *mut c_void, out: *mut MigrationPort) {
     if core.is_null() || out.is_null() {
@@ -488,7 +492,8 @@ pub unsafe extern "C" fn sgi_mace_ps2_export(core: *mut c_void, out: *mut Migrat
 }
 
 /// # Safety
-/// `core` must be live and exclusively accessed; `input` points to two readable entries.
+/// `core` must be live and exclusively accessed.
+/// `input` must point to two readable entries and not overlap `core`.
 #[no_mangle]
 pub unsafe extern "C" fn sgi_mace_ps2_import(
     core: *mut c_void,
