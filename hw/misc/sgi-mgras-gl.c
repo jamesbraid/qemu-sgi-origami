@@ -3979,6 +3979,7 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
     SGIRasterTarget t = mgras_gl_raster_target(s);
     SGIGLTexImage image;
     SGIGLDrawResult result;
+    int64_t begin;
 
     if (s->gl_selection[s->gl_current].active) {
         return mgras_gl_selection_draw(s, d);
@@ -3997,6 +3998,7 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
      * meanwhile an access that would touch either waits for the slice,
      * and command-FIFO words queue (sgi-mgras-raster.c).
      */
+    begin = sgi_mgras_draw_begin(s);
     if (sgi_head_work_may_unlock(&s->work)) {
         sgi_head_work_unlock(&s->work);
         result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
@@ -4004,6 +4006,7 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
     } else {
         result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
     }
+    sgi_mgras_draw_end(s, begin);
     s->dirty = true;
     return result;
 }
@@ -4178,11 +4181,14 @@ static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
 {
     SGIMgrasState *s = opaque;
     SGIRasterTarget t = mgras_gl_raster_target(s);
+    int64_t begin;
 
     if (s->gl_selection[s->gl_current].active) {
         return;
     }
+    begin = sgi_mgras_draw_begin(s);
     sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
+    sgi_mgras_draw_end(s, begin);
     s->dirty = true;
 }
 

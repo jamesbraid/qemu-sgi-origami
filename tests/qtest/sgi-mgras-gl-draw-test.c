@@ -1571,6 +1571,105 @@ static void test_gl_flat_triangle_matches_the_reference(void)
                    0xffff00, 0x0000ff);
 }
 
+/*
+ * After a draw that outruns a slice, a processor's command words queue for
+ * the board's thread, and a read that depends on them waits for them. qtest
+ * has no processor, so x-test-defer-draws queues every word.
+ */
+static void gl_defer_draws(bool on)
+{
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-defer-draws', 'value': %i}}", MGRAS_QOM_PATH,
+        on);
+}
+
+static bool gl_work_pending(void)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-work-pending'}}", MGRAS_QOM_PATH);
+    bool pending = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return pending;
+}
+
+static void test_gl_queued_draw_matches_the_inline_one(void)
+{
+    static const float v[3][2] = {
+        { -0.75f, -0.75f }, { 0.75f, -0.625f }, { -0.125f, 0.734375f },
+    };
+    g_autofree uint32_t *inline_rgb = NULL;
+    g_autofree uint32_t *queued_rgb = NULL;
+    unsigned int steps = 0;
+
+    mgras_reset();
+    gl_draw_probe_triangle(qts, v);
+    inline_rgb = mgras_screendump(qts);
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_defer_draws(true);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_SHADE_MODEL_HDR);
+    gl_word(qts, GL_FLAT);
+    gl_color3f(qts, 1, 1, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    for (int i = 0; i < 3; i++) {
+        gl_vertex2f(qts, v[i][0], v[i][1]);
+    }
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_word(qts, GL_FLUSH);
+    g_assert_true(gl_work_pending());
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-test-held-words"), >, 0);
+    while (gl_work_pending()) {
+        g_assert_cmpuint(++steps, <, 1000);
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    gl_defer_draws(false);
+    queued_rgb = mgras_screendump(qts);
+    g_assert_cmpint(memcmp(inline_rgb, queued_rgb,
+                           1280 * 1024 * sizeof(*queued_rgb)), ==, 0);
+}
+
+/* A read the queued draws decide finishes them first. */
+static void test_gl_queued_draw_read_waits(void)
+{
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_defer_draws(true);
+    gl_viewport(qts, 0, 0, 128, 128);
+    gl_clear_color(qts, 0, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    g_assert_true(gl_work_pending());
+    g_assert_cmphex(gl_window_pixel(qts, 5, 5), ==, 0);
+    qtest_readl(qts, REG_QUERY_ANSWER);
+    g_assert_false(gl_work_pending());
+    gl_defer_draws(false);
+    g_assert_cmphex(gl_window_pixel(qts, 5, 5), ==, 0x0000ff);
+}
+
+/* A processor stays at most 4096 words ahead of the thread. */
+static void test_gl_queued_words_are_bounded(void)
+{
+    uint64_t held;
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, 256, 640, 128, 128, 0x11);
+    gl_defer_draws(true);
+    held = mgras_qom_get_uint(qts, "x-test-held-words");
+    for (unsigned i = 0; i < 1100; i++) {
+        gl_color3f(qts, 0, 0, 0);
+    }
+    held = mgras_qom_get_uint(qts, "x-test-held-words") - held;
+    g_assert_cmpuint(held, ==, 4400 - 1);
+    gl_defer_draws(false);
+}
+
 /* Moving the third vertex to (88, 103) changes exactly the census. */
 static void test_gl_flat_triangle_moved_vertex(void)
 {
@@ -5008,6 +5107,15 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-flat-triangle-matches-the-reference",
         test_gl_flat_triangle_matches_the_reference, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-queued-draw-matches-the-inline-one",
+        test_gl_queued_draw_matches_the_inline_one, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-queued-draw-read-waits",
+        test_gl_queued_draw_read_waits, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-queued-words-are-bounded",
+        test_gl_queued_words_are_bounded, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-flat-triangle-moved-vertex",
         test_gl_flat_triangle_moved_vertex, true);

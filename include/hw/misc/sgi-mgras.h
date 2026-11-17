@@ -752,6 +752,13 @@ struct SGIMgrasState {
     SGIMgrasCmdParser list_parser;  /* the list's parser between slices */
     GArray *work_queue;         /* FIFO words waiting behind the list */
     bool work_replaying;        /* a queued word is being executed */
+    /* Host-only: the last draw outran a slice (mgras_work_held()). */
+    bool work_hold;
+    bool test_defer;            /* host-only: every processor word queues */
+    uint64_t work_held_words;   /* words queued because of work_hold */
+    uint64_t draw_ticks;        /* 0 until calibrated */
+    int64_t draw_ns0;
+    int64_t draw_tick0;
     unsigned int work_insert;   /* where a word split by a new list goes */
     /* What flag writes and acknowledges still queued will do. */
     uint32_t work_flag_sets;

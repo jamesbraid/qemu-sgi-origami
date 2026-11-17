@@ -505,6 +505,14 @@ bool sgi_mgras_work_queue_flags(SGIMgrasState *s, SGIMgrasFlagsOp op,
     return true;
 }
 
+#define MGRAS_WORK_QUEUE_MAX    4096
+
+/* After a draw longer than a slice a processor's words queue for the thread. */
+static bool mgras_work_held(SGIMgrasState *s)
+{
+    return s->test_defer || (current_cpu && s->work_hold);
+}
+
 /*
  * Whether a word arriving now has to wait, and if so keep it. A word
  * waits while a list runs outside its own slice, and behind any word
@@ -526,13 +534,21 @@ static bool mgras_work_defer(SGIMgrasState *s, MgrasQueuedKind kind,
         return true;
     }
     if (s->list_running ||
-        (!s->list_busy && (s->work_replaying || !s->work_queue->len))) {
+        (!s->list_busy && (s->work_replaying ||
+                           (!s->work_queue->len && !mgras_work_held(s))))) {
+        return false;
+    }
+    if (!s->list_busy && !s->work_replaying &&
+        s->work_queue->len >= MGRAS_WORK_QUEUE_MAX) {
+        /* Not further ahead of the thread than it can run. */
+        sgi_mgras_work_drain(s, 0);
         return false;
     }
     if (s->work_replaying) {
         g_array_insert_val(s->work_queue, s->work_insert++, w);
     } else {
         g_array_append_val(s->work_queue, w);
+        s->work_held_words += mgras_work_held(s);
     }
     mgras_work_schedule(s);
     return true;
@@ -4102,6 +4118,8 @@ static void mgras_work_step(SGIMgrasState *s, SGIHeadWorkBudget *b)
             mgras_raster_list_finish(s, 0);
         }
         if (!s->work_queue->len) {
+            /* Caught up: the next word runs where it arrives. */
+            s->work_hold = false;
             return;
         }
         mgras_work_replay_one(s);
@@ -4111,9 +4129,33 @@ static void mgras_work_step(SGIMgrasState *s, SGIHeadWorkBudget *b)
     }
 }
 
+/* Ticks, not the clock, which can be a system call; calibrated on first use. */
+int64_t sgi_mgras_draw_begin(SGIMgrasState *s)
+{
+    return cpu_get_host_ticks();
+}
+
+void sgi_mgras_draw_end(SGIMgrasState *s, int64_t begin)
+{
+    int64_t now = cpu_get_host_ticks();
+
+    if (!s->draw_ticks) {
+        int64_t ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - s->draw_ns0;
+
+        if (ns >= 10 * SCALE_MS && now > s->draw_tick0) {
+            s->draw_ticks = MAX(1, (double)(now - s->draw_tick0) *
+                                SGI_HEAD_WORK_SLICE_NS / ns);
+        }
+        return;
+    }
+    s->work_hold = now - begin > s->draw_ticks;
+}
+
+/* A queued word is off the queue while its draw runs, so count the draw. */
 bool sgi_mgras_work_pending(SGIMgrasState *s)
 {
-    return s->list_busy || (s->work_queue && s->work_queue->len);
+    return s->list_busy || s->work.drawing ||
+           (s->work_queue && s->work_queue->len);
 }
 
 static void mgras_work_schedule(SGIMgrasState *s)
@@ -4163,6 +4205,7 @@ static void mgras_work_abandon(SGIMgrasState *s)
         mgras_raster_list_finish(s, SGI_FAIL_BUSY);
     }
     g_array_set_size(s->work_queue, 0);
+    s->work_hold = false;
     mgras_work_flags_update(s);
     sgi_head_work_idle(&s->work);
 }
@@ -4177,6 +4220,8 @@ void sgi_mgras_work_reset(SGIMgrasState *s)
 void sgi_mgras_work_init(SGIMgrasState *s)
 {
     s->work_queue = g_array_new(false, false, sizeof(MgrasQueuedWord));
+    s->draw_ns0 = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    s->draw_tick0 = cpu_get_host_ticks();
     sgi_head_work_init(&s->work, "sgi-mgras-work", &mgras_work_ops, s);
 }
 

@@ -29,6 +29,9 @@ bool sgi_mgras_work_pending(SGIMgrasState *s);
 /* Finish it all now, for an access at addr that must see the result. */
 void sgi_mgras_work_drain(SGIMgrasState *s, hwaddr addr);
 void sgi_mgras_work_reset(SGIMgrasState *s);
+/* Bracket a draw: one that outruns a slice makes later words queue. */
+int64_t sgi_mgras_draw_begin(SGIMgrasState *s);
+void sgi_mgras_draw_end(SGIMgrasState *s, int64_t begin);
 /* The HQ flag set and clear ports and the pending-source acknowledge. */
 typedef enum SGIMgrasFlagsOp {
     MGRAS_FLAGS_SET,            /* 0x020010 */

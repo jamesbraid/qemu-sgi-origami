@@ -1117,8 +1117,11 @@ draws nothing.
 A list runs inside the store for the first millisecond of host time and
 then in slices on the board's own thread, paced by the virtual clock.
 Words written meanwhile to ``0x020400``, ``0x120400`` and ``0x130400``
-wait behind it in order. Status, flag, enable, ``PP1SELECT``, XMAP and
-scheduler accesses act at once; flag writes and acknowledges also queue a
+wait behind it in order. A draw or clear that itself runs longer than a
+millisecond of host time has the same effect on the words after it, until
+the thread has caught up or 4096 words wait, when the store runs them.
+Status, flag, enable, ``PP1SELECT``, XMAP and scheduler accesses act at
+once; flag writes and acknowledges also queue a
 copy so their final state follows the processor's order. Every other
 access waits until the work has finished. That a board runs a list after
 the store that started it is *inferred* from the drivers' waits; the
@@ -1509,7 +1512,10 @@ Model limits
   status reads busy for at most 500 ms of work. The low-water source is
   raised as soon as it is enabled.
 - Flags, interrupts and DMA complete inside the store that causes them;
-  only display lists run later.
+  only display lists and the words queued behind long draws run later.
+  Graphics credits return as each word is queued, so a processor is not
+  slowed by queued draws until 4096 words wait: the model's FIFO depth for
+  a draw stream.
 - The E-series boards render exactly as the first-generation ones.
 - Both raster engines share one set of planes, and MXI and EMXI share one
   TRAM image. TRAM layout is the model's own.

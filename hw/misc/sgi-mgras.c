@@ -2714,6 +2714,16 @@ static const Property mgras_properties[] = {
                        SGI_SYNTHETIC_ONEWIRE_SERIAL('G', 0)),
 };
 
+static bool mgras_test_get_defer(Object *obj, Error **errp)
+{
+    return SGI_MGRAS(obj)->test_defer;
+}
+
+static void mgras_test_set_defer(Object *obj, bool value, Error **errp)
+{
+    SGI_MGRAS(obj)->test_defer = value;
+}
+
 static bool mgras_test_get_work_pending(Object *obj, Error **errp)
 {
     return sgi_mgras_work_pending(SGI_MGRAS(obj));
@@ -2994,6 +3004,11 @@ static void mgras_instance_init(Object *obj)
     object_property_add_uint32_ptr(obj, "x-test-slice-words",
                                    &s->work.test_words,
                                    OBJ_PROP_FLAG_READWRITE);
+    /* Host-only: every command word queues, as after a long draw. */
+    object_property_add_bool(obj, "x-test-defer-draws", mgras_test_get_defer,
+                             mgras_test_set_defer);
+    object_property_add_uint64_ptr(obj, "x-test-held-words",
+                                   &s->work_held_words, OBJ_PROP_FLAG_READ);
     object_property_add_bool(obj, "x-test-work-pending",
                              mgras_test_get_work_pending, NULL);
     object_property_add(obj, "x-test-pixel-row", "str", NULL,
