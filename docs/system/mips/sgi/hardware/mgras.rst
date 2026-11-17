@@ -1381,8 +1381,13 @@ for this format. The shipped file (``1280x1024_60_2f.sdb``, SHA-256 prefix
 ``86b511ee8c39``) records a nominal pixel clock of 107.248776 MHz, which gives
 29.929 Hz, *software expectation*. The programmed PLL gives 107.25 MHz and
 29.9293 Hz, *inferred*. The model's period is that rate, not NTSC's 30000/1001
-Hz. Whether the VC3 signals one retrace per pass of the table or one per field
-is *unknown*.
+Hz. The model retraces once per pass of the table. Whether the VC3 signals one
+retrace per pass or one per field is *unknown* for tables with two fields or
+two pictures (this one, and stereo formats): the only datum is Discreet Smoke
+5.0 on IRIX 6.5.13f, which loads this table, counts retraces as video frames and
+plays at the right rate with one per pass, *software expectation*. It says
+nothing about a stereo format's retrace rate. For one-field tables one per
+frame is *inferred*.
 
 Deriving the period only at the enable write, restarting the phase only
 when the period changes, and running the stock period before any table is
