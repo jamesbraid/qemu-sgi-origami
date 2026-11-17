@@ -4580,7 +4580,8 @@ static bool sgi_soft_gpu_triangle(const SGISoftDraw *r,
     const double *rgba;
     double alpha;
 
-    if (!simple || st->depth_test || offset != 0 || !t->store_rgba ||
+    if (!simple || st->depth_test || offset != 0 ||
+        !(t->store_rgba || t->store_colour) ||
         !r->ntargets || r->dither || r->rgba_read || !r->rgba_mask) {
         return false;
     }
@@ -4601,20 +4602,22 @@ static bool sgi_soft_gpu_triangle(const SGISoftDraw *r,
         }
     }
     if (smooth) {
-        const double steps = 1 << rules->color_bits;
+        const bool floor_store = rules->colour_store == SGI_COLOUR_STORE_FLOOR;
+        const double steps = (1 << rules->color_bits) - !floor_store;
 
         for (int k = 0; k < 4; k++) {
             if (v[1].rgba[k] != v[0].rgba[k] ||
-                v[2].rgba[k] != v[0].rgba[k] ||
-                !sgi_soft_gpu_stable(v[0].rgba[k], k == 3 ?
-                                     (double)sgi_soft_alpha_max(rules) :
-                                     steps, k == 3 ? 0.5 : 0)) {
+                v[2].rgba[k] != v[0].rgba[k]) {
+                return false;
+            }
+            if (k == 3 ? rules->alpha_bits &&
+                !sgi_soft_gpu_stable(v[0].rgba[k],
+                                     sgi_soft_alpha_max(rules), 0.5) :
+                !sgi_soft_gpu_stable(v[0].rgba[k], steps,
+                                     floor_store ? 0 : 0.5)) {
                 return false;
             }
         }
-    }
-    if (!r->gpu->draw) {
-        return true;
     }
     rgba = smooth ? v[0].rgba : flat->rgba;
     alpha = sgi_soft_alpha(rules, rgba[3]) /
@@ -4625,6 +4628,7 @@ static bool sgi_soft_gpu_triangle(const SGISoftDraw *r,
         .clip = r->win.clip->n > 1 ? r->win.clip : NULL,
         .colour = sgi_soft_rgba_value(rules, sgi_soft_rgb(rules, rgba),
                                       alpha),
+        .rgb = sgi_soft_rgb(rules, rgba),
         .ntargets = r->ntargets,
     };
     for (int i = 0; i < 3; i++) {
@@ -4640,7 +4644,7 @@ static bool sgi_soft_gpu_triangle(const SGISoftDraw *r,
         tri.y1 = MIN((int64_t)tri.y1,
                      (int64_t)st->scissor[1] + st->scissor[3] - 1);
     }
-    return t->gpu_triangle(t->opaque, &tri, true);
+    return t->gpu_triangle(t->opaque, &tri, r->gpu->draw);
 }
 
 /*
@@ -7590,8 +7594,9 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         /* Clears remain undithered: no dither state is submitted. */
         clear = sgi_soft_rgba_value(rules, rgb, op->clear_rgba[3]);
     }
-    if (colour && rgba && t->gpu_clear &&
-        t->gpu_clear(t->opaque, op, &clear, rgba_mask)) {
+    if (colour && t->gpu_clear && !op->index_bits &&
+        (rgba || mask == sgi_soft_colour_bits(rules)) &&
+        t->gpu_clear(t->opaque, op, &clear, rgba ? rgba_mask : 0xf)) {
         /* The colour is done; depth and stencil still go row by row. */
         colour = rgba_read = false;
         if (!depth && !stencil) {

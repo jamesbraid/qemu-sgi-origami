@@ -566,6 +566,8 @@ typedef struct SGIRasterGpuTriangle {
     int32_t x0, y0, x1, y1;
     const SGIClipList *clip;
     SGIRasterColour colour;
+    /* What a target with store_colour and no store_rgba stores. */
+    uint32_t rgb;
     SGIColourTarget targets[SGI_GL_MAX_TARGETS];
     uint32_t ntargets;
 } SGIRasterGpuTriangle;
@@ -677,8 +679,10 @@ typedef struct SGIRasterTarget {
      * the host GPU says so here. A draw is offered to gpu_triangle first
      * with draw false, to learn whether every triangle of it can go; only if
      * all can is it offered again with draw true, and the scalar path never
-     * sees it. gpu_clear takes a clear's colour part, true when it did.
-     * Per draw, never migrated.
+     * sees it. gpu_clear takes a clear's colour part, true when it did; a
+     * target with no store_rgba is offered only a clear of every colour
+     * channel, whose rgb is the colour's components and whose rgba_mask is
+     * then all four bits. Per draw, never migrated.
      */
     bool (*gpu_triangle)(void *opaque, const struct SGIRasterGpuTriangle *tri,
                          bool draw);
