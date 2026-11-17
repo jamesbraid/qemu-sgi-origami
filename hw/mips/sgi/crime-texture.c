@@ -27,6 +27,12 @@ struct CrimeTexture {
     void *opaque;
 };
 
+typedef enum CrimeTextureSetup64Result {
+    CRIME_TEXTURE_SETUP64_ERROR,
+    CRIME_TEXTURE_SETUP64_FALLBACK,
+    CRIME_TEXTURE_SETUP64_READY,
+} CrimeTextureSetup64Result;
+
 static bool crime_texture_read(CrimeTexture *t, unsigned entry, unsigned offset,
                                 uint32_t *value)
 {
@@ -400,6 +406,158 @@ static bool crime_texture_wrap(CrimeRational *value, unsigned size,
     return true;
 }
 
+static CrimeRational crime_texture_ratio128(Int128 numerator,
+                                             Int128 denominator)
+{
+    Int128 divisor = crime_gcd128(numerator, denominator);
+
+    return (CrimeRational) {
+        .numerator = crime_integer_from128(int128_divu(numerator, divisor)),
+        .denominator = crime_integer_from128(int128_divu(denominator, divisor)),
+    };
+}
+
+static int crime_texture_compare64(const CrimeRational *a, uint64_t numerator,
+                                    uint64_t denominator, bool negative)
+{
+    uint64_t an = crime_integer_low64(&a->numerator);
+    uint64_t ad = crime_integer_low64(&a->denominator);
+    Int128 left, right;
+    int result;
+
+    if (a->negative != negative) {
+        return a->negative ? -1 : 1;
+    }
+    left = crime_product64(an, denominator);
+    right = crime_product64(numerator, ad);
+    result = int128_eq(left, right) ? 0 : int128_ult(left, right) ? -1 : 1;
+    return a->negative ? -result : result;
+}
+
+static CrimeTextureSetup64Result crime_texture_setup_axis64(
+    const CrimeRational *coordinate, unsigned size, unsigned wrap, bool linear,
+    int64_t *index, CrimeRational weights[2])
+{
+    uint64_t numerator, denominator;
+    bool negative;
+    Int128 scaled, divisor, mapped, quotient, remainder, fraction;
+    CrimeRational result[2];
+
+    if (!crime_rational_is64(coordinate) || !size || size > 1024 || wrap > 3) {
+        return CRIME_TEXTURE_SETUP64_FALLBACK;
+    }
+    numerator = crime_integer_low64(&coordinate->numerator);
+    denominator = crime_integer_low64(&coordinate->denominator);
+    negative = coordinate->negative;
+    if (wrap == 1) {
+        int64_t whole;
+        if (!crime_rational_floor(coordinate, &whole)) {
+            return CRIME_TEXTURE_SETUP64_ERROR;
+        }
+        numerator %= denominator;
+        if (negative && numerator) {
+            numerator = denominator - numerator;
+        }
+        if (!numerator) {
+            denominator = 1;
+        } else {
+            uint64_t gcd = crime_gcd64(numerator, denominator);
+            numerator /= gcd;
+            denominator /= gcd;
+        }
+        negative = false;
+    } else {
+        uint64_t lo_numerator = 0, lo_denominator = 1;
+        uint64_t hi_numerator = 1, hi_denominator = 1;
+        bool lo_negative = false, hi_negative = false;
+
+        if (wrap == 2) {
+            lo_numerator = 1;
+            lo_denominator = 2 * size;
+            hi_numerator = lo_denominator - 1;
+            hi_denominator = lo_denominator;
+        } else if (wrap == 3) {
+            lo_numerator = 1;
+            lo_denominator = 2 * size;
+            lo_negative = true;
+            hi_numerator = lo_denominator + 1;
+            hi_denominator = lo_denominator;
+        }
+        if (crime_texture_compare64(coordinate, lo_numerator, lo_denominator,
+                                    lo_negative) < 0) {
+            numerator = lo_numerator;
+            denominator = lo_denominator;
+            negative = lo_negative;
+        } else if (crime_texture_compare64(coordinate, hi_numerator,
+                                            hi_denominator, hi_negative) > 0) {
+            numerator = hi_numerator;
+            denominator = hi_denominator;
+            negative = hi_negative;
+        }
+    }
+
+    /* size <= 1024 keeps the scaled signed numerator below 75 bits. */
+    scaled = crime_product64(numerator, size);
+    divisor = int128_make128(denominator, 0);
+    negative = negative && numerator;
+    if (linear) {
+        Int128 twice = int128_lshift(scaled, 1);
+        Int128 half_divisor = int128_lshift(divisor, 1);
+
+        if (negative) {
+            mapped = int128_add(twice, divisor);
+        } else if (int128_ult(twice, divisor)) {
+            mapped = int128_sub(divisor, twice);
+            negative = true;
+        } else {
+            mapped = int128_sub(twice, divisor);
+        }
+        divisor = half_divisor;
+    } else {
+        mapped = scaled;
+    }
+    quotient = int128_divu(mapped, divisor);
+    remainder = int128_remu(mapped, divisor);
+    if (negative) {
+        Int128 limit = int128_make128(UINT64_C(1) << 63, 0);
+        if (int128_ult(limit, quotient) ||
+            (int128_eq(limit, quotient) && int128_nz(remainder))) {
+            return CRIME_TEXTURE_SETUP64_ERROR;
+        }
+        if (int128_nz(remainder)) {
+            quotient = int128_add(quotient, int128_makes64(1));
+        }
+        uint64_t value = int128_getlo(quotient);
+        *index = value == (UINT64_C(1) << 63) ? INT64_MIN : -(int64_t)value;
+    } else {
+        Int128 limit = int128_makes64(INT64_MAX);
+        if (int128_ult(limit, quotient)) {
+            return CRIME_TEXTURE_SETUP64_ERROR;
+        }
+        *index = int128_getlo(quotient);
+    }
+
+    fraction = negative && int128_nz(remainder) ?
+               int128_sub(divisor, remainder) : remainder;
+    result[1] = crime_texture_ratio128(fraction, divisor);
+    result[0] = (CrimeRational) {
+        .numerator = result[1].denominator,
+        .denominator = result[1].denominator,
+    };
+    crime_integer_subtract(&result[0].numerator, &result[1].denominator,
+                           &result[1].numerator);
+    if (linear && crime_integer_bits(&result[1].denominator) > 64) {
+        return CRIME_TEXTURE_SETUP64_FALLBACK;
+    }
+    if (!linear && wrap != 1 && *index == size &&
+        !crime_integer_bits(&result[1].numerator)) {
+        (*index)--;
+    }
+    weights[0] = result[0];
+    weights[1] = result[1];
+    return CRIME_TEXTURE_SETUP64_READY;
+}
+
 static void crime_texture_border(const CrimeTexture *t, CrimeRational *value)
 {
     for (unsigned c = 0; c < 4; c++) {
@@ -530,31 +688,52 @@ static bool crime_texture_level(CrimeTexture *t,
                                  CrimeRational *result)
 {
     CrimeRational weights[2][2];
-    CrimeRational one = crime_rational(1, 1), half = crime_rational(1, 2);
+    CrimeRational one = crime_rational(1, 1);
     int64_t index[2];
+    bool setup64 = true;
 
     for (unsigned axis = 0; axis < 2; axis++) {
         unsigned log = axis ? t->v : t->u;
         unsigned size = 1U << MAX((int)log - (int)level, 0);
         unsigned wrap = (t->mode >> (axis ? 2 : 4)) & 3;
-        CrimeRational value = coordinate[axis], scale = crime_rational(size, 1);
-        CrimeRational integer;
+        CrimeTextureSetup64Result setup = crime_texture_setup_axis64(
+            &coordinate[axis], size, wrap, linear, &index[axis], weights[axis]);
 
-        if (!crime_texture_wrap(&value, size, wrap) ||
-            !crime_rational_multiply(&value, &value, &scale) ||
-            (linear && !crime_rational_subtract(&value, &value, &half)) ||
-            !crime_rational_floor(&value, &index[axis])) {
+        if (setup == CRIME_TEXTURE_SETUP64_ERROR) {
             return false;
         }
-        integer = crime_rational(index[axis], 1);
-        if (!crime_rational_subtract(&weights[axis][1], &value, &integer) ||
-            !crime_rational_subtract(&weights[axis][0], &one,
-                                     &weights[axis][1])) {
-            return false;
+        if (setup == CRIME_TEXTURE_SETUP64_FALLBACK) {
+            setup64 = false;
+            break;
         }
-        if (!linear && wrap != 1 && index[axis] == size &&
-            !crime_integer_bits(&weights[axis][1].numerator)) {
-            index[axis]--;
+    }
+    if (!setup64) {
+        CrimeRational half = crime_rational(1, 2);
+
+        for (unsigned axis = 0; axis < 2; axis++) {
+            unsigned log = axis ? t->v : t->u;
+            unsigned size = 1U << MAX((int)log - (int)level, 0);
+            unsigned wrap = (t->mode >> (axis ? 2 : 4)) & 3;
+            CrimeRational value = coordinate[axis];
+            CrimeRational scale = crime_rational(size, 1), integer;
+
+            if (!crime_texture_wrap(&value, size, wrap) ||
+                !crime_rational_multiply(&value, &value, &scale) ||
+                (linear && !crime_rational_subtract(&value, &value, &half)) ||
+                !crime_rational_floor(&value, &index[axis])) {
+                return false;
+            }
+            integer = crime_rational(index[axis], 1);
+            if (!crime_rational_subtract(&weights[axis][1], &value,
+                                         &integer) ||
+                !crime_rational_subtract(&weights[axis][0], &one,
+                                         &weights[axis][1])) {
+                return false;
+            }
+            if (!linear && wrap != 1 && index[axis] == size &&
+                !crime_integer_bits(&weights[axis][1].numerator)) {
+                index[axis]--;
+            }
         }
     }
     if (!linear) {
@@ -758,6 +937,22 @@ void crime_texture_free(CrimeTexture *t)
 }
 
 #ifdef CRIME_TEXTURE_TEST
+int crime_texture_test_setup_axis64(
+    const CrimeRational *coordinate, unsigned size, unsigned wrap, bool linear,
+    int64_t *index, CrimeRational *weights)
+{
+    return (int)crime_texture_setup_axis64(coordinate, size, wrap, linear,
+                                           index, weights);
+}
+
+bool crime_texture_test_level(CrimeTexture *t,
+                              const CrimeRational *coordinate,
+                              unsigned level, bool linear,
+                              CrimeRational *result)
+{
+    return crime_texture_level(t, coordinate, level, linear, result);
+}
+
 bool crime_texture_test_environment(CrimeTexture *t, const CrimeRational *texel,
                                     uint32_t *color)
 {

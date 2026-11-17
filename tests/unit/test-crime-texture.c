@@ -10,6 +10,12 @@
 #include "crime-rational-361-reference.h"
 #include "crime-texture-82-reference.h"
 
+enum {
+    CRIME_TEXTURE_SETUP64_ERROR,
+    CRIME_TEXTURE_SETUP64_FALLBACK,
+    CRIME_TEXTURE_SETUP64_READY,
+};
+
 #ifdef CRIME_TEXTURE_ALLOCATION_WRAP
 static int allocation_failure = -1;
 static unsigned allocation_count;
@@ -258,6 +264,131 @@ static void test_point_constant(void)
             g_assert_true(crime_texture_sample(t, x, 3 * x, &color));
             g_assert_cmphex(color, ==, 0x2371b9d5);
         }
+    }
+}
+
+static void assert_rational(const CrimeRational *a, const CrimeRational *b);
+
+static bool texture_axis_setup_reference(CrimeRational value, unsigned size,
+                                         unsigned wrap, bool linear,
+                                         int64_t *index,
+                                         CrimeRational weights[2])
+{
+    CrimeRational zero = crime_rational(0, 1), one = crime_rational(1, 1);
+    CrimeRational half = crime_rational(1, 2);
+    CrimeRational half_texel = crime_rational(1, 2 * size), lo, hi;
+    CrimeRational scale = crime_rational(size, 1), integer;
+    int64_t whole;
+
+    if (wrap == 1) {
+        if (!crime_rational_floor(&value, &whole)) {
+            return false;
+        }
+        lo = crime_rational(whole, 1);
+        if (!crime_rational_subtract(&value, &value, &lo)) {
+            return false;
+        }
+    } else {
+        lo = zero;
+        hi = one;
+        if (wrap == 2) {
+            lo = half_texel;
+            if (!crime_rational_subtract(&hi, &one, &half_texel)) {
+                return false;
+            }
+        } else if (wrap == 3) {
+            lo = half_texel;
+            lo.negative = true;
+            if (!crime_rational_add(&hi, &one, &half_texel)) {
+                return false;
+            }
+        }
+        if (crime_rational_compare(&value, &lo) < 0) {
+            value = lo;
+        } else if (crime_rational_compare(&value, &hi) > 0) {
+            value = hi;
+        }
+    }
+    if (!crime_rational_multiply(&value, &value, &scale) ||
+        (linear && !crime_rational_subtract(&value, &value, &half)) ||
+        !crime_rational_floor(&value, index)) {
+        return false;
+    }
+    integer = crime_rational(*index, 1);
+    if (!crime_rational_subtract(&weights[1], &value, &integer) ||
+        !crime_rational_subtract(&weights[0], &one, &weights[1])) {
+        return false;
+    }
+    if (!linear && wrap != 1 && *index == size &&
+        !crime_integer_bits(&weights[1].numerator)) {
+        (*index)--;
+    }
+    return true;
+}
+
+static void test_texture_axis_setup64(void)
+{
+    const struct {
+        uint64_t numerator, denominator;
+        bool negative;
+    } coordinates[] = {
+        {0, 1, false}, {0, 1, true}, {1, 2, false}, {1, 2, true},
+        {UINT64_MAX, UINT64_MAX - 2, false},
+        {INT64_MAX, UINT64_MAX, false}, {INT64_MAX, 1, false},
+        {UINT64_C(1) << 63, 1, true},
+        {(UINT64_C(1) << 63) + 1, 1, true},
+        {UINT64_MAX, 1, false}, {1, UINT64_MAX, false},
+        {UINT64_C(1) << 63, UINT64_MAX, false},
+    };
+    const unsigned sizes[] = {1, 4, 1024};
+
+    for (unsigned c = 0; c < ARRAY_SIZE(coordinates); c++) {
+        CrimeRational value = {
+            .numerator = crime_integer(coordinates[c].numerator),
+            .denominator = crime_integer(coordinates[c].denominator),
+            .negative = coordinates[c].negative,
+        };
+        for (unsigned s = 0; s < ARRAY_SIZE(sizes); s++) {
+            for (unsigned wrap = 0; wrap < 4; wrap++) {
+                for (unsigned linear = 0; linear < 2; linear++) {
+                    CrimeRational expected_weights[2], actual_weights[2];
+                    int64_t expected_index = 0, actual_index = 0;
+                    bool expected_ok = texture_axis_setup_reference(
+                        value, sizes[s], wrap, linear, &expected_index,
+                        expected_weights);
+                    int result =
+                        crime_texture_test_setup_axis64(&value, sizes[s], wrap,
+                            linear, &actual_index, actual_weights);
+
+                    if (!expected_ok) {
+                        g_assert_cmpint(result, ==,
+                                       CRIME_TEXTURE_SETUP64_ERROR);
+                        continue;
+                    }
+                    if (crime_integer_bits(&expected_weights[1].denominator) >
+                            64 && linear) {
+                        g_assert_cmpint(result, ==,
+                                       CRIME_TEXTURE_SETUP64_FALLBACK);
+                        continue;
+                    }
+                    g_assert_cmpint(result, ==, CRIME_TEXTURE_SETUP64_READY);
+                    g_assert_cmpint(actual_index, ==, expected_index);
+                    assert_rational(&actual_weights[0], &expected_weights[0]);
+                    assert_rational(&actual_weights[1], &expected_weights[1]);
+                }
+            }
+        }
+    }
+    {
+        CrimeRational wide = {
+            .numerator = { .word = {0, 0, 1} },
+            .denominator = crime_integer(1),
+        };
+        CrimeRational weights[2];
+        int64_t index;
+        g_assert_cmpint(crime_texture_test_setup_axis64(
+            &wide, 4, 0, true, &index, weights), ==,
+            CRIME_TEXTURE_SETUP64_FALLBACK);
     }
 }
 
@@ -558,7 +689,9 @@ static void test_rational_performance(void)
 
 typedef struct SamplerRam {
     uint8_t *data;
-    uint64_t reads, trace;
+    uint64_t reads, trace, attempts;
+    unsigned fail_after;
+    bool fail;
 } SamplerRam;
 
 static bool sampler_ram(void *opaque, uint64_t address, unsigned size,
@@ -566,6 +699,9 @@ static bool sampler_ram(void *opaque, uint64_t address, unsigned size,
 {
     SamplerRam *ram = opaque;
     if (address + size > 224 * 65536) {
+        return false;
+    }
+    if (ram->fail && ram->attempts++ == ram->fail_after) {
         return false;
     }
     ram->reads++;
@@ -598,6 +734,40 @@ static void sampler_state(uint64_t p[128], uint64_t tlb[28])
             tlb[i] |= (uint64_t)(0x8000 | (4 * i + j) * 2) << (48 - 16 * j);
         }
     }
+}
+
+static void test_texture_fallback_tap_failure(void)
+{
+    const uint64_t bytes = 224 * 65536;
+    uint64_t p[128], tlb[28];
+    CrimeRational coordinate[2] = {
+        { .numerator = crime_integer(UINT64_C(1) << 63),
+          .denominator = crime_integer(UINT64_MAX) },
+        { .numerator = crime_integer(UINT64_C(1) << 63),
+          .denominator = crime_integer(UINT64_MAX) },
+    };
+    CrimeRational weights[2], result[4];
+    int64_t index;
+    SamplerRam ram = { .fail = true, .fail_after = 1 };
+    g_autofree uint8_t *data = g_malloc0(bytes);
+
+    sampler_state(p, tlb);
+    p[0x110 / 4] &= ~((3U << 4) | (3U << 2));
+    ram.data = data;
+    g_autoptr(CrimeTexture) t = crime_texture_new(
+        p, tlb, 0, 0, false, sampler_ram, &ram);
+    g_assert_nonnull(t);
+    for (unsigned axis = 0; axis < 2; axis++) {
+        g_assert_cmpint(crime_texture_test_setup_axis64(
+            &coordinate[axis], 4, 0, true, &index, weights), ==,
+            CRIME_TEXTURE_SETUP64_FALLBACK);
+    }
+    for (unsigned c = 0; c < 4; c++) {
+        result[c] = crime_rational(7, 11);
+    }
+    g_assert_false(crime_texture_test_level(t, coordinate, 4, true, result));
+    g_assert_cmpuint(ram.attempts, ==, 2);
+    g_assert_cmpuint(ram.reads, ==, 1);
 }
 
 static int64_t sampler_measure(bool previous, unsigned count, bool white,
@@ -925,6 +1095,10 @@ int main(int argc, char **argv)
                     test_sampler_matrix);
     g_test_add_func("/crime/rational/limits", test_rational_limits);
     g_test_add_func("/crime/texture/constant-point", test_point_constant);
+    g_test_add_func("/crime/texture/axis-setup64",
+                    test_texture_axis_setup64);
+    g_test_add_func("/crime/texture/fallback-tap-failure",
+                    test_texture_fallback_tap_failure);
     g_test_add_func("/crime/rational/division-vectors", test_division_vectors);
     g_test_add_func("/crime/rational/python-vectors", test_rational_vectors);
     g_test_add_func("/crime/rational/random-reference", test_math_reference);
