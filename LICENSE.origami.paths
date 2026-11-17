@@ -109,6 +109,7 @@ hw/char/sgi-ioc3-parallel.c
 hw/display/psitech-rad1.c
 hw/display/psitech-rad4-modes-fixture.h
 hw/display/psitech-rad4.c
+hw/display/sgi-gpu-stub.c
 hw/display/sgi/board-memory.c
 hw/display/sgi/command-fetch.c
 hw/display/sgi/gbe.c

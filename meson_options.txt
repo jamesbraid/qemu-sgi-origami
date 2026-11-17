@@ -389,6 +389,8 @@ option('x86_version', type : 'combo', choices : ['0', '1', '2', '3', '4'], value
 
 option('rust', type: 'feature', value: 'disabled',
        description: 'Rust support')
+option('sgi_gpu', type: 'feature', value: 'auto',
+       description: 'SGI graphics GPU back end (Rust, wgpu)')
 option('strict_rust_lints', type: 'boolean', value: false,
        description: 'Enable stricter set of Rust warnings')
 option('containers', type: 'boolean', value: true,

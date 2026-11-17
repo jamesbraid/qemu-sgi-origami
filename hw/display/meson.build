@@ -157,4 +157,12 @@ endif
 
 system_ss.add(when: 'CONFIG_OMAP', if_true: files('omap_lcdc.c'))
 
+# C callers of include/hw/display/sgi-gpu.h link either the Rust library or
+# these stand-ins, which report no GPU.
+if have_sgi_gpu
+  system_ss.add(sgi_gpu_dep)
+else
+  system_ss.add(files('sgi-gpu-stub.c'))
+endif
+
 modules += { 'hw-display': hw_display_modules }

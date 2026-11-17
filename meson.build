@@ -142,6 +142,21 @@ if have_rust
       native: true, language: 'rust')
 endif
 
+# rust/sgi-gpu is a standalone cargo staticlib: wgpu's dependency tree does not
+# fit the wraps of the root workspace. It needs a newer rustc than QEMU does.
+have_sgi_gpu = false
+if have_rust and not get_option('sgi_gpu').disabled()
+  sgi_gpu_cargo = find_program('cargo', required: get_option('sgi_gpu'))
+  if sgi_gpu_cargo.found() and rustc.version().version_compare('<1.90.0')
+    if get_option('sgi_gpu').enabled()
+      error('sgi_gpu needs rustc 1.90 or newer, found ' + rustc.version())
+    endif
+    message('rustc ' + rustc.version() + ' is older than 1.90, not building the SGI GPU back end')
+  else
+    have_sgi_gpu = sgi_gpu_cargo.found()
+  endif
+endif
+
 dtrace = not_found
 stap = not_found
 if 'dtrace' in get_option('trace_backends')
@@ -2290,6 +2305,7 @@ config_host_data = configuration_data()
 
 config_host_data.set('CONFIG_HMP', have_hmp)
 config_host_data.set('CONFIG_HAVE_RUST', have_rust)
+config_host_data.set('CONFIG_HAVE_SGI_GPU', have_sgi_gpu)
 audio_drivers_selected = []
 if have_system
   audio_drivers_available = {
@@ -3309,7 +3325,8 @@ host_kconfig = \
   (multiprocess_allowed ? ['CONFIG_MULTIPROCESS_ALLOWED=y'] : []) + \
   (vfio_user_server_allowed ? ['CONFIG_VFIO_USER_SERVER_ALLOWED=y'] : []) + \
   (hv_balloon ? ['CONFIG_HV_BALLOON_POSSIBLE=y'] : []) + \
-  (have_rust ? ['CONFIG_HAVE_RUST=y'] : [])
+  (have_rust ? ['CONFIG_HAVE_RUST=y'] : []) + \
+  (have_sgi_gpu ? ['CONFIG_HAVE_SGI_GPU=y'] : [])
 
 ignored = [ 'TARGET_XML_FILES', 'TARGET_ABI_DIR' ]
 
@@ -3766,6 +3783,34 @@ system_ss = ss.source_set()
 specific_fuzz_ss = ss.source_set()
 specific_ss = ss.source_set()
 rust_devices_ss = ss.source_set()
+
+sgi_gpu_dep = not_found
+if have_sgi_gpu
+  sgi_gpu_args = []
+  sgi_gpu_link = []
+  if meson.is_cross_build()
+    sgi_gpu_args = [rust.compiler_target(native: false)]
+  endif
+  if host_os == 'darwin'
+    sgi_gpu_link = ['-framework', 'Metal', '-framework', 'QuartzCore',
+                    '-framework', 'CoreGraphics', '-framework', 'Foundation',
+                    '-framework', 'CoreFoundation', '-lobjc', '-lm']
+  elif host_os == 'windows'
+    sgi_gpu_link = ['-lkernel32', '-lntdll', '-luserenv', '-lws2_32', '-ldbghelp']
+  else
+    sgi_gpu_link = ['-ldl', '-lpthread', '-lm']
+  endif
+  sgi_gpu_lib = custom_target('sgi_gpu',
+    output: 'libsgi_gpu.a',
+    command: [find_program('scripts/rust/build_staticlib.sh'),
+              meson.project_source_root() / 'rust/sgi-gpu',
+              meson.current_build_dir() / 'cargo-sgi-gpu',
+              '@OUTPUT@'] + sgi_gpu_args,
+    build_always_stale: true,
+    build_by_default: false)
+  sgi_gpu_dep = declare_dependency(link_with: sgi_gpu_lib,
+                                   link_args: sgi_gpu_link)
+endif
 stub_ss = ss.source_set()
 trace_ss = ss.source_set()
 user_ss = ss.source_set()
