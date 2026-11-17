@@ -220,11 +220,6 @@ struct DummyDev {
     Object parent_obj;
 
     DummyBus *bus;
-    DummyBackend *notified_backend;
-    unsigned link_changes;
-    bool reject_unlink;
-    bool reenter_link;
-    bool remove_link_on_notify;
 };
 
 struct DummyDevClass {
@@ -257,43 +252,6 @@ static void dummy_dev_finalize(Object *obj)
     object_unref(OBJECT(dev->bus));
 }
 
-static unsigned dummy_backend_finalized;
-
-static void dummy_backend_finalize(Object *obj)
-{
-    dummy_backend_finalized++;
-}
-
-static void dummy_dev_check_notified_link(const Object *obj,
-                                          const char *name, Object *value,
-                                          Error **errp)
-{
-    DummyDev *dev = DUMMY_DEV((Object *)obj);
-
-    if (!value && dev->reject_unlink) {
-        error_setg(errp, "unlink refused");
-    }
-}
-
-static void dummy_dev_notified_link_changed(Object *obj, const char *name)
-{
-    DummyDev *dev = DUMMY_DEV(obj);
-
-    g_assert_true(object_property_get_link(obj, name, &error_abort) ==
-                  (Object *)dev->notified_backend);
-    dev->link_changes++;
-    if (dev->reenter_link) {
-        dev->reenter_link = false;
-        g_assert_true(object_property_set_link(obj, name,
-                                               OBJECT(dev->notified_backend),
-                                               &error_abort));
-    }
-    if (dev->remove_link_on_notify) {
-        dev->remove_link_on_notify = false;
-        object_property_del(obj, name);
-    }
-}
-
 static void dummy_dev_init(Object *obj)
 {
     DummyDev *dev = DUMMY_DEV(obj);
@@ -307,10 +265,6 @@ static void dummy_dev_init(Object *obj)
 
     object_property_add_link(obj, "backend", TYPE_DUMMY_BACKEND,
                              (Object **)&bus->backend, NULL, 0);
-    object_property_add_link_with_notify(
-        obj, "notified-backend", TYPE_DUMMY_BACKEND,
-        (Object **)&dev->notified_backend, dummy_dev_check_notified_link,
-        dummy_dev_notified_link_changed, OBJ_PROP_LINK_STRONG);
 }
 
 static void dummy_dev_unparent(Object *obj)
@@ -378,7 +332,6 @@ static const TypeInfo dummy_backend_info = {
     .parent        = TYPE_OBJECT,
     .instance_size = sizeof(DummyBackend),
     .instance_init = dummy_backend_init,
-    .instance_finalize = dummy_backend_finalize,
     .class_size = sizeof(DummyBackendClass),
 };
 
@@ -718,68 +671,6 @@ static void test_dummy_delchild(void)
     object_unparent(OBJECT(dev));
 }
 
-static void test_link_notify(void)
-{
-    Object *root = object_get_objects_root();
-    DummyDev *dev = DUMMY_DEV(object_new(TYPE_DUMMY_DEV));
-    DummyBackend *backend = DUMMY_BACKEND(object_new(TYPE_DUMMY_BACKEND));
-    g_autofree char *path = NULL;
-    Error *err = NULL;
-
-    dummy_backend_finalized = 0;
-    object_property_add_child(root, "notify-backend", OBJECT(backend));
-    path = object_get_canonical_path(OBJECT(backend));
-    object_unref(OBJECT(backend));
-
-    dev->reenter_link = true;
-    g_assert_true(object_property_set_link(OBJECT(dev), "notified-backend",
-                                           OBJECT(backend), &error_abort));
-    g_assert_cmpuint(dev->link_changes, ==, 1);
-
-    g_assert_true(object_property_set_str(OBJECT(dev), "notified-backend",
-                                          path, &error_abort));
-    g_assert_cmpuint(dev->link_changes, ==, 1);
-
-    dev->reject_unlink = true;
-    g_assert_false(object_property_set_link(OBJECT(dev), "notified-backend",
-                                            NULL, &err));
-    g_assert_nonnull(err);
-    error_free(err);
-    err = NULL;
-    g_assert_cmpuint(dev->link_changes, ==, 1);
-    g_assert_true((Object *)dev->notified_backend == OBJECT(backend));
-
-    object_unparent(OBJECT(backend));
-    g_assert_cmpuint(dummy_backend_finalized, ==, 0);
-    dev->reject_unlink = false;
-    g_assert_true(object_property_set_link(OBJECT(dev), "notified-backend",
-                                           NULL, &error_abort));
-    g_assert_cmpuint(dev->link_changes, ==, 2);
-    g_assert_cmpuint(dummy_backend_finalized, ==, 1);
-
-    object_unref(OBJECT(dev));
-}
-
-static void test_link_notify_property_deletion(void)
-{
-    Object *root = object_get_objects_root();
-    DummyDev *dev = DUMMY_DEV(object_new(TYPE_DUMMY_DEV));
-    DummyBackend *backend = DUMMY_BACKEND(object_new(TYPE_DUMMY_BACKEND));
-
-    object_property_add_child(root, "notify-delete-backend",
-                              OBJECT(backend));
-    object_unref(OBJECT(backend));
-    dev->remove_link_on_notify = true;
-
-    g_assert_true(object_property_set_link(OBJECT(dev), "notified-backend",
-                                           OBJECT(backend), &error_abort));
-    g_assert_null(object_property_find(OBJECT(dev), "notified-backend"));
-    g_assert_cmpuint(dev->link_changes, ==, 1);
-
-    object_unparent(OBJECT(backend));
-    object_unref(OBJECT(dev));
-}
-
 static void test_qom_partial_path(void)
 {
     Object *root  = object_get_objects_root();
@@ -895,9 +786,6 @@ int main(int argc, char **argv)
     g_test_add_func("/qom/proplist/delchild", test_dummy_delchild);
     g_test_add_func("/qom/proplist/qapi_enum", test_dummy_qapi_enum);
     g_test_add_func("/qom/proplist/qapi_prop", test_dummy_qapi_prop);
-    g_test_add_func("/qom/proplist/link-notify", test_link_notify);
-    g_test_add_func("/qom/proplist/link-notify-property-deletion",
-                    test_link_notify_property_deletion);
     g_test_add_func("/qom/resolve/partial", test_qom_partial_path);
 
     return g_test_run();

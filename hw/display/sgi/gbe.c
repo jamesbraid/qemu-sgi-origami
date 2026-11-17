@@ -17,6 +17,7 @@
 #include "hw/i2c/bitbang_i2c.h"
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
+#include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "qemu/bswap.h"
 #include "qemu/log.h"
@@ -381,14 +382,20 @@ static void arm(SGIO2GBEState *s)
     timer_mod(s->timer, s->last_ns + MAX((delta + num - 1) / num, 1));
 }
 
-static void timing_output_changed(DeviceState *dev, const char *name, int n)
-{
-    SGIO2GBEState *s = SGI_O2_GBE(dev);
+static ObjectPropertyAccessor *timing_link_set;
 
-    (void)name;
-    (void)n;
-    sync_clock(s, false);
-    arm(s);
+/* Re-arm after a timing link changes; the link property has no notifier. */
+static void timing_link_changed(Object *obj, Visitor *v, const char *name,
+                                void *opaque, Error **errp)
+{
+    ERRP_GUARD();
+    SGIO2GBEState *s = SGI_O2_GBE(obj);
+
+    timing_link_set(obj, v, name, opaque, errp);
+    if (!*errp) {
+        sync_clock(s, false);
+        arm(s);
+    }
 }
 
 static void timer_tick(void *opaque)
@@ -1323,9 +1330,14 @@ static void init(Object *obj)
         sysbus_init_irq(SYS_BUS_DEVICE(obj), &s->events[i]);
     }
     qdev_init_gpio_in(dev, input, 12);
-    qdev_init_gpio_out_named_with_notify(dev, s->timing, "timing",
-                                         TIMING_COUNT,
-                                         timing_output_changed);
+    qdev_init_gpio_out_named(dev, s->timing, "timing", TIMING_COUNT);
+    for (unsigned i = 0; i < TIMING_COUNT; i++) {
+        g_autofree char *link = g_strdup_printf("timing[%u]", i);
+        ObjectProperty *prop = object_property_find(obj, link);
+
+        timing_link_set = prop->set;
+        prop->set = timing_link_changed;
+    }
     qdev_init_gpio_out_named(dev, s->aux_out, "auxiliary", 20);
     s->aux_in = 1023;
     s->sense = true;

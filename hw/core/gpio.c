@@ -22,20 +22,6 @@
 #include "hw/core/irq.h"
 #include "qapi/error.h"
 
-typedef struct GPIOOutNotify {
-    void (*notify)(DeviceState *dev, const char *name, int n);
-    char *name;
-    int n;
-} GPIOOutNotify;
-
-static void qdev_gpio_out_notify_free(gpointer opaque)
-{
-    GPIOOutNotify *notify = opaque;
-
-    g_free(notify->name);
-    g_free(notify);
-}
-
 static NamedGPIOList *qdev_get_named_gpio_list(DeviceState *dev,
                                                const char *name)
 {
@@ -85,30 +71,8 @@ void qdev_init_gpio_in(DeviceState *dev, qemu_irq_handler handler, int n)
     qdev_init_gpio_in_named(dev, handler, NULL, n);
 }
 
-static void qdev_gpio_out_link_changed(Object *obj, const char *propname)
-{
-    DeviceState *dev = DEVICE(obj);
-    GPIOOutNotify *notify = dev->gpio_out_notifiers ?
-        g_hash_table_lookup(dev->gpio_out_notifiers, propname) : NULL;
-
-    if (notify) {
-        void (*callback)(DeviceState *, const char *, int) = notify->notify;
-        g_autofree char *name = g_strdup(notify->name);
-        int n = notify->n;
-
-        callback(dev, name, n);
-    }
-}
-
 void qdev_init_gpio_out_named(DeviceState *dev, qemu_irq *pins,
                               const char *name, int n)
-{
-    qdev_init_gpio_out_named_with_notify(dev, pins, name, n, NULL);
-}
-
-void qdev_init_gpio_out_named_with_notify(
-    DeviceState *dev, qemu_irq *pins, const char *name, int n,
-    void (*notify)(DeviceState *dev, const char *name, int n))
 {
     int i;
     NamedGPIOList *gpio_list = qdev_get_named_gpio_list(dev, name);
@@ -123,29 +87,10 @@ void qdev_init_gpio_out_named_with_notify(
         gchar *propname = g_strdup_printf("%s[%u]", name,
                                           gpio_list->num_out + i);
 
-        if (notify) {
-            GPIOOutNotify *change = g_new0(GPIOOutNotify, 1);
-
-            if (!dev->gpio_out_notifiers) {
-                dev->gpio_out_notifiers = g_hash_table_new_full(
-                    g_str_hash, g_str_equal, g_free,
-                    qdev_gpio_out_notify_free);
-            }
-            change->notify = notify;
-            change->name = g_strdup(gpio_list->name);
-            change->n = gpio_list->num_out + i;
-            g_hash_table_insert(dev->gpio_out_notifiers,
-                                g_strdup(propname), change);
-            object_property_add_link_with_notify(
-                OBJECT(dev), propname, TYPE_IRQ, (Object **)&pins[i],
-                object_property_allow_set_link, qdev_gpio_out_link_changed,
-                OBJ_PROP_LINK_STRONG);
-        } else {
-            object_property_add_link(OBJECT(dev), propname, TYPE_IRQ,
-                                     (Object **)&pins[i],
-                                     object_property_allow_set_link,
-                                     OBJ_PROP_LINK_STRONG);
-        }
+        object_property_add_link(OBJECT(dev), propname, TYPE_IRQ,
+                                 (Object **)&pins[i],
+                                 object_property_allow_set_link,
+                                 OBJ_PROP_LINK_STRONG);
         g_free(propname);
     }
     gpio_list->num_out += n;
