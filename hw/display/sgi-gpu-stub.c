@@ -6,6 +6,7 @@
 #include "qemu/osdep.h"
 #include "hw/display/sgi-gpu.h"
 #include "hw/display/sgi-gpu-vpro.h"
+#include "hw/display/sgi-gpu-scanout.h"
 
 SgiGpu *sgi_gpu_open(void)
 {
@@ -86,4 +87,30 @@ uint64_t sgi_gpu_vpro_tris(SgiGpuPlane *colour, const SgiGpuVproTri *tris,
 uint64_t sgi_gpu_vpro_clear(SgiGpuPlane *plane, const SgiGpuVproClear *clear)
 {
     return 0;
+}
+
+SgiGpuVproScanout *sgi_gpu_vpro_scanout_new(SgiGpu *gpu, uint32_t width,
+                                            uint32_t height)
+{
+    return NULL;
+}
+
+void sgi_gpu_vpro_scanout_free(SgiGpuVproScanout *sc)
+{
+}
+
+void sgi_gpu_vpro_scanout_quiesce(SgiGpuVproScanout *sc)
+{
+}
+
+bool sgi_gpu_vpro_scanout_compose(SgiGpuVproScanout *sc,
+                                  const SgiGpuVproTables *tables,
+                                  uint32_t row_y, uint32_t row_count,
+                                  const uint8_t *did, const uint8_t *overlay,
+                                  SgiGpuPlane *buf0, SgiGpuPlane *buf1,
+                                  SgiGpuFrame *frame,
+                                  void (*done)(void *opaque, bool ok),
+                                  void *opaque)
+{
+    return false;
 }
