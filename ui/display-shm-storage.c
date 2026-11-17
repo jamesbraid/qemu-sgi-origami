@@ -156,6 +156,36 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
     return r;
 }
 
+/* A GPU slot: only the dma-buf's descriptor, which is ours to close. */
+DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
+                                uint32_t id)
+{
+#ifdef CONFIG_LINUX
+    DShmRegion *r;
+
+    if (g->kind != DSHM_GPU_DMABUF || g->handle < 0 || !g->width ||
+        !g->height || g->stride < g->width * 4) {
+        if (g->handle >= 0) {
+            close(g->handle);
+        }
+        return NULL;
+    }
+    r = g_new0(DShmRegion, 1);
+    r->id = d->next_region_id++;
+    r->kind = DSHM_KIND_SLOT;
+    r->access = DSHM_ACCESS_READ;
+    r->size = (size_t)g->stride * g->height;
+    r->h = g->handle;
+    r->refs = 1;
+    r->gpu = true;
+    r->gpu_id = id;
+    r->gpu_slot = *g;
+    return r;
+#else
+    return NULL;
+#endif
+}
+
 void dshm_region_ref(DShmRegion *r)
 {
     r->refs++;
@@ -165,6 +195,14 @@ void dshm_region_unref(DisplayShm *d, DShmRegion *r)
 {
     assert(r->refs);
     if (--r->refs) {
+        return;
+    }
+    if (r->gpu) {
+        /* GPU memory is not host memory: not counted in d->retained */
+#ifndef _WIN32
+        close(r->h);
+#endif
+        g_free(r);
         return;
     }
 #ifdef _WIN32

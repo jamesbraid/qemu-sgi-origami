@@ -77,8 +77,14 @@
 #define DSHM_FEAT_TEST          (1u << 4)
 #define DSHM_FEAT_ALL           0x1fu
 
-/* Storage classes. */
+/* Storage classes; 3 to 5 are reserved (Vulkan fd, NT handle, IOSurface). */
 #define DSHM_STORAGE_SHM        1
+#define DSHM_STORAGE_DMABUF     2
+
+/* linux.dmabuf: slots are dma-bufs the producer's GPU draws; never map them. */
+#define DSHM_EXT_DMABUF         "linux.dmabuf"
+#define DSHM_ALLOC_GPU          2
+#define DSHM_GPU_WRITTEN        (1u << 0)       /* DShmGpuRegion flags */
 
 /* Region kinds. */
 #define DSHM_KIND_STATE         1
@@ -112,6 +118,7 @@
 #define DSHM_DAMAGE_RECTS       1
 #define DSHM_DAMAGE_LINES       2
 #define DSHM_FRAME_CURSOR_EMBEDDED (1u << 0)
+/* Bit 1 is reserved for a sync_file fd on FRAME; nothing sets it yet. */
 
 /* IMPORT_FAILED reasons. */
 #define DSHM_IMPORT_CLASS       1
@@ -294,6 +301,28 @@ typedef struct DShmFrame {              /* 72 bytes, then damage */
     uint32_t reserved;
     uint64_t lease_seq;
 } DShmFrame;
+
+/* linux.dmabuf: the offer payload (flags are reserved) and the accept. */
+typedef struct DShmGpuOffer {           /* 8 bytes */
+    uint32_t flags;
+    uint32_t reserved;
+} DShmGpuOffer;
+
+typedef struct DShmGpuAccept {          /* 8 bytes */
+    uint32_t allocator;                 /* DSHM_ALLOC_GPU */
+    uint32_t flags;
+} DShmGpuAccept;
+
+/* REGION payload of a dma-buf slot; the fd rides the message. */
+typedef struct DShmGpuRegion {          /* 32 bytes */
+    uint32_t fourcc;
+    uint32_t flags;                     /* DSHM_GPU_WRITTEN */
+    uint64_t modifier;
+    uint32_t offset;
+    uint32_t stride;
+    uint32_t width;
+    uint32_t height;
+} DShmGpuRegion;
 
 typedef struct DShmCursorImage {        /* 40 bytes, then pixels */
     DShmHdr hdr;
@@ -528,6 +557,13 @@ DSHM_CHECK(DShmFrame, guest_ns, 48);
 DSHM_CHECK(DShmFrame, lease, 56);
 DSHM_CHECK(DShmFrame, frame_flags, 58);
 DSHM_CHECK(DShmFrame, lease_seq, 64);
+QEMU_BUILD_BUG_ON(sizeof(DShmGpuOffer) != 8);
+QEMU_BUILD_BUG_ON(sizeof(DShmGpuAccept) != 8);
+QEMU_BUILD_BUG_ON(sizeof(DShmGpuRegion) != 32);
+DSHM_CHECK(DShmGpuRegion, modifier, 8);
+DSHM_CHECK(DShmGpuRegion, offset, 16);
+DSHM_CHECK(DShmGpuRegion, stride, 20);
+DSHM_CHECK(DShmGpuRegion, height, 28);
 QEMU_BUILD_BUG_ON(sizeof(DShmCursorImage) != 40);
 QEMU_BUILD_BUG_ON(sizeof(DShmCursorNotify) != 16);
 QEMU_BUILD_BUG_ON(sizeof(DShmInputAck) != 16);

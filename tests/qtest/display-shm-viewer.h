@@ -48,7 +48,8 @@ typedef struct VMsg {
 } VMsg;
 
 typedef struct VRegion {
-    uint32_t id, kind, access;
+    uint32_t id, kind, access, storage;
+    uint32_t fourcc, gflags, gstride;   /* a dma-buf's payload */
     uint64_t size;
     VHandle h;
     uint8_t *map;               /* mapped read-only on demand */
@@ -93,6 +94,7 @@ typedef struct Viewer {
     uint8_t *feedback;
     size_t state_size;
     unsigned test_idx, steer_idx, steer_block_off;
+    uint32_t gpu_alloc;         /* linux.dmabuf accepted: the allocator */
     uint64_t handles_parsed;
     uint64_t handles_taken;     /* trailing fields read, Windows */
     uint32_t last_orphans;      /* entries of the last ORPHANS, Windows */
@@ -356,8 +358,14 @@ static inline bool v_parse(Viewer *v, VMsg *m)
         v_unmap(r);
         v_handle_close(r->h);
         *r = (VRegion) { .id = le32(m->d + 8), .kind = le32(m->d + 12),
+                         .storage = le32(m->d + 16),
                          .access = le32(m->d + 20),
                          .size = le64(m->d + 24), .h = m->h };
+        if (le32(m->d + 32) >= 32) {
+            r->fourcc = le32(m->d + 40);
+            r->gflags = le32(m->d + 44);
+            r->gstride = le32(m->d + 60);
+        }
         m->h = V_NO_HANDLE;
         break;
     }
@@ -471,8 +479,8 @@ static inline unsigned v_steer_ext(Viewer *v, unsigned local)
 typedef struct VOpts {
     uint32_t features;
     uint32_t credit;
-    uint32_t storage0;
-    bool test, steer;
+    uint32_t storage0, storage1;
+    bool test, steer, dmabuf;
     uint32_t max_w, max_h;
     const char *name;
     uint32_t prev_id;           /* the last connection, for ORPHANS */
@@ -483,7 +491,7 @@ typedef struct VOpts {
 static inline Viewer *v_open(const char *path, VOpts o)
 {
     Viewer *v = g_new0(Viewer, 1);
-    uint8_t hello[120 + 80 + 8] = { };
+    uint8_t hello[120 + 80 + 48] = { };
     size_t len = 120, off;
     unsigned n_ext = 0;
     VMsg m = { };
@@ -500,6 +508,7 @@ static inline Viewer *v_open(const char *path, VOpts o)
     stl_le_p(hello + 12, v->features);
     snprintf((char *)hello + 16, 32, "%s", o.name ? o.name : "qtest");
     stl_le_p(hello + 48, o.storage0 ? o.storage0 : 1);
+    stl_le_p(hello + 52, o.storage1);
     stl_le_p(hello + 80, v->credit_asked);
     stl_le_p(hello + 84, o.max_w);
     stl_le_p(hello + 88, o.max_h);
@@ -519,6 +528,14 @@ static inline Viewer *v_open(const char *path, VOpts o)
         stw_le_p(hello + off + 32, 1);
         stw_le_p(hello + off + 34, 1);
         off += 40;
+        n_ext++;
+    }
+    if (o.dmabuf) {
+        snprintf((char *)hello + off, 32, "linux.dmabuf");
+        stw_le_p(hello + off + 32, 1);
+        stw_le_p(hello + off + 34, 1);
+        stl_le_p(hello + off + 36, 8);
+        off += 48;
         n_ext++;
     }
     stl_le_p(hello + 100, n_ext);
@@ -548,6 +565,8 @@ static inline Viewer *v_open(const char *path, VOpts o)
             } else if (!strcmp((const char *)a, "qemu.pointer-steering")) {
                 v->steer_idx = a[34];
                 v->steer_block_off = le32(a + 40);
+            } else if (!strcmp((const char *)a, "linux.dmabuf")) {
+                v->gpu_alloc = le32(a + 40);
             }
             pos += 40 + ROUND_UP(plen, 8);
         }
@@ -681,6 +700,16 @@ static inline uint32_t v_px(Viewer *v, const VFrame *f, unsigned x, unsigned y)
 {
     uint8_t *m = v_map(v, f->region, false);
     uint32_t stride = v->head[f->head].stride;
+
+    return ldl_le_p(m + (size_t)y * stride + x * 4) & 0xffffff;
+}
+
+/* A dma-buf slot's pixels; a memfd in these tests, so it maps. */
+static inline uint32_t v_gpu_px(Viewer *v, const VFrame *f, unsigned x,
+                                unsigned y)
+{
+    uint8_t *m = v_map(v, f->region, false);
+    uint32_t stride = v_region(v, f->region)->gstride;
 
     return ldl_le_p(m + (size_t)y * stride + x * 4) & 0xffffff;
 }

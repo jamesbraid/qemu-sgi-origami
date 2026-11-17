@@ -63,3 +63,25 @@ void dshm_head_cursor_move(DShmHead *h, int x, int y, bool on)
 void dshm_head_guest_cursor(DShmHead *h, unsigned kind, int x, int y)
 {
 }
+
+void dshm_head_set_gpu(DShmHead *h, const DShmGpuOps *ops)
+{
+}
+
+void dshm_head_gpu_ready(DShmHead *h)
+{
+}
+
+uint32_t dshm_head_sample_marks_gpu(DShmHead *h, DShmResolveRow resolve,
+                                    void *opaque)
+{
+    return 0;
+}
+
+void dshm_head_gpu_publish(DShmHead *h, uint32_t id)
+{
+}
+
+void dshm_head_gpu_abort(DShmHead *h, uint32_t id)
+{
+}

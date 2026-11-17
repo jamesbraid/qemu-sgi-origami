@@ -401,15 +401,27 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
                         .id = r->id, .kind = r->kind,
                         .storage = DSHM_STORAGE_SHM, .access = access,
                         .size = r->size };
-    uint8_t buf[sizeof(m) + 8] = { };
+    uint8_t buf[sizeof(m) + sizeof(DShmGpuRegion) + 8] = { };
+    size_t len = sizeof(m) + 8;
     DShmOut *o;
     DShmHandle h = dshm_region_dup(r, access);
 
     if (!DSHM_HANDLE_OK(h)) {
         return false;
     }
+    if (r->gpu) {
+        const DisplayShmGpuSlot *g = &r->gpu_slot;
+        DShmGpuRegion p = { .fourcc = g->fourcc, .flags = DSHM_GPU_WRITTEN,
+                            .modifier = g->modifier, .stride = g->stride,
+                            .width = g->width, .height = g->height };
+
+        m.storage = DSHM_GPU_CLASS;
+        m.payload_len = sizeof(p);
+        memcpy(buf + sizeof(m), &p, sizeof(p));
+        len += sizeof(p);
+    }
     memcpy(buf, &m, sizeof(m));
-    o = dshm_queue(v, buf, sizeof(buf), h, true);
+    o = dshm_queue(v, buf, len, h, true);
     if (!o) {
         return false;
     }
@@ -529,12 +541,12 @@ static size_t core_min_len(uint16_t type)
     }
 }
 
-/* Whether the offers include name with version 1; *bad if they overrun. */
-static bool offers_have(const uint8_t *offers, size_t left, unsigned n,
-                        const char *name, bool *bad)
+/* The offer of name with version 1, or NULL; *bad if the offers overrun. */
+static const uint8_t *offer_find(const uint8_t *offers, size_t left,
+                                 unsigned n, const char *name, bool *bad)
 {
     size_t off = 0;
-    bool found = false;
+    const uint8_t *found = NULL;
 
     for (unsigned i = 0; i < n; i++) {
         DShmOffer of;
@@ -542,20 +554,29 @@ static bool offers_have(const uint8_t *offers, size_t left, unsigned n,
 
         if (left - off < sizeof(of)) {
             *bad = true;
-            return false;
+            return NULL;
         }
         memcpy(&of, offers + off, sizeof(of));
         total = sizeof(of) + ROUND_UP((size_t)of.payload_len, 8);
         if (total > left - off) {
             *bad = true;
-            return false;
+            return NULL;
         }
-        found |= !strncmp((const char *)of.name, name, sizeof(of.name)) &&
-                 of.version_min <= 1 && of.version_max >= 1;
+        if (!strncmp((const char *)of.name, name, sizeof(of.name)) &&
+            of.version_min <= 1 && of.version_max >= 1) {
+            found = offers + off;
+        }
         off += total;
     }
     return found;
 }
+
+static bool offers_have(const uint8_t *offers, size_t left, unsigned n,
+                        const char *name, bool *bad)
+{
+    return offer_find(offers, left, n, name, bad) != NULL;
+}
+
 
 static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
                          const uint8_t *msg)
@@ -568,8 +589,8 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     size_t wlen = sizeof(w), pos;
     const uint8_t *offers = msg + sizeof(h);
     size_t left = hdr->length - sizeof(h);
-    bool test_ok, steer_ok, bad = false;
-    unsigned idx = 0, n_acc = 0;
+    bool test_ok, steer_ok, gpu_ok = false, bad = false;
+    unsigned idx = 0, n_acc = 0, gpu_idx = 0;
     Error *err = NULL;
 
     memcpy(&h, msg, sizeof(h));
@@ -598,6 +619,10 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     }
     test_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_TEST, &bad);
     steer_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_STEER, &bad);
+    if (DSHM_GPU_CLASS) {
+        gpu_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_DMABUF, &bad) &&
+                 dshm_storage_has(h.storage, DSHM_GPU_CLASS);
+    }
     if (bad) {
         dshm_viewer_close(v, DSHM_ERR_PROTOCOL, "extension offers overrun");
         return;
@@ -638,6 +663,11 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
         v->steer_idx = ++idx;
         n_acc++;
     }
+    v->ext_gpu = gpu_ok;
+    if (v->ext_gpu) {
+        gpu_idx = ++idx;
+        n_acc++;
+    }
 
     /* The feedback region is this viewer's own. */
     v->feedback = dshm_region_new(d, DSHM_KIND_FEEDBACK, DSHM_REGION_ALIGN,
@@ -669,6 +699,9 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     if (v->ext_steer) {
         wlen += 8;
     }
+    if (v->ext_gpu) {
+        wlen += sizeof(DShmGpuAccept);
+    }
     wb = g_malloc0(wlen);
     memcpy(wb, &w, sizeof(w));
     pos = sizeof(w);
@@ -689,6 +722,16 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
         stl_le_p(wb + pos, d->steer_block_offset);
         stl_le_p(wb + pos + 4, DSHM_STEER_BLOCK_BYTES);
         pos += 8;
+    }
+    if (v->ext_gpu) {
+        DShmAccept a = { .version = 1, .index = gpu_idx,
+                         .payload_len = sizeof(DShmGpuAccept) };
+
+        strcpy((char *)a.name, DSHM_EXT_DMABUF);
+        memcpy(wb + pos, &a, sizeof(a));
+        pos += sizeof(a);
+        stl_le_p(wb + pos, DSHM_ALLOC_GPU);
+        pos += sizeof(DShmGpuAccept);
     }
     dshm_queue(v, wb, wlen, DSHM_NO_HANDLE, false);
 #ifdef _WIN32

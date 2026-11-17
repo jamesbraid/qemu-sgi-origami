@@ -44,15 +44,25 @@ typedef int DShmHandle;
 #define DSHM_HANDLE_OK(h) ((h) >= 0)
 #endif
 
+/* The dma-buf class exists on Linux only; elsewhere no viewer gets it. */
+#ifdef CONFIG_LINUX
+#define DSHM_GPU_CLASS DSHM_STORAGE_DMABUF
+#else
+#define DSHM_GPU_CLASS 0
+#endif
+
 /* One shared allocation with one handle. */
 typedef struct DShmRegion {
     uint32_t id;
     uint32_t kind;
     uint32_t access;            /* DSHM_ACCESS_* for the viewer's handle */
     size_t size;
-    uint8_t *ptr;
+    uint8_t *ptr;               /* NULL for a GPU slot: never mapped */
     DShmHandle h;
     unsigned refs;
+    bool gpu;
+    uint32_t gpu_id;            /* the head's name for the image */
+    DisplayShmGpuSlot gpu_slot;
 } DShmRegion;
 
 struct DShmSlot {
@@ -61,12 +71,15 @@ struct DShmSlot {
     unsigned long *stale;       /* lines the reference frame has changed */
     unsigned lent;              /* leases naming it */
     bool retired;
+    bool rendering;             /* a GPU is drawing it */
 };
 
 struct DShmSet {
     QTAILQ_ENTRY(DShmSet) next;
     DShmHead *h;
     bool writable;
+    bool gpu;                   /* dma-buf images; at most one per head */
+    DShmSlot *cur;              /* gpu: the newest picture */
     bool current;               /* matches the head's mode */
     uint32_t width, height, stride;
     size_t slot_bytes;
@@ -107,6 +120,8 @@ struct DShmVH {
     DShmOut *queued;            /* the one unsent FRAME */
     bool too_large;
     bool lost_once;             /* device-lost re-creation used */
+    bool gpu_off;               /* the viewer refused GPU frames */
+    bool gpu_wait;              /* gpu_off only because the GPU was not ready */
     bool nothing;               /* the set could not be allocated */
     bool needs_eval;
     uint64_t set_gen;           /* one more for every re-home or mode change */
@@ -180,6 +195,7 @@ struct DShmViewer {
     uint32_t wheel_dropped;     /* wheel buttons whose press was dropped */
     uint64_t sync_pending;
     bool ext_test, ext_steer;
+    bool ext_gpu;               /* linux.dmabuf accepted */
 };
 
 struct DShmHead {
@@ -217,6 +233,9 @@ struct DShmHead {
     bool hold_armed, held;
     bool steerable;
     bool cursor_embedded;
+    const DShmGpuOps *gpu_ops;
+    uint32_t gpu_next_id;
+    uint32_t gpu_pending;       /* the image whose draw ends the sample */
     bool waiting_retrace;
     QEMUBH *bh;
     unsigned skipped;
@@ -283,6 +302,7 @@ struct DisplayShm {
     bool ready;
     Notifier done;
     Notifier exit;
+    bool exiting;
     DShmHead **pre;             /* sources added before the machine was ready */
     unsigned n_pre;
     GHashTable *seen_cons;      /* consoles that have a head */
@@ -326,6 +346,7 @@ struct DisplayShm {
 };
 
 /* display-shm.c */
+bool dshm_storage_has(const uint32_t *storage, uint32_t class);
 DShmHead *dshm_head(DisplayShm *d, unsigned idx);
 int64_t dshm_now_ns(void);
 void dshm_head_send_to(DShmViewer *v, DShmHead *h);
@@ -359,6 +380,8 @@ void dshm_dcl_cursor_define(DisplayChangeListener *dcl, QEMUCursor *c);
 /* display-shm-storage.c */
 DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
                             bool writable_by_viewer, Error **errp);
+DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
+                                uint32_t id);
 void dshm_region_ref(DShmRegion *r);
 void dshm_region_unref(DisplayShm *d, DShmRegion *r);
 DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access);

@@ -1819,6 +1819,224 @@ static void test_orphans_bad_count(void)
 }
 #endif
 
+/* ---- linux.dmabuf ------------------------------------------------------- */
+
+#ifdef CONFIG_LINUX
+/* A viewer that takes dma-buf slots; in these tests they are memfds. */
+static Viewer *open_gpu(uint32_t credit, bool ext, uint32_t class)
+{
+    return v_open(sock_path, (VOpts) { .credit = credit, .test = true,
+                                       .dmabuf = ext, .storage1 = class });
+}
+
+static void check_gpu_picture(Viewer *v, const VFrame *f, unsigned pattern,
+                              uint64_t seed, uint32_t step)
+{
+    const VHead *h = &v->head[f->head];
+
+    for (unsigned y = 0; y < h->height; y++) {
+        for (unsigned x = 0; x < h->width; x++) {
+            g_assert_cmphex(v_gpu_px(v, f, x, y), ==,
+                            t_pixel(pattern, seed, step, x, y, h->width,
+                                    h->height));
+        }
+    }
+}
+
+static void expect_slots(Viewer *v, uint32_t storage, unsigned n)
+{
+    const VHead *h = &v->head[0];
+
+    g_assert_cmpuint(h->n_slots, ==, n);
+    for (unsigned i = 0; i < h->n_slots; i++) {
+        VRegion *r = v_region(v, h->slot[i]);
+
+        g_assert_nonnull(r);
+        g_assert_cmpuint(r->storage, ==, storage);
+        g_assert_true(V_HANDLE_OK(r->h));
+        if (storage == DSHM_STORAGE_DMABUF) {
+            g_assert_cmpuint(r->gflags & DSHM_GPU_WRITTEN, ==,
+                             DSHM_GPU_WRITTEN);
+            g_assert_cmpuint(r->gstride, >=, h->width * 4);
+        }
+    }
+}
+
+/* A frame drawn by the GPU stand-in, none of it copied by the producer. */
+static void test_dmabuf_frames(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_gpu(2, true, DSHM_STORAGE_DMABUF);
+    VStats before, after;
+    uint64_t seen = 0;
+    VFrame f;
+
+    g_assert_cmpuint(v->gpu_alloc, ==, DSHM_ALLOC_GPU);
+    /* the newest picture, the one being drawn and one per credit */
+    expect_slots(v, DSHM_STORAGE_DMABUF, 4);
+    before = v_stats(v);
+    for (uint32_t step = 1; step <= 3; step++) {
+        v_pattern(v, 0, 1, 7, step);
+        g_assert_true(fresh_frame(v, 0, seen, &f));
+        g_assert_cmpuint(f.serial, >, seen);
+        check_gpu_picture(v, &f, 1, 7, step);
+        v_release(v, &f);
+        seen = f.serial;
+    }
+    after = v_stats(v);
+    g_assert_cmpuint(after.frames_sent - before.frames_sent, ==, 3);
+    g_assert_cmpuint(after.lines_produced, ==, before.lines_produced);
+    g_assert_cmpuint(after.lines_copied, ==, before.lines_copied);
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* A viewer that comes while the GPU is still opening gets it once it is. */
+static void test_dmabuf_gpu_opens_late(void)
+{
+    QTestState *qts = start();
+    Viewer *c = open_v(1, 0);
+    Viewer *v = NULL;
+    VFrame f;
+
+    v_stimulus(c, 0, 7, 0, 0, 1);
+    v_stats(c);
+    v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    expect_slots(v, DSHM_STORAGE_SHM, 3);   /* the set it shares with c */
+    v_stimulus(c, 0, 7, 0, 0, 0);
+    v_stats(c);
+    for (unsigned i = 0; i < 20; i++) {
+        const VHead *h = &v->head[0];
+        VRegion *r = h->n_slots ? v_region(v, h->slot[0]) : NULL;
+
+        if (r && r->storage == DSHM_STORAGE_DMABUF) {
+            break;
+        }
+        v_pump(v, 500);
+    }
+    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    v_pattern(c, 0, 1, 5, 2);
+    g_assert_true(fresh_frame(v, 0, 0, &f));
+    check_gpu_picture(v, &f, 1, 5, 2);
+    v_close(c);
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* Both halves of the negotiation, and an old viewer, keep shared memory. */
+static void test_dmabuf_negotiation(void)
+{
+    QTestState *qts = start();
+    Viewer *v;
+    VFrame f;
+
+    v = open_gpu(1, true, 0);           /* extension, but no class */
+    g_assert_cmpuint(v->gpu_alloc, ==, 0);
+    expect_slots(v, DSHM_STORAGE_SHM, 2);
+    v_close(v);
+    v = open_gpu(1, false, DSHM_STORAGE_DMABUF);    /* class, no extension */
+    g_assert_cmpuint(v->gpu_alloc, ==, 0);
+    expect_slots(v, DSHM_STORAGE_SHM, 2);
+    v_pattern(v, 0, 1, 3, 1);
+    g_assert_true(fresh_frame(v, 0, 0, &f));
+    v_check_picture(v, &f, 1, 3, 1);
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* One viewer has the images; the next gets shared memory and a CPU frame. */
+static void test_dmabuf_one_viewer(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    Viewer *w = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    VStats before, after;
+    VFrame f, g;
+
+    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    expect_slots(w, DSHM_STORAGE_SHM, 2);
+    before = v_stats(v);
+    v_pattern(v, 0, 1, 9, 5);
+    g_assert_true(fresh_frame(v, 0, 0, &f));
+    g_assert_true(fresh_frame(w, 0, 0, &g));
+    check_gpu_picture(v, &f, 1, 9, 5);
+    v_check_picture(w, &g, 1, 9, 5);
+    after = v_stats(v);
+    g_assert_cmpuint(after.lines_produced, >, before.lines_produced);
+    v_close(v);
+    v_close(w);
+    qtest_quit(qts);
+}
+
+/* A lent image is not drawn again, and comes back when released. */
+static void test_dmabuf_leases(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_gpu(2, true, DSHM_STORAGE_DMABUF);
+    VFrame f1, f2, f3;
+
+    v_pattern(v, 0, 1, 1, 1);
+    g_assert_true(fresh_frame(v, 0, 0, &f1));
+    v_pattern(v, 0, 1, 1, 2);
+    g_assert_true(fresh_frame(v, 0, f1.serial, &f2));
+    g_assert_cmpuint(f2.region, !=, f1.region);
+    g_assert_cmpuint(f2.lease, !=, f1.lease);
+    check_gpu_picture(v, &f1, 1, 1, 1);
+    check_gpu_picture(v, &f2, 1, 1, 2);
+    v_release(v, &f1);
+    v_release(v, &f2);
+    v_pattern(v, 0, 1, 1, 3);
+    g_assert_true(fresh_frame(v, 0, f2.serial, &f3));
+    check_gpu_picture(v, &f3, 1, 1, 3);
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* A viewer that cannot import the images is moved to shared memory. */
+static void test_dmabuf_import_failed(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    uint8_t b[8] = { };
+    VMsg m = { };
+    VFrame f;
+
+    stl_le_p(b, v->head[0].slot[0]);
+    stl_le_p(b + 4, DSHM_IMPORT_ADAPTER);
+    v_send_msg(v, DSHM_MSG_IMPORT_FAILED, DSHM_F_MUST, b, 8);
+    g_assert_true(v_take(v, DSHM_MSG_HEAD, &m, V_WAIT_MS));
+    v_msg_free(&m);
+    expect_slots(v, DSHM_STORAGE_SHM, 2);
+    v_pattern(v, 0, 1, 4, 6);
+    g_assert_true(fresh_frame(v, 0, 0, &f));
+    v_check_picture(v, &f, 1, 4, 6);
+    v_close(v);
+    qtest_quit(qts);
+}
+
+/* A new mode gets new images of its size. */
+static void test_dmabuf_mode_change(void)
+{
+    QTestState *qts = start();
+    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    VMsg m = { };
+    VFrame f;
+
+    v_stimulus(v, 0, 4, 64 | (32u << 16), 0, 0);
+    do {
+        g_assert_true(v_take(v, DSHM_MSG_HEAD, &m, V_WAIT_MS));
+        v_msg_free(&m);
+    } while (v->head[0].width != 64);
+    g_assert_cmpuint(v->head[0].height, ==, 32);
+    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    v_pattern(v, 0, 3, 5, 12);
+    g_assert_true(fresh_frame(v, 0, 0, &f));
+    check_gpu_picture(v, &f, 3, 5, 12);
+    v_close(v);
+    qtest_quit(qts);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -1896,6 +2114,17 @@ int main(int argc, char **argv)
     qtest_add_func("display-shm/steer-cancel-rel", test_steer_cancel_rel);
     qtest_add_func("display-shm/steer-cancel-other", test_steer_cancel_other);
     qtest_add_func("display-shm/connections", test_connections);
+#ifdef CONFIG_LINUX
+    qtest_add_func("display-shm/dmabuf-frames", test_dmabuf_frames);
+    qtest_add_func("display-shm/dmabuf-gpu-opens-late",
+                   test_dmabuf_gpu_opens_late);
+    qtest_add_func("display-shm/dmabuf-negotiation", test_dmabuf_negotiation);
+    qtest_add_func("display-shm/dmabuf-one-viewer", test_dmabuf_one_viewer);
+    qtest_add_func("display-shm/dmabuf-leases", test_dmabuf_leases);
+    qtest_add_func("display-shm/dmabuf-import-failed",
+                   test_dmabuf_import_failed);
+    qtest_add_func("display-shm/dmabuf-mode-change", test_dmabuf_mode_change);
+#endif
     ret = g_test_run();
 
     g_rmdir(sock_dir);

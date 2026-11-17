@@ -10,18 +10,36 @@
 #include "qemu/error-report.h"
 #include "qemu/bswap.h"
 #include "qemu/thread.h"
+#include "qemu/main-loop.h"
 #include "ui/display-shm-priv.h"
+#ifdef CONFIG_LINUX
+#include "qemu/memfd.h"
+#include <sys/mman.h>
+#endif
 
 #define TEST_W 128
 #define TEST_H 64
 #define HOLDS_MAX 16
 
+#define TEST_IMAGES 16
+
+/* A memfd standing in for a GPU image: the protocol carries the fd only. */
+typedef struct TestImage {
+    uint32_t id;
+    int fd;
+    uint8_t *map;
+    size_t size;
+    uint32_t stride;
+} TestImage;
+
 typedef struct TestHead {
     DShmHead *h;
+    TestImage image[TEST_IMAGES];
     uint32_t pattern;
     uint64_t seed;
     uint32_t step;
     int mark_delay_us;          /* op 4: mark from a second thread */
+    bool gpu_wait;              /* stimulus 7: the GPU is still opening */
 } TestHead;
 
 typedef struct TestHold {
@@ -90,11 +108,128 @@ static void test_resolve(void *opaque, unsigned y, uint32_t *dst)
     }
 }
 
-static void test_sample(void *opaque)
+#ifdef CONFIG_LINUX
+static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
+                              uint32_t hgt, DisplayShmGpuSlot *out)
+{
+    TestHead *t = opaque;
+    uint32_t stride = ROUND_UP(w * 4, 256);
+    size_t size = (size_t)stride * hgt;
+    TestImage *im = NULL;
+    int fd;
+
+    if (t->gpu_wait) {
+        return false;
+    }
+    for (unsigned i = 0; i < TEST_IMAGES && !im; i++) {
+        im = t->image[i].id ? NULL : &t->image[i];
+    }
+    fd = im ? qemu_memfd_create("dshm-gpu", size, false, 0, 0, NULL) : -1;
+    if (fd < 0) {
+        return false;
+    }
+    im->map = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    if (im->map == MAP_FAILED) {
+        close(fd);
+        im->map = NULL;
+        return false;
+    }
+    im->id = id;
+    im->fd = fd;
+    im->size = size;
+    im->stride = stride;
+    *out = (DisplayShmGpuSlot) {
+        .kind = DSHM_GPU_DMABUF, .width = w, .height = hgt, .stride = stride,
+        .fourcc = DSHM_FOURCC_XB24, .handle = qemu_dup(fd), .fence = -1,
+    };
+    return out->handle >= 0;
+}
+
+static void test_gpu_image_free(TestImage *im)
+{
+    munmap(im->map, im->size);
+    close(im->fd);
+    *im = (TestImage) { };
+}
+
+static void test_gpu_slot_free(void *opaque, uint32_t id)
 {
     TestHead *t = opaque;
 
+    for (unsigned i = 0; i < TEST_IMAGES; i++) {
+        if (t->image[i].id == id) {
+            test_gpu_image_free(&t->image[i]);
+        }
+    }
+}
+
+static bool test_gpu_ready(void *opaque)
+{
+    return !((TestHead *)opaque)->gpu_wait;
+}
+
+static const DShmGpuOps test_gpu_ops = {
+    .slot_new = test_gpu_slot_new,
+    .slot_free = test_gpu_slot_free,
+    .ready = test_gpu_ready,
+};
+
+typedef struct TestDone {
+    DShmHead *h;
+    uint32_t id;
+} TestDone;
+
+static void test_gpu_done(void *opaque)
+{
+    TestDone *d = opaque;
+
+    dshm_head_gpu_publish(d->h, d->id);
+    g_free(d);
+}
+
+/* The "GPU" draws now and finishes from the main loop, as a pump thread. */
+static void test_gpu_draw(TestHead *t, uint32_t id)
+{
+    g_autofree uint32_t *row = g_new(uint32_t, t->h->width);
+    TestDone *d = g_new(TestDone, 1);
+
+    for (unsigned i = 0; i < TEST_IMAGES; i++) {
+        TestImage *im = &t->image[i];
+
+        if (im->id != id) {
+            continue;
+        }
+        for (unsigned y = 0; y < t->h->height; y++) {
+            test_resolve(t, y, row);
+            memcpy(im->map + (size_t)y * im->stride, row, t->h->width * 4);
+        }
+    }
+    *d = (TestDone) { .h = t->h, .id = id };
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), test_gpu_done, d);
+}
+
+static void test_gpu_free_all(TestHead *t)
+{
+    for (unsigned i = 0; i < TEST_IMAGES; i++) {
+        if (t->image[i].id) {
+            test_gpu_image_free(&t->image[i]);
+        }
+    }
+}
+#endif
+
+static void test_sample(void *opaque)
+{
+    TestHead *t = opaque;
+#ifdef CONFIG_LINUX
+    uint32_t id = dshm_head_sample_marks_gpu(t->h, test_resolve, t);
+
+    if (id) {
+        test_gpu_draw(t, id);
+    }
+#else
     dshm_head_sample_marks(t->h, test_resolve, t);
+#endif
 }
 
 static const DShmSourceOps test_ops = { .sample = test_sample };
@@ -108,6 +243,9 @@ static TestHead *test_head_new(DisplayShm *d, uint32_t w, uint32_t hgt)
     t->h->test = t;
     dshm_head_set_steerable(t->h, true);
     dshm_head_set_mode_owned(t->h, w, hgt, 60000);
+#ifdef CONFIG_LINUX
+    dshm_head_set_gpu(t->h, &test_gpu_ops);
+#endif
     dshm_head_announce(t->h);
     return t;
 }
@@ -223,11 +361,24 @@ static void stimulus(DShmViewer *v, const DShmStimulus *m)
     DShmHead *h = dshm_head(d, m->head);
     TestHead *t = h ? h->test : NULL;
 
+    if (m->kind == 7) {
+        /* The GPU is opening (arg 1), or has opened and viewers may have it. */
+        if (t) {
+            t->gpu_wait = m->arg != 0;
+            if (!t->gpu_wait) {
+                dshm_head_gpu_ready(h);
+            }
+        }
+        return;
+    }
     if (m->kind == 5) {
         if (m->arg) {
             test_head_new(d, TEST_W, TEST_H);
         } else if (h && h->test) {
             dshm_head_remove(h);
+#ifdef CONFIG_LINUX
+            test_gpu_free_all(h->test);
+#endif
             g_free(h->test);
             h->test = NULL;
         }

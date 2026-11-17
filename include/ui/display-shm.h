@@ -64,6 +64,50 @@ void dshm_head_sample_end(DShmHead *h);
 void dshm_head_retrace(DShmHead *h);
 void dshm_head_retrace_stopped(DShmHead *h);
 
+/*
+ * GPU frames (linux.dmabuf): the head lends the images its GPU drew to one
+ * viewer that took them, and the producer never maps one. Main loop only.
+ */
+typedef enum DisplayShmGpuKind {
+    DSHM_GPU_NONE,
+    DSHM_GPU_DMABUF,
+    DSHM_GPU_IOSURFACE,
+    DSHM_GPU_WIN32,
+} DisplayShmGpuKind;
+
+typedef struct DisplayShmGpuSlot {
+    DisplayShmGpuKind kind;
+    uint32_t width, height, stride, fourcc;
+    uint64_t modifier;
+    int64_t handle;             /* fd, Mach port or HANDLE; the producer's */
+    int64_t fence;              /* the head waits on it itself; unused here */
+    uint64_t fence_value;
+} DisplayShmGpuSlot;
+
+typedef struct DShmGpuOps {
+    /* Make image id for the head's mode; the producer owns out->handle. */
+    bool (*slot_new)(void *opaque, uint32_t id, uint32_t width,
+                     uint32_t height, DisplayShmGpuSlot *out);
+    /* No viewer holds the image: destroy it. Not called after remove. */
+    void (*slot_free)(void *opaque, uint32_t id);
+    /* Optional: false while the GPU is still opening, so slot_new fails. */
+    bool (*ready)(void *opaque);
+} DShmGpuOps;
+
+void dshm_head_set_gpu(DShmHead *h, const DShmGpuOps *ops);
+/* The GPU has finished opening: viewers refused only for want of it get it. */
+void dshm_head_gpu_ready(DShmHead *h);
+/*
+ * dshm_head_sample_marks() for a GPU head: returns the id of an image to draw
+ * the newest picture into, held open until published or aborted; 0 if none.
+ */
+uint32_t dshm_head_sample_marks_gpu(DShmHead *h, DShmResolveRow resolve,
+                                    void *opaque);
+/* The GPU finished the image, its fence waited for: it is the picture. */
+void dshm_head_gpu_publish(DShmHead *h, uint32_t id);
+/* The image was not drawn after all. */
+void dshm_head_gpu_abort(DShmHead *h, uint32_t id);
+
 /* The source reports where the guest drew its cursor, so ABS can steer. */
 void dshm_head_set_steerable(DShmHead *h, bool steerable);
 /* The source draws its cursor into the pixels it resolves. */

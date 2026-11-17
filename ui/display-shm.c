@@ -45,6 +45,22 @@ static uint32_t stride_for(uint32_t width)
     return ROUND_UP(width * 4, DSHM_STRIDE_ALIGN);
 }
 
+bool dshm_storage_has(const uint32_t *storage, uint32_t class)
+{
+    for (unsigned i = 0; i < 8 && storage[i]; i++) {
+        if (storage[i] == class) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* A slot a lease or a GPU draw still needs. */
+static bool slot_busy(const DShmSlot *s)
+{
+    return s->lent || s->rendering;
+}
+
 /* ---- Slots and sets --------------------------------------------------- */
 
 static void slot_free(DShmHead *h, DShmSlot *s)
@@ -53,6 +69,10 @@ static void slot_free(DShmHead *h, DShmSlot *s)
 
     for (unsigned i = 0; i < d->n_viewers; i++) {
         dshm_region_forget(d->viewers[i], s->r);
+    }
+    /* At exit the GPU driver may have torn itself down; exit frees the slot. */
+    if (s->r->gpu && h->gpu_ops && !d->exiting) {
+        h->gpu_ops->slot_free(h->opaque, s->r->gpu_id);
     }
     dshm_region_unref(d, s->r);
     g_free(s->stale);
@@ -65,11 +85,26 @@ static DShmSlot *slot_new(DShmHead *h, DShmSet *set)
     DShmRegion *r;
     Error *err = NULL;
 
-    r = dshm_region_new(h->d, DSHM_KIND_SLOT, set->slot_bytes,
-                        set->writable, &err);
-    if (!r) {
-        error_report_err(err);
-        return NULL;
+    if (set->gpu) {
+        DisplayShmGpuSlot g = { .fence = -1 };
+        uint32_t id = ++h->gpu_next_id;
+
+        if (!h->gpu_ops->slot_new(h->opaque, id, set->width, set->height,
+                                  &g)) {
+            return NULL;
+        }
+        r = dshm_region_new_gpu(h->d, &g, id);
+        if (!r) {
+            h->gpu_ops->slot_free(h->opaque, id);
+            return NULL;
+        }
+    } else {
+        r = dshm_region_new(h->d, DSHM_KIND_SLOT, set->slot_bytes,
+                            set->writable, &err);
+        if (!r) {
+            error_report_err(err);
+            return NULL;
+        }
     }
     s = g_new0(DShmSlot, 1);
     s->r = r;
@@ -96,7 +131,7 @@ static bool set_idle(const DShmSet *set)
         return false;
     }
     for (unsigned i = 0; i < set->n; i++) {
-        if (set->slot[i]->lent) {
+        if (slot_busy(set->slot[i])) {
             return false;
         }
     }
@@ -112,7 +147,8 @@ static void set_maybe_free(DShmSet *set)
 
 static unsigned set_want(const DShmSet *set)
 {
-    return MIN(MAX(set->credits + 1, 2u), DSHM_MAX_SLOTS);
+    /* a GPU set also holds the newest picture and the one being drawn */
+    return MIN(MAX(set->credits + 1 + set->gpu, 2u), DSHM_MAX_SLOTS);
 }
 
 static void vh_send_head(DShmVH *vh);
@@ -157,7 +193,7 @@ static bool set_fit(DShmSet *set, const DShmVH *skip, bool announce)
         changed = true;
     }
     for (unsigned i = set->n; i-- > 0 && set->n > want;) {
-        if (!set->slot[i]->lent) {
+        if (!slot_busy(set->slot[i]) && set->slot[i] != set->cur) {
             DShmSlot *s = set->slot[i];
 
             memmove(&set->slot[i], &set->slot[i + 1],
@@ -190,9 +226,12 @@ static void slot_retire(DShmHead *h, DShmSlot *s)
             break;
         }
     }
+    if (set->cur == s) {
+        set->cur = NULL;
+    }
     s->set = NULL;
     s->retired = true;
-    if (!s->lent) {
+    if (!slot_busy(s)) {
         slot_free(h, s);
     }
 }
@@ -218,7 +257,7 @@ static void lease_free(DShmVH *vh, unsigned i)
     vh->lease[i].slot = NULL;
     assert(s->lent);
     s->lent--;
-    if (s->retired && !s->lent) {
+    if (s->retired && !slot_busy(s)) {
         slot_free(vh->h, s);
     } else {
         set_maybe_free(set);
@@ -350,7 +389,7 @@ static DShmSet *head_find_set(DShmHead *h, bool writable, unsigned credit)
     DShmSet *set;
 
     QTAILQ_FOREACH(set, &h->sets, next) {
-        if (set->current && set->writable == writable &&
+        if (set->current && !set->gpu && set->writable == writable &&
             set->credits + credit + 1 <= DSHM_MAX_SLOTS) {
             return set;
         }
@@ -369,12 +408,13 @@ static unsigned head_live_sets(DShmHead *h)
     return n;
 }
 
-static DShmSet *set_new(DShmHead *h, bool writable)
+static DShmSet *set_new(DShmHead *h, bool writable, bool gpu)
 {
     DShmSet *set = g_new0(DShmSet, 1);
 
     set->h = h;
     set->writable = writable;
+    set->gpu = gpu;
     set->current = true;
     set->width = h->width;
     set->height = h->height;
@@ -401,12 +441,43 @@ static void vh_leave_set(DShmVH *vh)
     }
 }
 
+/* The one set of GPU images the head lends, if a viewer has it. */
+static DShmSet *head_gpu_set(DShmHead *h)
+{
+    DShmSet *set;
+
+    QTAILQ_FOREACH(set, &h->sets, next) {
+        if (set->gpu && set->current && set->viewers) {
+            return set;
+        }
+    }
+    return NULL;
+}
+
+/* The viewer took linux.dmabuf and lists it, and no one else has the images. */
+static bool vh_gpu_ok(DShmVH *vh)
+{
+    DShmSet *set;
+
+    if (!DSHM_GPU_CLASS || !vh->v->ext_gpu || vh->gpu_off ||
+        !vh->h->gpu_ops || !dshm_storage_has(vh->v->storage, DSHM_GPU_CLASS)) {
+        return false;
+    }
+    QTAILQ_FOREACH(set, &vh->h->sets, next) {
+        if (set->gpu && set->viewers) {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Join (or create) the set for the head's current mode. */
 static bool vh_join_set(DShmVH *vh)
 {
     DShmHead *h = vh->h;
     DShmViewer *v = vh->v;
-    bool writable = v->features & DSHM_FEAT_RW_PIXELS;
+    bool gpu = vh_gpu_ok(vh);
+    bool writable = !gpu && (v->features & DSHM_FEAT_RW_PIXELS);
     unsigned credit = v->credit;
     DShmSet *set;
 
@@ -423,16 +494,20 @@ static bool vh_join_set(DShmVH *vh)
         vh->too_large = true;
         return true;
     }
-    set = head_find_set(h, writable, credit);
+    set = gpu ? NULL : head_find_set(h, writable, credit);
     if (!set && head_live_sets(h) < h->d->max_sets) {
-        set = set_new(h, writable);
+        set = set_new(h, writable, gpu);
     }
     if (!set && writable) {
         /* Over the bound: the core read-only set, if it fits. */
         set = head_find_set(h, false, credit);
         if (!set) {
-            set = set_new(h, false);
+            set = set_new(h, false, false);
         }
+    }
+    if (!set && gpu) {
+        vh->gpu_off = true;
+        return vh_join_set(vh);
     }
     if (!set) {
         return false;
@@ -449,8 +524,18 @@ static bool vh_join_set(DShmVH *vh)
         set->viewers--;
         set->credits -= vh->credit;
         set_maybe_free(set);
+        if (gpu) {
+            /* no images to be had: shared memory instead */
+            vh->gpu_off = true;
+            vh->gpu_wait = h->gpu_ops->ready && !h->gpu_ops->ready(h->opaque);
+            return vh_join_set(vh);
+        }
         vh->nothing = true;
         return true;
+    }
+    if (h->gpu_ops) {
+        /* the CPU frame may be stale, or the GPU has no picture yet */
+        dshm_head_mark(h, 0, h->height);
     }
     return true;
 }
@@ -778,6 +863,11 @@ static void run_sample(DShmHead *h, bool numbered)
         h->ops->sample(h->opaque);
     }
     h->sample_open = false;
+    if (h->gpu_pending) {
+        /* a GPU draw is out: its publish ends the sample */
+        h->in_sample = false;
+        return;
+    }
     if (h->completed_seq != h->sample_seq) {
         finish_sample(h);
     }
@@ -787,7 +877,7 @@ static void run_sample(DShmHead *h, bool numbered)
 void dshm_head_do_sample(DShmHead *h)
 {
     /* a sample may drop the big lock to wait: do not start one inside it */
-    if (!h->present || h->held || h->in_sample) {
+    if (!h->present || h->held || h->in_sample || h->gpu_pending) {
         return;
     }
     if (h->hold_armed) {
@@ -893,11 +983,53 @@ void dshm_head_mark(DShmHead *h, int first, int count)
     dshm_head_marked(h);
 }
 
+/* Whether a viewer is on shared memory, so the CPU frame must be current. */
+static bool head_cpu_wanted(DShmHead *h)
+{
+    DisplayShm *d = h->d;
+
+    if (!h->gpu_ops) {
+        return true;
+    }
+    for (unsigned i = 0; i < d->n_viewers; i++) {
+        DShmVH *vh = viewer_vh(d->viewers[i], h);
+
+        if (vh && vh->set && !vh->set->gpu) {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* An image to draw the newest picture into; the sample waits for it. */
+static uint32_t gpu_acquire(DShmHead *h)
+{
+    DShmSet *set = head_gpu_set(h);
+
+    if (!set || h->gpu_pending) {
+        return 0;
+    }
+    head_refresh_leases(h);
+    for (unsigned i = 0; i < set->n; i++) {
+        DShmSlot *s = set->slot[i];
+
+        if (!slot_busy(s) && s != set->cur) {
+            s->rendering = true;
+            h->gpu_pending = s->r->gpu_id;
+            return h->gpu_pending;
+        }
+    }
+    return 0;
+}
+
 /* Sampling steps 2 to 4 for a source whose marks the producer holds. */
-void dshm_head_sample_marks(DShmHead *h, DShmResolveRow resolve, void *opaque)
+static uint32_t sample_marks(DShmHead *h, DShmResolveRow resolve,
+                             void *opaque, bool gpu)
 {
     g_autofree uint32_t *row = g_malloc(MAX(h->width, 1) * 4);
     size_t words = BITS_TO_LONGS(h->height);
+    bool cpu = head_cpu_wanted(h), any = false;
+    uint32_t id = 0;
 
     dshm_head_sample_start(h);
     for (size_t w = 0; w < words; w++) {
@@ -911,6 +1043,10 @@ void dshm_head_sample_marks(DShmHead *h, DShmResolveRow resolve, void *opaque)
             if (y >= h->height) {
                 continue;
             }
+            any = true;
+            if (!cpu) {
+                continue;
+            }
             dst = (uint32_t *)((uint8_t *)h->ref + y * h->ref_stride);
             resolve(opaque, y, row);
             h->d->stats.lines_produced++;
@@ -920,7 +1056,136 @@ void dshm_head_sample_marks(DShmHead *h, DShmResolveRow resolve, void *opaque)
             }
         }
     }
-    dshm_head_sample_end(h);
+    if (gpu && any) {
+        id = gpu_acquire(h);
+    }
+    if (!id) {
+        dshm_head_sample_end(h);
+    }
+    return id;
+}
+
+void dshm_head_sample_marks(DShmHead *h, DShmResolveRow resolve, void *opaque)
+{
+    sample_marks(h, resolve, opaque, false);
+}
+
+uint32_t dshm_head_sample_marks_gpu(DShmHead *h, DShmResolveRow resolve,
+                                    void *opaque)
+{
+    return sample_marks(h, resolve, opaque, true);
+}
+
+static DShmSlot *gpu_slot_find(DShmHead *h, uint32_t id)
+{
+    DShmSet *set;
+
+    QTAILQ_FOREACH(set, &h->sets, next) {
+        for (unsigned i = 0; set->gpu && i < set->n; i++) {
+            if (set->slot[i]->r->gpu_id == id) {
+                return set->slot[i];
+            }
+        }
+    }
+    return NULL;
+}
+
+/* The GPU is done with image id; the sample it held open ends. */
+static void gpu_done(DShmHead *h, uint32_t id, bool published)
+{
+    DShmSlot *s = gpu_slot_find(h, id);
+    DShmSet *set;
+    bool mine = h->gpu_pending == id, live;
+
+    if (!s || !s->rendering || !h->d) {
+        return;
+    }
+    set = s->set;
+    live = set && set->current && set->viewers;
+    s->rendering = false;
+    if (mine) {
+        h->gpu_pending = 0;
+    }
+    if (live && published) {
+        set->cur = s;
+        h->changed_any = true;
+        for (unsigned i = 0; i < h->d->n_viewers; i++) {
+            DShmVH *vh = viewer_vh(h->d->viewers[i], h);
+
+            if (vh && vh->set == set) {
+                vh->damage_all = true;
+            }
+        }
+    }
+    if (mine && live) {
+        h->in_sample = true;
+        finish_sample(h);
+        h->in_sample = false;
+    }
+    if (!live) {
+        /* the mode changed or the viewer left while it was drawn */
+        if (s->retired && !slot_busy(s)) {
+            slot_free(h, s);
+        } else {
+            set_maybe_free(set);
+        }
+    }
+    if (h->bh && qatomic_read(&h->unsampled) && dshm_head_demand(h)) {
+        qemu_bh_schedule(h->bh);
+    }
+}
+
+void dshm_head_gpu_publish(DShmHead *h, uint32_t id)
+{
+    if (h) {
+        gpu_done(h, id, true);
+    }
+}
+
+void dshm_head_gpu_abort(DShmHead *h, uint32_t id)
+{
+    if (h) {
+        gpu_done(h, id, false);
+    }
+}
+
+void dshm_head_set_gpu(DShmHead *h, const DShmGpuOps *ops)
+{
+    DisplayShm *d;
+
+    if (!h) {
+        return;
+    }
+    h->gpu_ops = ops;
+    d = h->d;
+    if (!d || h->idx == UINT_MAX || !h->present) {
+        return;
+    }
+    for (unsigned i = 0; i < d->n_viewers; i++) {
+        DShmVH *vh = viewer_vh(d->viewers[i], h);
+
+        if (vh && d->viewers[i]->ready && vh->set && vh_gpu_ok(vh)) {
+            vh_rehome(vh, false);
+        }
+    }
+}
+
+void dshm_head_gpu_ready(DShmHead *h)
+{
+    DisplayShm *d = h ? h->d : NULL;
+
+    if (!d || h->idx == UINT_MAX || !h->present) {
+        return;
+    }
+    for (unsigned i = 0; i < d->n_viewers; i++) {
+        DShmVH *vh = viewer_vh(d->viewers[i], h);
+
+        if (vh && vh->gpu_wait && d->viewers[i]->ready) {
+            vh->gpu_off = false;
+            vh->gpu_wait = false;
+            vh_rehome(vh, false);
+        }
+    }
 }
 
 /* ---- Delivery --------------------------------------------------------- */
@@ -1047,13 +1312,18 @@ static void vh_deliver(DShmVH *vh)
         vh->queued = NULL;
         dshm_out_remove(v, old);
     }
-    slot = pick_slot(vh);
+    if (vh->set->gpu) {
+        head_refresh_leases(h);
+        slot = vh->set->cur;
+    } else {
+        slot = pick_slot(vh);
+    }
     if (!slot) {
         h->skipped++;
         state_frame_write(h);
         return;
     }
-    if (stale_count(slot)) {
+    if (!slot->set->gpu && stale_count(slot)) {
         fill_slot(h, slot);
     }
     idx = old ? (int)lease : vh_free_index(vh);
@@ -1218,6 +1488,10 @@ void dshm_vh_eval(DShmVH *vh)
     if (vh->req.bound && vh->req.bound > h->completed_seq) {
         return;
     }
+    if (vh->set->gpu && (!vh->set->cur || h->gpu_pending)) {
+        /* the picture arrives with the GPU's publish */
+        return;
+    }
     seen = vh->reset ? 0 : vh->req.frame_seen;
     last = vh->reset ? 0 : vh->last_lent;
     if (h->n > MAX(seen, last)) {
@@ -1283,6 +1557,15 @@ void dshm_import_failed(DShmViewer *v, uint32_t region, uint32_t reason)
         if (!found) {
             continue;
         }
+        if (vh->set && vh->set->gpu && reason >= DSHM_IMPORT_CLASS &&
+            reason <= DSHM_IMPORT_REPRESENTATION &&
+            reason != DSHM_IMPORT_TOO_LARGE) {
+            /* the images cannot be used: shared memory is the fallback */
+            vh->gpu_off = true;
+            vh->gpu_wait = false;
+            vh_rehome(vh, false);
+            continue;
+        }
         switch (reason) {
         case DSHM_IMPORT_DEVICE_LOST:
             if (vh->lost_once) {
@@ -1336,6 +1619,8 @@ void dshm_vh_set_storage(DShmVH *vh, const uint32_t *storage)
     }
     memcpy(vh->v->storage, storage, sizeof(vh->v->storage));
     vh->lost_once = false;
+    vh->gpu_off = false;
+    vh->gpu_wait = false;
     vh_rehome(vh, false);
 }
 
@@ -1673,6 +1958,7 @@ void dshm_head_set_mode(DShmHead *h, uint32_t width, uint32_t height,
     /* Samples in flight are discarded; the new mode is sampled instead. */
     h->held = false;
     h->completed_seq = h->sample_seq;
+    h->gpu_pending = 0;
     h->waiting_retrace = false;
     if (h->idx == UINT_MAX) {
         return;
@@ -1690,12 +1976,15 @@ void dshm_head_changed_geometry(DShmHead *h)
     QTAILQ_FOREACH(set, &h->sets, next) {
         set->current = false;
         for (unsigned i = set->n; i-- > 0;) {
-            if (!set->slot[i]->lent) {
+            if (!slot_busy(set->slot[i])) {
                 DShmSlot *s = set->slot[i];
 
                 memmove(&set->slot[i], &set->slot[i + 1],
                         (set->n - i - 1) * sizeof(set->slot[0]));
                 set->n--;
+                if (set->cur == s) {
+                    set->cur = NULL;
+                }
                 slot_free(h, s);
             }
         }
@@ -1760,6 +2049,8 @@ void dshm_head_remove(DShmHead *h)
     }
     h->ops = NULL;
     h->opaque = NULL;
+    h->gpu_ops = NULL;
+    h->gpu_pending = 0;
     if (h->idx == UINT_MAX || !h->present) {
         return;
     }
@@ -1989,6 +2280,7 @@ static void display_shm_exit(Notifier *n, void *data)
 {
     DisplayShm *d = container_of(n, DisplayShm, exit);
 
+    d->exiting = true;
     dshm_transport_stop(d);
 }
 

@@ -54,7 +54,8 @@ Starting it
      - Offer ``qemu.test`` and add a test head.
 
 ``vulkan``, ``udmabuf`` (unless ``off``) and ``retire-on-disconnect`` (unless
-``held``) are refused until the extensions exist; ``shm-prefix`` names
+``held``) are refused until the extensions exist (``udmabuf`` is a viewer
+allocating for the CPU, not the GPU frames below); ``shm-prefix`` names
 shared memory where the host names it (macOS).
 
 Heads
@@ -107,14 +108,15 @@ Rectangles span the head's width; the producer does not track columns.
 Storage
 =======
 
-Only class ``shm`` exists. On Linux a slot is a memfd sealed against growing
-and shrinking and against further seals; a set the viewer may not write is
-also sealed against new writable mappings. ``RW_PIXELS`` gives the viewer a
+Class ``shm`` is the one every viewer has; ``dmabuf`` is described below. On
+Linux a slot is a memfd sealed against growing and shrinking and against
+further seals; a set the viewer may not write is also sealed against new
+writable mappings. ``RW_PIXELS`` gives the viewer a
 set of its own that it may write. ``IMPORT_FAILED`` re-homes the viewer:
 device lost (once per connection) and representation unsupported re-create
 its set, needs-write moves it to a writable set, too-large marks the head
 ``TOO_LARGE`` for it, and the rest end the session because no other class
-exists.
+exists. A viewer on GPU slots is moved to shared memory instead.
 
 On Windows a slot is an unnamed, pagefile-backed section. The producer
 copies the handle into the viewer's process (the socket's peer, found with
@@ -133,6 +135,62 @@ producer's process, so it is trusted not to write what it was given
 read-only. A viewer closed with input unread sees its connection reset, so
 an ``ERROR`` sent just before the close, such as ``LIMIT`` for a full output
 queue, can be lost.
+
+GPU frames (``linux.dmabuf``)
+=============================
+
+A head that draws on a GPU lends the images it drew instead of pixels. A
+viewer takes them with both halves of an offer: class 2 in its ``HELLO``
+storage list, and the extension ``linux.dmabuf`` (version 1, an eight-byte
+offer payload of zero flags). The accept carries ``allocator`` 2, the
+producer's GPU, and eight bytes of zero flags: **never map a slot**. A viewer
+with only one half, or an older one, keeps shared memory.
+
+The first viewer of a head that qualifies gets a set of GPU slots; a later
+viewer, and the console surface, keep shared memory, and the producer reads
+the picture back to the CPU only while one is on it. The set holds the newest
+picture, the image being drawn and one per credit of the viewer. Each is a
+``REGION`` of class 2 with the fd as its handle and a 32-byte payload:
+``fourcc``, flags (bit 0, ``GPU_WRITTEN``: no ``DMA_BUF_IOCTL_SYNC`` bracket
+is wanted), the DRM format modifier, plane offset, row pitch, width and
+height. ``HEAD.stride`` does not describe them.
+
+``FRAME`` is sent when the GPU has finished the image, its fence waited for by
+the producer off the display thread, so a viewer needs no wait of its own.
+The damage is always the whole frame. ``released[lease]`` means the
+viewer's GPU has finished sampling the image, not that the commands were
+submitted; only then does the image come back to be drawn. The viewer takes
+the image from the producer's queue family and gives it back. ``REQUEST``
+with ``SAMPLE_NOW`` is answered by the draw in flight, or the next.
+
+``IMPORT_FAILED`` for a GPU region (reasons 1 to 4, 6 and 7) moves the viewer
+to shared memory at once, as does a producer that cannot allocate the images;
+``SET_STORAGE`` offers the class again.
+
+The producer does not yet learn which formats, modifiers and adapter a viewer
+imports. It lends a linear XRGB8888 image on its own adapter to any viewer
+that offers both halves, and a viewer that cannot import it (another GPU, no
+linear import) answers ``IMPORT_FAILED`` and falls back to shared memory.
+Listing the viewer's formats, modifiers and adapter in ``HELLO`` is left for a
+later protocol step.
+
+Bit 1 of ``frame_flags`` is reserved for a sync_file fd on ``FRAME`` that
+would replace the producer's wait. Nothing sets it yet.
+
+Specified, not built:
+
+* macOS: display-shm is not built there yet, which comes first. Class 5 is
+  an IOSurface and a shared event; a Mach port cannot ride ``SCM_RIGHTS``.
+  The accept payload of ``macos.iosurface`` names a bootstrap service the
+  producer checked in for this instance, with a token. The viewer looks it
+  up, registers a receive port and the token over Mach, and the producer
+  sends each slot's port and the event's there, naming the ``REGION`` they
+  belong to. The event is signalled with the frame serial after the GPU
+  work, or the producer waits, as above.
+* Windows: class 4, ``win32.handle``. A slot is a shared NT handle, copied
+  into the viewer's process with ``DuplicateHandle`` as a pagefile section is,
+  into the last eight bytes of ``REGION``. A shared fence handle, waited on
+  for the frame serial, replaces the host wait. The lease rules are the same.
 
 Input
 =====
@@ -178,8 +236,8 @@ bytes), then the u32 ``sets`` at 88 and ``max_queued`` at 92.
 Not yet
 =======
 
-macOS (not built or run), the ``vk.external-memory``,
-``linux.dmabuf`` and ``sgi.raw-scanout`` extensions, leaving the cursor out
+macOS (not built or run), the ``vk.external-memory`` and
+``sgi.raw-scanout`` extensions, a GPU slot on macOS or Windows, leaving the cursor out
 of the picture, horizontal damage extents, a console created after a viewer
 connected (it becomes a head, or an unsupported one, at the next connection), and the held-sample ``CONTROL``
 for a producer that samples elsewhere than its own thread.
