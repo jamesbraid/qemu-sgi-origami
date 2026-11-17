@@ -4,6 +4,7 @@
  */
 #include "qemu/osdep.h"
 #include "qapi/error.h"
+#include "qemu/atomic.h"
 #include "qemu/bswap.h"
 #include "hw/display/sgi/board-memory.h"
 #include "trace.h"
@@ -316,6 +317,22 @@ static inline uint8_t *sgi_board_memory_bytes(const SGIBoardMemory *m,
     return at <= m->size && bpp <= m->size - at ? m->bytes + at : NULL;
 }
 
+/* Make row y's bytes current for a load, or for a store (which keeps them). */
+static inline void sgi_plane_gpu_touch(const SGIBoardMemory *m,
+                                       const SGIPlane *p, int y, bool write)
+{
+    const SGIBoardMemoryGpu *g = m->gpu;
+    uint8_t state;
+
+    if (likely(!g) || !g->rows[p->id] || (uint32_t)y >= g->height[p->id]) {
+        return;
+    }
+    state = qatomic_read(&g->rows[p->id][y]);
+    if (write ? state != SGI_ROWS_CPU : state == SGI_ROWS_GPU) {
+        g->cpu_access(g->opaque, p->id, y, write);
+    }
+}
+
 uint32_t sgi_plane_load(const SGIBoardMemory *m, const SGIPlane *p,
                         int x, int y)
 {
@@ -327,6 +344,7 @@ uint32_t sgi_plane_load(const SGIBoardMemory *m, const SGIPlane *p,
     if (!sgi_plane_contains(p, x, y)) {
         return 0;
     }
+    sgi_plane_gpu_touch(m, p, y, false);
     bpp = sgi_plane_bpp(p->format);
     at = sgi_plane_offset(p, x, y, bpp);
     if (m->bytes) {
@@ -354,6 +372,7 @@ void sgi_plane_store(SGIBoardMemory *m, const SGIPlane *p, int x, int y,
     if (!sgi_plane_contains(p, x, y)) {
         return;
     }
+    sgi_plane_gpu_touch(m, p, y, true);
     bpp = sgi_plane_bpp(p->format);
     at = sgi_plane_offset(p, x, y, bpp);
     if (m->bytes) {
@@ -382,6 +401,8 @@ bool sgi_plane_run(const SGIBoardMemory *m, const SGIPlane *p, int x, int y,
         !sgi_plane_contains(p, x + n - 1, y)) {
         return false;
     }
+    /* The caller may store through the run. */
+    sgi_plane_gpu_touch(m, p, y, true);
     bpp = sgi_plane_bpp(p->format);
     host = sgi_board_memory_host(m, sgi_plane_offset(p, x, y, bpp),
                                  (uint64_t)n * bpp);

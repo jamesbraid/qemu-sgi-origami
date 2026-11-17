@@ -114,6 +114,7 @@ hw/display/sgi/board-memory.c
 hw/display/sgi/command-fetch.c
 hw/display/sgi/gbe.c
 hw/display/sgi/gl-context.c
+hw/display/sgi/gpu-board.c
 hw/display/sgi/pixel-dma.c
 hw/display/sgi/rasterizer.c
 hw/display/sgi/render-resource.c
@@ -382,6 +383,7 @@ include/hw/audio/sgi-rad1-audio-pcm.h
 include/hw/audio/sgi-rad1-audio.h
 include/hw/char/sgi-ioc-serial-dma.h
 include/hw/char/sgi-ioc3-parallel.h
+include/hw/display/sgi-gpu-board.h
 include/hw/display/sgi-gpu-scanout.h
 include/hw/display/sgi-gpu-vpro.h
 include/hw/display/sgi-gpu.h

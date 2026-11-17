@@ -75,6 +75,20 @@ typedef struct SGIBoardPage {
     uint64_t guest;             /* the page's guest address */
 } SGIBoardPage;
 
+/*
+ * A host GPU may hold the newest copy of a plane's rows (rows[id], a byte per
+ * row): CPU, the bytes here are current; BOTH, equal; GPU, only the GPU's is.
+ * A load of a GPU row or a store to a non-CPU row calls cpu_access first.
+ */
+enum { SGI_ROWS_CPU, SGI_ROWS_BOTH, SGI_ROWS_GPU };
+
+typedef struct SGIBoardMemoryGpu {
+    void *opaque;
+    void (*cpu_access)(void *opaque, uint32_t plane, uint32_t y, bool write);
+    uint8_t *rows[SGI_PLANES_MAX];
+    uint32_t height[SGI_PLANES_MAX];
+} SGIBoardMemoryGpu;
+
 typedef struct SGIBoardMemory {
     uint64_t size;
     uint8_t *bytes;             /* device-backed, else NULL */
@@ -85,6 +99,8 @@ typedef struct SGIBoardMemory {
     /* A fixed table, so a plane pointer stays valid for the memory's life. */
     SGIPlane planes[SGI_PLANES_MAX];
     uint32_t nplanes;
+    /* Host-only, never migrated; NULL unless the family opts in. */
+    const SGIBoardMemoryGpu *gpu;
 } SGIBoardMemory;
 
 /*

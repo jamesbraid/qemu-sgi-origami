@@ -29,3 +29,7 @@ sgi_render_shadow_phase_mismatch(const char *signature, uint32_t scalar, uint32_
 sgi_render_shadow_refused(const char *signature, const char *reason) "%s reason %s"
 sgi_render_shadow_failed(const char *signature, int status, const char *error) "%s status %d: %s"
 sgi_render_shadow_disabled(const char *error) "%s"
+
+# gpu-board.c
+sgi_board_gpu_rows(const char *who, const char *why, unsigned surface, uint32_t y, uint32_t rows) "%s %s surface %u rows %u+%u"
+sgi_board_gpu_draw(const char *who, const char *what, uint32_t count) "%s %s count %u"

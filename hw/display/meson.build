@@ -29,7 +29,7 @@ system_ss.add(when: 'CONFIG_SGI_O2_GBE', if_true: files('sgi/gbe.c'))
 system_ss.add(when: 'CONFIG_SGI_DISPLAY',
               if_true: files('sgi/board-memory.c', 'sgi/command-fetch.c',
                              'sgi/head-guard.c', 'sgi/head-work.c',
-                             'sgi/gl-context.c', 'sgi/gl-select.c',
+                             'sgi/gl-context.c', 'sgi/gl-select.c', 'sgi/gpu-board.c',
                              'sgi/pixel-dma.c',
                              'sgi/rasterizer.c', 'sgi/render-resource.c',
                              'sgi/renderer.c', 'sgi/render-shadow.c',

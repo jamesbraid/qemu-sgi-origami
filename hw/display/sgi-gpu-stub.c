@@ -5,6 +5,7 @@
  */
 #include "qemu/osdep.h"
 #include "hw/display/sgi-gpu.h"
+#include "hw/display/sgi-gpu-board.h"
 #include "hw/display/sgi-gpu-vpro.h"
 #include "hw/display/sgi-gpu-scanout.h"
 
@@ -85,6 +86,17 @@ uint64_t sgi_gpu_vpro_tris(SgiGpuPlane *colour, const SgiGpuVproTri *tris,
 }
 
 uint64_t sgi_gpu_vpro_clear(SgiGpuPlane *plane, const SgiGpuVproClear *clear)
+{
+    return 0;
+}
+
+uint64_t sgi_gpu_fill_tris(SgiGpuPlane *plane, uint32_t sub_bits,
+                           const SgiGpuFillTri *tris, size_t count)
+{
+    return 0;
+}
+
+uint64_t sgi_gpu_fill_clear(SgiGpuPlane *plane, const SgiGpuFillClear *clear)
 {
     return 0;
 }

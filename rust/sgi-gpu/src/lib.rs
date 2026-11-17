@@ -8,6 +8,7 @@ mod device;
 #[allow(dead_code)]
 mod plane;
 
+mod fill;
 mod frame;
 #[cfg(all(test, target_os = "linux"))]
 mod frame_viewer_test;
