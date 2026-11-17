@@ -343,6 +343,7 @@ hw/misc/sgi-mgras-raster.h
 hw/misc/sgi-mgras-texture.c
 hw/misc/sgi-mgras-texture.h
 hw/misc/sgi-mgras.c
+hw/misc/sgi-odyssey-gpu.c
 hw/misc/sgi-odyssey-native-mesa.c
 hw/misc/sgi-odyssey-planes.c
 hw/misc/sgi-odyssey-scanout-gpu.c
@@ -448,6 +449,7 @@ include/hw/misc/sgi-l1-provider.h
 include/hw/misc/sgi-l2-hub.h
 include/hw/misc/sgi-mgras.h
 include/hw/misc/sgi-odyssey-clock.h
+include/hw/misc/sgi-odyssey-gpu.h
 include/hw/misc/sgi-odyssey-native-mesa.h
 include/hw/misc/sgi-odyssey-planes.h
 include/hw/misc/sgi-odyssey-scanout-gpu.h

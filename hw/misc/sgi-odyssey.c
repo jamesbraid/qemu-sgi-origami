@@ -3839,9 +3839,22 @@ static const SGIPlane *odyssey_buffer_plane(SGIOdysseyState *s, unsigned b)
                sgi_board_memory_plane(&s->mem, s->colour_plane);
 }
 
+/*
+ * With x-gpu a row the GPU drew is downloaded before the CPU reads it, and
+ * before it writes it, which also leaves the row with the CPU.
+ */
+static inline void odyssey_gpu_touch(SGIOdysseyState *s, unsigned b,
+                                     int64_t y, int64_t rows, bool write)
+{
+    if (s->gpu && y >= 0 && odyssey_gpu_needs(s->gpu, b, y, write)) {
+        odyssey_gpu_cpu_access(s->gpu, b, y, rows, write);
+    }
+}
+
 static uint32_t odyssey_buffer_load(SGIOdysseyState *s, unsigned b,
                                     int64_t x, int64_t y)
 {
+    odyssey_gpu_touch(s, b, y, 1, false);
     return sgi_plane_load(odyssey_buffer_mem(s, b),
                           odyssey_buffer_plane(s, b), x, y);
 }
@@ -3849,6 +3862,7 @@ static uint32_t odyssey_buffer_load(SGIOdysseyState *s, unsigned b,
 static void odyssey_buffer_store(SGIOdysseyState *s, unsigned b,
                                  int64_t x, int64_t y, uint32_t word)
 {
+    odyssey_gpu_touch(s, b, y, 1, true);
     sgi_plane_store(odyssey_buffer_mem(s, b), odyssey_buffer_plane(s, b),
                     x, y, word);
 }
@@ -4310,6 +4324,7 @@ static uint8_t *odyssey_buffer_row(SGIOdysseyState *s, unsigned b, int64_t x,
         y >= p->height) {
         return NULL;
     }
+    odyssey_gpu_touch(s, b, y, 1, true);
     at = p->base + (uint64_t)y * p->stride + (uint64_t)x * size;
     len = (uint64_t)n * size;
     if (at > m->size || len > m->size - at) {
@@ -6266,6 +6281,7 @@ static bool odyssey_gl_load_rgba(void *opaque, SGIColourTarget target,
     if (!p || !mem->bytes || !sgi_plane_contains(p, x, y)) {
         return false;
     }
+    odyssey_gpu_touch(s, target, y, 1, false);
     offset = (uint64_t)y * p->stride + (uint64_t)x * sizeof(uint32_t);
     if (offset > p->len || sizeof(uint32_t) > p->len - offset ||
         uadd64_overflow(p->base, offset, &at) || at > limit ||
@@ -7737,6 +7753,17 @@ static void odyssey_texture_vertex(SGIOdysseyState *s)
 }
 
 /*
+ * Whether this draw may go to the GPU: RGBA colour planes, no id test, in a
+ * head-thread slice (the only place a GPU draw is submitted).
+ */
+static bool odyssey_gpu_draws(SGIOdysseyState *s)
+{
+    return s->gpu && sgi_head_work_may_unlock(&s->work) &&
+           !odyssey_gl_index_mode(s) && !odyssey_id_compare_active(s) &&
+           !odyssey_gl_to_aux(s) && odyssey_gpu_usable(s->gpu);
+}
+
+/*
  * The context emits one assembled primitive here; rasterize it into the
  * plane. Shared between the fire-and-forget and checked sink callbacks
  * below; only the out-of-memory result differs in how it is reported back.
@@ -7757,6 +7784,8 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
      */
     QEMU_UNINITIALIZED OdysseyTextureChain texture;
     SGIGLDrawResult result;
+    uint64_t gpu_before = 0;
+    bool gpu;
 
     if ((d->state->texture_2d || d->state->texture_3d) &&
         !odyssey_texture_setup(s, &image, &texture, &t.texture)) {
@@ -7783,6 +7812,11 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
     state.fog_index = (s->gl_fog[0] >> 12) & 0xfff;
     draw.state = &state;
     odyssey_gl_report_refusals(s, true);
+    gpu = odyssey_gpu_draws(s);
+    if (gpu) {
+        gpu_before = qatomic_read(&s->gpu->draws);
+        odyssey_gpu_target(s->gpu, &t);
+    }
     /*
      * In a slice of queued command work on the board's thread the draw
      * runs without the big lock. It reads and writes only the planes and
@@ -7800,6 +7834,12 @@ static SGIGLDrawResult odyssey_gl_draw_result(void *opaque,
         result = sgi_soft_draw(&rules, &t, &draw);
     }
     trace_sgi_odyssey_gl_draw_path("scalar", result, true);
+    if (gpu && d->mode >= SGI_GL_TRIANGLES && d->mode <= SGI_GL_POLYGON) {
+        qatomic_inc(&s->gpu->offered);
+        if (qatomic_read(&s->gpu->draws) != gpu_before) {
+            qatomic_inc(&s->gpu->taken);
+        }
+    }
     sgi_scanout_invalidate_all(&s->scanout);
     return result;
 }
@@ -7912,10 +7952,19 @@ static void odyssey_gl_raster(void *opaque, const SGIRasterOp *op)
     SGIRasterTarget t = odyssey_gl_target(s);
     SGIRasterRules rules = odyssey_gl_operation_rules(s);
 
+    bool gpu = op->kind == SGI_RASTER_CLEAR && odyssey_gpu_draws(s);
+
     odyssey_gl_report_refusals(s, op->kind != SGI_RASTER_CLEAR ||
                                   (op->clear_buffers &
                                    SGI_GL_COLOR_BUFFER_BIT));
+    if (gpu) {
+        odyssey_gpu_target(s->gpu, &t);
+        sgi_head_work_unlock(&s->work);
+    }
     sgi_soft_raster(&rules, &t, op);
+    if (gpu) {
+        sgi_head_work_relock(&s->work);
+    }
     sgi_scanout_invalidate_all(&s->scanout);
 }
 
@@ -14873,6 +14922,18 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
                                                       &stencil, &error_abort);
     }
 
+    if (s->gpu_enabled) {
+        if (s->mesa_renderer_enabled) {
+            error_setg(errp, "x-gpu and x-mesa-renderer are exclusive");
+            return;
+        }
+        s->gpu = odyssey_gpu_new(s, s->gpu_min_pixels, &local_err);
+        if (!s->gpu) {
+            error_propagate(errp, local_err);
+            return;
+        }
+    }
+
     /*
      * The shared scanout owns the console and its surface, resolving the
      * colour plane through odyssey_head_ops.resolve_row. Setting the mode
@@ -14908,6 +14969,8 @@ static void odyssey_unrealize(DeviceState *dev)
     s->mesa_renderer = NULL;
     address_space_destroy(&s->fabric_as);
     sgi_scanout_cleanup(&s->scanout);
+    odyssey_gpu_free(s->gpu);
+    s->gpu = NULL;
     g_free(s->did);
     g_free(s->overlay);
     g_free(s->poly_marks);
@@ -14959,6 +15022,7 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
      */
     memset(s->mem.bytes, 0, s->mem.bytes_len);
     memset(s->buffer1_mem.bytes, 0, s->buffer1_mem.bytes_len);
+    odyssey_gpu_reset(s->gpu);
     memset(s->obj_mem.bytes, 0, s->obj_mem.bytes_len);
     memset(s->stencil_mem.bytes, 0, s->stencil_mem.bytes_len);
     memset(s->did, 0, SGI_ODYSSEY_WIDTH * SGI_ODYSSEY_HEIGHT * sizeof(*s->did));
@@ -15242,6 +15306,49 @@ static void odyssey_test_get_unlocked_draws(Object *obj, Visitor *v,
     visit_type_uint32(v, name, &value, errp);
 }
 
+/* x-gpu's device: "opening" (it opens on a worker thread), "ready" or not. */
+static char *odyssey_get_gpu_state(Object *obj, Error **errp)
+{
+    OdysseyGpu *g = SGI_ODYSSEY(obj)->gpu;
+
+    return g_strdup(g ? odyssey_gpu_state(g) : "unavailable");
+}
+
+/* x-gpu's counters: switches, readback, draws, clears, uploads, offers. */
+static void odyssey_get_gpu_counter(Object *obj, Visitor *v, const char *name,
+                                    void *opaque, Error **errp)
+{
+    OdysseyGpu *g = SGI_ODYSSEY(obj)->gpu;
+    uint64_t value = 0;
+
+    if (g) {
+        switch ((uintptr_t)opaque) {
+        case 0:
+            value = qatomic_read(&g->switches);
+            break;
+        case 1:
+            value = qatomic_read(&g->readback_bytes);
+            break;
+        case 2:
+            value = qatomic_read(&g->draws);
+            break;
+        case 4:
+            value = qatomic_read(&g->clears);
+            break;
+        case 5:
+            value = qatomic_read(&g->offered);
+            break;
+        case 6:
+            value = qatomic_read(&g->taken);
+            break;
+        default:
+            value = qatomic_read(&g->upload_bytes);
+            break;
+        }
+    }
+    visit_type_uint64(v, name, &value, errp);
+}
+
 /* The command FIFO's level: the stores still waiting. */
 static void odyssey_test_get_work_waiting(Object *obj, Visitor *v,
                                           const char *name, void *opaque,
@@ -15307,6 +15414,28 @@ static void odyssey_instance_init(Object *obj)
                         odyssey_test_get_work_waiting, NULL, NULL, NULL);
     object_property_add(obj, "x-test-unlocked-draws", "uint32", NULL,
                         odyssey_test_get_unlocked_draws, NULL, NULL, NULL);
+    object_property_add_str(obj, "x-gpu-state", odyssey_get_gpu_state, NULL);
+    object_property_add(obj, "x-gpu-switches", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)0);
+    object_property_add(obj, "x-gpu-readback-bytes", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)1);
+    object_property_add(obj, "x-gpu-draws", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)2);
+    object_property_add(obj, "x-gpu-offered", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)5);
+    object_property_add(obj, "x-gpu-taken", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)6);
+    object_property_add(obj, "x-gpu-clears", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)4);
+    object_property_add(obj, "x-gpu-upload-bytes", "uint64", NULL,
+                        odyssey_get_gpu_counter, NULL, NULL,
+                        (void *)(uintptr_t)3);
     object_property_add_uint32_ptr(obj, "x-test-pixel-x", &s->test_pixel_x,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add_uint32_ptr(obj, "x-test-pixel-y", &s->test_pixel_y,
@@ -15406,6 +15535,13 @@ static const Property odyssey_properties[] = {
     DEFINE_PROP_STRING("nic-record", SGIOdysseyState, nic_record),
     DEFINE_PROP_BOOL("x-mesa-renderer", SGIOdysseyState,
                      mesa_renderer_enabled, false),
+    /*
+     * Flat fills and clears draw on the host GPU; draws under x-gpu-min-pixels
+     * stay on the CPU.
+     */
+    DEFINE_PROP_BOOL("x-gpu", SGIOdysseyState, gpu_enabled, false),
+    DEFINE_PROP_UINT32("x-gpu-min-pixels", SGIOdysseyState,
+                       gpu_min_pixels, 4096),
     /*
      * Large GL draws run in bands of rows on several host threads. Off
      * draws every pixel on the calling thread, for debugging; the pixels
@@ -15735,6 +15871,8 @@ static int odyssey_pre_load(void *opaque)
 {
     SGIOdysseyState *s = opaque;
 
+    /* The planes about to load are the CPU's; drop the GPU's copies. */
+    odyssey_gpu_reset(s->gpu);
     /* An absent subsection replaces any destination state with defaults. */
     odyssey_back_material_reset(opaque);
     odyssey_raster_latch_reset(s);
@@ -15770,6 +15908,7 @@ static int odyssey_post_load(void *opaque, int version_id)
     SGIOdysseyState *s = opaque;
     Error *local_err = NULL;
 
+    odyssey_gpu_reset(s->gpu);
     if (s->gl_program_half >= ODSY_PROG_ENTRY_HALFWORDS) {
         return -EINVAL;
     }
@@ -15827,9 +15966,13 @@ static int odyssey_post_load(void *opaque, int version_id)
 /* The machine stopped first (odyssey_work_vm_state); this only makes sure. */
 static int odyssey_work_pre_save(void *opaque)
 {
+    SGIOdysseyState *s = opaque;
+
     sgi_head_work_enter_work();
     odyssey_work_drain(opaque, UINT64_MAX);
     sgi_head_work_leave();
+    /* The planes saved are the CPU's, so every row the GPU drew comes down. */
+    odyssey_gpu_sync_all(s->gpu);
     return 0;
 }
 

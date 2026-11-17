@@ -13,6 +13,7 @@
 #include "hw/display/sgi/head-work.h"
 #include "hw/display/sgi/pixel-dma.h"
 #include "hw/display/sgi/scanout.h"
+#include "hw/misc/sgi-odyssey-gpu.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "hw/mips/sgi/xio-board.h"
 #include "system/memory.h"
@@ -590,6 +591,10 @@ struct SGIOdysseyState {
     bool raster_bands;
     /* Host-only qtest band threshold (x-test-raster-band-pixels). */
     uint32_t raster_band_pixels;
+    /* x-gpu: colour planes on the host GPU (hw/misc/sgi-odyssey-gpu.c). */
+    bool gpu_enabled;
+    uint32_t gpu_min_pixels;
+    OdysseyGpu *gpu;
     /* Read-only x-mesa-* properties; host diagnostics, never migrated. */
     OdysseyMesaCounts mesa_counts;
     bool gl_in_prim;

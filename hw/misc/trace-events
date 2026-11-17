@@ -219,6 +219,8 @@ sgi_odyssey_draw_mask(uint32_t mask) "mask 0x%" PRIx32
 sgi_odyssey_buffer_word(uint32_t reg, uint32_t word) "reg 0x%" PRIx32 " word 0x%" PRIx32
 sgi_odyssey_board_oob(uint32_t base, uint32_t limit_mib) "destination base 0x%" PRIx32 " exceeds the %u MiB this board reports"
 sgi_odyssey_gl_draw_path(const char *backend, int result, bool called) "backend %s result %d called=%d"
+sgi_odyssey_gpu_rows(const char *why, unsigned buffer, uint32_t y, uint32_t rows) "%s buffer %u rows %u+%u"
+sgi_odyssey_gpu_draw(const char *what, uint32_t count) "%s count %u"
 # draw flags bits 0..6: back colours, polygon modes/stipple, point/line/polygon smooth, line stipple.
 # state flags bits 0..12: depth, stencil, blend, alpha, fog, cull, clip, colour/index logic, texture 3D, offset, window matrix, bound.
 sgi_odyssey_mesa_draw_input(uint32_t mode, uint32_t count, uint32_t draw_flags, uint32_t state_flags, uint32_t shade, uint32_t index_bits, uint32_t buffers, uint32_t mask, uint32_t front, uint32_t blend) "mode %u count %u draw-flags 0x%x state-flags 0x%x shade %u index-bits %u buffers 0x%x mask 0x%x front %u blend %u"
