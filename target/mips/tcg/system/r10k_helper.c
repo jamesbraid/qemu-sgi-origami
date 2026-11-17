@@ -69,9 +69,8 @@ static void r10k_icache_invalidate(CPUMIPSState *env, unsigned int tag)
 
 /*
  * Invalidate one primary data-cache way: state to invalid, the secondary-way
- * bit to zero, the state modifier back to normal (001), state parity to
- * zero. The opt-in data-cache view moves dirty data to secondary before a
- * writeback operation calls this invalidation.
+ * bit to zero, the state modifier back to normal (001), and state parity
+ * to zero.
  */
 static void r10k_dcache_invalidate(CPUMIPSState *env, unsigned int tag)
 {
@@ -103,8 +102,6 @@ static uint64_t r10k_scache_tag_pa(CPUMIPSState *env, unsigned int tag)
 static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
                                    unsigned int way, uint64_t paddr,
                                    target_ulong vaddr);
-static bool r10k_scache_flush_primaries(CPUMIPSState *env, hwaddr pa);
-
 static MemTxAttrs r10k_cache_backing_attrs(CPUMIPSState *env)
 {
     MemTxAttrs attrs = { .mips_cca = 3 };
@@ -121,29 +118,17 @@ static unsigned int r10k_scache_word_index(CPUMIPSState *env, hwaddr pa,
     return (quad_set * R10K_SCACHE_WAYS + way) * 2 + ((pa >> 3) & 1);
 }
 
-static unsigned int r10k_dcache_word_index(hwaddr pa, unsigned int way)
-{
-    /* The opt-in view accepts direct xkphys C=3, where VA[13:2] equals PA. */
-    return ((pa >> 2) & 0xfff) * R10K_PCACHE_WAYS + way;
-}
-
 /*
  * A secondary data doubleword is held as TagHi:TagLo, TagHi in bits 63:32. The
  * memory order is a MODEL CHOICE: the word at the lower address is TagLo and
  * the next one TagHi. The refill delivery order is not established; the one
  * piece of evidence, a third-party simulation of a boot PROM, agrees with this
- * choice. Index Load/Store Data, refills and writebacks all go through these
- * so they cannot disagree, and a change of mind is a change here.
+ * choice. Index Load/Store Data and writebacks use this order.
  */
 static void r10k_scache_dword_to_memory(uint8_t *bytes, uint64_t dword)
 {
     stl_be_p(bytes, dword);
     stl_be_p(bytes + 4, dword >> 32);
-}
-
-static uint64_t r10k_scache_dword_from_memory(const uint8_t *bytes)
-{
-    return ldl_be_p(bytes) | (uint64_t)ldl_be_p(bytes + 4) << 32;
 }
 
 /* The shift that moves the byte at @pa to bit 0 of its doubleword. */
@@ -211,8 +196,8 @@ static bool r10k_scache_operand(CPUMIPSState *env, hwaddr paddr,
  * neither allocate nor evict: a staged line lives until an explicit
  * operation ends it.
  *
- * The opt-in data-cache view (cache-data-visibility) already routes every
- * cached access through the arrays, so the page index is off there.
+ * These lines are selected only for cached references. The backing view
+ * handles the rest of each page.
  */
 
 /* The address of the block a valid, reachable secondary tag names. */
@@ -474,23 +459,6 @@ static const MemoryRegionOps r10k_staged_ops = {
               .unaligned = true },
 };
 
-static int r10k_scache_find(CPUMIPSState *env, hwaddr pa)
-{
-    unsigned int set = (pa / r10k_scache_line_size(env)) &
-                       (r10k_scache_sets(env) - 1);
-
-    for (unsigned int way = 0; way < R10K_SCACHE_WAYS; way++) {
-        unsigned int tag = set * R10K_SCACHE_WAYS + way;
-
-        if ((env->r10k->scache_taglo[tag] & (3 << 10)) &&
-            r10k_scache_tag_pa(env, tag) == (pa >> 18)) {
-            env->r10k->scache_mru[set] = way;
-            return way;
-        }
-    }
-    return -1;
-}
-
 static bool r10k_scache_writeback(CPUMIPSState *env, hwaddr pa,
                                   unsigned int way)
 {
@@ -521,293 +489,24 @@ static bool r10k_scache_writeback(CPUMIPSState *env, hwaddr pa,
     return true;
 }
 
-static int r10k_scache_fill(CPUMIPSState *env, hwaddr pa)
-{
-    R10KState *r10k = env->r10k;
-    unsigned int line_size = r10k_scache_line_size(env);
-    unsigned int set = (pa / line_size) & (r10k_scache_sets(env) - 1);
-    unsigned int way;
-    unsigned int tag;
-    uint8_t bytes[R10K_SCACHE_LINE_SIZE];
-    int found = r10k_scache_find(env, pa);
-
-    if (found >= 0) {
-        return found;
-    }
-    way = !(r10k->scache_taglo[set * R10K_SCACHE_WAYS] & (3 << 10)) ? 0 :
-          !(r10k->scache_taglo[set * R10K_SCACHE_WAYS + 1] & (3 << 10)) ? 1 :
-          r10k->scache_mru[set] ^ 1;
-    tag = set * R10K_SCACHE_WAYS + way;
-    if (r10k->scache_taglo[tag] & (3 << 10)) {
-        hwaddr old = (r10k_scache_tag_pa(env, tag) << 18) |
-                     (pa & (0x3ffff & ~(hwaddr)(line_size - 1)));
-
-        if (!r10k_scache_flush_primaries(env, old) ||
-            !r10k_scache_writeback(env, old, way)) {
-            return -1;
-        }
-        r10k_scache_invalidate(env, set, way, old, old);
-    }
-    pa &= ~(hwaddr)(line_size - 1);
-    if (address_space_read(&MIPS_CPU(env_cpu(env))->cache_backing_as, pa,
-                           r10k_cache_backing_attrs(env), bytes,
-                           line_size) != MEMTX_OK) {
-        qemu_log_mask(LOG_GUEST_ERROR,
-                      "R10000 cache fill failed at 0x%" HWADDR_PRIx "\n",
-                      pa);
-        return -1;
-    }
-    for (unsigned int i = 0; i < line_size; i += 8) {
-        r10k->scache_data[r10k_scache_word_index(env, pa + i, way)] =
-            r10k_scache_dword_from_memory(bytes + i);
-    }
-    r10k_scache_write_tag(env, tag,
-                          (uint32_t)(extract64(pa, 18, 18) << 14) |
-                          ((uint32_t)extract64(pa, 12, 2) << 7) | (1 << 10),
-                          extract64(pa, 36, 4));
-    r10k->scache_mru[set] = way;
-    return way;
-}
-
-static bool r10k_dcache_writeback(CPUMIPSState *env, hwaddr pa,
-                                  unsigned int way)
-{
-    R10KState *r10k = env->r10k;
-    unsigned int set = (pa >> 5) & (R10K_DCACHE_SETS - 1);
-    unsigned int tag = set * R10K_PCACHE_WAYS + way;
-    int sway;
-    unsigned int stag;
-
-    if ((r10k->dcache_taglo[tag] & (3 << 6)) != (3 << 6)) {
-        return true;
-    }
-    pa &= ~(hwaddr)(R10K_DCACHE_LINE_SIZE - 1);
-    sway = r10k_scache_fill(env, pa);
-    if (sway < 0) {
-        return false;
-    }
-    stag = ((pa / r10k_scache_line_size(env)) &
-            (r10k_scache_sets(env) - 1)) * R10K_SCACHE_WAYS + sway;
-    for (unsigned int i = 0; i < R10K_DCACHE_LINE_SIZE; i += 4) {
-        hwaddr word_pa = pa + i;
-        unsigned int index = r10k_scache_word_index(env, word_pa, sway);
-        uint64_t word = r10k->scache_data[index];
-        uint32_t data = r10k->dcache_data[
-            r10k_dcache_word_index(word_pa, way)];
-
-        r10k->scache_data[index] = (word_pa & 4) ?
-            (word & UINT64_C(0x00000000ffffffff)) | ((uint64_t)data << 32) :
-            (word & UINT64_C(0xffffffff00000000)) | data;
-    }
-    r10k_scache_write_tag(env, stag, r10k->scache_taglo[stag] | (3 << 10),
-                          r10k->scache_taghi[stag]);
-    r10k->dcache_taglo[tag] = (r10k->dcache_taglo[tag] & ~(3 << 6)) |
-                               (1 << 6);
-    return true;
-}
-
-static int r10k_dcache_fill(CPUMIPSState *env, hwaddr pa)
-{
-    R10KState *r10k = env->r10k;
-    unsigned int set = (pa >> 5) & (R10K_DCACHE_SETS - 1);
-    unsigned int way;
-    unsigned int tag;
-    int sway;
-
-    for (way = 0; way < R10K_PCACHE_WAYS; way++) {
-        tag = set * R10K_PCACHE_WAYS + way;
-        if ((r10k->dcache_taglo[tag] & (3 << 6)) &&
-            r10k_dcache_tag_pa(env, tag) == (pa >> 12)) {
-            r10k->dcache_lru[set] = way;
-            return way;
-        }
-    }
-    way = !(r10k->dcache_taglo[set * R10K_PCACHE_WAYS] & (3 << 6)) ? 0 :
-          !(r10k->dcache_taglo[set * R10K_PCACHE_WAYS + 1] & (3 << 6)) ? 1 :
-          r10k->dcache_lru[set] ^ 1;
-    tag = set * R10K_PCACHE_WAYS + way;
-    if (r10k->dcache_taglo[tag] & (3 << 6)) {
-        hwaddr old = (r10k_dcache_tag_pa(env, tag) << 12) |
-                     ((set & 0x7f) << 5);
-
-        if (!r10k_dcache_writeback(env, old, way)) {
-            return -1;
-        }
-    }
-    pa &= ~(hwaddr)(R10K_DCACHE_LINE_SIZE - 1);
-    sway = r10k_scache_fill(env, pa);
-    if (sway < 0) {
-        return -1;
-    }
-    for (unsigned int i = 0; i < R10K_DCACHE_LINE_SIZE; i += 4) {
-        hwaddr word_pa = pa + i;
-        uint64_t dword = r10k->scache_data[
-            r10k_scache_word_index(env, word_pa, sway)];
-
-        r10k->dcache_data[r10k_dcache_word_index(word_pa, way)] =
-            (word_pa & 4) ? dword >> 32 : dword;
-    }
-    r10k->dcache_taglo[tag] = (uint32_t)(extract64(pa, 12, 24) << 8) |
-                               (1 << 6);
-    r10k->dcache_taghi[tag] = extract64(pa, 36, 4);
-    r10k->dcache_lru[set] = way;
-    return way;
-}
-
-static bool r10k_scache_flush_primaries(CPUMIPSState *env, hwaddr pa)
-{
-    hwaddr block = pa & ~(hwaddr)(r10k_scache_line_size(env) - 1);
-
-    for (unsigned int set = 0; set < R10K_DCACHE_SETS; set++) {
-        for (unsigned int way = 0; way < R10K_PCACHE_WAYS; way++) {
-            unsigned int tag = set * R10K_PCACHE_WAYS + way;
-            hwaddr line = (r10k_dcache_tag_pa(env, tag) << 12) |
-                          ((set & 0x7f) << 5);
-
-            if ((env->r10k->dcache_taglo[tag] & (3 << 6)) == (3 << 6) &&
-                (line & ~(hwaddr)(r10k_scache_line_size(env) - 1)) ==
-                block) {
-                if (!r10k_dcache_writeback(env, line, way)) {
-                    return false;
-                }
-            }
-        }
-    }
-    return true;
-}
-
-static bool r10k_cache_backing_is_ram(CPUMIPSState *env, hwaddr pa,
-                                       MemTxAttrs attrs)
-{
-    hwaddr line_size = r10k_scache_line_size(env);
-    hwaddr line = pa & ~(line_size - 1);
-    hwaddr len = line_size;
-    hwaddr xlat;
-    MemoryRegion *mr;
-
-    RCU_READ_LOCK_GUARD();
-    mr = address_space_translate(&MIPS_CPU(env_cpu(env))->cache_backing_as,
-                                 line, &xlat, &len, false, attrs);
-    return mr && memory_region_is_ram(mr) &&
-           !memory_region_is_ram_device(mr) && len == line_size;
-}
-
-static MemTxResult r10k_cache_read(void *opaque, hwaddr pa, uint64_t *data,
-                                    unsigned size, MemTxAttrs attrs)
-{
-    MIPSCPU *cpu = opaque;
-    CPUMIPSState *env = &cpu->env;
-    uint8_t bytes[8] = { };
-    MemTxResult result;
-
-    if (attrs.mips_cca != 3 ||
-        !r10k_cache_backing_is_ram(env, pa, attrs)) {
-        result = address_space_read(&cpu->cache_backing_as, pa, attrs,
-                                    bytes, size);
-        if (result != MEMTX_OK) {
-            return result;
-        }
-    } else {
-        for (unsigned int i = 0; i < size; i++) {
-            hwaddr byte_pa = pa + i;
-            int way = r10k_dcache_fill(env, byte_pa);
-            uint32_t word;
-
-            if (way < 0) {
-                return MEMTX_ERROR;
-            }
-            word = env->r10k->dcache_data[
-                r10k_dcache_word_index(byte_pa, way)];
-
-            bytes[i] = word >> ((3 - (byte_pa & 3)) * 8);
-        }
-    }
-    *data = 0;
-    for (unsigned int i = 0; i < size; i++) {
-        *data = (*data << 8) | bytes[i];
-    }
-    return MEMTX_OK;
-}
-
-static MemTxResult r10k_cache_write(void *opaque, hwaddr pa, uint64_t data,
-                                     unsigned size, MemTxAttrs attrs)
-{
-    MIPSCPU *cpu = opaque;
-    CPUMIPSState *env = &cpu->env;
-    uint8_t bytes[8];
-
-    for (unsigned int i = 0; i < size; i++) {
-        bytes[i] = data >> ((size - 1 - i) * 8);
-    }
-    if (attrs.mips_cca != 3 ||
-        !r10k_cache_backing_is_ram(env, pa, attrs)) {
-        return address_space_write(&cpu->cache_backing_as, pa, attrs,
-                                   bytes, size);
-    }
-    for (unsigned int i = 0; i < size; i++) {
-        hwaddr byte_pa = pa + i;
-        int way = r10k_dcache_fill(env, byte_pa);
-        unsigned int index;
-        unsigned int shift;
-        unsigned int set;
-        unsigned int tag;
-
-        if (way < 0) {
-            return MEMTX_ERROR;
-        }
-        index = r10k_dcache_word_index(byte_pa, way);
-        shift = (3 - (byte_pa & 3)) * 8;
-        set = (byte_pa >> 5) & (R10K_DCACHE_SETS - 1);
-        tag = set * R10K_PCACHE_WAYS + way;
-
-        env->r10k->dcache_data[index] =
-            (env->r10k->dcache_data[index] & ~(0xffu << shift)) |
-            ((uint32_t)bytes[i] << shift);
-        env->r10k->dcache_taglo[tag] =
-            (env->r10k->dcache_taglo[tag] & ~(3 << 6)) | (3 << 6);
-    }
-    return MEMTX_OK;
-}
-
-static const MemoryRegionOps r10k_cache_ops = {
-    .read_with_attrs = r10k_cache_read,
-    .write_with_attrs = r10k_cache_write,
-    .endianness = DEVICE_BIG_ENDIAN,
-    .valid = { .min_access_size = 1, .max_access_size = 8,
-               .unaligned = true },
-    .impl = { .min_access_size = 1, .max_access_size = 8,
-              .unaligned = true },
-};
-
-/*
- * Set up the regions behind an R10000-family processor's cached accesses:
- * the opt-in data cache when cache-data-visibility asks for it, otherwise
- * the staged-line window. cpu.c installs them as address spaces.
- */
-void r10k_cache_memory_init(MIPSCPU *cpu)
+/* Set up the staged-line window and its RAM backing address space. */
+void r10k_staged_window_init(MIPSCPU *cpu)
 {
     R10KState *r10k = cpu->env.r10k;
 
     address_space_init(&cpu->cache_backing_as, CPU(cpu)->memory,
                        "r10k-cache-backing");
-    if (cpu->cache_data_visibility) {
-        memory_region_init_io(&cpu->cache_memory, OBJECT(cpu),
-                              &r10k_cache_ops, cpu, "r10k-data-cache",
-                              UINT64_MAX);
-    } else {
-        memory_region_init_io(&cpu->staged_window, OBJECT(cpu),
-                              &r10k_staged_ops, cpu, "r10k-staged-lines",
-                              R10K_STAGED_SPAN);
-        r10k->staged_pages = g_hash_table_new(g_direct_hash,
-                                              g_direct_equal);
-        r10k->staging = true;
-    }
-    cpu->cache_memory_initialized = true;
+    memory_region_init_io(&cpu->staged_window, OBJECT(cpu),
+                          &r10k_staged_ops, cpu, "r10k-staged-lines",
+                          R10K_STAGED_SPAN);
+    r10k->staged_pages = g_hash_table_new(g_direct_hash, g_direct_equal);
+    r10k->staging = true;
+    cpu->staged_window_initialized = true;
 }
 
-void r10k_cache_memory_destroy(MIPSCPU *cpu)
+void r10k_staged_window_destroy(MIPSCPU *cpu)
 {
-    if (cpu->cache_memory_initialized) {
+    if (cpu->staged_window_initialized) {
         R10KState *r10k = cpu->env.r10k;
 
         if (r10k->staging) {
@@ -816,7 +515,7 @@ void r10k_cache_memory_destroy(MIPSCPU *cpu)
             r10k->staging = false;
         }
         address_space_destroy(&cpu->cache_backing_as);
-        cpu->cache_memory_initialized = false;
+        cpu->staged_window_initialized = false;
     }
 }
 
@@ -867,8 +566,7 @@ static void r10k_scache_invalidate_subsets(CPUMIPSState *env, uint64_t block,
  * index from its VA[13:12]. Hardware generates fresh ECC over those
  * fields; the model keeps no ECC machinery and nothing ever checks these
  * bits, so it stores zero. The MRU bit is pointed away from the
- * invalidated way. The opt-in data-cache view writes a dirty block to the
- * backing address space before calling this invalidation.
+ * invalidated way.
  */
 static void r10k_scache_invalidate(CPUMIPSState *env, unsigned int set,
                                    unsigned int way, uint64_t paddr,
@@ -1018,15 +716,6 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         unsigned int way = addr & 1;
         unsigned int tag = set * R10K_PCACHE_WAYS + way;
 
-        if (MIPS_CPU(env_cpu(env))->cache_data_visibility &&
-            (env->r10k->dcache_taglo[tag] & (3 << 6)) == (3 << 6)) {
-            hwaddr line = (r10k_dcache_tag_pa(env, tag) << 12) |
-                          ((set & 0x7f) << 5);
-
-            if (!r10k_dcache_writeback(env, line, way)) {
-                return;
-            }
-        }
         r10k_dcache_invalidate(env, tag);
         return;
     }
@@ -1034,11 +723,8 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
         (cache_type == 1 && (cache_operation == 0b100 ||
                              cache_operation == 0b101))) {
         /*
-         * Hit Invalidate (I)/(D) and Hit WriteBack Invalidate (D): both
-         * ways at the virtual index are compared against the physical
-         * address, and a valid matching way is invalidated. The write
-         * back distinguishing the last of the three moves data only in
-         * the opt-in data-cache view.
+         * Hit Invalidate (I)/(D) and Hit WriteBack Invalidate (D) compare
+         * both ways at the virtual index with the physical address.
          */
         unsigned int w;
 
@@ -1059,11 +745,6 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
                 if ((env->r10k->dcache_taglo[tag] & (3 << 6)) &&
                     r10k_dcache_tag_pa(env, tag) ==
                     extract64(paddr, 12, 28)) {
-                    if (MIPS_CPU(env_cpu(env))->cache_data_visibility &&
-                        cache_operation == 0b101 &&
-                        !r10k_dcache_writeback(env, paddr, w)) {
-                        return;
-                    }
                     r10k_dcache_invalidate(env, tag);
                 }
             }
@@ -1168,17 +849,6 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
 
             line &= ~(hwaddr)(r10k_scache_line_size(env) - 1);
 
-            /*
-             * A dirty line goes to memory whether the arrays are staged
-             * by hand or filled by the opt-in view. The primary data
-             * caches only hold data in the opt-in view. A block write
-             * that fails is logged and dropped; the line is still
-             * invalidated, so one wild tag cannot pin it forever.
-             */
-            if (MIPS_CPU(env_cpu(env))->cache_data_visibility &&
-                !r10k_scache_flush_primaries(env, line)) {
-                return;
-            }
             r10k_scache_writeback(env, line, slot.way);
             r10k_scache_invalidate(env, slot.set, slot.way, paddr, addr);
         }
@@ -1215,10 +885,6 @@ void r10k_cache_op(CPUMIPSState *env, target_ulong addr, uint32_t op,
             if ((env->r10k->scache_taglo[tag] & (3 << 10)) &&
                 r10k_scache_tag_pa(env, tag) == extract64(paddr, 18, 22)) {
                 if (cache_operation == 0b101) {
-                    if (MIPS_CPU(env_cpu(env))->cache_data_visibility &&
-                        !r10k_scache_flush_primaries(env, paddr)) {
-                        return;
-                    }
                     /* A failed block write is logged, then dropped. */
                     r10k_scache_writeback(env, paddr, w);
                 }

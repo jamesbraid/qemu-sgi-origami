@@ -2032,11 +2032,6 @@ static void o2_init(MachineState *machine)
             exit(1);
         }
     }
-    if (object_property_get_bool(OBJECT(cpu_dev),
-                                 "cache-data-visibility", &error_fatal)) {
-        error_report("o2 requires cache-data-visibility=off");
-        exit(1);
-    }
     qdev_connect_clock_in(cpu_dev, "clk-in", cpuclk);
     object_property_set_bool(OBJECT(cpu_dev), "big-endian", true,
                              &error_fatal);

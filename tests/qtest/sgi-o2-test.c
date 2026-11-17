@@ -2608,9 +2608,6 @@ static void test_banked_configuration(void)
                               "does not support -bios");
     assert_o2_banked_rejected(banked, "1G", "-cpu", "R12000",
                               "Invalid CPU model: R12000");
-    assert_o2_banked_rejected(banked, "1G", "-cpu",
-                              "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
     assert_o2_banked_rejected(banked, "1G", "-smp", "2", "max CPUs");
     assert_o2_banked_rejected(banked, "1G", "-device",
                               "e1000,bus=mace.0,addr=1",
@@ -2749,9 +2746,6 @@ static void test_private_window_configuration(void)
                               "empty-renderer-status=on");
     assert_o2_banked_rejected(selected, "128M", NULL, NULL,
                               "eight-bank profile requires 1 GiB");
-    assert_o2_banked_rejected(selected, "1G", "-cpu",
-                              "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
     qts = qtest_initf(MEMTX_TEST_DEVICE "-M %s -cpu R10000 -m 1G "
                       "-nodefaults -accel tcg,thread=single -S", selected);
     get = qtest_qmp(qts,
@@ -3212,9 +3206,6 @@ static void test_prom_id_word_configuration(void)
                               "max CPUs");
     assert_o2_banked_rejected(selected, "1G", "-cpu", "R12000",
                               "Invalid CPU model: R12000");
-    assert_o2_banked_rejected(selected, "1G", "-cpu",
-                              "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
     assert_o2_banked_rejected("origin200,prom-id-word=on", "64M",
                               NULL, NULL, "prom-id-word");
     g_assert_cmpint(unlink(path), ==, 0);
@@ -3264,9 +3255,6 @@ static void test_gbe11_registers_configuration(void)
                               "eight-bank profile requires 1 GiB");
     assert_o2_banked_rejected(selected, "1G", "-cpu", "R12000",
                               "Invalid CPU model: R12000");
-    assert_o2_banked_rejected(selected, "1G", "-cpu",
-                              "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
     assert_o2_banked_rejected("origin200,gbe11-registers=on", "64M",
                               NULL, NULL, "gbe11-registers");
     g_assert_cmpint(unlink(path), ==, 0);
@@ -3307,9 +3295,6 @@ static void test_prom_sb64_reset_configuration(void)
                               "eight-bank profile requires 1 GiB");
     assert_o2_banked_rejected(selected, "1G", "-cpu", "R12000",
                               "Invalid CPU model: R12000");
-    assert_o2_banked_rejected(selected, "1G", "-cpu",
-                              "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
     assert_o2_banked_rejected(selected, "1G", "-cpu",
                               "R10000,reset-mode=0x19a603",
                               "prom-sb64-reset rejects CPU reset-mode");
@@ -8859,7 +8844,6 @@ static void test_o2plus_configuration(void)
         { "r12000-fpu-id=0x901", "requires r12000-fpu-id" },
         { "reset-mode=0x11aa603", "conflicts with the board's" },
         { "big-endian=off", "requires a big-endian CPU" },
-        { "cache-data-visibility=on", "requires cache-data-visibility=off" },
     };
     O2ProductTest t = { 0 };
     QTestState *qts;
@@ -9096,7 +9080,7 @@ static void test_product_configuration(void)
                               "Invalid CPU model: R12000");
     assert_o2_banked_rejected(t.machine, "1G", "-cpu",
                               "R10000,cache-data-visibility=on",
-                              "requires cache-data-visibility=off");
+                              "cache-data-visibility");
     assert_o2_banked_rejected(t.machine, "1G", "-cpu",
                               "R10000,reset-mode=0x198603",
                               "rejects CPU reset-mode");

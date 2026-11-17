@@ -689,8 +689,6 @@ static void test_machine_admission(void)
                    "legacy-software requires");
     reject_machine(selected, "1G", "R12000", NULL, NULL, "Invalid CPU model");
     reject_machine(selected, "1G", "R10000", "-smp", "2", "max CPUs");
-    reject_machine(selected, "1G", "R10000,cache-data-visibility=on",
-                   NULL, NULL, "requires cache-data-visibility=off");
     reject_machine(selected, "1G", "R10000", "-device",
                    "e1000,bus=mace.0,addr=3", "does not support attached PCI");
     reject_machine(selected, "1G", "R10000", "-bios", "unused",

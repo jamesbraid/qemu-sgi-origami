@@ -20,7 +20,6 @@ qtest-mips64/ics1890-test 13
 qtest-mips64/machine-none-test 2
 qtest-mips64/memory-buffer-test 4
 qtest-mips64/netdev-socket 4
-qtest-mips64/o2-r10k-cache-test 2
 qtest-mips64/octane-mgras-test 25
 qtest-mips64/octane-test 66
 qtest-mips64/octane-vpro-test 4

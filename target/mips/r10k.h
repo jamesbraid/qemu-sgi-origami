@@ -308,7 +308,7 @@ typedef struct R10KState {
      * r10k_helper.c explains the view this index drives.
      */
     GHashTable *staged_pages;
-    /* Set unless cache-data-visibility is on: the two views are exclusive. */
+    /* Enables cached accesses to guest-staged secondary-cache lines. */
     bool staging;
 } R10KState;
 
@@ -316,8 +316,8 @@ typedef struct R10KState {
 #define R10K_STAGED_SPAN       (UINT64_C(1) << 48)
 
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
-void r10k_cache_memory_init(MIPSCPU *cpu);
-void r10k_cache_memory_destroy(MIPSCPU *cpu);
+void r10k_staged_window_init(MIPSCPU *cpu);
+void r10k_staged_window_destroy(MIPSCPU *cpu);
 #endif
 
 void r10k_cpu_set_bus_handler(MIPSCPU *cpu,

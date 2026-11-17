@@ -1598,7 +1598,6 @@ struct ArchCPU {
      * RAM. Unlinked, every reference resolves in the one space as before.
      */
     MemoryRegion *uncached_memory;
-    bool cache_data_visibility;
     /*
      * Recover a Compare target that virtual time passed between a guest
      * Count read or write and the next Compare write
@@ -1607,7 +1606,6 @@ struct ArchCPU {
      */
     bool count_sample_window;
 #ifndef CONFIG_USER_ONLY
-    MemoryRegion cache_memory;
     /*
      * What serves the pages that hold staged secondary-cache lines on an
      * R10000-family processor (r10k_helper.c). It is a space of its own,
@@ -1615,7 +1613,7 @@ struct ArchCPU {
      */
     MemoryRegion staged_window;
     AddressSpace cache_backing_as;
-    bool cache_memory_initialized;
+    bool staged_window_initialized;
 #endif
 };
 

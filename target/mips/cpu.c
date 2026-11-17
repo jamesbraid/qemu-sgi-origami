@@ -620,20 +620,6 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
         return;
     }
 #ifndef CONFIG_USER_ONLY
-    if (cpu->cache_data_visibility &&
-        strcmp(env->cpu_model->name, "R10000")) {
-        error_setg(errp, "cache-data-visibility requires R10000");
-        return;
-    }
-#ifndef CONFIG_TCG
-    if (cpu->cache_data_visibility) {
-        error_setg(errp, "cache-data-visibility requires TCG");
-        return;
-    }
-#endif
-#endif
-
-#ifndef CONFIG_USER_ONLY
     if (mcc->cpu_def->lcsr_cpucfg2 & (1 << CPUCFG2_LCSRP)) {
         memory_region_init_io(&env->iocsr.mr, OBJECT(cpu), NULL,
                               env, "iocsr", UINT64_MAX);
@@ -674,17 +660,16 @@ static void mips_cpu_realizefn(DeviceState *dev, Error **errp)
 #ifndef CONFIG_USER_ONLY
 #ifdef CONFIG_TCG
     if (env->r10k) {
-        r10k_cache_memory_init(cpu);
+        r10k_staged_window_init(cpu);
     }
 #endif
     /*
      * With an uncached view linked, both spaces exist before the vCPU
      * thread starts; qemu_init_vcpu() then leaves the default alone.
      */
-    if (cpu->uncached_memory || cpu->cache_data_visibility) {
+    if (cpu->uncached_memory) {
         cpu_address_space_init(cs, MIPSASIdx_CACHED, "cpu-memory",
-                               cpu->cache_data_visibility ?
-                               &cpu->cache_memory : cs->memory);
+                               cs->memory);
         cpu_address_space_init(cs, MIPSASIdx_UNCACHED, "cpu-uncached",
                                cpu->uncached_memory ?: cs->memory);
     }
@@ -708,7 +693,7 @@ static void mips_cpu_unrealizefn(DeviceState *dev)
     g_free(cpu->mvp);
     mcc->parent_unrealize(dev);
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
-    r10k_cache_memory_destroy(cpu);
+    r10k_staged_window_destroy(cpu);
 #endif
     mips_r10k_cpu_unrealize(cpu);
 }
@@ -774,8 +759,7 @@ static int mips_asidx_from_attrs(CPUState *cs, MemTxAttrs attrs)
     if (cpu->env.r10k && cpu->env.r10k->staging && mips_attrs_staged(attrs)) {
         return MIPSASIdx_STAGED;
     }
-    return attrs.mips_uncached &&
-           (cpu->uncached_memory || cpu->cache_data_visibility) ?
+    return attrs.mips_uncached && cpu->uncached_memory ?
            MIPSASIdx_UNCACHED : MIPSASIdx_CACHED;
 }
 
@@ -792,8 +776,6 @@ static const Property mips_cpu_properties[] = {
 #ifndef CONFIG_USER_ONLY
     DEFINE_PROP_LINK("uncached-memory", MIPSCPU, uncached_memory,
                      TYPE_MEMORY_REGION, MemoryRegion *),
-    DEFINE_PROP_BOOL("cache-data-visibility", MIPSCPU,
-                     cache_data_visibility, false),
     DEFINE_PROP_BOOL("count-sample-window", MIPSCPU,
                      count_sample_window, false),
 #endif

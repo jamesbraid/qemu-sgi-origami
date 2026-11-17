@@ -421,8 +421,11 @@ accelerated) from EntryLo UC for a mapped page and from address bits
 58:57 for xkphys, where those two bits are then not part of the physical
 address.
 
-The model has no functional cache on the default CPU. Every load, store
-and fetch goes to the machine's memory directly, whatever the algorithm.
+The model does not implement general functional caches. Ordinary loads,
+stores and fetches use the machine's memory address spaces. Guest-staged
+secondary lines have a separate view: cached accesses to their pages read or
+write those lines, while other bytes use backing memory. Primary and secondary
+arrays otherwise retain diagnostic tag and data state for CACHE operations.
 It carries the algorithm, an uncached flag, the uncached attribute (as an
 address window above the physical address) and the CPU's requester
 identity with each reference, so a board can tell a coherent request
@@ -436,24 +439,17 @@ the manual's coherence transactions, interventions, state responses or
 conflict rules :src:`r10000-users-manual-2.0 p. 127-145` are modelled.
 On the Octane, HEART is the external agent that keeps processor caches
 coherent with I/O :src:`octane-technical-report p. 2-16-2-17`; the
-exact rules it uses are *unknown*, and the model needs none because
-nothing is cached.
-
-``cache-data-visibility=on``, R10000 only and off by default, routes
-xkphys algorithm 3 loads and stores to RAM through the primary data and
-secondary arrays, with fills, dirty writeback, and writeback by the index
-and hit CACHE operations. It is a diagnostic aid, not a coherence model:
-a cached instruction fetch, an algorithm-3 access outside xkphys and
-any access under another cached algorithm each log ``LOG_UNIMP`` and
-raise an address error, and a machine with it on cannot migrate.
+exact rules it uses are *unknown*. The model does not emulate HEART's
+coherence behavior.
 
 TLB remapping
 -------------
 
-Because nothing is cached, rewriting a TLB entry's PFN takes effect on
-the next access through it, under algorithm 2 or 3, and rewriting only
-its C field is honoured at once. Diagnostic CACHE operations on the
-arrays leave memory unchanged. A 32-bit load through a remapped page
+Rewriting a TLB entry's PFN takes effect on the next access through it,
+under algorithm 2 or 3, and rewriting only its C field is honoured at once.
+Primary-array CACHE operations change diagnostic state only. Explicit
+secondary writeback operations can send staged line data to backing memory.
+A 32-bit load through a remapped page
 sign-extends bit 31 into the upper half. These are model behaviours. The
 manual facts the test relies on are the cache algorithms
 :src:`r10000-users-manual-2.0 p. 53-54`, the EntryLo and PageMask fields
@@ -480,9 +476,10 @@ The model stores and returns check bits but never computes or checks
 them. Index Store Data (S) writes one doubleword from TagHi and TagLo,
 zeroes the other half of the quadword, and stores the ten bits from CP0
 ECC; Index Load Data (S) returns them. ECC keeps bits 9:0 and reads bits
-31:10 as zero. Invalidation stores zero tag check bits, and fills under
-``cache-data-visibility`` leave the stored check bits unchanged. No
-access raises a Cache Error, and CacheErr reads zero.
+31:10 as zero. Invalidation stores zero tag check bits. Array inspection and
+invalidation do not change backing memory; explicit secondary writeback
+operations can write staged line data there. No access raises a Cache Error,
+and CacheErr reads zero.
 
 .. _sgi-r10000-fpu:
 
@@ -733,9 +730,6 @@ Tests
   prefetch hints and Status RE logging.
 - ``tests/qtest/sn0-r10k-perf-migration-test.c``: counter migration, the
   secondary-cache arrays across migration and Index Store Data padding.
-- ``tests/qtest/o2-r10k-cache-test.c``: ``cache-data-visibility`` dirty
-  data, writeback by CACHE operations and the address errors for the
-  unsupported paths.
 - ``tests/functional/mips64/test_r10k_fpu.py``: the denormal input and
   result vectors on the R10000, R12000 and R16000.
 - ``tests/functional/mips64/test_r10000_tlb_cache.py``: TLB remapping
