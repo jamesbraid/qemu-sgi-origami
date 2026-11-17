@@ -991,15 +991,17 @@ static SGIRasterColour sgi_soft_rgba_value(const SGIRasterRules *rules,
     return c;
 }
 
-static SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
-                                           const SGISoftFrag *frag,
-                                           const SGIRasterColour *dest)
+/* Inline: the 16-byte result returned in memory stalls on its reload. */
+static inline QEMU_ALWAYS_INLINE
+SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
+                                     const SGISoftFrag *frag,
+                                     const SGIRasterColour *dest)
 {
     SGIRasterColour out;
     uint32_t max = (1u << r->rules->color_bits) - 1;
     uint32_t alpha_max = sgi_soft_alpha_max(r->rules);
     uint32_t alpha_q = sgi_soft_alpha(r->rules, frag->rgba[3]);
-    double alpha = alpha_q / (double)alpha_max;
+    double alpha;
     uint32_t rgb = r->blend ? sgi_soft_rgb(r->rules, frag->rgba) :
                               sgi_soft_store_rgb(r, x, y, frag->rgba);
 
@@ -1021,6 +1023,7 @@ static SGIRasterColour sgi_soft_rgba_result(const SGISoftDraw *r, int x, int y,
                            alpha_q * stored / alpha_max;
         return out;
     }
+    alpha = alpha_q / (double)alpha_max;
     out = sgi_soft_rgba_value(r->rules, rgb, alpha);
     if (r->blend) {
         double src[4], dst[4], blended[4];
