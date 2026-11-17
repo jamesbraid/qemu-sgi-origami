@@ -186,7 +186,8 @@ DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access)
     DWORD rights = SECTION_MAP_READ | SECTION_QUERY;
 
     if (access & DSHM_ACCESS_WRITE) {
-        rights |= SECTION_MAP_WRITE;
+        /* D3D12 heap import needs EXECUTE and READ_CONTROL too. */
+        rights |= SECTION_MAP_WRITE | SECTION_MAP_EXECUTE | READ_CONTROL;
     }
     if (!DuplicateHandle(self, r->h, self, &dup, rights, FALSE, 0)) {
         return NULL;
