@@ -340,9 +340,15 @@ static inline uint64_t crime_integer_low64(const CrimeInteger *a)
 
 static inline bool crime_rational_is64(const CrimeRational *a)
 {
-    return (a->denominator.word[0] | a->denominator.word[1]) &&
-           crime_integer_words(&a->numerator) <= 2 &&
-           crime_integer_words(&a->denominator) <= 2;
+    uint32_t upper = 0;
+
+    if (!(a->denominator.word[0] | a->denominator.word[1])) {
+        return false;
+    }
+    for (unsigned i = 2; i < ARRAY_SIZE(a->numerator.word); i++) {
+        upper |= a->numerator.word[i] | a->denominator.word[i];
+    }
+    return !upper;
 }
 
 static inline Int128 crime_product64(uint64_t a, uint64_t b)

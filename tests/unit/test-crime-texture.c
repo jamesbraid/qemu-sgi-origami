@@ -109,6 +109,81 @@ static void test_rational_limits(void)
     }
 }
 
+static void test_rational_is64_boundaries(void)
+{
+    CrimeRational value = crime_rational(INT64_MIN, 1);
+
+    g_assert_true(crime_rational_is64(&value));
+    value.negative = true;
+    g_assert_true(crime_rational_is64(&value));
+    for (unsigned i = 2; i < ARRAY_SIZE(value.numerator.word); i++) {
+        value.numerator.word[i] = 1;
+        g_assert_false(crime_rational_is64(&value));
+        value.numerator.word[i] = 0;
+        value.denominator.word[i] = 1;
+        g_assert_false(crime_rational_is64(&value));
+        value.denominator.word[i] = 0;
+    }
+    value.denominator = crime_integer(0);
+    g_assert_false(crime_rational_is64(&value));
+}
+
+typedef bool (*RationalIs64)(const CrimeRational *value);
+
+static bool __attribute__((__noinline__))
+current_is64(const CrimeRational *value)
+{
+    return crime_rational_is64(value);
+}
+
+static bool __attribute__((__noinline__))
+reference_is64(const CrimeRational *value)
+{
+    return (value->denominator.word[0] | value->denominator.word[1]) &&
+           reference_integer_words(&value->numerator) <= 2 &&
+           reference_integer_words(&value->denominator) <= 2;
+}
+
+static int64_t measure_is64(RationalIs64 check, bool wide, uint64_t *checksum)
+{
+    CrimeRational value = { .denominator = { .word = {1} } };
+    uint64_t result = 1;
+    int64_t start = g_get_monotonic_time();
+
+    for (unsigned i = 0; i < 1U << 20; i++) {
+        value.numerator.word[0] = i;
+        if (wide) {
+            value.numerator.word[15] = i & 1;
+        }
+        result = (result * UINT64_C(0x100000001b3)) ^ check(&value);
+    }
+    *checksum = result;
+    return g_get_monotonic_time() - start;
+}
+
+static void test_rational_is64_performance(void)
+{
+    const char *names[] = {"common", "wide-first-word"};
+    for (unsigned wide = 0; wide < ARRAY_SIZE(names); wide++) {
+        for (unsigned round = 0; round < 3; round++) {
+            uint64_t old_sum = 0, new_sum = 0;
+            int64_t old_us, new_us;
+            if (round & 1) {
+                new_us = measure_is64(current_is64, wide, &new_sum);
+                old_us = measure_is64(reference_is64, wide, &old_sum);
+            } else {
+                old_us = measure_is64(reference_is64, wide, &old_sum);
+                new_us = measure_is64(current_is64, wide, &new_sum);
+            }
+            g_assert_cmphex(old_sum, ==, new_sum);
+            g_test_message("is64 %s round %u: old %" PRId64 " us, new %"
+                           PRId64 " us, ratio %.3f, checksum %016" PRIx64,
+                           names[wide], round, old_us, new_us,
+                           new_us ? (double)old_us / new_us : 0, new_sum);
+        }
+    }
+}
+
 static bool texture_ram(void *opaque, uint64_t address, unsigned size,
                          uint64_t *identity, uint8_t *data)
 {
@@ -836,6 +911,8 @@ int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/crime/rational/small", test_rational_small);
+    g_test_add_func("/crime/rational/is64-boundaries",
+                    test_rational_is64_boundaries);
     g_test_add_func("/crime/rational/native-fractions",
                     test_native_fraction_boundaries);
     g_test_add_func("/crime/rational/equal-denominators",
@@ -855,6 +932,8 @@ int main(int argc, char **argv)
     g_test_add_func("/crime/rational/reference-zero-divisor",
                     test_reference_divide_zero);
     if (g_test_perf()) {
+        g_test_add_func("/crime/rational/is64-performance",
+                        test_rational_is64_performance);
         g_test_add_func("/crime/rational/performance",
                     test_rational_performance);
         g_test_add_func("/crime/texture/performance", test_sampler_performance);
