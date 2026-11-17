@@ -1,0 +1,17 @@
+--- a/src/impl/mod.rs
++++ b/src/impl/mod.rs
+@@ -12,7 +12,14 @@
+     // SAFETY: nothing that can go wrong here, the memory
+     // is allocated by the C library and returned straight
+     // away
++    #[cfg(not(windows))]
+     let p = unsafe { libc::aligned_alloc(layout.align(), layout.size()).cast::<T>() };
++    // Windows has no aligned allocation that free() accepts; malloc is 16-byte aligned.
++    #[cfg(windows)]
++    let p = {
++        assert!(layout.align() <= 16);
++        unsafe { libc::malloc(layout.size()).cast::<T>() }
++    };
+     if p.is_null() {
+         handle_alloc_error(layout);
+     }
