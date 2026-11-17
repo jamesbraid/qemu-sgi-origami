@@ -67,7 +67,7 @@ config SGI_O2_ROM
 config SGI_O2_TEST
     bool
     default y
-    depends on SGI_DEVICES
+    depends on SGI_DEVICES && HAVE_RUST
     imply TEST_DEVICES
     select SGI_CATALOGUE
     select SGI_CRIME
@@ -178,7 +178,7 @@ config SGI_CRIME
 config SGI_MACE
     bool
     default y if SGI_DEVICES
-    depends on SGI_DEVICES
+    depends on SGI_DEVICES && HAVE_RUST
     select DS1685
     select I2C_WIRE
     select ICS1890

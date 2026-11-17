@@ -18,8 +18,7 @@ mips_ss.add(when: ['CONFIG_SGI_CRIME', 'CONFIG_SGI_TEST_FIXTURES'],
 mips_ss.add(when: 'CONFIG_SGI_MACE',
             if_true: files('sgi/mace.c', 'sgi/mace-serial-dma.c', 'sgi/mace-audio.c',
                            'sgi/mace-video.c', 'sgi/mace-i2c.c',
-                           'sgi/mace-id.c',
-                           'sgi/mace-ps2.c'))
+                           'sgi/mace-ps2.c', 'sgi/mace-id.c'))
 mips_ss.add(when: ['CONFIG_SGI_MACE', 'CONFIG_SGI_TEST_FIXTURES'],
             if_true: files('../../tests/qtest/fixtures/sgi-serial-peer.c',
                            '../../tests/qtest/fixtures/sgi-mace-audio.c',

@@ -13,6 +13,9 @@ the O2+ with an R12000.
 No test in this tree runs a stock IP32 PROM or a guest on the O2; qtests
 cover its registers and its refusals (:ref:`sgi-running`).
 
+Configure QEMU with ``--enable-rust`` to include the O2 machine. The MACE
+identity device requires Rust support.
+
 Selections
 ----------
 

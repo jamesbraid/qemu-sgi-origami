@@ -902,6 +902,12 @@ static void test_password_clear_input(void)
         for (unsigned level = 0; level < 2; level++) {
             qtest_set_irq_in(qts, "/machine/peripheral/identity",
                               "password-clear-input", 0, level);
+            QDict *response = qtest_qmp(qts,
+                "{'execute':'qom-get','arguments':{"
+                "'path':'/machine/peripheral/identity',"
+                "'property':'password-clear-input'}}");
+            g_assert_cmpint(qdict_get_bool(response, "return"), ==, level);
+            qobject_unref(response);
             for (unsigned writable = 0; writable < 64; writable++) {
                 uint64_t expected = (writable & 0x35) | (level << 1) |
                                     ((writable & 4) ? 8 : 0);
@@ -920,6 +926,12 @@ static void test_password_clear_input(void)
             qtest_qmp_assert_success(qts, "{ 'execute': 'system_reset' }");
             g_assert_cmphex(qtest_readq(qts, MACE_ID_REG), ==,
                              0x20 | (level << 1));
+            response = qtest_qmp(qts,
+                "{'execute':'qom-get','arguments':{"
+                "'path':'/machine/peripheral/identity',"
+                "'property':'password-clear-input'}}");
+            g_assert_cmpint(qdict_get_bool(response, "return"), ==, level);
+            qobject_unref(response);
         }
         qtest_quit(qts);
     }

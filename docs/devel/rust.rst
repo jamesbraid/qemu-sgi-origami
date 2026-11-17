@@ -114,6 +114,9 @@ QEMU includes several crates:
   used to further develop them.  These two crates are functional\ [#issues]_ replacements
   for the ``hw/char/pl011.c`` and ``hw/timer/hpet.c`` files.
 
+* ``mace_id`` (under ``rust/hw/mips/sgi``) owns the O2 MACE identity line state;
+  its C device shell retains QOM properties, one-wire child setup and migration wiring.
+
 .. [#issues] The ``pl011`` crate is synchronized with ``hw/char/pl011.c``
    as of commit 3e0f118f82.  The ``hpet`` crate is synchronized as of
    commit 1433e38cc8.  Both are lacking tracing functionality.

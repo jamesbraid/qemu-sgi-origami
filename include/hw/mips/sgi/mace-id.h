@@ -9,4 +9,43 @@
 #define TYPE_SGI_MACE_ID "sgi-mace-id"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIMACEIDState, SGI_MACE_ID)
 
+/* Fixed C/Rust snapshot used to preserve the existing VMState v1 layout. */
+typedef struct SGIMACEIDMigrationState {
+    bool password_clear_input;
+    bool flash_write_enabled;
+    bool released;
+    uint32_t led_control;
+} SGIMACEIDMigrationState;
+
+enum {
+    SGI_MACE_ID_WRITE_DECODE_ERROR = -1,
+    SGI_MACE_ID_WRITE_NOOP = -2,
+};
+
+/* Rust writes return the flash IRQ level, or one of the negative results. */
+
+void *sgi_mace_id_new(void *bus, bool part, bool misc_word_pio,
+                      bool password_clear_input);
+void sgi_mace_id_free(void *core);
+void sgi_mace_id_set_input(void *core, bool level);
+bool sgi_mace_id_reset(void *core);
+int sgi_mace_id_read(void *core, int64_t now, uint64_t offset, uint32_t size,
+                     uint64_t *value);
+int sgi_mace_id_write(void *core, int64_t now, uint64_t offset, uint32_t size,
+                      uint64_t value);
+void sgi_mace_id_export(void *core, SGIMACEIDMigrationState *state);
+bool sgi_mace_id_import(void *core,
+                        const SGIMACEIDMigrationState *state);
+
+void sgi_mace_id_trace_drive(int64_t now, uint64_t offset, unsigned size,
+                             bool release, int64_t duration);
+void sgi_mace_id_trace_reset(int64_t now, int64_t low, bool ready,
+                             bool accepted);
+void sgi_mace_id_trace_presence(int64_t now, int64_t start, int64_t end);
+void sgi_mace_id_trace_sample(int64_t now, uint64_t offset, unsigned size,
+                              bool sample, bool presence);
+void sgi_mace_id_log_pulse(int64_t low);
+void sgi_mace_id_log_control(uint64_t bits);
+void sgi_mace_id_log_misc(uint64_t value);
+
 #endif

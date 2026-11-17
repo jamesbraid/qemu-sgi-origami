@@ -1520,6 +1520,7 @@ F: docs/devel/sgi-mesa-renderer.rst
 F: docs/system/mips/sgi/
 F: docs/system/devices/sgi-mace-i2c.rst
 F: docs/tools/qemu-sgi-machine-init.rst
+F: rust/hw/mips/
 F: hw/mips/sn0*
 F: hw/mips/sgi/
 F: hw/mips/sgi/mace-timer.h

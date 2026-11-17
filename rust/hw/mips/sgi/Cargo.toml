@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name = "mace_id"
+version = "0.1.0"
+description = "SGI MACE identity device model for QEMU"
+publish = false
+
+edition.workspace = true
+homepage.workspace = true
+license = "BSD-3-Clause"
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
