@@ -80,7 +80,12 @@ typedef struct DisplayShmGpuSlot {
     uint32_t width, height, stride, fourcc;
     uint64_t modifier;
     int64_t handle;             /* fd, Mach port or HANDLE; the producer's */
-    int64_t fence;              /* the head waits on it itself; unused here */
+    /*
+     * The head waits on its GPU itself. Windows also lends this shared fence
+     * HANDLE (the producer's; 0 or less for none) so the viewer may wait.
+     */
+    int64_t fence;
+    uint64_t adapter_luid;      /* Windows: the GPU's LUID */
     uint64_t fence_value;
 } DisplayShmGpuSlot;
 

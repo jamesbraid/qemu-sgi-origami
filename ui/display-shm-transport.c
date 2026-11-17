@@ -394,6 +394,33 @@ void dshm_viewer_doom(DShmViewer *v, uint32_t code, const char *text)
 
 /* ---- Regions as the viewer sees them ---------------------------------- */
 
+#ifdef _WIN32
+/* The slot's shared fence as a REGION of its own; the slot's names it. */
+static bool region_announce_fence(DShmViewer *v, DShmRegion *r)
+{
+    DShmRegionMsg m = { .hdr = { .type = DSHM_MSG_REGION,
+                                 .flags = DSHM_F_MUST },
+                        .id = r->fence_id, .kind = DSHM_KIND_FENCE,
+                        .storage = DSHM_STORAGE_WIN32,
+                        .access = DSHM_ACCESS_READ | DSHM_ACCESS_WRITE };
+    uint8_t buf[sizeof(m) + 8] = { };
+    HANDLE h = dshm_region_dup_fence(r);
+    DShmOut *o;
+
+    if (!h) {
+        return false;
+    }
+    memcpy(buf, &m, sizeof(m));
+    o = dshm_queue(v, buf, sizeof(buf), h, true);
+    if (!o) {
+        return false;
+    }
+    o->region = r->fence_id;
+    g_hash_table_add(v->announced, GUINT_TO_POINTER(r->fence_id));
+    return true;
+}
+#endif
+
 bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
 {
     DShmRegionMsg m = { .hdr = { .type = DSHM_MSG_REGION,
@@ -411,9 +438,26 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
     }
     if (r->gpu) {
         const DisplayShmGpuSlot *g = &r->gpu_slot;
+#ifdef _WIN32
+        DShmWin32Region p = { .fourcc = g->fourcc, .flags = DSHM_GPU_WRITTEN,
+                              .adapter_luid = g->adapter_luid,
+                              .fence_region = r->fence_id,
+                              .stride = g->stride, .width = g->width,
+                              .height = g->height };
+
+        /* the fence goes first, so the viewer has it when the slot names it */
+        if (r->fence_id &&
+            !g_hash_table_contains(v->announced,
+                                   GUINT_TO_POINTER(r->fence_id)) &&
+            !region_announce_fence(v, r)) {
+            handle_drop(h);
+            return false;
+        }
+#else
         DShmGpuRegion p = { .fourcc = g->fourcc, .flags = DSHM_GPU_WRITTEN,
                             .modifier = g->modifier, .stride = g->stride,
                             .width = g->width, .height = g->height };
+#endif
 
         m.storage = DSHM_GPU_CLASS;
         m.payload_len = sizeof(p);
@@ -429,6 +473,30 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
     g_hash_table_add(v->announced, GUINT_TO_POINTER(r->id));
     return true;
 }
+
+#ifdef _WIN32
+/* The slot's fence goes with it, the same way. */
+static void region_forget_fence(DShmViewer *v, const DShmRegion *r)
+{
+    bool announced = g_hash_table_remove(v->announced,
+                                         GUINT_TO_POINTER(r->fence_id));
+    bool unsent = false;
+    DShmOut *o, *next;
+
+    QTAILQ_FOREACH_SAFE(o, &v->out, next, next) {
+        if (!o->off && o->type == DSHM_MSG_REGION && o->region == r->fence_id) {
+            unsent = true;
+            dshm_out_remove(v, o);
+        }
+    }
+    if (announced && !unsent) {
+        DShmRegionGone g = { .hdr = { .type = DSHM_MSG_REGION_GONE },
+                             .id = r->fence_id };
+
+        dshm_queue(v, &g, sizeof(g), DSHM_NO_HANDLE, false);
+    }
+}
+#endif
 
 /* Cancel an unsent REGION and what names it, or send REGION_GONE. */
 void dshm_region_forget(DShmViewer *v, DShmRegion *r)
@@ -475,6 +543,11 @@ void dshm_region_forget(DShmViewer *v, DShmRegion *r)
 
         dshm_queue(v, &g, sizeof(g), DSHM_NO_HANDLE, false);
     }
+#ifdef _WIN32
+    if (r->fence_id) {
+        region_forget_fence(v, r);
+    }
+#endif
     for (unsigned h = find_first_bit(heads, DSHM_FEEDBACK_HEADS);
          h < DSHM_FEEDBACK_HEADS && !v->closing;
          h = find_next_bit(heads, DSHM_FEEDBACK_HEADS, h + 1)) {
@@ -620,7 +693,7 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     test_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_TEST, &bad);
     steer_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_STEER, &bad);
     if (DSHM_GPU_CLASS) {
-        gpu_ok = offers_have(offers, left, h.n_ext, DSHM_EXT_DMABUF, &bad) &&
+        gpu_ok = offers_have(offers, left, h.n_ext, DSHM_GPU_EXT, &bad) &&
                  dshm_storage_has(h.storage, DSHM_GPU_CLASS);
     }
     if (bad) {
@@ -727,7 +800,7 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
         DShmAccept a = { .version = 1, .index = gpu_idx,
                          .payload_len = sizeof(DShmGpuAccept) };
 
-        strcpy((char *)a.name, DSHM_EXT_DMABUF);
+        strcpy((char *)a.name, DSHM_GPU_EXT);
         memcpy(wb + pos, &a, sizeof(a));
         pos += sizeof(a);
         stl_le_p(wb + pos, DSHM_ALLOC_GPU);

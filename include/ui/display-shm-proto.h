@@ -77,19 +77,23 @@
 #define DSHM_FEAT_TEST          (1u << 4)
 #define DSHM_FEAT_ALL           0x1fu
 
-/* Storage classes; 3 to 5 are reserved (Vulkan fd, NT handle, IOSurface). */
+/* Storage classes; 3 and 5 are reserved (Vulkan fd, IOSurface). */
 #define DSHM_STORAGE_SHM        1
 #define DSHM_STORAGE_DMABUF     2
+#define DSHM_STORAGE_WIN32      4
 
 /* linux.dmabuf: slots are dma-bufs the producer's GPU draws; never map them. */
 #define DSHM_EXT_DMABUF         "linux.dmabuf"
 #define DSHM_ALLOC_GPU          2
 #define DSHM_GPU_WRITTEN        (1u << 0)       /* DShmGpuRegion flags */
+/* win32.handle: slots are shared D3D12 buffers, each with a shared fence. */
+#define DSHM_EXT_WIN32          "win32.handle"
 
 /* Region kinds. */
 #define DSHM_KIND_STATE         1
 #define DSHM_KIND_FEEDBACK      2
 #define DSHM_KIND_SLOT          3
+#define DSHM_KIND_FENCE         4       /* win32.handle: a shared ID3D12Fence */
 
 #define DSHM_ACCESS_READ        1u
 #define DSHM_ACCESS_WRITE       2u
@@ -323,6 +327,20 @@ typedef struct DShmGpuRegion {          /* 32 bytes */
     uint32_t width;
     uint32_t height;
 } DShmGpuRegion;
+
+/*
+ * REGION payload of a win32.handle slot; the NT handle rides the message. The
+ * fields the two kinds share sit at the same offsets.
+ */
+typedef struct DShmWin32Region {        /* 32 bytes */
+    uint32_t fourcc;                    /* the words' layout */
+    uint32_t flags;                     /* DSHM_GPU_WRITTEN */
+    uint64_t adapter_luid;              /* HighPart << 32 | LowPart */
+    uint32_t fence_region;              /* its shared fence, 0 for none */
+    uint32_t stride;                    /* row pitch in bytes */
+    uint32_t width;
+    uint32_t height;
+} DShmWin32Region;
 
 typedef struct DShmCursorImage {        /* 40 bytes, then pixels */
     DShmHdr hdr;
@@ -564,6 +582,11 @@ DSHM_CHECK(DShmGpuRegion, modifier, 8);
 DSHM_CHECK(DShmGpuRegion, offset, 16);
 DSHM_CHECK(DShmGpuRegion, stride, 20);
 DSHM_CHECK(DShmGpuRegion, height, 28);
+QEMU_BUILD_BUG_ON(sizeof(DShmWin32Region) != 32);
+DSHM_CHECK(DShmWin32Region, adapter_luid, 8);
+DSHM_CHECK(DShmWin32Region, fence_region, 16);
+DSHM_CHECK(DShmWin32Region, stride, 20);
+DSHM_CHECK(DShmWin32Region, height, 28);
 QEMU_BUILD_BUG_ON(sizeof(DShmCursorImage) != 40);
 QEMU_BUILD_BUG_ON(sizeof(DShmCursorNotify) != 16);
 QEMU_BUILD_BUG_ON(sizeof(DShmInputAck) != 16);

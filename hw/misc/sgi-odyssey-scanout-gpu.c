@@ -68,6 +68,60 @@ static OgsFrame *ogs_frame(OdysseyGpuScanout *g, uint32_t id)
     return NULL;
 }
 
+#ifdef _WIN32
+/* The viewer's copy of the frame's NT handle and shared fence. */
+static bool ogs_lend(const SgiGpuExport *ex, DisplayShmGpuSlot *out)
+{
+    HANDLE self = GetCurrentProcess(), buffer, fence;
+
+    if (ex->kind != SGI_GPU_EXPORT_WIN32 || ex->fence < 0 ||
+        !DuplicateHandle(self, (HANDLE)(intptr_t)ex->handle, self, &buffer, 0,
+                         FALSE, DUPLICATE_SAME_ACCESS)) {
+        return false;
+    }
+    if (!DuplicateHandle(self, (HANDLE)(intptr_t)ex->fence, self, &fence, 0,
+                         FALSE, DUPLICATE_SAME_ACCESS)) {
+        CloseHandle(buffer);
+        return false;
+    }
+    *out = (DisplayShmGpuSlot) {
+        .kind = DSHM_GPU_WIN32,
+        .width = ex->width,
+        .height = ex->height,
+        .stride = ex->stride,
+        .fourcc = ex->fourcc,
+        .handle = (intptr_t)buffer,
+        .fence = (intptr_t)fence,
+        .adapter_luid = ex->adapter_id,
+    };
+    return true;
+}
+#else
+static bool ogs_lend(const SgiGpuExport *ex, DisplayShmGpuSlot *out)
+{
+    int fd;
+
+    if (ex->kind != SGI_GPU_EXPORT_DMABUF) {
+        return false;
+    }
+    fd = qemu_dup(ex->handle);
+    if (fd < 0) {
+        return false;
+    }
+    *out = (DisplayShmGpuSlot) {
+        .kind = DSHM_GPU_DMABUF,
+        .width = ex->width,
+        .height = ex->height,
+        .stride = ex->stride,
+        .fourcc = ex->fourcc,
+        .modifier = ex->modifier,
+        .handle = fd,
+        .fence = -1,
+    };
+    return true;
+}
+#endif
+
 static bool ogs_slot_new(void *opaque, uint32_t id, uint32_t width,
                          uint32_t height, DisplayShmGpuSlot *out)
 {
@@ -75,7 +129,6 @@ static bool ogs_slot_new(void *opaque, uint32_t id, uint32_t width,
     OgsFrame *slot = ogs_frame(g, 0);
     SgiGpuExport ex;
     SgiGpuFrame *frame;
-    int fd;
 
     if (!slot || !sgi_gpu_ready(g->gpu)) {
         return false;
@@ -84,27 +137,12 @@ static bool ogs_slot_new(void *opaque, uint32_t id, uint32_t width,
     if (!frame) {
         return false;
     }
-    /* No dma-buf from this adapter: the viewer gets shared memory. */
-    if (!sgi_gpu_frame_export(frame, &ex) || ex.kind != SGI_GPU_EXPORT_DMABUF) {
-        sgi_gpu_frame_free(frame);
-        return false;
-    }
-    fd = qemu_dup(ex.handle);
-    if (fd < 0) {
+    /* No exportable memory from this adapter: the viewer gets shared memory. */
+    if (!sgi_gpu_frame_export(frame, &ex) || !ogs_lend(&ex, out)) {
         sgi_gpu_frame_free(frame);
         return false;
     }
     *slot = (OgsFrame) { .id = id, .frame = frame };
-    *out = (DisplayShmGpuSlot) {
-        .kind = DSHM_GPU_DMABUF,
-        .width = ex.width,
-        .height = ex.height,
-        .stride = ex.stride,
-        .fourcc = ex.fourcc,
-        .modifier = ex.modifier,
-        .handle = fd,
-        .fence = -1,
-    };
     return true;
 }
 

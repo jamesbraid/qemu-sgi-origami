@@ -44,11 +44,16 @@ typedef int DShmHandle;
 #define DSHM_HANDLE_OK(h) ((h) >= 0)
 #endif
 
-/* The dma-buf class exists on Linux only; elsewhere no viewer gets it. */
-#ifdef CONFIG_LINUX
+/* The GPU class and its extension: dma-bufs on Linux, NT handles on Windows. */
+#if defined(CONFIG_LINUX)
 #define DSHM_GPU_CLASS DSHM_STORAGE_DMABUF
+#define DSHM_GPU_EXT DSHM_EXT_DMABUF
+#elif defined(_WIN32)
+#define DSHM_GPU_CLASS DSHM_STORAGE_WIN32
+#define DSHM_GPU_EXT DSHM_EXT_WIN32
 #else
 #define DSHM_GPU_CLASS 0
+#define DSHM_GPU_EXT ""
 #endif
 
 /* One shared allocation with one handle. */
@@ -63,6 +68,10 @@ typedef struct DShmRegion {
     bool gpu;
     uint32_t gpu_id;            /* the head's name for the image */
     DisplayShmGpuSlot gpu_slot;
+#ifdef _WIN32
+    uint32_t fence_id;          /* gpu: the region the shared fence goes as */
+    HANDLE fence_h;             /* gpu: ours; NULL for none */
+#endif
 } DShmRegion;
 
 struct DShmSlot {
@@ -385,6 +394,9 @@ DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
 void dshm_region_ref(DShmRegion *r);
 void dshm_region_unref(DisplayShm *d, DShmRegion *r);
 DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access);
+#ifdef _WIN32
+HANDLE dshm_region_dup_fence(const DShmRegion *r);
+#endif
 
 /* display-shm-transport.c */
 void dshm_transport_start(DisplayShm *d, Error **errp);

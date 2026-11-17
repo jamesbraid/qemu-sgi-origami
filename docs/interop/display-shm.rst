@@ -187,10 +187,27 @@ Specified, not built:
   sends each slot's port and the event's there, naming the ``REGION`` they
   belong to. The event is signalled with the frame serial after the GPU
   work, or the producer waits, as above.
-* Windows: class 4, ``win32.handle``. A slot is a shared NT handle, copied
-  into the viewer's process with ``DuplicateHandle`` as a pagefile section is,
-  into the last eight bytes of ``REGION``. A shared fence handle, waited on
-  for the frame serial, replaces the host wait. The lease rules are the same.
+
+GPU frames on Windows (``win32.handle``)
+========================================
+
+The same offer with class 4 and the extension ``win32.handle`` (version 1, the
+offer and accept payloads of ``linux.dmabuf``). A slot is a D3D12 buffer on a
+shared heap holding the picture's words, an NT handle copied into the
+viewer's process with ``DuplicateHandle`` into the last eight bytes of
+``REGION``, as a section is. The viewer opens it with
+``ID3D12Device::OpenSharedHandle`` and **never maps it**. The 32-byte payload
+is ``fourcc``, flags (``GPU_WRITTEN``), the producer's adapter LUID
+(``HighPart`` << 32 | ``LowPart``), the region id of the slot's shared fence
+(0 for none), the row pitch in bytes, width and height. A viewer on another adapter sends ``IMPORT_FAILED``
+with reason ``ADAPTER``.
+
+Each shared ``ID3D12Fence`` is a ``REGION`` of kind 4 and size 0, sent just
+before the slot that names it, with its own handle. Both go away with
+``REGION_GONE``. The producer's GPU is already finished when ``FRAME``
+goes out, as on Linux, so a viewer waits for nothing; the fence is lent for
+the mode that replaces the host wait, once ``FRAME`` carries the value to
+wait for. The lease rules are the same as for dma-bufs.
 
 Input
 =====
@@ -237,7 +254,7 @@ Not yet
 =======
 
 macOS (not built or run), the ``vk.external-memory`` and
-``sgi.raw-scanout`` extensions, a GPU slot on macOS or Windows, leaving the cursor out
+``sgi.raw-scanout`` extensions, a GPU slot on macOS, a fence value on ``FRAME`` for Windows, leaving the cursor out
 of the picture, horizontal damage extents, a console created after a viewer
 connected (it becomes a head, or an unsupported one, at the next connection), and the held-sample ``CONTROL``
 for a producer that samples elsewhere than its own thread.

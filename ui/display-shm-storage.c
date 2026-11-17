@@ -156,26 +156,47 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
     return r;
 }
 
-/* A GPU slot: only the dma-buf's descriptor, which is ours to close. */
+/* A GPU slot: only the dma-buf's descriptor or NT handles, ours to close. */
 DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
                                 uint32_t id)
 {
-#ifdef CONFIG_LINUX
+#if defined(CONFIG_LINUX) || defined(_WIN32)
     DShmRegion *r;
+#ifdef _WIN32
+    bool kind_ok = g->kind == DSHM_GPU_WIN32 && g->handle > 0;
+#else
+    bool kind_ok = g->kind == DSHM_GPU_DMABUF && g->handle >= 0;
+#endif
 
-    if (g->kind != DSHM_GPU_DMABUF || g->handle < 0 || !g->width ||
-        !g->height || g->stride < g->width * 4) {
+    if (!kind_ok || !g->width || !g->height || g->stride < g->width * 4) {
+#ifdef _WIN32
+        if (g->handle > 0) {
+            CloseHandle((HANDLE)(intptr_t)g->handle);
+        }
+        if (g->fence > 0) {
+            CloseHandle((HANDLE)(intptr_t)g->fence);
+        }
+#else
         if (g->handle >= 0) {
             close(g->handle);
         }
+#endif
         return NULL;
     }
     r = g_new0(DShmRegion, 1);
+#ifdef _WIN32
+    if (g->fence > 0) {
+        r->fence_id = d->next_region_id++;
+        r->fence_h = (HANDLE)(intptr_t)g->fence;
+    }
+    r->h = (HANDLE)(intptr_t)g->handle;
+#else
+    r->h = g->handle;
+#endif
     r->id = d->next_region_id++;
     r->kind = DSHM_KIND_SLOT;
     r->access = DSHM_ACCESS_READ;
     r->size = (size_t)g->stride * g->height;
-    r->h = g->handle;
     r->refs = 1;
     r->gpu = true;
     r->gpu_id = id;
@@ -199,7 +220,12 @@ void dshm_region_unref(DisplayShm *d, DShmRegion *r)
     }
     if (r->gpu) {
         /* GPU memory is not host memory: not counted in d->retained */
-#ifndef _WIN32
+#ifdef _WIN32
+        CloseHandle(r->h);
+        if (r->fence_h) {
+            CloseHandle(r->fence_h);
+        }
+#else
         close(r->h);
 #endif
         g_free(r);
@@ -223,6 +249,11 @@ DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access)
     HANDLE self = GetCurrentProcess(), dup;
     DWORD rights = SECTION_MAP_READ | SECTION_QUERY;
 
+    if (r->gpu) {
+        /* a shared D3D12 object, which has no section rights to narrow */
+        return DuplicateHandle(self, r->h, self, &dup, 0, FALSE,
+                               DUPLICATE_SAME_ACCESS) ? dup : NULL;
+    }
     if (access & DSHM_ACCESS_WRITE) {
         /* D3D12 heap import needs EXECUTE and READ_CONTROL too. */
         rights |= SECTION_MAP_WRITE | SECTION_MAP_EXECUTE | READ_CONTROL;
@@ -235,3 +266,18 @@ DShmHandle dshm_region_dup(const DShmRegion *r, uint32_t access)
     return qemu_dup(r->h);
 #endif
 }
+
+#ifdef _WIN32
+/* The slot's shared fence, for its own REGION; NULL if it has none. */
+HANDLE dshm_region_dup_fence(const DShmRegion *r)
+{
+    HANDLE self = GetCurrentProcess(), dup;
+
+    if (!r->fence_h ||
+        !DuplicateHandle(self, r->fence_h, self, &dup, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS)) {
+        return NULL;
+    }
+    return dup;
+}
+#endif
