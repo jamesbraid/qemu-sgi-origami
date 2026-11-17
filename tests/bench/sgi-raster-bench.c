@@ -377,6 +377,7 @@ typedef enum Scene {
     SCENE_SLIVER,
     SCENE_PERSPECTIVE,
     SCENE_TRILINEAR,
+    SCENE_PIXELS,
     SCENE_COUNT,
 } Scene;
 
@@ -390,6 +391,7 @@ static const char *const scene_names[SCENE_COUNT] = {
     [SCENE_SLIVER] = "sliver",
     [SCENE_PERSPECTIVE] = "perspective",
     [SCENE_TRILINEAR] = "trilinear",
+    [SCENE_PIXELS] = "pixels",
 };
 
 /*
@@ -476,6 +478,41 @@ static void trilinear_texels(Bench *b)
     }
 }
 
+/*
+ * A glDrawPixels frame of 720 by 486 one-pixel fragments in runs of 512,
+ * as a head queues them, on a window with one clip rectangle and no
+ * depth test: the plain path. Only the draw is timed.
+ */
+static void pixels_scene(const SGIRasterRules *rules, const SGIRasterTarget *t,
+                         Bench *b, SGIGLContext *c, double *ms)
+{
+    enum { PW = 720, PH = 486, RUN = 512 };
+    g_autofree SGIRasterPoint *pt = g_new0(SGIRasterPoint, PW * PH);
+    int64_t start;
+
+    for (uint32_t i = 0; i < PW * PH; i++) {
+        pt[i] = (SGIRasterPoint) {
+            .x = i % PW, .y = i / PW,
+            .rgba = { (i & 255) / 255.0f, ((i >> 3) & 255) / 255.0f,
+                      ((i >> 5) & 255) / 255.0f, 1 },
+        };
+    }
+    c->cur.drawable.clip = (SGIClipList) { .n = 1,
+                                           .r = { { 0, 0, W - 1, H - 1 } } };
+    clear(rules, t, b);
+    start = get_clock();
+    for (uint32_t i = 0; i < PW * PH; i += RUN) {
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_BITMAP, .ntargets = 1,
+            .bitmap = { .state = &c->cur, .z = 0.5, .points = pt + i,
+                        .npoints = MIN(RUN, PW * PH - i) },
+        };
+
+        sgi_soft_raster(rules, t, &op);
+    }
+    *ms = (get_clock() - start) / 1e6;
+}
+
 /* Draw scene into a new bench, returning it and the milliseconds taken. */
 static Bench *scene_draw(Scene scene, double *ms)
 {
@@ -536,6 +573,8 @@ static Bench *scene_draw(Scene scene, double *ms)
         c.cur.texture_2d = 1;
         c.cur.texture_env_mode = SGI_GL_MODULATE;
         break;
+    case SCENE_PIXELS:
+        break;
     case SCENE_BLEND:
         c.cur.blend = 1;
         c.cur.blend_src = SGI_GL_SRC_ALPHA;
@@ -545,6 +584,11 @@ static Bench *scene_draw(Scene scene, double *ms)
         g_assert_not_reached();
     }
 
+    if (scene == SCENE_PIXELS) {
+        pixels_scene(rules, &t, b, &c, ms);
+        sgi_gl_cleanup(&c);
+        return b;
+    }
     start = get_clock();
     if (scene == SCENE_CLEAR) {
         for (unsigned i = 0; i < 16; i++) {
@@ -1347,6 +1391,28 @@ static bool corpus_draw(unsigned index, Corpus *c)
             bytes[i] = g_rand_int(rand);
         }
         op.bitmap.count = (op.bitmap.width + 7) / 8 * op.bitmap.height;
+        sgi_soft_raster(&rules, &t, &op);
+    }
+    if (corpus_chance(rand, 25)) {
+        /* A glDrawPixels run of one-pixel fragments. */
+        SGIRasterPoint pt[40];
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_BITMAP, .ntargets = 1,
+            .bitmap = { .state = &ctx.cur, .z = g_rand_double(rand),
+                        .points = pt, .npoints = ARRAY_SIZE(pt) },
+        };
+
+        for (unsigned i = 0; i < ARRAY_SIZE(pt); i++) {
+            pt[i] = (SGIRasterPoint) {
+                .x = g_rand_int_range(rand, -4, CW + 4),
+                .y = g_rand_int_range(rand, -4, CH + 4),
+                .rgba = { g_rand_double_range(rand, -0.2, 1.2),
+                          g_rand_double_range(rand, -0.2, 1.2),
+                          g_rand_double_range(rand, -0.2, 1.2),
+                          g_rand_double_range(rand, -0.2, 1.2) },
+                .index = g_rand_int_range(rand, 0, 256),
+            };
+        }
         sgi_soft_raster(&rules, &t, &op);
     }
     if (t.texture && corpus_chance(rand, 30)) {
