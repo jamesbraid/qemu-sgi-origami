@@ -20291,13 +20291,12 @@ static void test_sz_dependencies_triangles(void)
         v.dx = (INT64_C(1) << 36) + 1;
         v.dy = -v.dx;
         sz_program(s, &v);
-        /* Both nonzero weights require their own bound despite cancellation. */
+        /* The sole covered integer sample cancels the wider terms exactly. */
         g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0),
-                        ==, MEMTX_ERROR);
-        qtest_writeq(s, DE + 0x1d0, 0);
-        qtest_writeq(s, DE + 0x1d8, 0);
-        g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+                        ==, MEMTX_OK);
         triangle_pixels(s, &c, one, v.color, 3, UINT32_MAX);
+        g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                        0x53000012);
     }
     for (unsigned transpose = 0; transpose < 2; transpose++) {
         Shape c = triangle_prepare(s, 0, 0, 0);
@@ -20398,6 +20397,165 @@ static void test_render_rejection_context(void)
         g_unlink(state);
         g_rmdir(dir);
     }
+}
+
+static void sz_affine_one_sample(QTestState *s, SZCase *v, Shape *c,
+                                 int64_t dx, int64_t dy)
+{
+    static const int vertices[3][2] = {
+        {47881 - 262144, 37946 - 262144},
+        {47858 - 262144, 38191 - 262144},
+        {47741 - 262144, 39429 - 262144},
+    };
+
+    *c = triangle_prepare(s, 0, 744, 600);
+    sz_initialize(s, c, v->old);
+    v->draw = TRIANGLE_DRAW | 6;
+    v->start = 18 * 4096;
+    v->dx = 0;
+    v->dy = 0;
+    sz_program(s, v);
+    qtest_writel(s, DE + 0x58, 0);
+    triangle_vertices(s, vertices, NULL, true);
+    qtest_writel(s, DE + 0x60, 0x02000000);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 747, 605, 4), 4), ==,
+                    0x53000012);
+    qtest_writeq(s, DE + 0x1d0, dx);
+    qtest_writeq(s, DE + 0x1d8, dy);
+}
+
+static void test_sz_affine_wide_triangle_boundaries(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int64_t dx = -16580698112LL, dy = 6461305856LL;
+    QTestState *s;
+    Shape c;
+    SZCase v = sz_case();
+
+    s = start_indexed_state();
+    sz_affine_one_sample(s, &v, &c, 0, 0);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, limit), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 747, 605, 4), 4), ==,
+                    0x53ffffff);
+    qtest_quit(s);
+
+    s = start_indexed_state();
+    sz_affine_one_sample(s, &v, &c, dx, dy);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 172955237375LL), ==,
+                    MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 747, 605, 4), 4), ==,
+                    0x53ffffff);
+    qtest_writeq(s, DE + 0x1d0, 0);
+    qtest_writeq(s, DE + 0x1d8, 0);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, limit), ==, MEMTX_OK);
+    qtest_quit(s);
+
+    {
+        g_autofree char *dir = g_dir_make_tmp("crime-z-affine-bound-XXXXXX",
+                                              NULL);
+        g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+        s = start_indexed_state();
+        sz_affine_one_sample(s, &v, &c, dx, dy);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, 172955237376LL, 8);
+        qtest_quit(s);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+}
+
+static void test_sz_affine_recorded_triangle(void)
+{
+    static const int vertices[3][2] = {
+        {19606 - 262144, 14536 - 262144},
+        {19543 - 262144, 14786 - 262144},
+        {19868 - 262144, 15620 - 262144},
+    };
+    QTestState *s = start_indexed_state();
+    Shape c = triangle_prepare(s, 0, 304, 228);
+    SZCase v = sz_case();
+
+    sz_initialize(s, &c, v.old);
+    v.draw = TRIANGLE_DRAW | 6;
+    v.start = 18 * 4096;
+    v.dx = 0;
+    v.dy = 0;
+    sz_program(s, &v);
+    qtest_writel(s, DE + 0x58, 0);
+    triangle_vertices(s, vertices, NULL, true);
+    qtest_writel(s, DE + 0x60, 0x02010000);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 307, 230, 4), 4), ==,
+                    0x53000012);
+    qtest_writeq(s, DE + 0x1d0, -16580698112LL);
+    qtest_writeq(s, DE + 0x1d8, 6461305856LL);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, 69217460224LL), ==,
+                    MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 307, 230, 4), 4), ==,
+                    0x536a2cee);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 307, 235, 4), 4), ==,
+                    0x53e286d6);
+    qtest_quit(s);
+}
+
+static void sz_affine_line_prepare(QTestState *s, SZCase *v, Shape *c,
+                                   const int a[2], const int b[2])
+{
+    *c = gl_line_prepare(s, false);
+    sz_initialize(s, c, v->old);
+    v->draw = TRIANGLE_DRAW | 6;
+    v->start = 18 * 4096;
+    v->dx = 0;
+    v->dy = 0;
+    sz_program(s, v);
+    gl_line_vertices(s, a, b, 0, 0, 0);
+    qtest_writel(s, DE + 0x60, 0x01000020);
+    g_assert_cmpint(memtx_writel(s, DE + 0x9f0, 0), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                    0x53000012);
+}
+
+static void test_sz_affine_line_phase(void)
+{
+    const int64_t limit = INT64_C(1) << 36;
+    const int horizontal_a[] = {65, 64}, horizontal_b[] = {129, 64};
+    const int diagonal_a[] = {65, 65}, diagonal_b[] = {129, 129};
+    const int64_t start = limit + (INT64_C(1) << 30) - 1;
+    QTestState *s;
+    Shape c;
+    SZCase v = sz_case();
+
+    s = start_indexed_state();
+    sz_affine_line_prepare(s, &v, &c, horizontal_a, horizontal_b);
+    qtest_writeq(s, DE + 0x1d0, limit - 1);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, start), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                    0x53ffffff);
+    qtest_quit(s);
+
+    {
+        g_autofree char *dir = g_dir_make_tmp("crime-z-line-phase-XXXXXX",
+                                              NULL);
+        g_autofree char *path = g_build_filename(dir, "state", NULL);
+
+        s = start_indexed_state();
+        sz_affine_line_prepare(s, &v, &c, horizontal_a, horizontal_b);
+        qtest_writeq(s, DE + 0x1d0, limit);
+        sz_atomic_failure(s, &c, path, DE + 0x9c8, start, 8);
+        qtest_quit(s);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+
+    s = start_indexed_state();
+    sz_affine_line_prepare(s, &v, &c, diagonal_a, diagonal_b);
+    qtest_writeq(s, DE + 0x1d0, INT64_MIN);
+    qtest_writeq(s, DE + 0x1d8, INT64_MAX);
+    g_assert_cmpint(memtx_writeq(s, DE + 0x9c8, limit - 1), ==, MEMTX_OK);
+    g_assert_cmphex(pixel_read(s, pixel_address(2, 1, 1, 4), 4), ==,
+                    0x53ffffff);
+    qtest_quit(s);
 }
 
 static void test_sz_dependencies_discards(void)
@@ -22828,6 +22986,12 @@ int main(int argc, char **argv)
              test_sz_dependencies_triangles);
     add_case("sgi/crime/render/rejection-context",
              test_render_rejection_context);
+    add_case("sgi/crime/render/sz/affine-wide-boundaries",
+             test_sz_affine_wide_triangle_boundaries);
+    add_case("sgi/crime/render/sz/affine-recorded-triangle",
+             test_sz_affine_recorded_triangle);
+    add_case("sgi/crime/render/sz/affine-line-phase",
+             test_sz_affine_line_phase);
     add_case("sgi/crime/render/sz/dependencies-discards",
              test_sz_dependencies_discards);
     add_case("sgi/crime/render/sz/dependencies-starts",

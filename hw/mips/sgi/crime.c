@@ -2267,7 +2267,7 @@ static MemTxResult crime_render_gl_transfer(SGICrimeState *s, hwaddr offset,
 #define CRIME_Z_DY 4
 
 typedef struct CrimeRenderSZ {
-    bool depth, stencil, write_depth, tag;
+    bool depth, stencil, write_depth, tag, extended;
     uint32_t control, mode, mask;
     int64_t start, dx, dy;
 } CrimeRenderSZ;
@@ -2346,10 +2346,11 @@ static unsigned crime_render_sz_dependencies(int64_t nx, int64_t ny)
 }
 
 static bool crime_render_sz_plane(const uint64_t *p, unsigned required,
-                                  CrimeRenderSZ *sz)
+                                  CrimeRenderSZ *sz, bool affine)
 {
     int64_t *coefficients[] = { &sz->start, &sz->dx, &sz->dy };
 
+    sz->extended = false;
     if (!sz->depth) {
         return true;
     }
@@ -2359,7 +2360,10 @@ static bool crime_render_sz_plane(const uint64_t *p, unsigned required,
         if (required & (1U << i)) {
             value = (int64_t)p[(0x1c8 + 8 * i) / 4];
             if (value < -CRIME_Z_LIMIT || value > CRIME_Z_LIMIT) {
-                return false;
+                if (!affine) {
+                    return false;
+                }
+                sz->extended = true;
             }
         }
         *coefficients[i] = value;
@@ -2371,8 +2375,32 @@ static bool crime_render_sz_coefficients(const uint64_t *p, unsigned opcode,
                                            CrimeRenderSZ *sz)
 {
     return crime_render_sz_plane(p, CRIME_Z_START | CRIME_Z_DX | CRIME_Z_DY,
-                                 sz) &&
+                                 sz, false) &&
            ((opcode != 0 && opcode != 3) || (!sz->dx && !sz->dy));
+}
+
+static Int128 crime_render_sz_floor(Int128 value, int64_t divisor)
+{
+    Int128 d = int128_makes64(divisor);
+    Int128 quotient = int128_divs(value, d);
+
+    if (int128_lt(int128_rems(value, d), int128_zero())) {
+        quotient = int128_sub(quotient, int128_one());
+    }
+    return quotient;
+}
+
+static void crime_render_sz_clamp_depth(Int128 value, uint32_t *depth)
+{
+    Int128 z = crime_render_sz_floor(value, 4096);
+
+    if (int128_le(z, int128_zero())) {
+        *depth = 0;
+    } else if (int128_ge(z, int128_makes64(0xffffff))) {
+        *depth = 0xffffff;
+    } else {
+        *depth = int128_getlo(z);
+    }
 }
 
 static bool crime_render_sz_depth(const CrimeRenderSZ *sz,
@@ -2383,6 +2411,27 @@ static bool crime_render_sz_depth(const CrimeRenderSZ *sz,
 
     if (!sz->depth) {
         *depth = 0;
+        return true;
+    }
+    if (sz->extended) {
+        Int128 wide = int128_makes64(sz->start);
+
+        if (g->opcode == 2) {
+            int64_t nx = x - g->shade_anchor[0];
+            int64_t ny = y - g->shade_anchor[1];
+
+            if (nx) {
+                wide = int128_add(wide, crime_line_product(sz->dx, nx));
+            }
+            if (ny) {
+                wide = int128_add(wide, crime_line_product(sz->dy, ny));
+            }
+        }
+        if (int128_lt(wide, int128_makes64(-CRIME_Z_LIMIT)) ||
+            !int128_lt(wide, int128_makes64(CRIME_Z_LIMIT))) {
+            return false;
+        }
+        crime_render_sz_clamp_depth(wide, depth);
         return true;
     }
     if (g->opcode == 2) {
@@ -2644,6 +2693,26 @@ static bool crime_gl_line_depth(const CrimeRenderSZ *sz,
     if (!sz->depth) {
         return true;
     }
+    if (sz->extended) {
+        Int128 wide_n = crime_line_product(sz->start, 64);
+        Int128 wide_z;
+
+        if (64 * x != line->vertex[0][0]) {
+            wide_n = int128_add(wide_n, crime_line_product(
+                sz->dx, 64 * x - line->vertex[0][0]));
+        }
+        if (64 * y != line->vertex[0][1]) {
+            wide_n = int128_add(wide_n, crime_line_product(
+                sz->dy, 64 * y - line->vertex[0][1]));
+        }
+        wide_z = crime_render_sz_floor(wide_n, 64);
+        if (int128_lt(wide_z, int128_makes64(-CRIME_Z_LIMIT)) ||
+            !int128_lt(wide_z, int128_makes64(CRIME_Z_LIMIT))) {
+            return false;
+        }
+        crime_render_sz_clamp_depth(wide_z, depth);
+        return true;
+    }
     n = 64 * sz->start;
     if (64 * x != line->vertex[0][0]) {
         n += sz->dx * (64 * x - line->vertex[0][0]);
@@ -2656,6 +2725,30 @@ static bool crime_gl_line_depth(const CrimeRenderSZ *sz,
         return false;
     }
     *depth = CLAMP(crime_line_floor(z, 4096), 0, 0xffffff);
+    return true;
+}
+
+static bool crime_gl_line_sz_phase(const CrimeRenderSZ *sz,
+                                   const CrimeGLLine *line)
+{
+    for (unsigned width = 37; width < 64; width++) {
+        Int128 modulus = int128_lshift(int128_one(), width);
+        int64_t dx = sextract64((uint64_t)sz->dx, 0, width);
+        int64_t dy = sextract64((uint64_t)sz->dy, 0, width);
+        Int128 qdx = int128_divs(int128_sub(int128_makes64(sz->dx),
+                                            int128_makes64(dx)), modulus);
+        Int128 qdy = int128_divs(int128_sub(int128_makes64(sz->dy),
+                                            int128_makes64(dy)), modulus);
+        uint64_t phase = int128_getlo(qdx) *
+                         ((uint64_t)line->vertex[0][0] & 63) +
+                         int128_getlo(qdy) *
+                         ((uint64_t)line->vertex[0][1] & 63);
+
+        if (phase & 63) {
+            return false;
+        }
+    }
+    /* At width 64 the projected derivatives are the source words. */
     return true;
 }
 
@@ -3153,7 +3246,11 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         /* Include stipple-disabled, width-replicated and offscreen samples. */
         if (sz.depth &&
             (!crime_gl_line_generate(p, &line, &sz, NULL, &required) ||
-             !crime_render_sz_plane(p, required, &sz))) {
+             !crime_render_sz_plane(p, required, &sz, !line.aa))) {
+            return crime_transfer_fail(offset,
+                                       "unsupported depth/stencil state");
+        }
+        if (sz.extended && !crime_gl_line_sz_phase(&sz, &line)) {
             return crime_transfer_fail(offset,
                                        "unsupported depth/stencil state");
         }
@@ -3173,9 +3270,24 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                     x - geometry.shade_anchor[0], y - geometry.shade_anchor[1]);
             }
         }
-        if (!crime_render_sz_plane(p, required, &sz)) {
+        if (!crime_render_sz_plane(p, required, &sz, true)) {
             return crime_transfer_fail(offset,
                                        "unsupported depth/stencil state");
+        }
+        if (sz.extended) {
+            uint32_t depth;
+
+            /* Integer weights preserve each common-width projection. */
+            for (unsigned i = 0; i < geometry.samples; i++) {
+                int x, y;
+
+                crime_render_sample(&geometry, i, &x, &y);
+                if (crime_render_triangle_inside(&geometry, x, y) &&
+                    !crime_render_sz_depth(&sz, &geometry, x, y, &depth)) {
+                    return crime_transfer_fail(
+                        offset, "unsupported depth/stencil state");
+                }
+            }
         }
     }
     if (geometry.opcode <= 1 && !native_gl) {
