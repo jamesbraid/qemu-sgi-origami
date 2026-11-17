@@ -441,6 +441,7 @@ include/hw/misc/sgi-l1-l2-link.h
 include/hw/misc/sgi-l1-provider.h
 include/hw/misc/sgi-l2-hub.h
 include/hw/misc/sgi-mgras.h
+include/hw/misc/sgi-odyssey-clock.h
 include/hw/misc/sgi-odyssey-native-mesa.h
 include/hw/misc/sgi-odyssey-planes.h
 include/hw/misc/sgi-odyssey.h
@@ -1292,6 +1293,7 @@ tests/qtest/sn1-pio-forward-test.c
 tests/unit/test-sgi-egl-display.c
 tests/unit/test-sgi-head-guard.c
 tests/unit/test-sgi-machine-init.c
+tests/unit/test-sgi-odyssey-clock.c
 tests/unit/test-sgi-renderer-gl.c
 tests/unit/test-sgi-renderer.c
 scripts/ci/sgi-license-check.py

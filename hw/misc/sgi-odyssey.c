@@ -139,6 +139,7 @@
 #include "hw/display/sgi/rasterizer.h"
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-odyssey.h"
+#include "hw/misc/sgi-odyssey-clock.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "qemu/error-report.h"
@@ -13843,7 +13844,9 @@ static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
 {
     OdysseyQueuedStore q = {
         .value = value, .addr = addr, .size = size, .counted = counted,
-        .queued_at = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL),
+        .queued_at = trace_event_get_state_backends(
+                         TRACE_SGI_ODYSSEY_WORK_BEHIND) ?
+                     qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) : 0,
     };
 
     uint32_t before = odyssey_fifo_level(s);
@@ -13894,7 +13897,8 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
     /* Cut the run stores off once: removing each from the front is O(n^2). */
     g_array_remove_range(s->work_queue, 0, s->work_head);
     s->work_head = 0;
-    if (s->work_queue->len) {
+    if (s->work_queue->len &&
+        trace_event_get_state_backends(TRACE_SGI_ODYSSEY_WORK_BEHIND)) {
         trace_sgi_odyssey_work_behind(s->work_queue->len,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
             g_array_index(s->work_queue, OdysseyQueuedStore, 0).queued_at);
@@ -13914,16 +13918,20 @@ static const SGIHeadWorkOps odyssey_work_ops = {
 /* Finish the waiting work now, for an access at addr that must see it. */
 static void odyssey_work_drain(SGIOdysseyState *s, hwaddr addr)
 {
-    int64_t start;
+    int64_t start = 0;
 
     sgi_head_work_wait_slice(&s->work);
     if (!odyssey_work_pending(s)) {
         return;
     }
-    start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    if (trace_event_get_state_backends(TRACE_SGI_ODYSSEY_WORK)) {
+        start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    }
     sgi_head_work_drain(&s->work);
-    trace_sgi_odyssey_work("drained", addr,
-                           qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start);
+    if (start) {
+        trace_sgi_odyssey_work("drained", addr,
+                               qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start);
+    }
 }
 
 /*
@@ -14048,9 +14056,56 @@ static bool odyssey_store_queues(SGIOdysseyState *s, hwaddr addr,
     if (!odyssey_command_store(addr, size)) {
         return false;
     }
-    return odyssey_work_pending(s) || s->work.drawing ||
-           s->work.test_words ||
-           qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->work_queued_until;
+    if (odyssey_work_pending(s) || s->work.drawing || s->work.test_words) {
+        return true;
+    }
+    /* Read the clock only inside a hold, and end the hold when it lapses. */
+    if (s->work_queued_until) {
+        if (qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) < s->work_queued_until) {
+            return true;
+        }
+        s->work_queued_until = 0;
+    }
+    return false;
+}
+
+/*
+ * FIFO stores are timed in host ticks, as a clock read costs more than most
+ * of them. The rate is measured against the clock first, which times them.
+ */
+static void odyssey_store_calibrate(SGIOdysseyState *s)
+{
+    int64_t ns, ticks;
+
+    if (s->store_ticks_per_ms) {
+        return;
+    }
+    ns = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+    ticks = cpu_get_host_ticks();
+    if (s->store_cal_ns && ns - s->store_cal_ns < SGI_ODYSSEY_CAL_MIN_NS) {
+        return;
+    }
+    if (s->store_cal_ns) {
+        s->store_ticks_per_ms = sgi_odyssey_ticks_per_ms(
+            ticks - s->store_cal_ticks, ns - s->store_cal_ns);
+    }
+    if (!s->store_ticks_per_ms) {
+        s->store_cal_ns = ns;
+        s->store_cal_ticks = ticks;
+    }
+}
+
+/* In ticks when rate is set, else in ns. */
+static int64_t odyssey_store_now(uint64_t rate)
+{
+    return rate ? cpu_get_host_ticks() : qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+}
+
+static int64_t odyssey_store_ns(uint64_t rate, int64_t start)
+{
+    int64_t d = odyssey_store_now(rate) - start;
+
+    return rate ? (d > 0 ? muldiv64(d, SCALE_MS, rate) : 0) : d;
 }
 
 /* Take the one-shot mark before dispatch can make another memory access. */
@@ -14073,16 +14128,18 @@ static MemTxResult odyssey_mmio_write(void *opaque, hwaddr addr,
         /* Credited as it enters the FIFO (odyssey_work_admit()). */
         counted = false;
     } else if (odyssey_fifo_port(addr) && current_cpu) {
-        int64_t start = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
+        uint64_t rate;
+        int64_t start, took;
 
+        odyssey_store_calibrate(s);
+        rate = s->store_ticks_per_ms;
+        start = odyssey_store_now(rate);
         odyssey_write_dispatch(s, addr, value, size);
-        if (qemu_clock_get_ns(QEMU_CLOCK_REALTIME) - start >
-            SGI_HEAD_WORK_SLICE_NS) {
+        took = odyssey_store_ns(rate, start);
+        if (took > SGI_HEAD_WORK_SLICE_NS) {
             s->work_queued_until = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
                                    ODSY_WORK_HOLD_NS;
-            trace_sgi_odyssey_work("queueing", addr,
-                                   qemu_clock_get_ns(QEMU_CLOCK_REALTIME) -
-                                   start);
+            trace_sgi_odyssey_work("queueing", addr, took);
         }
     } else {
         if (odyssey_work_pending(s) && odyssey_access_waits(addr, size, true)) {

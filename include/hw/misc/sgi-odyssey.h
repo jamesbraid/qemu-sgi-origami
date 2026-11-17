@@ -417,6 +417,10 @@ struct SGIOdysseyState {
     uint32_t test_slice_sleep_ms;
     /* Until when (QEMU_CLOCK_VIRTUAL) FIFO stores queue after a long one. */
     int64_t work_queued_until;
+    /* Host ticks per ms, from the pair below; 0 until known. */
+    uint64_t store_ticks_per_ms;
+    int64_t store_cal_ticks;
+    int64_t store_cal_ns;
     /* Scalar draws run without the big lock, for the qtest. */
     uint32_t work_unlocked_draws;
     VMChangeStateEntry *work_vm_state;
