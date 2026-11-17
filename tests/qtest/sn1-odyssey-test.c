@@ -12,6 +12,8 @@
 #include <math.h>
 #include "qemu/bswap.h"
 #include "libqtest.h"
+#include "prereq.h"
+#include "display-shm-viewer.h"
 #include "qobject/qdict.h"
 #include "qobject/qjson.h"
 #include "sgi-raster-bands.h"
@@ -25624,6 +25626,97 @@ static void add_fresh_case(const char *path, GTestFunc fn)
     }
 }
 
+/*
+ * x-gpu scan-out: a viewer lent the GPU-composed frame sees what the CPU
+ * resolves (drawables, index fill, cursor). Needs an adapter that exports
+ * dma-bufs (VULKAN_EXPORT).
+ */
+static void test_scanout_gpu_dmabuf(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("odsy-scanout-XXXXXX", NULL);
+    g_autofree char *sock = g_build_filename(dir, "dshm.sock", NULL);
+    g_autofree char *extra = g_strdup_printf(
+        " -global sgi-odyssey.x-gpu=on -global sgi-odyssey.x-gpu-min-pixels=0"
+        " -device display-shm,path=%s", sock);
+    int64_t deadline = g_get_monotonic_time() + 180 * G_TIME_SPAN_SECOND;
+    unsigned checked = 0, seen_a = 0, seen_b = 0, seen_cursor = 0;
+    QTestState *qts;
+    Viewer *v;
+    VFrame f;
+
+    qts = board_launch(extra);
+    for (;;) {
+        QDict *resp = qtest_qmp(qts,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-gpu-state'}}", BOARD);
+        g_autofree char *state = g_strdup(qdict_get_str(resp, "return"));
+
+        qobject_unref(resp);
+        if (!strcmp(state, "ready")) {
+            break;
+        }
+        if (strcmp(state, "opening") || g_get_monotonic_time() > deadline) {
+            qtest_quit(qts);
+            g_test_skip("no GPU adapter opened");
+            return;
+        }
+        g_usleep(10000);
+    }
+    /* Drawable 1 and 24 show index 5 through colormap groups 17 and 18. */
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID1, ODSY_DISPMODE_GROUP17);
+    backend_push64(qts, ODSY_BACKEND_DISPMODE_DID24, ODSY_DISPMODE_GROUP18);
+    backend_push64(qts, 0x34414001u, 0x040200c0u);
+    backend_push64(qts, 0x34814001u, 0x20040080u);
+    id_plane_write(qts, 1, 0xf8, 400, 400, 440, 440);
+    id_plane_write(qts, 24, 0xf8, 420, 410, 460, 450);
+    colour_index_fill(qts, 5, 400, 400, 460, 450);
+    /* A crosshair in colour word 1, over everything. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2591, 1));
+    backend_push32(qts, 0x3ff00000);
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2580, 1));
+    backend_push32(qts, (430u << 16) | 420u);
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2581, 1));
+    backend_push32(qts, 5);
+
+    v = v_open(sock, (VOpts) { .credit = 2, .dmabuf = true,
+                               .storage1 = DSHM_STORAGE_DMABUF });
+    v_request(v, 0, DSHM_REQ_FRAME, 0, 0, DSHM_REQ_SAMPLE_NOW);
+    g_assert_true(v_frame(v, &f, V_WAIT_MS));
+    if (v_region(v, f.region)->storage != DSHM_STORAGE_DMABUF) {
+        v_close(v);
+        qtest_quit(qts);
+        qtest_prereq_missing("VULKAN_EXPORT", "the adapter cannot export a "
+                             "dma-buf");
+        return;
+    }
+    /* A coarse grid over the screen and a fine one over the scene. */
+    for (uint32_t i = 0; i < 20 + 20; i++) {
+        uint32_t y = i < 20 ? i * 53 : 380 + (i - 20) * 5;
+
+        for (uint32_t j = 0; j < 21 + 20; j++) {
+            uint32_t x = j < 21 ? j * 61 : 380 + (j - 21) * 5;
+            uint32_t want = odsy_shown(qts, x, y) >> 8;
+
+            g_assert_cmphex(v_gpu_px(v, &f, x, y), ==, want);
+            seen_a += want == 0x102030;
+            seen_b += want == 0x804020;
+            seen_cursor += want == 0xff0000;
+            checked++;
+        }
+    }
+    g_assert_cmpuint(checked, >, 400);
+    /* The scene is in the picture, so the comparison was not of black. */
+    g_assert_cmpuint(seen_a, >, 0);
+    g_assert_cmpuint(seen_b, >, 0);
+    g_assert_cmpuint(seen_cursor, >, 0);
+    /* QEMU exits cleanly on SIGTERM while the viewer still holds the frame. */
+    qtest_quit(qts);
+    v_close(v);
+    /* QEMU removes its socket as it exits. */
+    g_unlink(sock);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
+}
+
 int main(int argc, char **argv)
 {
     int result;
@@ -26667,6 +26760,8 @@ int main(int argc, char **argv)
 
     add_fresh_case("sn1/odyssey/processor-credit-return",
                    test_processor_credit_return);
+    add_fresh_case("sn1/odyssey/scanout-gpu-dmabuf",
+                   test_scanout_gpu_dmabuf);
 
     result = g_test_run();
     if (shared_board) {

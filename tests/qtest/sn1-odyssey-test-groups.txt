@@ -222,6 +222,7 @@ gl /mips64/sn1/odyssey/command-fifo-gl-program-window-local-viewer
 gl /mips64/sn1/odyssey/command-fifo-gl-combined-carries-modelview
 gl /mips64/sn1/odyssey/command-fifo-gl-raster-rules
 gl /mips64/sn1/odyssey/command-fifo-gl-gpu-parity
+gl /mips64/sn1/odyssey/scanout-gpu-dmabuf
 gl /mips64/sn1/odyssey/command-fifo-gl-flat-shading
 gl /mips64/sn1/odyssey/command-fifo-gl-vertex-3i
 gl /mips64/sn1/odyssey/command-fifo-gl-fog-curve
