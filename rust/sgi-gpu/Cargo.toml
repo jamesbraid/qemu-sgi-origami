@@ -32,6 +32,12 @@ wgpu-hal = { version = "30", default-features = false, features = ["vulkan"] }
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
 
+[target.'cfg(target_vendor = "apple")'.dependencies]
+wgpu-hal = { version = "30", default-features = false, features = ["metal"] }
+objc2 = "0.6"
+objc2-metal = { version = "0.3", features = ["objc2-io-surface"] }
+objc2-io-surface = "0.3"
+
 [profile.release]
 opt-level = 2
 debug = false

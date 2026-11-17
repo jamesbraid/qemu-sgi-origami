@@ -18,6 +18,7 @@ pub const EXPORT_IOSURFACE: c_int = 2;
 pub const EXPORT_WIN32: c_int = 3;
 
 /// DRM_FORMAT_XRGB8888: our 0x00RRGGBB words, little-endian.
+#[allow(dead_code)]
 const FOURCC_XR24: u32 = 0x3432_5258;
 /// Row pitch granularity: what viewers and importers accept for a linear
 /// dma-buf.
@@ -401,7 +402,9 @@ mod tests {
         // Whatever this platform exports, or nothing where it cannot.
         if info.kind != EXPORT_NONE {
             assert!([EXPORT_DMABUF, EXPORT_IOSURFACE, EXPORT_WIN32].contains(&info.kind));
-            assert!(info.handle >= 0 && info.stride >= 400 && info.fourcc == FOURCC_XR24);
+            assert!(info.handle >= 0 && info.stride >= 400);
+            // IOSurfaces are 'BGRA'; the other kinds lend XRGB8888 words.
+            assert!(info.kind == EXPORT_IOSURFACE || info.fourcc == FOURCC_XR24);
             if info.kind == EXPORT_DMABUF {
                 assert!(info.stride % PITCH_ALIGN == 0);
             }

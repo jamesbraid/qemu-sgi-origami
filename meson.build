@@ -3794,7 +3794,8 @@ if have_sgi_gpu
   if host_os == 'darwin'
     sgi_gpu_link = ['-framework', 'Metal', '-framework', 'QuartzCore',
                     '-framework', 'CoreGraphics', '-framework', 'Foundation',
-                    '-framework', 'CoreFoundation', '-lobjc', '-lm']
+                    '-framework', 'CoreFoundation', '-framework', 'IOSurface',
+                    '-lobjc', '-lm']
   elif host_os == 'windows'
     sgi_gpu_link = ['-lkernel32', '-lntdll', '-luserenv', '-lws2_32', '-ldbghelp']
   else
