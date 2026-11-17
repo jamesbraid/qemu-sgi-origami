@@ -45,6 +45,160 @@ static SIDmaMapSlot mgras_test_dma_map_slot(uint32_t slot)
     return result;
 }
 
+/* Write one display-ID run list at SRAM word addr and point row y at it. */
+static void mgras_test_did_row(uint16_t addr, uint32_t y, const uint16_t *runs,
+                               unsigned int n)
+{
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x07, addr));
+    for (unsigned int i = 0; i < n; i++) {
+        qtest_writew(qts, REG_VC3_RAM, runs[i]);
+    }
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(0x07, MGRAS_DID_FRAME_BASE + y));
+    qtest_writew(qts, REG_VC3_RAM, addr);
+}
+
+/* A stale or repeated column never applies; the walk is width-bounded. */
+static void test_display_did_runs(void)
+{
+    const uint16_t plain[] = { 1, 100 << 5 | 2, 600 << 5 | 3, 0xffe0 };
+    const uint16_t stale[] = { 5, 50 << 5 | 6, 50 << 5 | 7, 40 << 5 | 8,
+                               0xffe0 };
+    uint16_t spin[1 + 1300 + 1];
+
+    mgras_reset();
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(0x04, MGRAS_DID_FRAME_BASE));
+    mgras_test_did_row(0x3000, 10, plain, ARRAY_SIZE(plain));
+    mgras_test_did_row(0x3100, 11, stale, ARRAY_SIZE(stale));
+    spin[0] = 1;
+    for (unsigned int k = 1; k <= 1300; k++) {
+        spin[k] = 10 << 5 | (k % 30 + 1);
+    }
+    spin[1301] = 0xffe0;
+    mgras_test_did_row(0x4000, 12, spin, ARRAY_SIZE(spin));
+
+    g_assert_cmpuint(mgras_test_wid(qts, 0, 10), ==, 1);
+    g_assert_cmpuint(mgras_test_wid(qts, 99, 10), ==, 1);
+    g_assert_cmpuint(mgras_test_wid(qts, 100, 10), ==, 2);
+    g_assert_cmpuint(mgras_test_wid(qts, 599, 10), ==, 2);
+    g_assert_cmpuint(mgras_test_wid(qts, 600, 10), ==, 3);
+    g_assert_cmpuint(mgras_test_wid(qts, 1279, 10), ==, 3);
+
+    g_assert_cmpuint(mgras_test_wid(qts, 49, 11), ==, 5);
+    g_assert_cmpuint(mgras_test_wid(qts, 50, 11), ==, 7);
+    g_assert_cmpuint(mgras_test_wid(qts, 1279, 11), ==, 7);
+
+    g_assert_cmpuint(mgras_test_wid(qts, 9, 12), ==, 1);
+    g_assert_cmpuint(mgras_test_wid(qts, 10, 12), ==, 1280 % 30 + 1);
+    g_assert_cmpuint(mgras_test_wid(qts, 1279, 12), ==, 1280 % 30 + 1);
+}
+
+/* FNV-1a over one 1280-pixel row. */
+static uint32_t mgras_test_row_sum(const uint32_t *row)
+{
+    uint32_t sum = 2166136261u;
+
+    for (int x = 0; x < 1280; x++) {
+        sum = (sum ^ row[x]) * 16777619u;
+    }
+    return sum;
+}
+
+/* Seeded display-ID tables must resolve as the pre-span code did. */
+static void test_display_resolve_equivalence(void)
+{
+    /* Sums taken from the code before the span resolve, commit 6916caef451. */
+    static const uint32_t expect[24] = {
+        0xe6706e03, 0xd7ad1537, 0x2c91bef2, 0x87663629,
+        0x728b53aa, 0xa2c9eaba, 0x56cd333b, 0x243c1052,
+        0x7a8d318d, 0xd9fddfd9, 0xa352a05d, 0x50639ae7,
+        0xbbd1738f, 0x002a5c63, 0xb3ff141b, 0xbb53c123,
+        0x3ad478e3, 0xf08d57a5, 0x824665ea, 0xa7bebb9b,
+        0x0836c93c, 0xebe5544c, 0x72557c5a, 0xe637c91d,
+    };
+    GRand *rng = g_rand_new_with_seed(0x2188);
+    g_autofree uint32_t *rgb = NULL;
+
+    mgras_reset();
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    for (unsigned int did = 0; did < 32; did++) {
+        qtest_writeb(qts, REG_XMAP_INDEX, did << 2);
+        qtest_writel(qts, REG_XMAP_MAIN_MODE, did << 5);
+        mgras_write_cmap_entry(qts, did, 0,
+                               g_rand_int(rng) & 0xffffff00);
+    }
+    qtest_writel(qts, REG_VC3_INDEXDATA,
+                 VC3_INDEXDATA(0x04, MGRAS_DID_FRAME_BASE));
+    for (unsigned int row = 0; row < 24; row++) {
+        uint16_t runs[64];
+        unsigned int n = 0, col = 0;
+
+        runs[n++] = g_rand_int_range(rng, 0, 32);
+        while (n < 60) {
+            int pick = g_rand_int_range(rng, 0, 10);
+
+            col += pick < 6 ? g_rand_int_range(rng, 1, 4) :
+                   pick < 9 ? g_rand_int_range(rng, 4, 21) :
+                   g_rand_int_range(rng, 21, 300);
+            if (col >= 1280) {
+                break;
+            }
+            runs[n++] = col << 5 | g_rand_int_range(rng, 0, 32);
+        }
+        runs[n++] = 0xffe0;
+        mgras_test_did_row(0x3000 + row * 0x40, 100 + row, runs, n);
+    }
+    g_rand_free(rng);
+
+    rgb = mgras_screendump(qts);
+    for (unsigned int row = 0; row < 24; row++) {
+        g_assert_cmphex(mgras_test_row_sum(&rgb[(100 + row) * 1280]), ==,
+                        expect[row]);
+    }
+}
+
+/* Microseconds per pass of n writes of DAC register reg, each then read. */
+static double mgras_test_dac_pass(uint16_t reg, int n)
+{
+    int64_t start = g_get_monotonic_time();
+
+    for (int i = 0; i < n; i++) {
+        qtest_writew(qts, REG_DAC_LUT_INDEX, reg);
+        qtest_writeb(qts, REG_DAC_LUT_DATA_2, i & 1 ? 0xff : 0xfe);
+        mgras_qom_get_uint(qts, "x-test-display-pixel");
+    }
+    return (double)(g_get_monotonic_time() - start) / n;
+}
+
+/* Bench, registered only with SGI_MGRAS_RESOLVE_BENCH=N; best of seven. */
+static void test_display_resolve_bench(void)
+{
+    double draw = 1e9, idle = 1e9;
+    int n = atoi(getenv("SGI_MGRAS_RESOLVE_BENCH"));
+
+    mgras_reset();
+    mgras_tag_wid(qts, 0, 0, 1279, 1023, 0);
+    mgras_tag_wid(qts, 100, 100, 1000, 800, 2);
+    mgras_tag_wid(qts, 300, 300, 700, 500, 3);
+    mgras_enter_gl_window(qts, 0, 0, 1280, 1024, 0x11);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    gl_viewport(qts, 0, 0, 1280, 1024);
+    gl_clear_color(qts, 1, 0, 1, 1);
+    gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    gl_word(qts, GL_FLUSH);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 100, 100), ==, 0xff00ff);
+
+    for (int round = 0; round < 7; round++) {
+        draw = MIN(draw, mgras_test_dac_pass(0x0400, n));
+        idle = MIN(idle, mgras_test_dac_pass(0x0000, n));
+    }
+    g_test_message("resolve of a full frame: %.2f ms (%.2f drawing, %.2f "
+                   "idle)", (draw - idle) / 1000, draw / 1000, idle / 1000);
+    qtest_writew(qts, REG_DAC_LUT_INDEX, 0x0400);
+    qtest_writeb(qts, REG_DAC_LUT_DATA_2, 0xff);
+}
+
 /*
  * The kernel-privileged mapping port (0x130400) shares 0x120400's
  * class/reg/len token framing. A class-0x48 header names a starting
@@ -7176,6 +7330,17 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
 
 
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-did-runs",
+        test_display_did_runs, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/display-resolve-equivalence",
+        test_display_resolve_equivalence, true);
+    if (getenv("SGI_MGRAS_RESOLVE_BENCH")) {
+        mgras_qtest_add_func(
+            "sn0/origin2000/mgras/display-resolve-bench",
+            test_display_resolve_bench, true);
+    }
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-map-slot-registers",
         test_dma_map_slot_registers, true);

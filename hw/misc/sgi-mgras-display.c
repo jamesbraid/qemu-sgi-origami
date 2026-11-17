@@ -70,17 +70,22 @@ void sgi_mgras_display_cursor_report(SGIMgrasState *s)
  * the model's choice, not observed. Return the entry in the native
  * 0x00BBGGRR order the callers convert.
  */
+static uint32_t mgras_cmap_bgr(const SGIMgrasState *s, uint32_t base,
+                               uint32_t bits, uint32_t index)
+{
+    uint32_t entry = s->cmap[(base + (index & bits)) % SGI_MGRAS_CMAP_ENTRIES];
+
+    return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
+}
+
 static uint32_t mgras_cmap_rgb(SGIMgrasState *s, uint8_t visual,
                                uint32_t index)
 {
     uint32_t mode = s->xmap[0].mode[visual & 0x1f];
-    uint32_t map = (mode >> 5) & 0x1f;
     uint32_t bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
                     0xfff : 0xff;
-    uint32_t entry = s->cmap[(map * 256 + (index & bits)) %
-                             SGI_MGRAS_CMAP_ENTRIES];
 
-    return ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
+    return mgras_cmap_bgr(s, ((mode >> 5) & 0x1f) * 256, bits, index);
 }
 
 /*
@@ -118,17 +123,20 @@ static void mgras_did_line(SGIMgrasState *s, unsigned int entry_reg,
     uint16_t ptr = s->vc3_sram[(s->vc3_reg[entry_reg] + y) & mask];
     uint16_t run = s->vc3_sram[ptr & mask];
     uint8_t current = run & MGRAS_DID_MASK;
-    unsigned int steps = 0;
+    unsigned int steps = 0, x = 0, next;
 
     run = s->vc3_sram[++ptr & mask];
-    for (unsigned int x = 0; x < columns; x++) {
+    while (x < columns) {
         /* Bound the walk; a guest table can repeat a column forever. */
-        while ((run >> MGRAS_DID_COLUMN_SHIFT) == x &&
-               steps++ < s->width) {
+        while ((run >> MGRAS_DID_COLUMN_SHIFT) == x && steps++ < s->width) {
             current = run & MGRAS_DID_MASK;
             run = s->vc3_sram[++ptr & mask];
         }
-        did[x] = current;
+        /* A run that does not start past x never applies: stuck to the end. */
+        next = run >> MGRAS_DID_COLUMN_SHIFT;
+        next = next > x ? MIN(next, columns) : columns;
+        memset(did + x, current, next - x);
+        x = next;
     }
 }
 
@@ -154,32 +162,6 @@ void sgi_mgras_display_did_line(SGIMgrasState *s, bool overlay,
 }
 
 /*
- * A nonzero overlay index covers the main planes when the pixel's WID has
- * its overlay enabled, resolved through the map that WID's overlay mode
- * names in bits 7:3; index 0 is transparent. The X server's own
- * SERVER_OVERLAY_VISUALS property advertises transparent pixel 0 for its
- * overlay visual (a guest console capture,
- * line 272 of its log: visual 0x23, TransparentPixel, value 0),
- * and it never loads entry 0 of the overlay maps. The mode fields are
- * inferred (see SGI_MGRAS_XMAP_OVERLAY_MODE); an overlay drawn over a WID
- * whose overlay is disabled stays invisible.
- */
-static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
-                              uint32_t *bgr)
-{
-    uint8_t index = s->overlay[i];
-    uint32_t mode = s->xmap[0].overlay_mode[did];
-    uint32_t entry;
-
-    if (!index || !(mode & 1)) {
-        return false;
-    }
-    entry = s->cmap[((mode >> 3) & 0x1f) * 256 + index];
-    *bgr = ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) | (entry >> 24);
-    return true;
-}
-
-/*
  * Resolve one bank word to mgras_cmap_rgb()'s native 0x00BBGGRR order,
  * keyed by its per-pixel format tag (sgi-mgras.h). CI8 indexes through the
  * WID's colour map, at the depth the WID's mode shows. RGB is a direct
@@ -193,8 +175,9 @@ static bool mgras_overlay_bgr(SGIMgrasState *s, int i, uint8_t did,
  * form's main WID is read: no register or capture is known to source a
  * map a direct-colour pixel would use.
  */
-static uint32_t mgras_bank_bgr(SGIMgrasState *s, uint32_t word,
-                               uint8_t format, uint8_t main_did)
+static inline uint32_t mgras_bank_bgr(const SGIMgrasState *s, uint32_t word,
+                                      uint8_t format, uint32_t base,
+                                      uint32_t bits)
 {
     if (format == SGI_MGRAS_PIXEL_FORMAT_RGB) {
         uint32_t rgb = word & 0x00ffffff;
@@ -208,38 +191,7 @@ static uint32_t mgras_bank_bgr(SGIMgrasState *s, uint32_t word,
 
         return (b * 0x11) << 16 | (g * 0x11) << 8 | r * 0x11;
     }
-    return mgras_cmap_rgb(s, main_did, word);
-}
-
-/*
- * One pixel in mgras_cmap_rgb()'s native order. A visible overlay pixel
- * covers every kind. A main display ID whose bit is set in the XMAP
- * buffer-select word under index 0 shows bank 1, which holds the GL
- * client's direct colours and colour indices, each resolved by bank 1's
- * own format tag (SGI_MGRAS_XMAP_BUF_SELECT in sgi-mgras.h), or slot 2 for
- * a pixel a deep window drew there; every other pixel shows bank 0.
- */
-static uint32_t mgras_resolve_pixel_bgr(SGIMgrasState *s, int i,
-                                        uint8_t main_did, uint8_t overlay_did)
-{
-    uint32_t overlay;
-
-    if (mgras_overlay_bgr(s, i, overlay_did, &overlay)) {
-        return overlay;
-    }
-    if ((s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1) {
-        /*
-         * A deep double-buffered window's pair is bank 0 and slot 2, so the
-         * set bit shows slot 2 where a draw wrote it (inferred, see the
-         * draw-buffer mapping in sgi-mgras-gl.c); elsewhere bank 1.
-         */
-        if (s->slot[0][i] & SGI_MGRAS_SLOT_WRITTEN) {
-            return mgras_bank_bgr(s, s->slot[0][i],
-                                  SGI_MGRAS_PIXEL_FORMAT_RGB, main_did);
-        }
-        return mgras_bank_bgr(s, s->back[i], s->back_format[i], main_did);
-    }
-    return mgras_bank_bgr(s, s->front[i], s->format[i], main_did);
+    return mgras_cmap_bgr(s, base, bits, word);
 }
 
 /* mgras_cmap_rgb()'s native 0x00BBGGRR as the scanout's 0x00RRGGBB. */
@@ -282,6 +234,61 @@ static void mgras_cursor_row(SGIMgrasState *s, unsigned y, uint32_t *dst)
     }
 }
 
+/* A native 0x00BBGGRR pixel through the DAC's mask and gamma, as 0x00RRGGBB. */
+static inline uint32_t mgras_gamma_rgb(const SGIMgrasState *s, uint32_t bgr,
+                                       uint8_t mask)
+{
+    return ((uint32_t)s->dac_gamma[0][bgr & mask] << 16) |
+           ((uint32_t)s->dac_gamma[1][(bgr >> 8) & mask] << 8) |
+           s->dac_gamma[2][(bgr >> 16) & mask];
+}
+
+/* Resolve n pixels from first that share a main and an overlay display ID. */
+static void mgras_resolve_span(SGIMgrasState *s, unsigned int first,
+                               unsigned int n, uint8_t main_did,
+                               uint8_t overlay_did, uint32_t *dst)
+{
+    uint32_t omode = s->xmap[0].overlay_mode[overlay_did];
+    const uint32_t *omap = (omode & 1) ?
+                           &s->cmap[((omode >> 3) & 0x1f) * 256] : NULL;
+    bool back = (s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1;
+    uint32_t mode = s->xmap[0].mode[main_did & 0x1f];
+    uint32_t base = ((mode >> 5) & 0x1f) * 256;
+    uint32_t bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
+                    0xfff : 0xff;
+    uint8_t mask = s->dac_reg[SGI_MGRAS_DAC_REG_PIXEL_MASK];
+    const uint8_t *overlay = s->overlay + first, *format = s->format + first;
+    const uint8_t *back_format = s->back_format + first;
+    const uint32_t *front = s->front + first, *bank1 = s->back + first;
+    const uint32_t *slot = s->slot[0] + first;
+
+    if (!omap && !back) {
+        for (unsigned int k = 0; k < n; k++) {
+            dst[k] = mgras_gamma_rgb(s, mgras_bank_bgr(s, front[k], format[k],
+                                                       base, bits), mask);
+        }
+        return;
+    }
+    for (unsigned int k = 0; k < n; k++) {
+        uint32_t bgr;
+
+        if (omap && overlay[k]) {
+            uint32_t entry = omap[overlay[k]];
+
+            bgr = ((entry & 0xff00) << 8) | ((entry >> 8) & 0xff00) |
+                  (entry >> 24);
+        } else if (!back) {
+            bgr = mgras_bank_bgr(s, front[k], format[k], base, bits);
+        } else if (slot[k] & SGI_MGRAS_SLOT_WRITTEN) {
+            bgr = mgras_bank_bgr(s, slot[k], SGI_MGRAS_PIXEL_FORMAT_RGB, base,
+                                 bits);
+        } else {
+            bgr = mgras_bank_bgr(s, bank1[k], back_format[k], base, bits);
+        }
+        dst[k] = mgras_gamma_rgb(s, bgr, mask);
+    }
+}
+
 /*
  * Display line y as the scanout presents it; blank while the VC3 has the
  * display disabled.
@@ -301,11 +308,20 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
     }
     mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did, s->width);
     mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did, s->width);
-    for (int x = 0; x < s->width; x++) {
-        int i = y * s->width + x;
+    for (unsigned int x = 0, end; x < s->width; x = end) {
+        uint64_t m = main_did[x] * 0x0101010101010101ull;
+        uint64_t o = overlay_did[x] * 0x0101010101010101ull;
 
-        dst[x] = mgras_bgr_to_rgb(mgras_gamma_apply(s,
-            mgras_resolve_pixel_bgr(s, i, main_did[x], overlay_did[x])));
+        /* Eight columns at a time while both IDs hold, then one by one. */
+        for (end = x + 1; end + 8 <= s->width &&
+             ldq_he_p(main_did + end) == m &&
+             ldq_he_p(overlay_did + end) == o; end += 8) {
+        }
+        for (; end < s->width && main_did[end] == main_did[x] &&
+             overlay_did[end] == overlay_did[x]; end++) {
+        }
+        mgras_resolve_span(s, y * s->width + x, end - x, main_did[x],
+                           overlay_did[x], dst + x);
     }
     if (s->cursor_enabled) {
         mgras_cursor_row(s, y, dst);
