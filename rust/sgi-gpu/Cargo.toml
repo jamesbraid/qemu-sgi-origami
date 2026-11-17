@@ -29,6 +29,9 @@ ash = "0.38"
 libc = "0.2"
 wgpu-hal = { version = "30", default-features = false, features = ["vulkan"] }
 
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Security", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"] }
+
 [profile.release]
 opt-level = 2
 debug = false

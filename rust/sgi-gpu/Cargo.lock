@@ -1365,6 +1365,7 @@ dependencies = [
  "parking_lot",
  "wgpu",
  "wgpu-hal",
+ "windows",
 ]
 
 [[package]]
