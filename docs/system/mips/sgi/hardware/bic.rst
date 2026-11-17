@@ -26,8 +26,9 @@ covers three things that sit beside that Bedrock and are specific to the
 module:
 
 - the board interface, type ``sgi-bic-board-interface`` in
-  ``hw/misc/sgi-bic-board-interface.c``, which holds a board identity word
-  and a rack and bay latch;
+  ``hw/misc/sgi-bic-board-interface.c``, or in
+  ``rust/hw/misc/sgi-bic-board-interface`` when the build enables Rust,
+  which holds a board identity word and a rack and bay latch;
 - the controller start-up that writes the latch from the L1, in
   ``hw/misc/sgi-l1.c``;
 - two synthetic additions to the register space, a 16550 UART and the

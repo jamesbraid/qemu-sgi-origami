@@ -1323,3 +1323,9 @@ hw/misc/sgi-l1-identity.c
 include/hw/misc/sgi-l1-identity.h
 hw/m68k/sgi-l1-board-peers.c
 include/hw/m68k/sgi-l1-board-peers.h
+rust/hw/misc/Kconfig
+rust/hw/misc/meson.build
+rust/hw/misc/sgi-bic-board-interface/Cargo.toml
+rust/hw/misc/sgi-bic-board-interface/meson.build
+rust/hw/misc/sgi-bic-board-interface/src/device.rs
+rust/hw/misc/sgi-bic-board-interface/src/lib.rs

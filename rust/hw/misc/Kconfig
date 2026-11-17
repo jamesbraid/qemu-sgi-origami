@@ -1,0 +1,3 @@
+# SPDX-License-Identifier: BSD-3-Clause
+config X_SGI_BIC_BOARD_INTERFACE_RUST
+    bool

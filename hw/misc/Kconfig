@@ -488,6 +488,12 @@ config MEMORY_TRANSACTION_TEST
 config SGI_BIC_BOARD_INTERFACE
     bool
     default y if SGI_DEVICES
+    # The board interface has both a Rust and a C implementation
+    select SGI_BIC_BOARD_INTERFACE_C if !HAVE_RUST
+    select X_SGI_BIC_BOARD_INTERFACE_RUST if HAVE_RUST
+
+config SGI_BIC_BOARD_INTERFACE_C
+    bool
 
 config SGI_SN1_ROUTER
     bool

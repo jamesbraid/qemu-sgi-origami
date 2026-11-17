@@ -325,6 +325,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "sgi-bic-board-interface"
+version = "0.1.0"
+dependencies = [
+ "bql",
+ "common",
+ "hwcore",
+ "migration",
+ "qom",
+ "system",
+ "util",
+]
+
+[[package]]
 name = "smallvec"
 version = "1.15.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

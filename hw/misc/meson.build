@@ -263,7 +263,7 @@ system_ss.add(when: 'CONFIG_SGI_TEST_FIXTURES',
 system_ss.add(when: 'CONFIG_MEMORY_TRANSACTION_TEST',
               if_true: files('memory-transaction-test.c'))
 
-system_ss.add(when: 'CONFIG_SGI_BIC_BOARD_INTERFACE',
+system_ss.add(when: 'CONFIG_SGI_BIC_BOARD_INTERFACE_C',
               if_true: files('sgi-bic-board-interface.c'))
 system_ss.add(when: ['CONFIG_SGI_BIC_BOARD_INTERFACE', 'CONFIG_SGI_TEST_FIXTURES'],
               if_true: files('../../tests/qtest/bic-board-interface-fixture.c'))

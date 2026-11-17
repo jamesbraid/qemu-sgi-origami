@@ -1,0 +1,24 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name = "sgi-bic-board-interface"
+version = "0.1.0"
+description = "SGI BIC board interface for the Origin 300 PCI expansion module"
+publish = false
+
+edition.workspace = true
+homepage.workspace = true
+license = "BSD-3-Clause"
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+common = { path = "../../../common" }
+util = { path = "../../../util" }
+migration = { path = "../../../migration" }
+bql = { path = "../../../bql" }
+qom = { path = "../../../qom" }
+system = { path = "../../../system" }
+hwcore = { path = "../../../hw/core" }
+
+[lints]
+workspace = true
