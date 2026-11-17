@@ -64,6 +64,10 @@ void dshm_head_guest_cursor(DShmHead *h, unsigned kind, int x, int y)
 {
 }
 
+void dshm_head_mark(DShmHead *h, int first, int count)
+{
+}
+
 void dshm_head_set_gpu(DShmHead *h, const DShmGpuOps *ops)
 {
 }

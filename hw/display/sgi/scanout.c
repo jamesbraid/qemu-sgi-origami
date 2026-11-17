@@ -6,6 +6,7 @@
 #include "qemu/bitmap.h"
 #include "qemu/host-utils.h"
 #include "qemu/log.h"
+#include "qemu/main-loop.h"
 #include "ui/surface.h"
 #include "ui/sgi-display-shm.h"
 #include "ui/display-shm.h"
@@ -146,6 +147,10 @@ void sgi_scanout_invalidate(SGIScanout *s, int first, int count)
      * cheap exit below: the reader clears its bits on its own schedule.
      */
     sgi_display_head_invalidated(s, first, last - first + 1);
+    /* Its GPU frames are drawn from marks of their own, never from dirty. */
+    if (s->gpu && dshm_head_active(s->dshm)) {
+        dshm_head_mark(s->dshm, first, last - first + 1);
+    }
     /*
      * A band-parallel draw marks rows from several threads at once, a
      * pixel at a time: leave a row already marked alone rather than make
@@ -516,9 +521,140 @@ static const GraphicHwOps sgi_scanout_gfx_ops = {
     .gfx_update = sgi_scanout_gfx_update,
 };
 
+/* A GPU compose in flight, until the main loop has told display-shm. */
+struct SGIScanoutGpu {
+    SGIScanout *s;              /* NULL once the scanout is gone */
+    const SGIScanoutGpuOps *ops;
+    void *opaque;
+    unsigned inflight;
+};
+
+typedef struct SGIScanoutGpuJob {
+    SGIScanoutGpu *g;
+    uint32_t id;
+    bool ok;
+} SGIScanoutGpuJob;
+
+static bool sgi_scanout_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
+                                     uint32_t h, DisplayShmGpuSlot *out)
+{
+    SGIScanout *s = opaque;
+
+    return s->gpu->ops->slot_new(s->gpu->opaque, id, w, h, out);
+}
+
+static void sgi_scanout_gpu_slot_free(void *opaque, uint32_t id)
+{
+    SGIScanout *s = opaque;
+
+    s->gpu->ops->slot_free(s->gpu->opaque, id);
+}
+
+static bool sgi_scanout_gpu_ready_op(void *opaque)
+{
+    SGIScanout *s = opaque;
+
+    return !s->gpu->ops->ready || s->gpu->ops->ready(s->gpu->opaque);
+}
+
+static const DShmGpuOps sgi_scanout_dshm_gpu_ops = {
+    .slot_new = sgi_scanout_gpu_slot_new,
+    .slot_free = sgi_scanout_gpu_slot_free,
+    .ready = sgi_scanout_gpu_ready_op,
+};
+
+/* The shared-memory viewers' line, as resolve_row() and the cursor give it. */
+static void sgi_scanout_dshm_resolve(void *opaque, unsigned y, uint32_t *dst)
+{
+    SGIScanout *s = opaque;
+
+    s->ops->resolve_row(s->opaque, y, dst);
+    if (s->composite_cursor) {
+        sgi_scanout_draw_cursor_row(s, y, dst);
+    }
+}
+
+static void sgi_scanout_gpu_finish(void *opaque)
+{
+    SGIScanoutGpuJob *job = opaque;
+    SGIScanoutGpu *g = job->g;
+
+    g->inflight--;
+    if (g->s && g->s->dshm) {
+        if (job->ok) {
+            dshm_head_gpu_publish(g->s->dshm, job->id);
+        } else {
+            dshm_head_gpu_abort(g->s->dshm, job->id);
+        }
+    }
+    g_free(job);
+    if (!g->s && !g->inflight) {
+        g_free(g);
+    }
+}
+
+/* Any thread: the GPU is done with the image; the main loop publishes it. */
+static void sgi_scanout_gpu_done(void *opaque, bool ok)
+{
+    SGIScanoutGpuJob *job = opaque;
+
+    job->ok = ok;
+    aio_bh_schedule_oneshot(qemu_get_aio_context(), sgi_scanout_gpu_finish,
+                            job);
+}
+
+/* A sample with a GPU board: marks, shared-memory lines, then the image. */
+static void sgi_scanout_gpu_sample(SGIScanout *s)
+{
+    SGIScanoutGpu *g = s->gpu;
+    SGIScanoutGpuJob *job;
+    uint32_t id;
+
+    if (s->ops->pre_update) {
+        s->ops->pre_update(s->opaque);
+    }
+    id = dshm_head_sample_marks_gpu(s->dshm, sgi_scanout_dshm_resolve, s);
+    if (!id) {
+        return;
+    }
+    job = g_new0(SGIScanoutGpuJob, 1);
+    job->g = g;
+    job->id = id;
+    g->inflight++;
+    if (!g->ops->compose(g->opaque, id, sgi_scanout_gpu_done, job)) {
+        g->inflight--;
+        g_free(job);
+        dshm_head_gpu_abort(s->dshm, id);
+    }
+}
+
 static void sgi_scanout_dshm_sample(void *opaque)
 {
-    sgi_scanout_update(opaque);
+    SGIScanout *s = opaque;
+
+    if (s->gpu && s->frame && s->gpu->ops->usable(s->gpu->opaque)) {
+        sgi_scanout_gpu_sample(s);
+        return;
+    }
+    sgi_scanout_update(s);
+}
+
+void sgi_scanout_set_gpu(SGIScanout *s, const SGIScanoutGpuOps *ops,
+                         void *opaque)
+{
+    assert(!s->gpu && !s->composite_cursor);
+    s->gpu = g_new0(SGIScanoutGpu, 1);
+    s->gpu->s = s;
+    s->gpu->ops = ops;
+    s->gpu->opaque = opaque;
+    dshm_head_set_gpu(s->dshm, &sgi_scanout_dshm_gpu_ops);
+}
+
+void sgi_scanout_gpu_ready(SGIScanout *s)
+{
+    if (s->gpu) {
+        dshm_head_gpu_ready(s->dshm);
+    }
 }
 
 static bool sgi_scanout_dshm_retrace_armed(void *opaque)
@@ -559,6 +695,15 @@ void sgi_scanout_init_head(SGIScanout *s, DeviceState *dev, uint32_t head,
 
 void sgi_scanout_cleanup(SGIScanout *s)
 {
+    if (s->gpu) {
+        /* Jobs already queued as bottom halves find the scanout gone. */
+        s->gpu->ops->quiesce(s->gpu->opaque);
+        s->gpu->s = NULL;
+        if (!s->gpu->inflight) {
+            g_free(s->gpu);
+        }
+        s->gpu = NULL;
+    }
     timer_free(s->retrace_timer);
     s->retrace_timer = NULL;
     sgi_display_head_unbind(s);

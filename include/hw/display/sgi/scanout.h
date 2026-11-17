@@ -46,6 +46,7 @@
 #include "qemu/timer.h"
 #include "migration/vmstate.h"
 #include "ui/console.h"
+#include "ui/display-shm.h"
 #include "hw/display/sgi/board-memory.h"
 #include "hw/display/sgi/head-ops.h"
 
@@ -65,6 +66,32 @@ typedef struct SGISwapRecord {
     uint64_t seq;
     uint64_t cookie;
 } SGISwapRecord;
+
+/*
+ * Hooks a family sets with sgi_scanout_set_gpu() to compose its picture on a
+ * GPU for viewers that import GPU images. Main loop, except done.
+ */
+typedef struct SGIScanoutGpuOps {
+    /* The image id for the head's mode; as DShmGpuOps. */
+    bool (*slot_new)(void *opaque, uint32_t id, uint32_t width,
+                     uint32_t height, DisplayShmGpuSlot *out);
+    void (*slot_free)(void *opaque, uint32_t id);
+    /* Optional: false while the GPU is still opening. */
+    bool (*ready)(void *opaque);
+    /* Whether the picture can be composed on the GPU now. */
+    bool (*usable)(void *opaque);
+    /*
+     * Start composing the picture into image id. done runs on any thread
+     * once the GPU has finished it. False: not started, nothing will run.
+     */
+    bool (*compose)(void *opaque, uint32_t id,
+                    void (*done)(void *done_opaque, bool ok),
+                    void *done_opaque);
+    /* No compose is running or will call done after this returns. */
+    void (*quiesce)(void *opaque);
+} SGIScanoutGpuOps;
+
+typedef struct SGIScanoutGpu SGIScanoutGpu;
 
 typedef struct SGIScanout {
     QemuConsole *con;
@@ -99,6 +126,8 @@ typedef struct SGIScanout {
     bool cursor_on;
     /* lines the composited cursor was last drawn over, first > last: none */
     int32_t cursor_drawn_first, cursor_drawn_last;
+
+    SGIScanoutGpu *gpu;         /* sgi_scanout_set_gpu(), or NULL */
 } SGIScanout;
 
 /*
@@ -146,6 +175,15 @@ void sgi_scanout_invalidate_all(SGIScanout *s);
  */
 void sgi_scanout_invalidate_plane(SGIScanout *s, const SGIPlane *p,
                                   int y0, int y1);
+
+/*
+ * Lend GPU-image viewers the family's GPU-composed picture; others keep
+ * resolve_row(). Call after sgi_scanout_init() with the cursor off.
+ */
+void sgi_scanout_set_gpu(SGIScanout *s, const SGIScanoutGpuOps *ops,
+                         void *opaque);
+/* The family's GPU has finished opening: viewers refused for it may have it. */
+void sgi_scanout_gpu_ready(SGIScanout *s);
 
 /* Resolve the dirty lines, draw the cursor if composited, present. */
 void sgi_scanout_update(SGIScanout *s);
