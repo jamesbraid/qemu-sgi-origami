@@ -3,26 +3,19 @@
 #ifndef HW_MIPS_SGI_MACE_PS2_H
 #define HW_MIPS_SGI_MACE_PS2_H
 
-#include "qemu/host-utils.h"
 #include "hw/core/qdev.h"
 
 #define TYPE_SGI_MACE_PS2 "sgi-mace-ps2"
 
-/* Run child progress after MACE has restored its IRQ baseline. */
-void sgi_mace_ps2_restore_post_load(DeviceState *dev);
+enum {
+    MACE_PS2_ACTION_NONE,
+    MACE_PS2_ACTION_POP_RX,
+    MACE_PS2_ACTION_SEND_KEYBOARD,
+    MACE_PS2_ACTION_SEND_MOUSE,
+    MACE_PS2_ACTION_DROP_MOUSE_STREAM,
+};
 
-#define MACE_PS2_POST_TX  0x01
-#define MACE_PS2_TXEN     0x02
-#define MACE_PS2_TXIE     0x04
-#define MACE_PS2_RXIE     0x08
-#define MACE_PS2_CLOCK    0x10
-#define MACE_PS2_RESET    0x20
-#define MACE_PS2_TXEMPTY  0x08
-#define MACE_PS2_RXFULL   0x10
-#define MACE_PS2_PARITY   0x40
-#define MACE_PS2_FRAMING  0x80
-
-typedef struct MACEPS2Port {
+typedef struct MACEPS2PortMigration {
     uint8_t control;
     uint8_t tx;
     uint8_t rx;
@@ -30,57 +23,28 @@ typedef struct MACEPS2Port {
     bool tx_pending;
     bool rx_full;
     bool inhibited;
-    /*
-     * Of the bytes still in the mouse, how many at the front answer a command
-     * the guest sent; the rest are what it streamed on its own. Mouse port
-     * only. A control-register reset leaves it, as the mouse keeps its queue.
-     */
     uint16_t reply;
-} MACEPS2Port;
+} MACEPS2PortMigration;
 
-static inline bool mace_ps2_clock_permitted(const MACEPS2Port *p)
-{
-    return (p->control & (MACE_PS2_CLOCK | MACE_PS2_RESET)) ==
-           MACE_PS2_CLOCK && !p->inhibited && !p->rx_full;
-}
+void *sgi_mace_ps2_new(void);
+void sgi_mace_ps2_free(void *core);
+bool sgi_mace_ps2_read(void *core, uint64_t addr, uint32_t size,
+                       uint64_t *value);
+bool sgi_mace_ps2_write(void *core, uint64_t addr, uint64_t value,
+                        uint32_t size);
+int sgi_mace_ps2_next_action(void *core, uint32_t port, bool child_empty,
+                             uint8_t *data);
+void sgi_mace_ps2_transmit_complete(void *core, uint32_t port,
+                                    uint32_t reply_count);
+bool sgi_mace_ps2_receive(void *core, uint32_t port, uint8_t data,
+                          void *child);
+void sgi_mace_ps2_stream_dropped(uint32_t count);
+void sgi_mace_ps2_outputs(void *core, uint32_t port, bool resetting,
+                          bool *irq, bool *poll);
+void sgi_mace_ps2_reset(void *core);
+void sgi_mace_ps2_export(void *core, MACEPS2PortMigration *out);
+bool sgi_mace_ps2_import(void *core, const MACEPS2PortMigration *input);
 
-static inline uint8_t mace_ps2_status(const MACEPS2Port *p)
-{
-    return p->errors | (mace_ps2_clock_permitted(p) ? 3 : 0) |
-           (!(p->control & MACE_PS2_RESET) && !p->tx_pending ?
-            MACE_PS2_TXEMPTY : 0) | (p->rx_full ? MACE_PS2_RXFULL : 0);
-}
-
-static inline void mace_ps2_clear(MACEPS2Port *p)
-{
-    p->tx = 0;
-    p->rx = 0;
-    p->errors = 0;
-    p->tx_pending = false;
-    p->rx_full = false;
-    p->inhibited = false;
-}
-
-static inline uint16_t mace_ps2_receive(MACEPS2Port *p)
-{
-    uint16_t value = p->rx | ((uint16_t)mace_ps2_status(p) << 8);
-
-    p->rx_full = false;
-    return value;
-}
-
-/* Shared byte admission boundary; no guest-visible frame injector. */
-static inline bool mace_ps2_receive_frame(MACEPS2Port *p, uint8_t data,
-                                          bool start, bool parity, bool stop)
-{
-    if (!mace_ps2_clock_permitted(p) || p->tx_pending) {
-        return false;
-    }
-    p->rx = data;
-    p->errors = (((ctpop8(data) + parity) & 1) ? 0 : MACE_PS2_PARITY) |
-                ((start || !stop) ? MACE_PS2_FRAMING : 0);
-    p->rx_full = true;
-    return true;
-}
+void sgi_mace_ps2_restore_post_load(DeviceState *dev);
 
 #endif

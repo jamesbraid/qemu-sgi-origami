@@ -2,8 +2,7 @@
 /* Copyright (c) 2026 James Braid */
 /*
  * MACE 2.0 PS/2 frontend. The reviewed O2 PS/2 platform contract selects
- * atomic complete-byte transfers, not serial clock timing. Peripheral
- * commands and host input remain owned by QEMU's PS/2 children.
+ * atomic complete-byte transfers, not serial clock timing.
  */
 #include "qemu/osdep.h"
 #include "hw/core/sysbus.h"
@@ -11,20 +10,22 @@
 #include "hw/input/ps2.h"
 #include "hw/mips/sgi/mace-ps2.h"
 #include "migration/vmstate.h"
-#include "qemu/log.h"
+#include "qapi/error.h"
 #include "qemu/module.h"
 #include "qom/object.h"
-#include "trace.h"
 
 OBJECT_DECLARE_SIMPLE_TYPE(MACEPS2State, SGI_MACE_PS2)
+
+QEMU_BUILD_BUG_ON(sizeof(MACEPS2PortMigration) != 10);
 
 struct MACEPS2State {
     SysBusDevice parent_obj;
     MemoryRegion mmio;
     PS2KbdState keyboard;
     PS2MouseState mouse;
-    MACEPS2Port port[2];
+    MACEPS2PortMigration port[2];
     qemu_irq output[4];
+    void *rust_state;
     bool pumping;
     bool resetting;
 };
@@ -34,43 +35,12 @@ static PS2State *mace_ps2_child(MACEPS2State *s, unsigned n)
     return n ? PS2_DEVICE(&s->mouse) : PS2_DEVICE(&s->keyboard);
 }
 
-/*
- * A mouse answers a command with its next byte, not behind stale motion; keep
- * replies to earlier commands. Dropping the stored packet is inferred.
- */
-static void mace_ps2_mouse_command(MACEPS2State *s, MACEPS2Port *p)
-{
-    PS2State *child = PS2_DEVICE(&s->mouse);
-
-    if (!p->reply && !ps2_queue_empty(child)) {
-        unsigned dropped = 0;
-
-        /* Each pop re-raises the child's line; progress is already held off. */
-        while (!ps2_queue_empty(child)) {
-            ps2_read_data(child);
-            dropped++;
-        }
-        trace_mace_ps2_stream_dropped(dropped);
-    }
-    ps2_write_mouse(&s->mouse, p->tx);
-    /* Everything the mouse now holds counts as an answer. */
-    p->reply = child->queue.count;
-}
-
 static void mace_ps2_update(MACEPS2State *s)
 {
     for (unsigned n = 0; n < 2; n++) {
-        MACEPS2Port *p = &s->port[n];
-        bool ready = !(p->control & MACE_PS2_RESET) && !s->resetting;
-        bool tx = ready && !p->tx_pending;
-        bool rx = ready && p->rx_full;
+        bool irq, poll;
 
-        bool irq = (tx && (p->control & MACE_PS2_TXIE)) ||
-                   (rx && (p->control & MACE_PS2_RXIE));
-        bool poll = tx || rx;
-
-        trace_mace_ps2_outputs(n, p->control, p->tx_pending, p->rx_full,
-                               ready, irq, poll);
+        sgi_mace_ps2_outputs(s->rust_state, n, s->resetting, &irq, &poll);
         qemu_set_irq(s->output[2 * n], irq);
         qemu_set_irq(s->output[2 * n + 1], poll);
     }
@@ -81,41 +51,45 @@ static void mace_ps2_progress(MACEPS2State *s)
     if (s->pumping || s->resetting) {
         return;
     }
-    /* Dequeue and command dispatch can synchronously change the child IRQ. */
     s->pumping = true;
     for (unsigned n = 0; n < 2; n++) {
-        MACEPS2Port *p = &s->port[n];
         PS2State *child = mace_ps2_child(s, n);
 
-        if (!mace_ps2_clock_permitted(p)) {
-            continue;
-        }
-        if (p->tx_pending) {
-            if (!(p->control & MACE_PS2_TXEN)) {
-                continue;
-            }
-            if (n) {
-                mace_ps2_mouse_command(s, p);
-            } else {
-                ps2_write_keyboard(&s->keyboard, p->tx);
-            }
-            p->tx_pending = false;
-            if (p->control & MACE_PS2_POST_TX) {
-                p->inhibited = true;
-            }
-        }
-        if (mace_ps2_clock_permitted(p) && !ps2_queue_empty(child)) {
-            uint8_t data = ps2_read_data(child);
+        for (;;) {
+            uint8_t data;
+            int action = sgi_mace_ps2_next_action(s->rust_state, n,
+                                                   ps2_queue_empty(child), &data);
 
-            if (n && p->reply) {
-                p->reply--;
-            }
-            bool accepted = mace_ps2_receive_frame(p, data, false,
-                                                    !(ctpop8(data) & 1), true);
+            switch (action) {
+            case MACE_PS2_ACTION_POP_RX:
+                data = ps2_read_data(child);
+                sgi_mace_ps2_receive(s->rust_state, n, data, child);
+                break;
+            case MACE_PS2_ACTION_SEND_KEYBOARD:
+                ps2_write_keyboard(&s->keyboard, data);
+                sgi_mace_ps2_transmit_complete(s->rust_state, n, 0);
+                break;
+            case MACE_PS2_ACTION_SEND_MOUSE:
+                ps2_write_mouse(&s->mouse, data);
+                sgi_mace_ps2_transmit_complete(s->rust_state, n,
+                                                child->queue.count);
+                break;
+            case MACE_PS2_ACTION_DROP_MOUSE_STREAM: {
+                unsigned dropped = 0;
 
-            trace_mace_ps2_receive(child, n, data, accepted, p->rx,
-                                   p->errors, p->rx_full);
+                while (!ps2_queue_empty(child)) {
+                    ps2_read_data(child);
+                    dropped++;
+                }
+                sgi_mace_ps2_stream_dropped(dropped);
+                break;
+            }
+            default:
+                goto port_done;
+            }
         }
+port_done:
+        ;
     }
     s->pumping = false;
     mace_ps2_update(s);
@@ -123,86 +97,28 @@ static void mace_ps2_progress(MACEPS2State *s)
 
 static void mace_ps2_available(void *opaque, int n, int level)
 {
-    MACEPS2State *s = opaque;
-
-    /* Availability is derived from the child's queue, including after load. */
-    mace_ps2_progress(s);
+    mace_ps2_progress(opaque);
 }
 
 static uint64_t mace_ps2_read(void *opaque, hwaddr addr, unsigned size)
 {
     MACEPS2State *s = opaque;
-    unsigned n = (addr >> 5) & 1;
-    MACEPS2Port *p = &s->port[n];
     uint64_t value;
 
-    if (size != 8 || (addr & 7)) {
-        goto unsupported;
+    if (sgi_mace_ps2_read(s->rust_state, addr, size, &value)) {
+        mace_ps2_progress(s);
     }
-    switch (addr & 0x18) {
-    case 8:
-        if (p->rx_full) {
-            value = mace_ps2_receive(p);
-            trace_mace_ps2_read(n, value, true, p->rx_full, p->errors);
-            mace_ps2_progress(s);
-            return value;
-        }
-        value = p->rx | ((uint64_t)mace_ps2_status(p) << 8);
-        trace_mace_ps2_read(n, value, false, p->rx_full, p->errors);
-        return value;
-    case 16:
-        return p->control;
-    case 24:
-        return mace_ps2_status(p);
-    }
-unsupported:
-    qemu_log_mask(LOG_GUEST_ERROR, "sgi-mace-ps2: unsupported read "
-                  "at 0x%" HWADDR_PRIx " size %u\n", addr, size);
-    return 0;
+    return value;
 }
 
 static void mace_ps2_write(void *opaque, hwaddr addr, uint64_t value,
-                            unsigned size)
+                           unsigned size)
 {
     MACEPS2State *s = opaque;
-    MACEPS2Port *p = &s->port[(addr >> 5) & 1];
-    uint64_t writable;
 
-    if (size != 8 || (addr & 7)) {
-        goto unsupported;
+    if (sgi_mace_ps2_write(s->rust_state, addr, value, size)) {
+        mace_ps2_progress(s);
     }
-    switch (addr & 0x18) {
-    case 0:
-        if (p->tx_pending || (p->control & MACE_PS2_RESET)) {
-            goto unsupported;
-        }
-        writable = 0xff;
-        p->tx = value;
-        p->tx_pending = true;
-        break;
-    case 16:
-        writable = 0x3f;
-        p->control = value & writable;
-        if (p->control & MACE_PS2_RESET) {
-            mace_ps2_clear(p);
-        } else if (!(p->control & MACE_PS2_POST_TX)) {
-            p->inhibited = false;
-        }
-        break;
-    default:
-        goto unsupported;
-    }
-    if (value & ~writable) {
-        qemu_log_mask(LOG_GUEST_ERROR, "sgi-mace-ps2: reserved write bits "
-                      "at 0x%" HWADDR_PRIx " size %u value 0x%" PRIx64 "\n",
-                      addr, size, value);
-    }
-    mace_ps2_progress(s);
-    return;
-unsupported:
-    qemu_log_mask(LOG_GUEST_ERROR, "sgi-mace-ps2: unsupported write "
-                  "at 0x%" HWADDR_PRIx " size %u value 0x%" PRIx64 "\n",
-                  addr, size, value);
 }
 
 static const MemoryRegionOps mace_ps2_ops = {
@@ -218,11 +134,7 @@ static void mace_ps2_reset_enter(Object *obj, ResetType type)
     MACEPS2State *s = SGI_MACE_PS2(obj);
 
     s->resetting = true;
-    for (unsigned n = 0; n < 2; n++) {
-        mace_ps2_clear(&s->port[n]);
-        s->port[n].reply = 0;
-        s->port[n].control = MACE_PS2_CLOCK;
-    }
+    sgi_mace_ps2_reset(s->rust_state);
 }
 
 static void mace_ps2_reset_hold(Object *obj, ResetType type)
@@ -242,17 +154,14 @@ static int mace_ps2_post_load(void *opaque, int version_id)
 {
     MACEPS2State *s = opaque;
 
-    for (unsigned n = 0; n < 2; n++) {
-        MACEPS2Port *p = &s->port[n];
+    return sgi_mace_ps2_import(s->rust_state, s->port) ? 0 : -EINVAL;
+}
 
-        if ((p->control & ~0x3f) || (p->errors & ~0xc0) ||
-            (p->inhibited && !(p->control & MACE_PS2_POST_TX)) ||
-            ((p->control & MACE_PS2_RESET) &&
-             (p->tx_pending || p->rx_full || p->inhibited || p->errors))) {
-            return -EINVAL;
-        }
-    }
-    /* MACE starts child progress after its IRQ baseline is restored. */
+static int mace_ps2_pre_save(void *opaque)
+{
+    MACEPS2State *s = opaque;
+
+    sgi_mace_ps2_export(s->rust_state, s->port);
     return 0;
 }
 
@@ -263,19 +172,18 @@ void sgi_mace_ps2_restore_post_load(DeviceState *dev)
 
 static bool mace_ps2_reply_needed(void *opaque)
 {
-    MACEPS2Port *p = opaque;
+    MACEPS2PortMigration *p = opaque;
 
     return p->reply != 0;
 }
 
-/* Which of the mouse's queued bytes answer a command decides what it drops. */
 static const VMStateDescription vmstate_mace_ps2_port_reply = {
     .name = "sgi-mace-ps2/port/reply",
     .version_id = 1,
     .minimum_version_id = 1,
     .needed = mace_ps2_reply_needed,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT16(reply, MACEPS2Port),
+        VMSTATE_UINT16(reply, MACEPS2PortMigration),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -285,13 +193,13 @@ static const VMStateDescription vmstate_mace_ps2_port = {
     .version_id = 1,
     .minimum_version_id = 1,
     .fields = (const VMStateField[]) {
-        VMSTATE_UINT8(control, MACEPS2Port),
-        VMSTATE_UINT8(tx, MACEPS2Port),
-        VMSTATE_UINT8(rx, MACEPS2Port),
-        VMSTATE_UINT8(errors, MACEPS2Port),
-        VMSTATE_BOOL(tx_pending, MACEPS2Port),
-        VMSTATE_BOOL(rx_full, MACEPS2Port),
-        VMSTATE_BOOL(inhibited, MACEPS2Port),
+        VMSTATE_UINT8(control, MACEPS2PortMigration),
+        VMSTATE_UINT8(tx, MACEPS2PortMigration),
+        VMSTATE_UINT8(rx, MACEPS2PortMigration),
+        VMSTATE_UINT8(errors, MACEPS2PortMigration),
+        VMSTATE_BOOL(tx_pending, MACEPS2PortMigration),
+        VMSTATE_BOOL(rx_full, MACEPS2PortMigration),
+        VMSTATE_BOOL(inhibited, MACEPS2PortMigration),
         VMSTATE_END_OF_LIST()
     },
     .subsections = (const VMStateDescription * const []) {
@@ -304,10 +212,11 @@ static const VMStateDescription vmstate_mace_ps2 = {
     .name = TYPE_SGI_MACE_PS2,
     .version_id = 1,
     .minimum_version_id = 1,
+    .pre_save = mace_ps2_pre_save,
     .post_load = mace_ps2_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_STRUCT_ARRAY(port, MACEPS2State, 2, 0,
-                             vmstate_mace_ps2_port, MACEPS2Port),
+                             vmstate_mace_ps2_port, MACEPS2PortMigration),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -316,14 +225,25 @@ static void mace_ps2_realize(DeviceState *dev, Error **errp)
 {
     MACEPS2State *s = SGI_MACE_PS2(dev);
 
+    s->rust_state = sgi_mace_ps2_new();
     if (!sysbus_realize(SYS_BUS_DEVICE(&s->keyboard), errp) ||
         !sysbus_realize(SYS_BUS_DEVICE(&s->mouse), errp)) {
+        sgi_mace_ps2_free(s->rust_state);
+        s->rust_state = NULL;
         return;
     }
     for (unsigned n = 0; n < 2; n++) {
         qdev_connect_gpio_out(DEVICE(mace_ps2_child(s, n)), PS2_DEVICE_IRQ,
                               qdev_get_gpio_in_named(dev, "available", n));
     }
+}
+
+static void mace_ps2_unrealize(DeviceState *dev)
+{
+    MACEPS2State *s = SGI_MACE_PS2(dev);
+
+    sgi_mace_ps2_free(s->rust_state);
+    s->rust_state = NULL;
 }
 
 static void mace_ps2_init(Object *obj)
@@ -347,6 +267,7 @@ static void mace_ps2_class_init(ObjectClass *oc, const void *data)
 
     dc->desc = "SGI MACE PS/2 byte transport";
     dc->realize = mace_ps2_realize;
+    dc->unrealize = mace_ps2_unrealize;
     dc->vmsd = &vmstate_mace_ps2;
     dc->user_creatable = false;
     rc->phases.enter = mace_ps2_reset_enter;

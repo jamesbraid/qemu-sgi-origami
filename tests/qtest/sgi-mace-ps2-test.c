@@ -696,53 +696,6 @@ static void test_board_route(void)
     qtest_quit(s);
 }
 
-static void test_frames(void)
-{
-    MACEPS2Port p = { .control = MACE_PS2_CLOCK };
-    const uint8_t data[] = { 0, 0xff, 0x37, 0x80 };
-
-    for (unsigned i = 0; i < ARRAY_SIZE(data); i++) {
-        bool parity = !(ctpop8(data[i]) & 1);
-
-        for (unsigned fault = 0; fault < 4; fault++) {
-            p.rx_full = false;
-            g_assert_true(mace_ps2_receive_frame(&p, data[i], fault == 2,
-                parity ^ (fault == 1), fault != 3));
-            g_assert_true(p.rx_full);
-            g_assert_cmphex(p.rx, ==, data[i]);
-            g_assert_cmphex(p.errors, ==, fault == 1 ? MACE_PS2_PARITY :
-                              fault >= 2 ? MACE_PS2_FRAMING : 0);
-            g_assert_false(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            g_assert_cmphex(p.rx, ==, data[i]);
-            uint8_t errors = p.errors;
-            uint16_t word = mace_ps2_receive(&p);
-
-            g_assert_cmphex(word, ==, data[i] |
-                ((MACE_PS2_TXEMPTY | MACE_PS2_RXFULL | errors) << 8));
-            g_assert_false(p.rx_full);
-            g_assert_cmphex(mace_ps2_status(&p), ==, 0x0b | errors);
-            p.control = 0;
-            g_assert_false(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            p.control = MACE_PS2_CLOCK | MACE_PS2_RESET;
-            g_assert_false(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            p.control = MACE_PS2_CLOCK;
-            p.inhibited = true;
-            g_assert_false(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            p.inhibited = false;
-            p.tx_pending = true;
-            g_assert_false(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            p.tx_pending = false;
-            g_assert_cmphex(p.errors, ==, errors);
-            g_assert_true(mace_ps2_receive_frame(&p, 0x55, false, true, true));
-            g_assert_cmphex(p.errors, ==, 0);
-            p.errors = MACE_PS2_PARITY | MACE_PS2_FRAMING;
-            mace_ps2_clear(&p);
-            g_assert_cmphex(mace_ps2_status(&p), ==, 0x0b);
-            g_assert_cmphex(mace_ps2_receive(&p), ==, 0x0b00);
-        }
-    }
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -765,6 +718,5 @@ int main(int argc, char **argv)
     if (qtest_has_machine("o2")) {
         qtest_add_func("/sgi/mace-ps2/board-route", test_board_route);
     }
-    qtest_add_func("/sgi/mace-ps2/frames", test_frames);
     return g_test_run();
 }

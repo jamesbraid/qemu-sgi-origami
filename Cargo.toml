@@ -4,6 +4,7 @@ members = [
     "rust/hw/char/pl011",
     "rust/hw/misc/sgi-bic-board-interface",
     "rust/hw/mips/sgi",
+    "rust/hw/mips/sgi-ps2",
     "rust/hw/timer/hpet",
     "rust/tests",
 ]

@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: BSD-3-Clause
+[package]
+name = "mace_ps2"
+version = "0.1.0"
+description = "SGI MACE PS/2 device state for QEMU"
+publish = false
+
+edition.workspace = true
+homepage.workspace = true
+license = "BSD-3-Clause"
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+trace = { path = "../../../trace" }
+util = { path = "../../../util" }
+
+[lints]
+workspace = true
