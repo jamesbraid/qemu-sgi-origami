@@ -140,6 +140,7 @@
 #include "hw/display/sgi/scanout.h"
 #include "hw/misc/sgi-odyssey.h"
 #include "hw/misc/sgi-odyssey-clock.h"
+#include "hw/misc/sgi-odyssey-scanout-gpu.h"
 #include "hw/misc/sgi-odyssey-native-mesa.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "qemu/error-report.h"
@@ -14942,6 +14943,10 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
      */
     sgi_scanout_init(&s->scanout, dev, &odyssey_head_ops, s);
     odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+    if (s->gpu) {
+        s->gpu_scanout = odyssey_gpu_scanout_new(s, s->gpu->gpu,
+                                                 odyssey_gpu_scanout_planes);
+    }
     s->work_queue = g_array_new(false, false, sizeof(OdysseyQueuedStore));
     sgi_head_work_init(&s->work, "sgi-odyssey-work", &odyssey_work_ops, s);
     s->work_vm_state = qemu_add_vm_change_state_handler(odyssey_work_vm_state,
@@ -14969,6 +14974,8 @@ static void odyssey_unrealize(DeviceState *dev)
     s->mesa_renderer = NULL;
     address_space_destroy(&s->fabric_as);
     sgi_scanout_cleanup(&s->scanout);
+    odyssey_gpu_scanout_free(s->gpu_scanout);
+    s->gpu_scanout = NULL;
     odyssey_gpu_free(s->gpu);
     s->gpu = NULL;
     g_free(s->did);

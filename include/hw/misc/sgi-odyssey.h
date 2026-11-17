@@ -595,6 +595,7 @@ struct SGIOdysseyState {
     bool gpu_enabled;
     uint32_t gpu_min_pixels;
     OdysseyGpu *gpu;
+    struct OdysseyGpuScanout *gpu_scanout;
     /* Read-only x-mesa-* properties; host diagnostics, never migrated. */
     OdysseyMesaCounts mesa_counts;
     bool gl_in_prim;

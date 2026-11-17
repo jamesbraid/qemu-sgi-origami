@@ -58,6 +58,12 @@ void odyssey_gpu_target(OdysseyGpu *g, SGIRasterTarget *t);
  */
 void odyssey_gpu_cpu_access(OdysseyGpu *g, unsigned b, uint32_t y,
                             uint32_t rows, bool write);
+/*
+ * Both colour buffers' GPU planes with every row current on the GPU (CPU-only
+ * rows uploaded first); false when the GPU is not usable.
+ */
+bool odyssey_gpu_scanout_planes(SGIOdysseyState *s, SgiGpuPlane **buf0,
+                                SgiGpuPlane **buf1);
 /* The CPU's copy of every row current, for migration and the like. */
 void odyssey_gpu_sync_all(OdysseyGpu *g);
 /* Every row CPU-owned, the GPU's copy dropped: reset and migration load. */

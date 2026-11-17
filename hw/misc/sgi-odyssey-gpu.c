@@ -282,6 +282,29 @@ static bool og_upload(OdysseyGpu *g, unsigned b, uint32_t y0, uint32_t y1)
     return true;
 }
 
+bool odyssey_gpu_scanout_planes(SGIOdysseyState *s, SgiGpuPlane **buf0,
+                                SgiGpuPlane **buf1)
+{
+    OdysseyGpu *g = s->gpu;
+    bool ok;
+
+    if (!g || !odyssey_gpu_usable(g)) {
+        return false;
+    }
+    /* A slice's scalar draw writes CPU-only rows lock-free: wait it out. */
+    if (!sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_wait_slice(&s->work);
+    }
+    qemu_mutex_lock(&g->lock);
+    ok = og_upload(g, 0, 0, g->height - 1) && og_upload(g, 1, 0, g->height - 1);
+    qemu_mutex_unlock(&g->lock);
+    if (ok) {
+        *buf0 = g->plane[0];
+        *buf1 = g->plane[1];
+    }
+    return ok;
+}
+
 typedef struct OgRect {
     int32_t x0, y0, x1, y1;
 } OgRect;
