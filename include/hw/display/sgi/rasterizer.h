@@ -555,6 +555,21 @@ typedef struct SGIRenderResourceOps {
         Error **errp);
 } SGIRenderResourceOps;
 
+/*
+ * One filled triangle as the scalar path scans it: snapped vertices in its
+ * winding, the window's origin and reach, its clip list, and the colour.
+ */
+struct SGIRasterGpuTriangle;
+typedef struct SGIRasterGpuTriangle {
+    int64_t x[3], y[3];
+    int32_t ox, oy;
+    int32_t x0, y0, x1, y1;
+    const SGIClipList *clip;
+    SGIRasterColour colour;
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
+    uint32_t ntargets;
+} SGIRasterGpuTriangle;
+
 typedef struct SGIRasterTarget {
     void (*store_colour)(void *opaque, SGIColourTarget target, int x, int y,
                          uint32_t colour);
@@ -657,6 +672,20 @@ typedef struct SGIRasterTarget {
      * draws stays pixel-identical to one the scalar path draws alone.
      */
     bool mixed_frame;
+    /*
+     * A target that draws flat, opaque triangles and plain colour clears on
+     * the host GPU says so here. A draw is offered to gpu_triangle first
+     * with draw false, to learn whether every triangle of it can go; only if
+     * all can is it offered again with draw true, and the scalar path never
+     * sees it. gpu_clear takes a clear's colour part, true when it did.
+     * Per draw, never migrated.
+     */
+    bool (*gpu_triangle)(void *opaque, const struct SGIRasterGpuTriangle *tri,
+                         bool draw);
+    bool (*gpu_clear)(void *opaque, const SGIRasterOp *op,
+                      const SGIRasterColour *colour, uint32_t rgba_mask);
+    /* Draws that cover fewer pixels than this stay on the scalar path. */
+    uint32_t gpu_min_pixels;
 } SGIRasterTarget;
 
 /*

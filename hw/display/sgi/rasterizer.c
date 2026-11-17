@@ -77,7 +77,16 @@ typedef struct SGISoftDraw {
     const struct SGISoftFixedTex *fixed;
     /* Of bands > 1, the rows this pass draws (sgi_soft_row_in_band()). */
     unsigned band, bands;
+    /* A pass that offers triangles to the target's GPU hook, or NULL. */
+    struct SGISoftGpu *gpu;
 } SGISoftDraw;
+
+/* A GPU offer's state: whether a pass only asks, and what it found. */
+typedef struct SGISoftGpu {
+    bool draw;
+    bool declined;
+    bool offered;
+} SGISoftGpu;
 
 /* A vertex after transformation, ready to rasterize. */
 typedef struct SGISoftVertex {
@@ -4529,6 +4538,109 @@ sgi_soft_simple_span(const SGISoftDraw *r, const SGISoftVertex v[3], int py,
 }
 
 /*
+ * Whether a flat colour is unchanged by the scalar path's interpolation of
+ * three equal vertex values, i.e. clear of a stored-step boundary.
+ */
+#define SGI_SOFT_GPU_EDGE (1.0 / (1 << 30))
+
+static bool sgi_soft_gpu_stable(double c, double steps, double bias)
+{
+    double t, frac;
+    int e;
+
+    if (c == 0 || c == 1) {
+        return true;
+    }
+    if (frexp(c, &e) == 0.5) {
+        return true;
+    }
+    t = c * steps + bias;
+    frac = t - floor(t);
+    return frac > SGI_SOFT_GPU_EDGE && frac < 1.0 - SGI_SOFT_GPU_EDGE;
+}
+
+/*
+ * Offer a flat, simple-state triangle to the target's GPU hook; false means
+ * the scalar path draws it.
+ */
+static bool sgi_soft_gpu_triangle(const SGISoftDraw *r,
+                                  const SGISoftVertex v[3], bool simple,
+                                  bool smooth, double offset,
+                                  const SGISoftFrag *flat, int px0, int py0,
+                                  int px1, int py1)
+{
+    const SGIRasterRules *rules = r->rules;
+    const SGIGLDrawState *st = r->st;
+    const SGIRasterTarget *t = r->t;
+    SGIRasterGpuTriangle tri;
+    double slack = rules->depth_slack / 2;
+    const double *rgba;
+    double alpha;
+
+    if (!simple || st->depth_test || offset != 0 || !t->store_rgba ||
+        !r->ntargets || r->dither || r->rgba_read || !r->rgba_mask) {
+        return false;
+    }
+    for (int i = 0; i < 3; i++) {
+        double z = v[i].z;
+
+        if (rules->depth_row_given) {
+            if (!(v[i].depth_w > 0) || !isfinite(v[i].depth_w) ||
+                !isfinite(z)) {
+                return false;
+            }
+            z /= v[i].depth_w;
+            if (!(z >= -slack && z <= 1 + slack)) {
+                return false;
+            }
+        } else if (!(z >= SGI_SOFT_GPU_EDGE && z <= 1.0 - SGI_SOFT_GPU_EDGE)) {
+            return false;
+        }
+    }
+    if (smooth) {
+        const double steps = 1 << rules->color_bits;
+
+        for (int k = 0; k < 4; k++) {
+            if (v[1].rgba[k] != v[0].rgba[k] ||
+                v[2].rgba[k] != v[0].rgba[k] ||
+                !sgi_soft_gpu_stable(v[0].rgba[k], k == 3 ?
+                                     (double)sgi_soft_alpha_max(rules) :
+                                     steps, k == 3 ? 0.5 : 0)) {
+                return false;
+            }
+        }
+    }
+    if (!r->gpu->draw) {
+        return true;
+    }
+    rgba = smooth ? v[0].rgba : flat->rgba;
+    alpha = sgi_soft_alpha(rules, rgba[3]) /
+            (double)sgi_soft_alpha_max(rules);
+    tri = (SGIRasterGpuTriangle) {
+        .ox = r->win.ox, .oy = r->win.oy,
+        .x0 = px0, .y0 = py0, .x1 = px1, .y1 = py1,
+        .clip = r->win.clip->n > 1 ? r->win.clip : NULL,
+        .colour = sgi_soft_rgba_value(rules, sgi_soft_rgb(rules, rgba),
+                                      alpha),
+        .ntargets = r->ntargets,
+    };
+    for (int i = 0; i < 3; i++) {
+        tri.x[i] = v[i].x;
+        tri.y[i] = v[i].y;
+    }
+    memcpy(tri.targets, r->targets, sizeof(tri.targets));
+    if (st->scissor_test) {
+        tri.x0 = MAX((int64_t)tri.x0, st->scissor[0]);
+        tri.y0 = MAX((int64_t)tri.y0, st->scissor[1]);
+        tri.x1 = MIN((int64_t)tri.x1,
+                     (int64_t)st->scissor[0] + st->scissor[2] - 1);
+        tri.y1 = MIN((int64_t)tri.y1,
+                     (int64_t)st->scissor[1] + st->scissor[3] - 1);
+    }
+    return t->gpu_triangle(t->opaque, &tri, true);
+}
+
+/*
  * Map and rasterize one triangle of a clipped polygon, given its three
  * vertices in the view volume and, for flat shading, the provoking
  * vertex of the triangle it was clipped from (OpenGL 1.2.1, 2.13.7 and
@@ -4712,6 +4824,15 @@ static void sgi_soft_clipped_triangle(const SGISoftDraw *r,
     px1 = MIN((int)max_x, px1);
     py0 = MAX((int)min_y, py0);
     py1 = MIN((int)max_y, py1);
+
+    if (r->gpu) {
+        r->gpu->offered = true;
+        if (!sgi_soft_gpu_triangle(r, v, simple, smooth, offset, &flat_frag,
+                                   px0, py0, px1, py1)) {
+            r->gpu->declined = true;
+        }
+        return;
+    }
 
     /*
      * Each edge function is linear in x, so across a row it steps by an
@@ -6979,6 +7100,20 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
     case SGI_GL_POLYGON:
     case SGI_GL_QUADS:
     case SGI_GL_QUAD_STRIP:
+        if (t->gpu_triangle && !r.texture &&
+            sgi_soft_draw_pixels(&r, d, t->gpu_min_pixels) >=
+            t->gpu_min_pixels) {
+            SGISoftGpu gpu = { 0 };
+
+            r.gpu = &gpu;
+            sgi_soft_draw_triangles(&r, d);
+            if (gpu.offered && !gpu.declined) {
+                gpu.draw = true;
+                sgi_soft_draw_triangles(&r, d);
+                return SGI_GL_DRAW_OK;
+            }
+            r.gpu = NULL;
+        }
         if (!sgi_soft_draw_parallel(&r, d)) {
             sgi_soft_draw_triangles(&r, d);
         }
@@ -7382,6 +7517,14 @@ void sgi_soft_raster(const SGIRasterRules *rules, const SGIRasterTarget *t,
         rgb = sgi_soft_rgb(rules, c);
         /* Clears remain undithered: no dither state is submitted. */
         clear = sgi_soft_rgba_value(rules, rgb, op->clear_rgba[3]);
+    }
+    if (colour && rgba && t->gpu_clear &&
+        t->gpu_clear(t->opaque, op, &clear, rgba_mask)) {
+        /* The colour is done; depth and stencil still go row by row. */
+        colour = rgba_read = false;
+        if (!depth && !stencil) {
+            return;
+        }
     }
     rows = (SGISoftClear) {
         .rules = rules, .t = t, .op = op,
