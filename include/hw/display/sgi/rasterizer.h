@@ -1085,6 +1085,27 @@ bool sgi_gl_texture_apply_pixel(const SGIGLDrawState *state,
                                 const SGIGLTexImage *texture,
                                 const float coord[4], const float color[4],
                                 float out[4]);
+/*
+ * n pixels of bpp bytes from window (x, y); channel[k] is the byte of R, G,
+ * B or A, or -1 for a component of 1.
+ */
+typedef struct SGIRasterRow {
+    const struct SGIGLDrawState *state;
+    SGIColourTarget targets[SGI_GL_MAX_TARGETS];
+    uint32_t ntargets;
+    int32_t x, y;
+    float z;                    /* the raster position's window depth */
+    uint32_t n, bpp;
+    const uint8_t *bytes;
+    int8_t channel[4];
+} SGIRasterRow;
+
+/*
+ * Draw the row as one-pixel fragments would; false, with nothing drawn, if
+ * the state is not a plain store.
+ */
+bool sgi_soft_pixel_row(const SGIRasterRules *r, const SGIRasterTarget *t,
+                        const SGIRasterRow *row);
 /* Carry out a raster op on the target, under the head's rules. */
 void sgi_soft_raster(const SGIRasterRules *r, const SGIRasterTarget *t,
                      const SGIRasterOp *op);

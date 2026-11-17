@@ -378,6 +378,7 @@ typedef enum Scene {
     SCENE_PERSPECTIVE,
     SCENE_TRILINEAR,
     SCENE_PIXELS,
+    SCENE_PIXEL_ROWS,
     SCENE_COUNT,
 } Scene;
 
@@ -392,6 +393,7 @@ static const char *const scene_names[SCENE_COUNT] = {
     [SCENE_PERSPECTIVE] = "perspective",
     [SCENE_TRILINEAR] = "trilinear",
     [SCENE_PIXELS] = "pixels",
+    [SCENE_PIXEL_ROWS] = "pixelrows",
 };
 
 /*
@@ -481,13 +483,16 @@ static void trilinear_texels(Bench *b)
 /*
  * A glDrawPixels frame of 720 by 486 one-pixel fragments in runs of 512,
  * as a head queues them, on a window with one clip rectangle and no
- * depth test: the plain path. Only the draw is timed.
+ * depth test: the plain path. Only the draw is timed. With rows, the
+ * same pixels as a row of 8-bit RGBA bytes each, in the one call a plain
+ * DMA row takes, and the same digest.
  */
 static void pixels_scene(const SGIRasterRules *rules, const SGIRasterTarget *t,
-                         Bench *b, SGIGLContext *c, double *ms)
+                         Bench *b, SGIGLContext *c, double *ms, bool rows)
 {
     enum { PW = 720, PH = 486, RUN = 512 };
     g_autofree SGIRasterPoint *pt = g_new0(SGIRasterPoint, PW * PH);
+    g_autofree uint8_t *bytes = g_malloc(4 * PW * PH);
     int64_t start;
 
     for (uint32_t i = 0; i < PW * PH; i++) {
@@ -496,12 +501,24 @@ static void pixels_scene(const SGIRasterRules *rules, const SGIRasterTarget *t,
             .rgba = { (i & 255) / 255.0f, ((i >> 3) & 255) / 255.0f,
                       ((i >> 5) & 255) / 255.0f, 1 },
         };
+        bytes[4 * i] = i;
+        bytes[4 * i + 1] = i >> 3;
+        bytes[4 * i + 2] = i >> 5;
+        bytes[4 * i + 3] = 255;
     }
     c->cur.drawable.clip = (SGIClipList) { .n = 1,
                                            .r = { { 0, 0, W - 1, H - 1 } } };
     clear(rules, t, b);
     start = get_clock();
-    for (uint32_t i = 0; i < PW * PH; i += RUN) {
+    for (uint32_t y = 0; rows && y < PH; y++) {
+        SGIRasterRow row = {
+            .state = &c->cur, .ntargets = 1, .y = y, .z = 0.5, .n = PW,
+            .bpp = 4, .bytes = bytes + 4 * PW * y, .channel = { 0, 1, 2, 3 },
+        };
+
+        g_assert(sgi_soft_pixel_row(rules, t, &row));
+    }
+    for (uint32_t i = 0; !rows && i < PW * PH; i += RUN) {
         SGIRasterOp op = {
             .kind = SGI_RASTER_BITMAP, .ntargets = 1,
             .bitmap = { .state = &c->cur, .z = 0.5, .points = pt + i,
@@ -574,6 +591,7 @@ static Bench *scene_draw(Scene scene, double *ms)
         c.cur.texture_env_mode = SGI_GL_MODULATE;
         break;
     case SCENE_PIXELS:
+    case SCENE_PIXEL_ROWS:
         break;
     case SCENE_BLEND:
         c.cur.blend = 1;
@@ -584,8 +602,8 @@ static Bench *scene_draw(Scene scene, double *ms)
         g_assert_not_reached();
     }
 
-    if (scene == SCENE_PIXELS) {
-        pixels_scene(rules, &t, b, &c, ms);
+    if (scene == SCENE_PIXELS || scene == SCENE_PIXEL_ROWS) {
+        pixels_scene(rules, &t, b, &c, ms, scene == SCENE_PIXEL_ROWS);
         sgi_gl_cleanup(&c);
         return b;
     }
@@ -1158,6 +1176,87 @@ static void corpus_state(GRand *rand, SGIGLDrawState *st)
  * Draw case index of the corpus, leaving its planes in c, which is
  * allocated zeroed; whether the case textured is returned.
  */
+static unsigned corpus_rows_drawn, corpus_rows_declined;
+
+/*
+ * A row must leave the planes and target calls its one-pixel fragments do,
+ * under the case's state and a plain copy of it; the planes are restored.
+ */
+static void corpus_rows(unsigned index, Corpus *c, const SGIRasterRules *rules,
+                        const SGIRasterTarget *t, const SGIGLDrawState *state)
+{
+    static const int8_t layout[3][4] = {
+        { 3, 2, 1, 0 }, { 0, 1, 2, 3 }, { 0, 1, 2, -1 },
+    };
+    static const uint32_t bpp[3] = { 4, 4, 3 };
+    g_autofree Corpus *saved = g_memdup2(c, sizeof(*c));
+    GRand *rand = g_rand_new_with_seed(0x70f5 + index);
+
+    for (unsigned variant = 0; variant < 2; variant++) {
+        SGIGLDrawState st = *state;
+        SGIRasterTarget tt = *t;
+        unsigned f = g_rand_int_range(rand, 0, 3);
+        uint8_t bytes[40 * 4];
+        SGIRasterPoint pt[40];
+        SGIRasterRow row = {
+            .state = &st, .ntargets = 2, .targets = { 0, 1 },
+            .x = g_rand_int_range(rand, -20, CW), .n = 40,
+            .y = g_rand_int_range(rand, -4, CH + 4),
+            .z = g_rand_int_range(rand, 0, 8) ? g_rand_double(rand) : 1.5,
+            .bpp = bpp[f], .bytes = bytes,
+        };
+        SGIRasterOp op = {
+            .kind = SGI_RASTER_BITMAP, .ntargets = 2, .targets = { 0, 1 },
+            .bitmap = { .state = &st, .z = row.z, .points = pt,
+                        .npoints = row.n },
+        };
+        uint64_t planes, calls;
+
+        if (variant) {
+            if (!t->store_rgba) {
+                break;
+            }
+            st.texture_2d = st.texture_1d = st.texture_3d = 0;
+            st.fog = st.alpha_test = st.stencil_test = st.depth_test = 0;
+            st.index_bits = 0;
+            st.drawable.clip.n = 1;
+            tt.texture = NULL;
+        }
+        memcpy(row.channel, layout[f], sizeof(row.channel));
+        for (unsigned i = 0; i < sizeof(bytes); i++) {
+            bytes[i] = g_rand_int(rand);
+        }
+        for (unsigned i = 0; i < row.n; i++) {
+            const uint8_t *p = &bytes[i * row.bpp];
+            const int8_t *k = row.channel;
+
+            pt[i] = (SGIRasterPoint) {
+                .x = row.x + i, .y = row.y,
+                .rgba = { p[k[0]] / 255.0f, p[k[1]] / 255.0f,
+                          p[k[2]] / 255.0f,
+                          k[3] < 0 ? 1.0f : p[k[3]] / 255.0f },
+            };
+        }
+        if (!sgi_soft_pixel_row(rules, &tt, &row)) {
+            corpus_rows_declined++;
+            g_assert(!memcmp(c, saved, sizeof(*c)));
+            continue;
+        }
+        corpus_rows_drawn++;
+        planes = corpus_planes(c);
+        calls = corpus_calls(c);
+        memcpy(c, saved, sizeof(*c));
+        sgi_soft_raster(rules, &tt, &op);
+        if (planes != corpus_planes(c) || calls != corpus_calls(c)) {
+            fprintf(stderr, "case %u: pixel row differs from its points "
+                    "(variant %u, layout %u)\n", index, variant, f);
+            abort();
+        }
+        memcpy(c, saved, sizeof(*c));
+    }
+    g_rand_free(rand);
+}
+
 static bool corpus_draw(unsigned index, Corpus *c)
 {
     static const SGIRasterRules base = {
@@ -1415,6 +1514,7 @@ static bool corpus_draw(unsigned index, Corpus *c)
         }
         sgi_soft_raster(&rules, &t, &op);
     }
+    corpus_rows(index, c, &rules, &t, &ctx.cur);
     if (t.texture && corpus_chance(rand, 30)) {
         /*
          * New texel contents between two draws of one image: whatever a
@@ -1521,6 +1621,8 @@ static void corpus_run(unsigned count, bool verbose)
     printf("corpus %u cases %9.3f ms planes %016" PRIx64 " calls %016"
            PRIx64 "\n", count, (get_clock() - start) / 1e6, planes_all,
            calls_all);
+    printf("pixel rows: %u drawn as a row, %u declined\n",
+           corpus_rows_drawn, corpus_rows_declined);
 }
 
 /*

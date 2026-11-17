@@ -7131,6 +7131,17 @@ SGIGLDrawResult sgi_soft_draw(const SGIRasterRules *rules,
 #undef V
 }
 
+/* Whether the fragments need only the window, the scissor and a store. */
+static bool sgi_soft_plain_store(const SGISoftDraw *r, float z)
+{
+    const SGIGLDrawState *st = r->st;
+
+    return z >= 0.0 && z <= 1.0 && !r->texture && !st->fog &&
+           !st->alpha_test && !st->index_bits && r->t->store_rgba &&
+           !r->rgba_read && !st->depth_test && !st->stencil_test &&
+           r->win.clip->n <= 1;
+}
+
 /*
  * A run of a bitmap's image (OpenGL 1.2.1, 3.7): a fragment for each set
  * bit, at the image's corner plus the bit's column and row, bounded by
@@ -7180,11 +7191,7 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
      * texture. They stay so that this path is equal to
      * sgi_soft_fragment_at() for any caller.
      */
-    bool plain = b->z >= 0.0 && b->z <= 1.0 && !r.texture &&
-                 !b->state->fog && !b->state->alpha_test &&
-                 !b->state->index_bits && t->store_rgba && !r.rgba_read &&
-                 !b->state->depth_test && !b->state->stencil_test &&
-                 r.win.clip->n <= 1;
+    bool plain = sgi_soft_plain_store(&r, b->z);
 
     for (uint32_t i = 0; i < b->npoints; i++) {
         const SGIRasterPoint *pt = &b->points[i];
@@ -7240,6 +7247,66 @@ static void sgi_soft_bitmap(const SGIRasterRules *rules,
             sgi_soft_fragment_at(&r, px, py, b->z, &frag, 1, false);
         }
     }
+}
+
+/*
+ * A row drawn as sgi_soft_bitmap()'s points would draw it; false, with
+ * nothing drawn, unless the state is a plain store to 8-bit RGBA planes.
+ */
+bool sgi_soft_pixel_row(const SGIRasterRules *rules, const SGIRasterTarget *t,
+                        const SGIRasterRow *row)
+{
+    SGISoftDraw r = { .rules = rules, .t = t, .st = row->state };
+    const SGIGLDrawState *st = row->state;
+    int64_t x0, x1, y = row->y;
+
+    if (!sgi_soft_check_rules(rules)) {
+        return true;
+    }
+    if (rules->color_bits != 8 || rules->alpha_bits != 8 ||
+        !sgi_soft_texture_setup(&r, false) || r.texture) {
+        return false;
+    }
+    if (!sgi_soft_window(st, &r.win) ||
+        !sgi_soft_check_index(t, st->index_bits)) {
+        return true;
+    }
+    r.ntargets = MIN(row->ntargets, SGI_GL_MAX_TARGETS);
+    memcpy(r.targets, row->targets, sizeof(r.targets));
+    if (!sgi_soft_setup_ops(&r)) {
+        return true;
+    }
+    if (!sgi_soft_plain_store(&r, row->z) || r.blend || r.logic_op ||
+        r.dither ||
+        r.rgba_mask != sgi_soft_rgba_mask(rules, SGI_GL_COLOUR_MASK_ALL)) {
+        return false;
+    }
+    x0 = MAX((int64_t)row->x, r.win.x0 - r.win.ox);
+    x1 = MIN((int64_t)row->x + row->n - 1, r.win.x1 - r.win.ox);
+    if (y < r.win.y0 - r.win.oy || y > r.win.y1 - r.win.oy) {
+        return true;
+    }
+    if (st->scissor_test) {
+        x0 = MAX(x0, (int64_t)st->scissor[0]);
+        x1 = MIN(x1, (int64_t)st->scissor[0] + st->scissor[2] - 1);
+        if (y < st->scissor[1] ||
+            y >= (int64_t)st->scissor[1] + st->scissor[3]) {
+            return true;
+        }
+    }
+    for (int64_t x = x0; x <= x1; x++) {
+        const uint8_t *p = row->bytes + (x - row->x) * row->bpp;
+        SGIRasterColour out = { .component = {
+            p[row->channel[0]], p[row->channel[1]], p[row->channel[2]],
+            row->channel[3] < 0 ? 255 : p[row->channel[3]],
+        } };
+
+        for (uint32_t i = 0; i < r.ntargets; i++) {
+            t->store_rgba(t->opaque, r.targets[i], r.win.ox + x,
+                          r.win.oy + y, &out);
+        }
+    }
+    return true;
 }
 
 static void sgi_soft_pixels(const SGIRasterRules *rules,
