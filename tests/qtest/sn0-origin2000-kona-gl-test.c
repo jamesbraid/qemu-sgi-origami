@@ -1353,12 +1353,199 @@ static void test_x_clear_layer_clears_overlay(void)
     g_assert_cmphex(shown_pixel(qts, PROBE_X, y), ==, 0);
 }
 
+
+/*
+ * x-gpu: seeded flat scenes leave the same bank and tag words as the scalar
+ * path; run in slices (x-test-slice-words), where GPU draws are submitted.
+ */
+#define LIST_CALL_POOL   0x16eu
+#define DMA_POOL         0x1edu
+#define REG_MAPRAM(i)    KONA_REG(0x100000 + 4 * (uint64_t)(i))
+#define MAPRAM_16K       0x20000000u
+#define MAPRAM_PAGE      0x4000u
+#define KONA_DMA_ADDR_TAG 0x9000u
+#define POOL_BASE        UINT64_C(0x40000)
+#define GPU_SEEDS        3
+#define GPU_TRIANGLES    24
+#define GPU_SAMPLES      256
+
+static void list_add(GArray *list, uint32_t token, const uint32_t *args,
+                     unsigned argc)
+{
+    g_array_append_val(list, token);
+    g_array_append_vals(list, args, argc);
+}
+
+static uint32_t gpu_float(GRand *rng, double lo, double hi)
+{
+    return float_bits(g_rand_double_range(rng, lo, hi));
+}
+
+static GArray *gpu_scene(uint32_t seed)
+{
+    GArray *list = g_array_new(false, false, sizeof(uint32_t));
+    GRand *rng = g_rand_new_with_seed(seed);
+
+    list_add(list, 0xe3, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    list_add(list, 0xc, (uint32_t[]){ 0, 0, PROBE_SIZE, PROBE_SIZE }, 4);
+    list_add(list, 0x25, (uint32_t[]){ 0xbd0 }, 1);
+    list_add(list, 0x1d, (uint32_t[]){ gpu_float(rng, 0, 1),
+                                       gpu_float(rng, 0, 1),
+                                       gpu_float(rng, 0, 1), F1 }, 4);
+    list_add(list, 0x1a, (uint32_t[]){ 0x4000 }, 1);
+    list_add(list, 0xc0, (uint32_t[]){ 0x1d00 }, 1);
+    for (unsigned t = 0; t < GPU_TRIANGLES; t++) {
+        list_add(list, 0x63, (uint32_t[]){ gpu_float(rng, 0, 1),
+                                           gpu_float(rng, 0, 1),
+                                           gpu_float(rng, 0, 1) }, 3);
+        list_add(list, 0x5b, (uint32_t[]){ 0 }, 1);
+        for (unsigned v = 0; v < 3; v++) {
+            list_add(list, 0x8c, (uint32_t[]){ gpu_float(rng, -1.3, 1.3),
+                                               gpu_float(rng, -1.3, 1.3) }, 2);
+        }
+        list_add(list, 0x71, (uint32_t[]){ 0 }, 1);
+    }
+    g_rand_free(rng);
+    return list;
+}
+
+static char *kona_plane_digest(QTestState *s, unsigned plane)
+{
+    QDict *resp;
+    char *digest;
+
+    kona_qom_set_uint(s, "x-test-plane", plane);
+    resp = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': 'x-test-plane-digest'}}", KONA_QOM_PATH);
+    g_assert_true(qdict_haskey(resp, "return"));
+    digest = g_strdup(qdict_get_str(resp, "return"));
+    qobject_unref(resp);
+    return digest;
+}
+
+static bool kona_qom_get_bool(QTestState *s, const char *property)
+{
+    QDict *resp = qtest_qmp(s,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': %s}}", KONA_QOM_PATH, property);
+    bool value = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return value;
+}
+
+static bool gpu_work_pending(QTestState *s)
+{
+    return kona_qom_get_bool(s, "x-test-work-pending");
+}
+
+static bool gpu_ready(QTestState *s)
+{
+    return kona_qom_get_bool(s, "x-gpu-ready");
+}
+
+typedef struct GpuResult {
+    uint64_t draws;
+    uint64_t switches;
+    uint32_t words[2][GPU_SAMPLES];
+    char *digest[4];
+} GpuResult;
+
+/* False when the GPU never opened. */
+static bool gpu_run(const char *extra, uint32_t seed, GpuResult *out)
+{
+    g_autofree char *args = g_strconcat(MACHINE_ARGS, extra, NULL);
+    QTestState *s = qtest_init(args);
+    GArray *list = gpu_scene(seed);
+    g_autofree uint8_t *bytes = g_malloc(list->len * 4);
+    GRand *rng = g_rand_new_with_seed(seed + 100);
+    unsigned steps = 0;
+
+    /* Realize waits for the device to open, so it is ready or never will be. */
+    if (*extra && !gpu_ready(s)) {
+        qtest_quit(s);
+        g_array_free(list, true);
+        g_rand_free(rng);
+        return false;
+    }
+    gl_make_current(s, false);
+    gl_place_window(s, PROBE_X, 400, PROBE_SIZE);
+    for (unsigned i = 0; i < list->len; i++) {
+        stl_be_p(bytes + 4 * i, g_array_index(list, uint32_t, i));
+    }
+    qtest_memwrite(s, POOL_BASE, bytes, list->len * 4);
+    qtest_writel(s, REG_MAPRAM(POOL_BASE / MAPRAM_PAGE),
+                 MAPRAM_16K | (uint32_t)(POOL_BASE >> 12));
+    kona_command(s, DMA_POOL, (uint32_t[]){ POOL_BASE >> 12,
+                 ((uint32_t)POOL_BASE & 0xfffu) | KONA_DMA_ADDR_TAG,
+                 MAPRAM_PAGE }, 3);
+    kona_qom_set_uint(s, "x-test-slice-words", 40);
+    kona_command(s, LIST_CALL_POOL, (uint32_t[]){ 0, list->len }, 2);
+    while (gpu_work_pending(s)) {
+        g_assert_cmpuint(++steps, <, 100000);
+        qtest_clock_step(s, 100 * 1000);
+    }
+    kona_qom_set_uint(s, "x-test-slice-words", 0);
+    out->draws = kona_qom_get_uint(s, "x-gpu-draws");
+    /* Reading words and planes is what brings the GPU's rows down. */
+    for (unsigned i = 0; i < GPU_SAMPLES; i++) {
+        uint32_t x = PROBE_X + g_rand_int_range(rng, 0, PROBE_SIZE);
+        uint32_t y = 400 + g_rand_int_range(rng, 0, PROBE_SIZE);
+
+        out->words[0][i] = bank_word(s, 0, x, y);
+        out->words[1][i] = bank_word(s, 2, x, y);
+    }
+    out->switches = kona_qom_get_uint(s, "x-gpu-switches");
+    for (unsigned p = 0; p < 4; p++) {
+        out->digest[p] = kona_plane_digest(s, p);
+    }
+    qtest_quit(s);
+    g_array_free(list, true);
+    g_rand_free(rng);
+    return true;
+}
+
+static void test_gpu_parity(void)
+{
+    for (uint32_t seed = 1; seed <= GPU_SEEDS; seed++) {
+        GpuResult cpu = { 0 }, gpu = { 0 };
+        unsigned distinct;
+
+        g_assert_true(gpu_run("", seed, &cpu));
+        if (!gpu_run(" -global sgi-kona.x-gpu=on"
+                     " -global sgi-kona.x-gpu-min-pixels=0", seed, &gpu)) {
+            g_test_skip("no GPU adapter opened");
+            return;
+        }
+        g_test_message("seed %u: %" PRIu64 " GPU draws, %" PRIu64
+                       " ownership switches", seed, gpu.draws,
+                       gpu.switches);
+        g_assert_cmpuint(gpu.draws, >, 0);
+        /* A scene that left one colour everywhere would prove nothing. */
+        distinct = 0;
+        for (unsigned i = 1; i < GPU_SAMPLES; i++) {
+            distinct += cpu.words[0][i] != cpu.words[0][0];
+        }
+        g_assert_cmpuint(distinct, >, GPU_SAMPLES / 8);
+        g_assert_cmpuint(gpu.switches, >, 0);
+        g_assert_cmpmem(cpu.words, sizeof(cpu.words), gpu.words,
+                        sizeof(gpu.words));
+        for (unsigned p = 0; p < 4; p++) {
+            g_assert_cmpstr(cpu.digest[p], ==, gpu.digest[p]);
+            g_free(cpu.digest[p]);
+            g_free(gpu.digest[p]);
+        }
+    }
+}
+
 int main(int argc, char **argv)
 {
     int ret;
 
     g_test_init(&argc, &argv, NULL);
 
+    qtest_add_func("sn0/origin2000/kona-gl/gpu-parity", test_gpu_parity);
     qtest_add_func("sn0/origin2000/kona-gl/window-placement-asymmetric",
                    test_window_placement_asymmetric);
     qtest_add_func("sn0/origin2000/kona-gl/window-needed-and-moved",

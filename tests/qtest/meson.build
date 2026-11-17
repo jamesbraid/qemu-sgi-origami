@@ -154,6 +154,8 @@ slow_qtests = {
   # full parallel run with the saved-input and kernel-framer tests; 300
   # keeps three times that.
   'sn0-origin2000-kona-context-test': 300,
+  # The x-gpu parity case boots a machine six times.
+  'sn0-origin2000-kona-gl-test': 180,
   # The whole binary, which only a named run uses: its groups below are
   # what the qtest suites run.
   'sn0-origin2000-kona-fill-test': 900,
