@@ -1,5 +1,23 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Minimal public build environment for the maintained SGI machine tests.
+# rust/sgi-gpu needs rustc 1.90 and trixie ships 1.85, so the toolchain comes
+# from rustup, checked against the SHA-256 of the rustup-init 1.29.2 release
+# (x86-64 only). The version is the one the Origami build image carries.
+FROM docker.io/library/debian:trixie-slim AS rust-toolchain
+RUN apt-get update && \
+    apt-get install --no-install-recommends -y ca-certificates curl && \
+    rm -rf /var/lib/apt/lists/*
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/usr/local/cargo
+RUN test "$(dpkg --print-architecture)" = amd64 && \
+    curl -fsSL -o /tmp/rustup-init \
+        https://static.rust-lang.org/rustup/archive/1.29.2/x86_64-unknown-linux-gnu/rustup-init && \
+    echo "5be191e8c70a5007074254cb74d78dbfdd25cd5a61c27de7b8e5410122ec24f4  /tmp/rustup-init" \
+        | sha256sum -c - && \
+    chmod +x /tmp/rustup-init && \
+    /tmp/rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain 1.99.1 --component rustfmt && \
+    chmod -R a+rX "$RUSTUP_HOME" "$CARGO_HOME"
+
 FROM docker.io/library/debian:trixie-slim
 
 # python3-jsonschema and python3-yaml are pythondeps.toml's sgi-model group,
@@ -7,15 +25,15 @@ FROM docker.io/library/debian:trixie-slim
 # gdb-multiarch drives the functional tests' reverse-debugging cases.
 # python3-sphinx and python3-sphinx-rtd-theme build the manual, which the
 # script suites check with warnings treated as errors.
-# rustc, cargo, rustfmt, bindgen and libclang-dev build and check the Rust
-# devices (configure --enable-rust); rustc includes rustdoc.
+# bindgen and libclang-dev build the Rust devices (configure --enable-rust).
+# libvulkan1 and mesa-vulkan-drivers (lavapipe) give the SGI GPU back end's
+# qtest a software Vulkan adapter.
 RUN apt-get update && \
     apt-get install --no-install-recommends -y \
         binutils-mips64-linux-gnuabi64 \
         bindgen \
         build-essential \
         ca-certificates \
-        cargo \
         ccache \
         gcc-mips64-linux-gnuabi64 \
         gdb-multiarch \
@@ -34,8 +52,10 @@ RUN apt-get update && \
         libglib2.0-dev \
         libpixman-1-dev \
         libslirp-dev \
+        libvulkan1 \
         meson \
         makefs \
+        mesa-vulkan-drivers \
         ninja-build \
         pkg-config \
         python3 \
@@ -46,10 +66,15 @@ RUN apt-get update && \
         python3-venv \
         python3-wheel \
         python3-yaml \
-        rustc \
-        rustfmt \
         zlib1g-dev && \
     rm -rf /var/lib/apt/lists/*
+
+COPY --from=rust-toolchain /usr/local/rustup /usr/local/rustup
+COPY --from=rust-toolchain /usr/local/cargo /usr/local/cargo
+# The toolchain is read-only; cargo downloads crates into a CARGO_HOME of its own.
+RUN install -d -m 1777 /var/tmp/cargo-home
+ENV RUSTUP_HOME=/usr/local/rustup CARGO_HOME=/var/tmp/cargo-home
+ENV PATH="/usr/local/cargo/bin:${PATH}"
 
 # Populate functional dependencies before tests run without network access.
 RUN python3 -m venv --system-site-packages /opt/qemu-tests && \

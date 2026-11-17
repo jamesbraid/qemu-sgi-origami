@@ -51,8 +51,12 @@ CONFIGURE_ARGS = [
 
 # The qtests of those devices. A pull request that edits nothing under
 # tests/qtest still runs them, since they are the only check of the Rust code.
-RUST_DEVICE_QTESTS = ['qtest-mips64/sgi-bic-board-interface-test']
-RUST_DEVICE_CONFIGS = ['CONFIG_X_SGI_BIC_BOARD_INTERFACE_RUST=y']
+# The GPU back end builds only with rustc 1.90 or newer, which configure
+# otherwise skips quietly, so its test device must show up too.
+RUST_DEVICE_QTESTS = ['qtest-mips64/sgi-bic-board-interface-test',
+                      'qtest-mips64/sgi-gpu-test']
+RUST_DEVICE_CONFIGS = ['CONFIG_X_SGI_BIC_BOARD_INTERFACE_RUST=y',
+                       'CONFIG_SGI_GPU_TEST=y']
 
 # The Windows release is cross-compiled with MinGW in the image built from
 # tests/docker/dockerfiles/fedora-win64-cross.docker. Its configure arguments

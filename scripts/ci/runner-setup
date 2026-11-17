@@ -262,8 +262,8 @@ case "${1-}" in
     # that finds one missing fails instead of skipping (tests/qtest/prereq.h).
     # No runner exposes a DRM render node, and the image has no xorrisofs
     # (cdrom-test only covers upstream boards, none of them SGI), and the
-    # runners give the container no GPU and the image no Vulkan driver, so
-    # the display export's Vulkan case has no device. QEMU_TEST_UNAVAILABLE
+    # runners give the container no GPU and the image only lavapipe, so the
+    # display export's Vulkan case may find no device. QEMU_TEST_UNAVAILABLE
     # names all three: the result checker then accepts those skips and no
     # other.
     tap_options=()
