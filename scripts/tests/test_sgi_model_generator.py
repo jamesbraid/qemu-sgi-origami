@@ -23,7 +23,7 @@ L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "48cf41b7c08a4d5800062543474f5e83007706f44b6ed8c9dc06df54c00b06b5"
+    "390fa5ebb81f331558ddfa64d973b801b1f2a07b80471f13e56f761f903af7ca"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -1422,6 +1422,37 @@ class FuelTests(unittest.TestCase):
              for c in topology["xio-cables"]],
             [("c0-to-ibrick", [0, 0]), ("c1-to-ibrick2", [1, 1])])
 
+    def test_gpu_setting_follows_the_boards_that_name_a_property(self):
+        """gpu is one setting, off by default, offered where a graphics
+        family names a gpu-property; VPro and InfiniteReality do."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        definition = next(item for item in catalogue["setting-definitions"]
+                          if item["name"] == "gpu")
+        self.assertEqual(definition["kind"], "boolean")
+        self.assertEqual(definition["target"], {
+            "kind": "board-property", "form": "plain",
+            "field": "gpu-property"})
+        properties = {}
+        for topology in catalogue["topologies"]:
+            for slot in (topology.get("graphics") or {}).get("slots", []):
+                for family in slot["families"]:
+                    properties[family["device"]] = family.get("gpu-property")
+        self.assertEqual(properties, {
+            "sgi-odyssey": "x-gpu", "sgi-kona": "x-gpu",
+            "sgi-mgras": None, "psitech-rad4": None})
+        offered = {row["product"] for row in catalogue["offerings"]
+                   if any(item["name"] == "gpu" for item in row["settings"])}
+        self.assertEqual(offered, {"fuel", "octane2", "onyx2", "onyx350",
+                                   "origin3000", "tezro"})
+        for row in catalogue["offerings"]:
+            for item in row["settings"]:
+                if item["name"] == "gpu":
+                    self.assertEqual(item["default"], "off")
+                    self.assertEqual(item["default-provenance"],
+                                     "approximated")
+                    self.assertFalse(item["required"])
+
     def test_settings_follow_what_each_machine_binds(self):
         """The Bedrock board values are offered only where a Bedrock, an
         L1 and an IO8 or Fuel board bind them, an Origin 2000's own
@@ -1437,6 +1468,11 @@ class FuelTests(unittest.TestCase):
         records = ["chassis-eeprom", "board-eeprom"]
         routerless = {item["name"] for item in catalogue["topologies"]
                       if not item["routers"]}
+        vpro = {item["name"] for item in catalogue["topologies"]
+                if any("gpu-property" in family
+                       for slot in (item.get("graphics") or {}).get(
+                           "slots", [])
+                       for family in slot["families"])}
         expected = {
             "fuel": bedrock + ["ioc3-subsystem-id", "prid"] + records +
                     ["fuel-mac-eeprom"],
@@ -1467,6 +1503,8 @@ class FuelTests(unittest.TestCase):
                     row["topology"] in L2_DEFAULT_ON or
                     row["topology"] in L2_DEFAULT_OFF):
                 want.append("l2-controller")
+            if row["topology"] in vpro:
+                want.append("gpu")
             if "controller-brick-serial" in names:
                 # The Origin 300 expansion topologies add their controllers.
                 want += ["controller-brick-serial",

@@ -2,7 +2,7 @@
   "format": 4,
   "format_key": "sgi-sn",
   "outputs": {
-    "hw/mips/sgi/sgi-machines.json": "48cf41b7c08a4d5800062543474f5e83007706f44b6ed8c9dc06df54c00b06b5"
+    "hw/mips/sgi/sgi-machines.json": "390fa5ebb81f331558ddfa64d973b801b1f2a07b80471f13e56f761f903af7ca"
   },
-  "source_sha256": "3a1b77781540a74ef01a3676b993eee9d4c64f065b49797aa14c807afc75aeb0"
+  "source_sha256": "bae53715cf2d0f8513e46ad85cdfc2076579316dfbe11f0837f30697cc4dd84e"
 }

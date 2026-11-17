@@ -69,7 +69,7 @@ class IP30CatalogueTests(unittest.TestCase):
             [(item["name"], item.get("default"))
              for item in offering["settings"]],
             [("flash-select", "on"), ("flash-strap", "on"),
-             ("prid", "0xe35"), ("fpu-id", "0x900")])
+             ("prid", "0xe35"), ("fpu-id", "0x900"), ("gpu", "off")])
         self.assertTrue(all(item.get("default-provenance") == "approximated"
                             for item in offering["settings"][:2]))
         self.assertEqual(len(offering["scsi-adapters"]), 2)

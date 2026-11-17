@@ -174,6 +174,10 @@ machines' graphics catalogue offers only ``product=v12``; the other
 products need ``x-uncatalogued-graphics=on`` on the machine
 (:ref:`sgi-sn-graphics-pipes`).
 
+The catalogue's ``gpu`` setting turns on ``x-gpu`` (host GPU drawing,
+off by default) on every fitted board; it is rated *model capability, not
+hardware*.
+
 .. _sgi-odyssey-placement:
 
 Placement

@@ -76,6 +76,11 @@ offering's.
      - none
      - -M ``fuel-mac-eeprom``
      - none
+   * - ``gpu``
+     - boolean
+     - none
+     - -global on each fitted graphics board's ``gpu-property``
+     - ``off`` (approximated)
 
 Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``.
 
@@ -174,6 +179,11 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - none
      - -cpu ``fpu-id``
      - ``0x900`` (inferred)
+   * - ``gpu``
+     - boolean
+     - none
+     - -global on each fitted graphics board's ``gpu-property``
+     - ``off`` (approximated)
 
 ``onyx2``
 ---------
@@ -196,6 +206,11 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - none
      - -M ``elsc-dip-switches``
      - none
+   * - ``gpu``
+     - boolean
+     - none
+     - -global on each fitted graphics board's ``gpu-property``
+     - ``off`` (approximated)
 
 ``onyx350``
 -----------
@@ -243,6 +258,11 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - board: 0
      - -M ``board-eeprom``
      - none
+   * - ``gpu``
+     - boolean
+     - none
+     - -global on each fitted graphics board's ``gpu-property``
+     - ``off`` (approximated)
 
 ``onyx4``
 ---------
@@ -468,6 +488,11 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - none
      - the serial lines that name it
      - ``off`` (approximated)
+   * - ``gpu``
+     - boolean
+     - none
+     - -global on each fitted graphics board's ``gpu-property``
+     - ``off`` (approximated)
 
 The ``l2-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks``, ``origin3400-two-routers``, ``origin3800``, ``origin3800-64p``, ``origin3800-high-bandwidth`` default ``off`` (approximated); ``onyx3400-ir``, ``origin3400``, ``origin3400-two-partitions`` default ``on`` (approximated). The product's other topologies do not offer it.
 
@@ -594,6 +619,9 @@ tool never shows a value with nothing behind it.
    * - ``fpu-id``
      - inferred
      - The processor assembly in the model file, for the FPU revision the product's inventory prints; not a raw read.
+   * - ``gpu``
+     - approximated
+     - The device property's own default, off. The setting is a model capability, not hardware (hardware/odyssey.rst, hardware/kona.rst).
    * - ``l2-controller``
      - approximated
      - A launch choice, so an approximation either way; the default is off unless the model file authors one. That a rack with an R-brick holds an L2 is established, and the L2 is optional on the Origin 3200 and Onyx 3200 (hardware/l1-l2-link.rst), but starting one rests on model runs, not on those pages. The L2 is the shipped firmware under qemu-ppc behind a model L1 that drops the L2's own requests. A default of on is authored only where the PROM has booted with it; the console output differs from a run without it in timing, NIC ids and the interleaving of one boot line. The topologies are listed in hardware/l1-l2-link.rst, which is written by hand and must change with the model files.

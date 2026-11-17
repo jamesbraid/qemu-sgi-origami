@@ -238,6 +238,12 @@
         {
           "name": "fuel-mac-eeprom",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -1180,6 +1186,12 @@
           "default-provenance": "inferred",
           "name": "fpu-id",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 1,
@@ -1538,6 +1550,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -1922,6 +1940,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 2,
@@ -2305,6 +2329,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 3,
@@ -2686,6 +2716,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 2,
@@ -3060,6 +3096,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -3441,6 +3483,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -3847,6 +3895,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 4,
@@ -4251,6 +4305,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -4657,6 +4717,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 6,
@@ -5062,6 +5128,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 7,
@@ -5465,6 +5537,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 6,
@@ -5861,6 +5939,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -6259,6 +6343,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 4,
@@ -6656,6 +6746,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 5,
@@ -7051,6 +7147,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 4,
@@ -7439,6 +7541,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -7829,6 +7937,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 3,
@@ -8216,6 +8330,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 2,
@@ -8596,6 +8716,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -8985,6 +9111,12 @@
           "default-provenance": "approximated",
           "name": "l2-controller",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 8,
@@ -9348,6 +9480,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -9713,6 +9851,12 @@
           "default-provenance": "approximated",
           "name": "l2-controller",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 8,
@@ -10074,6 +10218,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -10493,6 +10643,12 @@
           "default-provenance": "approximated",
           "name": "l2-controller",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 16,
@@ -10808,6 +10964,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -11087,6 +11249,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -44629,6 +44797,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -44910,6 +45084,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -45191,6 +45371,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -45472,6 +45658,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -45753,6 +45945,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -46032,6 +46230,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -46311,6 +46515,12 @@
             ],
             "scope": "board"
           }
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smdk": {
@@ -46746,6 +46956,18 @@
         "kind": "machine",
         "property": "junk-uart"
       }
+    },
+    {
+      "allow-empty": false,
+      "description": "Draw on the host's GPU: a capability of the model, not a part of the hardware. Sets the gpu-property of every fitted graphics board whose family names one.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "gpu",
+      "target": {
+        "field": "gpu-property",
+        "form": "plain",
+        "kind": "board-property"
+      }
     }
   ],
   "topologies": [
@@ -46792,6 +47014,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -48179,6 +48402,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -49067,6 +49291,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -50383,6 +50608,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -50602,6 +50828,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -51904,6 +52131,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -52600,6 +52828,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -52727,6 +52956,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -52861,6 +53091,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -52988,6 +53219,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {
@@ -53924,6 +54156,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -54190,6 +54423,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -75794,6 +76028,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -76030,6 +76265,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {
@@ -76390,6 +76626,7 @@
               {
                 "device": "sgi-odyssey",
                 "family": "odyssey",
+                "gpu-property": "x-gpu",
                 "name": "VPro",
                 "products": [
                   {

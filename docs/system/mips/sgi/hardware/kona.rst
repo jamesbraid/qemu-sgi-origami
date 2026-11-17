@@ -223,6 +223,10 @@ rasterizer, with the same board memory as the result; ``record`` names a
 file that receives the stream the guest sends the pipe
 (:ref:`sgi-kona-record`).
 
+The catalogue's ``gpu`` setting turns on ``x-gpu`` (host GPU drawing, off
+by default) on every fitted pipe; it is rated *model capability, not
+hardware*.
+
 .. _sgi-kona-register-map:
 
 Register map

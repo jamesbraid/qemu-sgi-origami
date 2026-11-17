@@ -38,6 +38,7 @@ families:
   # VPro (Odyssey).
   - family: odyssey
     device: sgi-odyssey
+    gpu-property: x-gpu
     name: VPro
     products:
       - {product: v12, name: VPro V12,
@@ -48,6 +49,7 @@ families:
   # prints InfiniteReality2, the GE16 board set InfiniteReality2E.
   - family: kona
     device: sgi-kona
+    gpu-property: x-gpu
     name: InfiniteReality
     products:
       - {product: ir2, name: InfiniteReality2,

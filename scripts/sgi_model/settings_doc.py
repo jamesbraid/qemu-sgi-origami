@@ -35,6 +35,8 @@ def _target(definition: dict) -> str:
     target = definition["target"]
     if target["kind"] == "serial-lines":
         return "the serial lines that name it"
+    if target["kind"] == "board-property":
+        return f"-global on each fitted graphics board's ``{target['field']}``"
     text = {"machine": "-M", "global": "-global", "cpu": "-cpu"}[
         target["kind"]]
     prop = target["property"]

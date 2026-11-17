@@ -4404,6 +4404,7 @@
             {
               "device": "sgi-kona",
               "family": "kona",
+              "gpu-property": "x-gpu",
               "name": "InfiniteReality",
               "products": [
                 {
@@ -4623,6 +4624,7 @@
             {
               "device": "sgi-kona",
               "family": "kona",
+              "gpu-property": "x-gpu",
               "name": "InfiniteReality",
               "products": [
                 {

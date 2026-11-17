@@ -18,17 +18,20 @@ _L1_REVISION = r"[0-9]+\.[0-9]+\.[0-9]+"
 
 def _definition(name: str, kind: str, target_kind: str, property_name: str,
                 form: str | None, description: str, *,
-                device: str | None = None,
+                device: str | None = None, field: str | None = None,
                 identity: bool = False, allow_empty: bool = False,
                 **limits) -> dict:
-    # A serial-lines target has no property or form: the boolean turns on
-    # the serial lines that name it, and each carries its own property.
+    # Serial-lines targets carry no property; a board-property target
+    # names the graphics family field that holds it.
     target = {"kind": target_kind}
     if property_name is not None:
         target["property"] = property_name
+    if form is not None:
         target["form"] = form
     if device is not None:
         target["device"] = device
+    if field is not None:
+        target["field"] = field
     return {"name": name, "kind": kind, "target": target,
             "allow-empty": allow_empty, "identity": identity,
             "description": description, **limits}
@@ -128,6 +131,11 @@ SETTING_DEFINITIONS: list[dict] = [
     _definition("junk-uart", "boolean", "machine", "junk-uart", "plain",
                 "A debug input: fit the Hub's junk-bus UART, a bring-up "
                 "serial port no shipped machine is known to have."),
+    _definition("gpu", "boolean", "board-property", None, "plain",
+                "Draw on the host's GPU: a capability of the model, not a "
+                "part of the hardware. Sets the gpu-property of every "
+                "fitted graphics board whose family names one.",
+                field="gpu-property"),
 ]
 
 # The firmware's own names for the switch values; podlib-style lookups OR
@@ -168,6 +176,10 @@ DEFAULT_BASIS = {
     "debug-switches": (
         "The sgi-l1 device's own default; the stock :term:`PROM`'s read of the "
         "word is marked in hardware/l1.rst."),
+    "gpu": (
+        "The device property's own default, off. The setting is a model "
+        "capability, not hardware (hardware/odyssey.rst, "
+        "hardware/kona.rst)."),
     "origin300-l1cmd-compat": (
         "The machine property's own default, off; the commands it "
         "enables are an approximation (hardware/l1.rst)."),
@@ -205,7 +217,7 @@ def default_provenance(product: str, name: str, value: str) -> str:
     if name in ("prid", "fpu-id"):
         return "inferred"
     if name in ("flash-select", "flash-strap", "debug-switches",
-                "origin300-l1cmd-compat", "l2-controller"):
+                "origin300-l1cmd-compat", "l2-controller", "gpu"):
         return "approximated"
     raise KeyError(f"no basis for the default of {name} on {product}")
 
@@ -367,6 +379,11 @@ def offering_settings(offering: dict, topology: dict,
     if topology["junk_uart"] != -1:
         # Off unless a launch fits it, so there is no default to mark.
         chosen.append(_entry("junk-uart"))
+    if any("gpu-property" in family
+           for slot in (topology.get("graphics") or {}).get("slots", [])
+           for family in slot["families"]):
+        # The model's host-GPU drawing, off unless a launch asks for it.
+        chosen.append(_entry("gpu", default="off"))
     for entry in chosen:
         if "default" in entry and "default-provenance" not in entry:
             entry["default-provenance"] = default_provenance(

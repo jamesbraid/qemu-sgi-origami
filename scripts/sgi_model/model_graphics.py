@@ -34,6 +34,7 @@ _FIDELITY = {"validated", "implemented", "approximated"}
 _PAIRING = {"established", "inferred"}
 
 _FAMILY_FIELDS = {"family", "device", "name", "products", "settings"}
+_FAMILY_OPTIONAL = {"gpu-property"}
 _PRODUCT_FIELDS = {"product", "name", "description"}
 _SETTING_FIELDS = {"name", "description", "values"}
 _VALUE_FIELDS = {"value", "description", "evidence"}
@@ -88,7 +89,9 @@ def load_graphics_products(model_root: pathlib.Path) -> dict[str, dict]:
         raise ResolutionError(f"{path} is not a version 1 graphics product file")
     families: dict[str, dict] = {}
     for raw in document["families"]:
-        if not isinstance(raw, dict) or set(raw) != _FAMILY_FIELDS:
+        if (not isinstance(raw, dict) or
+                not _FAMILY_FIELDS <= set(raw) <=
+                _FAMILY_FIELDS | _FAMILY_OPTIONAL):
             raise ResolutionError(f"{path} has an invalid family {raw!r}")
         family = raw["family"]
         if family not in _FAMILIES:
@@ -148,6 +151,9 @@ def load_graphics_products(model_root: pathlib.Path) -> dict[str, dict]:
             "name": _string(raw["name"], f"{label} name"),
             "products": products,
             "settings": settings,
+            **({"gpu-property": _string(raw["gpu-property"],
+                                        f"{label} gpu-property")}
+               if "gpu-property" in raw else {}),
         }
     return families
 
@@ -417,6 +423,8 @@ def resolve_graphics(product_id: str, section: Any,
                 slot["families"].append({
                     "family": family["family"], "device": family["device"],
                     "name": family["name"], "products": products,
+                    **({"gpu-property": family["gpu-property"]}
+                       if "gpu-property" in family else {}),
                 })
             if not slot["families"]:
                 raise ResolutionError(f"{where} takes no family")

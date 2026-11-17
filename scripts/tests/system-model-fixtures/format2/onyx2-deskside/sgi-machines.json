@@ -331,6 +331,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 4,
@@ -713,6 +719,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -1097,6 +1109,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 3,
@@ -1478,6 +1496,12 @@
           ],
           "name": "dip-switches",
           "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
+          "required": false
         }
       ],
       "smp": 2,
@@ -1852,6 +1876,12 @@
             }
           ],
           "name": "dip-switches",
+          "required": false
+        },
+        {
+          "default": "off",
+          "default-provenance": "approximated",
+          "name": "gpu",
           "required": false
         }
       ],
@@ -2257,6 +2287,18 @@
         "kind": "machine",
         "property": "junk-uart"
       }
+    },
+    {
+      "allow-empty": false,
+      "description": "Draw on the host's GPU: a capability of the model, not a part of the hardware. Sets the gpu-property of every fitted graphics board whose family names one.",
+      "identity": false,
+      "kind": "boolean",
+      "name": "gpu",
+      "target": {
+        "field": "gpu-property",
+        "form": "plain",
+        "kind": "board-property"
+      }
     }
   ],
   "topologies": [
@@ -2580,6 +2622,7 @@
               {
                 "device": "sgi-kona",
                 "family": "kona",
+                "gpu-property": "x-gpu",
                 "name": "InfiniteReality",
                 "products": [
                   {

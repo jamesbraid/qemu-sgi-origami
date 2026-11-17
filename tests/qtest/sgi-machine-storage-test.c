@@ -362,6 +362,49 @@ static void check_serial_line_properties(QTestState *qts, QDict *offering,
     g_assert_cmpuint(lines, >, 0);
 }
 
+/* A board-property setting names a bool on a fitted graphics device. */
+static void check_board_properties(QTestState *qts, QDict *catalogue,
+                                   QDict *offering, const char *setting,
+                                   const char *field)
+{
+    const char *topology = qdict_get_str(offering, "topology");
+    const QListEntry *t, *s, *f;
+    unsigned int boards = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(catalogue, "topologies"), t) {
+        QDict *record = qobject_to(QDict, qlist_entry_obj(t));
+        QDict *graphics = qdict_get_qdict(record, "graphics");
+
+        if (!g_str_equal(qdict_get_str(record, "name"), topology) ||
+            !graphics) {
+            continue;
+        }
+        QLIST_FOREACH_ENTRY(qdict_get_qlist(graphics, "slots"), s) {
+            QDict *slot = qobject_to(QDict, qlist_entry_obj(s));
+
+            QLIST_FOREACH_ENTRY(qdict_get_qlist(slot, "families"), f) {
+                QDict *family = qobject_to(QDict, qlist_entry_obj(f));
+                const char *device = qdict_get_str(family, "device");
+                g_autofree char *found = NULL;
+
+                if (!qdict_haskey(family, field)) {
+                    continue;
+                }
+                found = property_type(qts, device,
+                                      qdict_get_str(family, field));
+                if (!found) {
+                    g_error("%s: setting %s names property %s, which %s "
+                            "lacks", qdict_get_str(offering, "id"), setting,
+                            qdict_get_str(family, field), device);
+                }
+                g_assert_cmpstr(found, ==, "bool");
+                boards++;
+            }
+        }
+    }
+    g_assert_cmpuint(boards, >, 0);
+}
+
 /*
  * Every setting an offering lists names a property that exists on the
  * machine type, the global device type or the processor part's CPU type,
@@ -408,6 +451,15 @@ static void test_settings_name_properties(void)
                 g_assert_false(qdict_haskey(target, "property"));
                 g_assert_false(qdict_haskey(target, "form"));
                 check_serial_line_properties(qts, offering, name, machine);
+                checked++;
+                continue;
+            }
+            if (g_str_equal(where, "board-property")) {
+                g_assert_false(qdict_haskey(target, "property"));
+                g_assert_cmpstr(qdict_get_str(target, "field"), ==,
+                                "gpu-property");
+                check_board_properties(qts, catalogue, offering, name,
+                                       qdict_get_str(target, "field"));
                 checked++;
                 continue;
             }
