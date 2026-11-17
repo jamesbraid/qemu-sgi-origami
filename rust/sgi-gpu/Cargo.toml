@@ -1,0 +1,31 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Standalone workspace: QEMU's root workspace is resolved crate by crate
+# through meson wraps, which wgpu's dependency tree does not fit.
+[workspace]
+
+[package]
+name = "sgi-gpu"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+name = "sgi_gpu"
+crate-type = ["staticlib"]
+
+[dependencies]
+iris-wgpu = { git = "https://github.com/jamesbraid/iris", rev = "dc46b3c6a8a8bc569a4438b70ede2b32deadfadf" }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12"] }
+bytemuck = { version = "1", features = ["derive"] }
+parking_lot = "0.12"
+log = "0.4"
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+ash = "0.38"
+
+[profile.release]
+opt-level = 2
+debug = false
+panic = "unwind"
