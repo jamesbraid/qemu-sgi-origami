@@ -11,5 +11,9 @@ license = "BSD-3-Clause"
 repository.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+trace = { path = "../../../trace" }
+util = { path = "../../../util" }
+
 [lints]
 workspace = true

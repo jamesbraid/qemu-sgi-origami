@@ -12,11 +12,8 @@
 #include "migration/blocker.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
-#include "qemu/log.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
-#include "trace/control.h"
-#include "trace.h"
 
 QEMU_BUILD_BUG_ON(sizeof(SGIMACEIDMigrationState) != 8);
 
@@ -54,52 +51,6 @@ static bool mace_id_hex(const char *text, uint8_t *out, size_t len)
         out[i] = (hi << 4) | lo;
     }
     return true;
-}
-
-void sgi_mace_id_trace_drive(int64_t now, uint64_t offset, unsigned size,
-                             bool release, int64_t duration)
-{
-    trace_mace_id_drive(now, offset, size, release, duration);
-}
-
-void sgi_mace_id_trace_reset(int64_t now, int64_t low, bool ready,
-                             bool accepted)
-{
-    trace_mace_id_reset(now, low, ready, accepted);
-}
-
-void sgi_mace_id_trace_presence(int64_t now, int64_t start, int64_t end)
-{
-    trace_mace_id_presence_schedule(now, start, end);
-}
-
-void sgi_mace_id_trace_sample(int64_t now, uint64_t offset, unsigned size,
-                              bool sample, bool presence)
-{
-    if (trace_event_get_state_backends(TRACE_MACE_ID_SAMPLE)) {
-        trace_mace_id_sample(now, offset, size, sample, presence);
-    }
-}
-
-void sgi_mace_id_log_pulse(int64_t low)
-{
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-mace-id: unsupported low pulse %" PRId64 " ns\n", low);
-}
-
-void sgi_mace_id_log_control(uint64_t bits)
-{
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-mace-id: unsupported identity control bits 0x%" PRIx64
-                  "\n", bits);
-}
-
-void sgi_mace_id_log_misc(uint64_t value)
-{
-    qemu_log_mask(LOG_UNIMP,
-                  "sgi-mace-id: unsupported nonzero Misc high word 0x%" PRIx64
-                  "\n",
-                  value);
 }
 
 static MemTxResult mace_id_read(void *opaque, hwaddr offset, uint64_t *value,

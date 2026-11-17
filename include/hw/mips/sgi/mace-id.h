@@ -37,15 +37,4 @@ void sgi_mace_id_export(void *core, SGIMACEIDMigrationState *state);
 bool sgi_mace_id_import(void *core,
                         const SGIMACEIDMigrationState *state);
 
-void sgi_mace_id_trace_drive(int64_t now, uint64_t offset, unsigned size,
-                             bool release, int64_t duration);
-void sgi_mace_id_trace_reset(int64_t now, int64_t low, bool ready,
-                             bool accepted);
-void sgi_mace_id_trace_presence(int64_t now, int64_t start, int64_t end);
-void sgi_mace_id_trace_sample(int64_t now, uint64_t offset, unsigned size,
-                              bool sample, bool presence);
-void sgi_mace_id_log_pulse(int64_t low);
-void sgi_mace_id_log_control(uint64_t bits);
-void sgi_mace_id_log_misc(uint64_t value);
-
 #endif

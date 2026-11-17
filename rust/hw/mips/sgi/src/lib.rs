@@ -2,6 +2,10 @@
 
 use std::ffi::c_void;
 
+use util::prelude::*;
+
+::trace::include_trace!("hw_mips_sgi");
+
 const FLASH_ENABLE: u64 = 1;
 const PASSWORD_CLEAR: u64 = 1 << 1;
 const RELEASE: u64 = 1 << 2;
@@ -23,13 +27,6 @@ const WRITE_NOOP: i32 = -2;
 unsafe extern "C" {
     fn onewire_reset(bus: *mut c_void) -> bool;
     fn onewire_touch_bit(bus: *mut c_void, drive: bool) -> bool;
-    fn sgi_mace_id_trace_drive(now: i64, offset: u64, size: u32, release: bool, duration: i64);
-    fn sgi_mace_id_trace_reset(now: i64, low: i64, ready: bool, accepted: bool);
-    fn sgi_mace_id_trace_presence(now: i64, start: i64, end: i64);
-    fn sgi_mace_id_trace_sample(now: i64, offset: u64, size: u32, sample: bool, presence: bool);
-    fn sgi_mace_id_log_pulse(low: i64);
-    fn sgi_mace_id_log_control(bits: u64);
-    fn sgi_mace_id_log_misc(value: u64);
 }
 
 #[repr(C)]
@@ -120,9 +117,11 @@ impl Core {
     fn write(&mut self, now: i64, value: u64, offset: u64, size: u32) {
         let release = value & RELEASE != 0;
         if value & !WRITABLE != 0 {
-            unsafe {
-                sgi_mace_id_log_control(value & !WRITABLE);
-            }
+            let bits = value & !WRITABLE;
+            log_mask_ln!(
+                Log::Unimp,
+                "sgi-mace-id: unsupported identity control bits 0x{bits:x}"
+            );
         }
         self.led_control = (value & (RED_LED | GREEN_LED)) as u32;
         self.flash_write_enabled = value & FLASH_ENABLE != 0;
@@ -142,9 +141,7 @@ impl Core {
         } else {
             now - self.high_start_ns
         };
-        unsafe {
-            sgi_mace_id_trace_drive(now, offset, size, release, duration);
-        }
+        trace::trace_mace_id_drive(now, offset, size, release, duration);
         self.released = release;
         if !release {
             self.reset_ready = self.high_seen && now - self.high_start_ns >= RESET_MIN_NS;
@@ -173,9 +170,11 @@ impl Core {
                 self.session = true;
                 self.presence_start_ns = now + PRESENCE_DELAY_NS;
                 self.presence_end_ns = now + PRESENCE_END_NS;
-                unsafe {
-                    sgi_mace_id_trace_presence(now, self.presence_start_ns, self.presence_end_ns);
-                }
+                trace::trace_mace_id_presence_schedule(
+                    now,
+                    self.presence_start_ns,
+                    self.presence_end_ns,
+                );
             }
             return;
         }
@@ -184,14 +183,12 @@ impl Core {
             return;
         }
         let low_ns = now - self.low_start_ns;
-        unsafe {
-            sgi_mace_id_trace_reset(
-                now,
-                low_ns,
-                self.reset_ready,
-                (RESET_MIN_NS..RESET_MAX_NS).contains(&low_ns) && self.reset_ready,
-            );
-        }
+        trace::trace_mace_id_reset(
+            now,
+            low_ns,
+            self.reset_ready,
+            (RESET_MIN_NS..RESET_MAX_NS).contains(&low_ns) && self.reset_ready,
+        );
         if low_ns >= RESET_MIN_NS {
             self.clear_windows();
             self.session = false;
@@ -202,9 +199,11 @@ impl Core {
                 self.session = true;
                 self.presence_start_ns = now + PRESENCE_DELAY_NS;
                 self.presence_end_ns = now + PRESENCE_END_NS;
-                unsafe {
-                    sgi_mace_id_trace_presence(now, self.presence_start_ns, self.presence_end_ns);
-                }
+                trace::trace_mace_id_presence_schedule(
+                    now,
+                    self.presence_start_ns,
+                    self.presence_end_ns,
+                );
             }
             return;
         }
@@ -220,9 +219,7 @@ impl Core {
             self.sample_start_ns = now;
             self.sample_end_ns = self.low_start_ns + SLOT_NS;
         } else {
-            unsafe {
-                sgi_mace_id_log_pulse(low_ns);
-            }
+            log_mask_ln!(Log::Unimp, "sgi-mace-id: unsupported low pulse {low_ns} ns");
         }
     }
 }
@@ -315,15 +312,13 @@ pub unsafe extern "C" fn sgi_mace_id_read(
     } else {
         return MMIO_DECODE_ERROR;
     }
-    unsafe {
-        sgi_mace_id_trace_sample(
-            now,
-            offset,
-            size,
-            *result & SAMPLE != 0,
-            state.presence(now),
-        );
-    }
+    trace::trace_mace_id_sample(
+        now,
+        offset,
+        size,
+        *result & SAMPLE != 0,
+        state.presence(now),
+    );
     0
 }
 
@@ -340,9 +335,10 @@ pub unsafe extern "C" fn sgi_mace_id_write(
     let state = unsafe { &mut *core.cast::<Core>() };
     if state.misc_word_pio && size == 4 && offset == 0 {
         if value != 0 {
-            unsafe {
-                sgi_mace_id_log_misc(value);
-            }
+            log_mask_ln!(
+                Log::Unimp,
+                "sgi-mace-id: unsupported nonzero Misc high word 0x{value:x}"
+            );
         }
         return WRITE_NOOP;
     }
