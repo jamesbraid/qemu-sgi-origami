@@ -189,6 +189,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "mace_ps2"
+version = "0.1.0"
+dependencies = [
+ "trace",
+ "util",
+]
+
+[[package]]
 name = "migration"
 version = "0.1.0"
 dependencies = [

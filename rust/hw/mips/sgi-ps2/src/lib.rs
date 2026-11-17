@@ -66,9 +66,7 @@ impl Port {
     }
 
     fn clock_permitted(&self) -> bool {
-        self.control & (CLOCK_ENABLE | RESET) == CLOCK_ENABLE
-            && !self.inhibited
-            && !self.rx_full
+        self.control & (CLOCK_ENABLE | RESET) == CLOCK_ENABLE && !self.inhibited && !self.rx_full
     }
 
     fn status(&self) -> u8 {
@@ -170,8 +168,13 @@ impl Core {
                 } else {
                     u64::from(port.rx) | (u64::from(port.status()) << 8)
                 };
-                trace::trace_mace_ps2_read(port_num as u32, value, had_full,
-                                           port.rx_full, port.errors);
+                trace::trace_mace_ps2_read(
+                    port_num as u32,
+                    value,
+                    had_full,
+                    port.rx_full,
+                    port.errors,
+                );
                 (value, had_full)
             }
             16 => (u64::from(port.control), false),
@@ -184,8 +187,10 @@ impl Core {
     }
 
     fn unsupported_read(addr: u64, size: u32) {
-        log_mask_ln!(Log::GuestError,
-                     "sgi-mace-ps2: unsupported read at 0x{addr:x} size {size}");
+        log_mask_ln!(
+            Log::GuestError,
+            "sgi-mace-ps2: unsupported read at 0x{addr:x} size {size}"
+        );
     }
 
     fn write(&mut self, addr: u64, value: u64, size: u32) -> bool {
@@ -216,15 +221,19 @@ impl Core {
             }
         };
         if value & !writable != 0 {
-            log_mask_ln!(Log::GuestError,
-                         "sgi-mace-ps2: reserved write bits at 0x{addr:x} size {size} value 0x{value:x}");
+            log_mask_ln!(
+                Log::GuestError,
+                "sgi-mace-ps2: reserved write bits at 0x{addr:x} size {size} value 0x{value:x}"
+            );
         }
         true
     }
 
     fn unsupported_write(addr: u64, value: u64, size: u32) {
-        log_mask_ln!(Log::GuestError,
-                     "sgi-mace-ps2: unsupported write at 0x{addr:x} size {size} value 0x{value:x}");
+        log_mask_ln!(
+            Log::GuestError,
+            "sgi-mace-ps2: unsupported write at 0x{addr:x} size {size} value 0x{value:x}"
+        );
     }
 
     fn next_action(&self, port_num: usize, child_empty: bool) -> (i32, u8) {
@@ -243,7 +252,11 @@ impl Core {
                 return (ACTION_DROP_MOUSE_STREAM, 0);
             }
             return (
-                if port_num == 0 { ACTION_SEND_KEYBOARD } else { ACTION_SEND_MOUSE },
+                if port_num == 0 {
+                    ACTION_SEND_KEYBOARD
+                } else {
+                    ACTION_SEND_MOUSE
+                },
                 port.tx,
             );
         }
@@ -277,8 +290,15 @@ impl Core {
             port.reply -= 1;
         }
         let accepted = port.receive_frame(data, false, data.count_ones() & 1 == 0, true);
-        trace::trace_mace_ps2_receive(child.cast(), port_num as u32, data, accepted,
-                                      port.rx, port.errors, port.rx_full);
+        trace::trace_mace_ps2_receive(
+            child.cast(),
+            port_num as u32,
+            data,
+            accepted,
+            port.rx,
+            port.errors,
+            port.rx_full,
+        );
         accepted
     }
 
@@ -287,11 +307,18 @@ impl Core {
         let ready = port.control & RESET == 0 && !resetting;
         let tx = ready && !port.tx_pending;
         let rx = ready && port.rx_full;
-        let irq = tx && port.control & TX_IRQ_ENABLE != 0
-            || rx && port.control & RX_IRQ_ENABLE != 0;
+        let irq =
+            tx && port.control & TX_IRQ_ENABLE != 0 || rx && port.control & RX_IRQ_ENABLE != 0;
         let poll = tx || rx;
-        trace::trace_mace_ps2_outputs(port_num as u32, port.control, port.tx_pending,
-                                      port.rx_full, ready, irq, poll);
+        trace::trace_mace_ps2_outputs(
+            port_num as u32,
+            port.control,
+            port.tx_pending,
+            port.rx_full,
+            ready,
+            irq,
+            poll,
+        );
         (irq, poll)
     }
 
@@ -345,7 +372,9 @@ pub unsafe extern "C" fn sgi_mace_ps2_read(
     }
     let state = unsafe { &mut *core.cast::<Core>() };
     let (result, progress) = state.read(addr, size);
-    unsafe { *value = result };
+    unsafe {
+        *value = result;
+    }
     progress
 }
 
@@ -376,9 +405,10 @@ pub unsafe extern "C" fn sgi_mace_ps2_next_action(
     if core.is_null() || data.is_null() {
         return ACTION_NONE;
     }
-    let (action, value) = unsafe { &*core.cast::<Core>() }
-        .next_action(port as usize, child_empty);
-    unsafe { *data = value };
+    let (action, value) = unsafe { &*core.cast::<Core>() }.next_action(port as usize, child_empty);
+    unsafe {
+        *data = value;
+    }
     action
 }
 
@@ -428,8 +458,8 @@ pub unsafe extern "C" fn sgi_mace_ps2_outputs(
     if core.is_null() || irq.is_null() || poll.is_null() || port >= 2 {
         return;
     }
-    let (irq_level, poll_level) = unsafe { &*core.cast::<Core>() }
-        .outputs(port as usize, resetting);
+    let (irq_level, poll_level) =
+        unsafe { &*core.cast::<Core>() }.outputs(port as usize, resetting);
     unsafe {
         *irq = irq_level;
         *poll = poll_level;
@@ -486,12 +516,7 @@ mod tests {
             let parity = byte.count_ones() & 1 == 0;
             for fault in 0..4 {
                 port.rx_full = false;
-                assert!(port.receive_frame(
-                    byte,
-                    fault == 2,
-                    parity ^ (fault == 1),
-                    fault != 3,
-                ));
+                assert!(port.receive_frame(byte, fault == 2, parity ^ (fault == 1), fault != 3,));
                 assert!(port.rx_full);
                 assert_eq!(port.rx, byte);
                 assert_eq!(
