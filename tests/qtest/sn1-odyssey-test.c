@@ -25626,10 +25626,62 @@ static void add_fresh_case(const char *path, GTestFunc fn)
     }
 }
 
+static int cmp_ms(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+
+    return (x > y) - (x < y);
+}
+
+/* Position-weighted sum of a frame's pixels, which a shifted row changes. */
+static uint64_t scanout_sum(Viewer *v, const VFrame *f)
+{
+    const VHead *h = &v->head[f->head];
+    uint64_t sum = 0;
+
+    for (unsigned y = 0; y < h->height; y++) {
+        for (unsigned x = 0; x < h->width; x++) {
+            sum += (uint64_t)v_gpu_px(v, f, x, y) * (1 + (x + 3 * y) % 251);
+        }
+    }
+    return sum;
+}
+
+/* Draw to a checked picture of the unchanged screen, as a viewer sees it. */
+static void scanout_gpu_latency(QTestState *qts, Viewer *v, VFrame *f)
+{
+    enum { N = 30 };
+    uint64_t want = scanout_sum(v, f);
+    double frame_ms[N], check_ms[N];
+
+    for (unsigned i = 0; i < N; i++) {
+        gint64 t0, t1, t2;
+
+        v_release(v, f);
+        t0 = g_get_monotonic_time();
+        /* Drawing the same fill again changes nothing but the damage. */
+        colour_index_fill(qts, 5, 400, 400, 460, 450);
+        v_request(v, 0, DSHM_REQ_FRAME, f->serial, 0, DSHM_REQ_SAMPLE_NOW);
+        g_assert_true(v_frame(v, f, V_WAIT_MS));
+        t1 = g_get_monotonic_time();
+        g_assert_cmphex(scanout_sum(v, f), ==, want);
+        t2 = g_get_monotonic_time();
+        frame_ms[i] = (t1 - t0) / 1000.0;
+        check_ms[i] = (t2 - t0) / 1000.0;
+    }
+    qsort(frame_ms, N, sizeof(double), cmp_ms);
+    qsort(check_ms, N, sizeof(double), cmp_ms);
+    g_test_message("scan-out %ux%u, %d frames: draw to FRAME p50 %.2f p95 "
+                   "%.2f ms; to checked picture p50 %.2f p95 %.2f ms",
+                   v->head[0].width, v->head[0].height, N, frame_ms[N / 2],
+                   frame_ms[N * 95 / 100], check_ms[N / 2],
+                   check_ms[N * 95 / 100]);
+}
+
 /*
  * x-gpu scan-out: a viewer lent the GPU-composed frame sees what the CPU
  * resolves (drawables, index fill, cursor). Needs an adapter that exports
- * dma-bufs (VULKAN_EXPORT).
+ * its frames: dma-bufs, NT handles or IOSurfaces (VULKAN_EXPORT).
  */
 static void test_scanout_gpu_dmabuf(void)
 {
@@ -25679,10 +25731,10 @@ static void test_scanout_gpu_dmabuf(void)
     backend_push32(qts, 5);
 
     v = v_open(sock, (VOpts) { .credit = 2, .dmabuf = true,
-                               .storage1 = DSHM_STORAGE_DMABUF });
+                               .storage1 = V_GPU_CLASS });
     v_request(v, 0, DSHM_REQ_FRAME, 0, 0, DSHM_REQ_SAMPLE_NOW);
     g_assert_true(v_frame(v, &f, V_WAIT_MS));
-    if (v_region(v, f.region)->storage != DSHM_STORAGE_DMABUF) {
+    if (v_region(v, f.region)->storage != V_GPU_CLASS) {
         v_close(v);
         qtest_quit(qts);
         qtest_prereq_missing("VULKAN_EXPORT", "the adapter cannot export a "
@@ -25709,6 +25761,7 @@ static void test_scanout_gpu_dmabuf(void)
     g_assert_cmpuint(seen_a, >, 0);
     g_assert_cmpuint(seen_b, >, 0);
     g_assert_cmpuint(seen_cursor, >, 0);
+    scanout_gpu_latency(qts, v, &f);
     /* QEMU exits cleanly on SIGTERM while the viewer still holds the frame. */
     qtest_quit(qts);
     v_close(v);

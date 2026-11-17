@@ -6,6 +6,9 @@
  */
 
 #include "qemu/osdep.h"
+#ifdef CONFIG_DARWIN
+#include <mach/mach.h>
+#endif
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
@@ -93,6 +96,26 @@ static bool ogs_lend(const SgiGpuExport *ex, DisplayShmGpuSlot *out)
         .handle = (intptr_t)buffer,
         .fence = (intptr_t)fence,
         .adapter_luid = ex->adapter_id,
+    };
+    return true;
+}
+#elif defined(CONFIG_DARWIN)
+/* A send right of our own to the frame's IOSurface, for display-shm to drop. */
+static bool ogs_lend(const SgiGpuExport *ex, DisplayShmGpuSlot *out)
+{
+    if (ex->kind != SGI_GPU_EXPORT_IOSURFACE || ex->handle <= 0 ||
+        mach_port_mod_refs(mach_task_self(), (mach_port_t)ex->handle,
+                           MACH_PORT_RIGHT_SEND, 1) != KERN_SUCCESS) {
+        return false;
+    }
+    *out = (DisplayShmGpuSlot) {
+        .kind = DSHM_GPU_IOSURFACE,
+        .width = ex->width,
+        .height = ex->height,
+        .stride = ex->stride,
+        .fourcc = ex->fourcc,
+        .handle = ex->handle,
+        .fence = -1,
     };
     return true;
 }

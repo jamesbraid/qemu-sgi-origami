@@ -845,7 +845,7 @@ Host GPU drawing and scan-out
 
 ``x-gpu=on`` lets the model draw the filled triangles and colour clears it
 can on the host GPU, and compose the scan-out there, when the host has a
-Vulkan or D3D12 adapter and QEMU was built with the GPU back end
+Vulkan, D3D12 or Metal adapter and QEMU was built with the GPU back end
 (``rust/sgi-gpu``, which needs rustc 1.90 or newer). The option changes host
 drawing only: every stored word equals what the model's own rasterizer
 would store, which the ``command-fifo-gl-gpu-parity`` qtest checks on
@@ -867,7 +867,7 @@ the CPU. ``SGI_GPU=off`` in the environment disables the back end and
 
 When a display-shm viewer accepts GPU images, the scan-out is composed on
 the GPU into a buffer lent to the viewer (a dma-buf on Linux, a D3D12 shared
-buffer on Windows) and no pixel crosses host memory;
+buffer on Windows, an IOSurface on macOS) and no pixel crosses host memory;
 setting ``SGI_GPU_SCANOUT_VERIFY`` in the environment compares every composed frame with the CPU
 resolve and reports the differing words when the board is freed. Other
 viewers and the console surface keep the CPU resolve.
