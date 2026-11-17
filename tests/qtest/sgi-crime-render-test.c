@@ -20338,6 +20338,8 @@ static void test_render_rejection_context(void)
                                           false, extra);
         Shape c = triangle_prepare(s, 0, 0, 0);
         SZCase v = sz_case();
+        char *snapshot;
+        char *first_line_end;
         bool primitive_reject = kind == 1;
         const char *reason = primitive_reject ? "unsupported primitive state" :
                                                 "unsupported clip mode";
@@ -20367,6 +20369,31 @@ static void test_render_rejection_context(void)
                                "clip 0x00000000" : "clip 0x00000001"));
         g_assert_nonnull(strstr(contents, primitive_reject ?
                                "draw 0x80400078" : "draw 0x00400078"));
+        snapshot = strstr(contents, "prospective renderer parameters");
+        first_line_end = strchr(contents, '\n');
+
+        g_assert_true(g_str_has_prefix(contents,
+                                       "sgi-crime: rejected access at "));
+        g_assert_nonnull(snapshot);
+        g_assert_nonnull(first_line_end);
+        g_assert_true(snapshot > first_line_end);
+        if (kind == 0) {
+            g_assert_nonnull(strstr(contents,
+                                   "058=0x00000000f000f000"));
+            g_assert_nonnull(strstr(contents,
+                                   "080=0x0000000048040040"));
+            g_assert_nonnull(strstr(contents,
+                                   "084=0x0000000048040040"));
+            g_assert_nonnull(strstr(contents,
+                                   "088=0x0000000048040080"));
+            g_assert_nonnull(strstr(contents,
+                                   "08c=0x0000000048040040"));
+            g_assert_nonnull(strstr(contents,
+                                   "0ec=0x0000000000000040"));
+            g_assert_nonnull(strstr(contents,
+                                   "1fc=0x0000000000000000"));
+            g_assert_null(strstr(contents, "200=0x"));
+        }
         g_unlink(log);
         g_unlink(state);
         g_rmdir(dir);

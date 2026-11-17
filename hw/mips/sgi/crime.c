@@ -1326,6 +1326,8 @@ static MemTxResult crime_render_fail(hwaddr offset, const char *reason,
                                      unsigned access_size)
 {
     char detail[256];
+    char snapshot[4096];
+    size_t used;
 
     g_snprintf(detail, sizeof(detail),
                "%s (renderer offset 0x%03x size %u value 0x%" PRIx64
@@ -1333,7 +1335,30 @@ static MemTxResult crime_render_fail(hwaddr offset, const char *reason,
                reason, (unsigned)(offset - 0x1002800), access_size, value,
                (uint32_t)p[0x18 / 4], (uint32_t)p[0x60 / 4],
                (uint32_t)p[0x10 / 4]);
-    return crime_transfer_fail(offset, detail);
+    qemu_log_mask(LOG_GUEST_ERROR,
+                  "sgi-crime: rejected access at 0x%" HWADDR_PRIx ": %s\n",
+                  (hwaddr)(0x14000000ULL + offset), detail);
+
+    /* Failed STARTs discard prospective state and write-only parameters. */
+    used = g_snprintf(snapshot, sizeof(snapshot),
+                      "sgi-crime: prospective renderer parameters "
+                      "(4-byte slot offsets, 64-bit model values):\n");
+    for (unsigned i = 0; i < 128; i++) {
+        if (i % 8 == 0) {
+            used += g_snprintf(snapshot + used, sizeof(snapshot) - used,
+                               "  ");
+        }
+        used += g_snprintf(snapshot + used, sizeof(snapshot) - used,
+                           "%s%03x=0x%016" PRIx64,
+                           i % 8 ? " " : "", i * 4, p[i]);
+        if (i % 8 == 7) {
+            used += g_snprintf(snapshot + used, sizeof(snapshot) - used,
+                               "\n");
+        }
+    }
+    qemu_log_mask(LOG_GUEST_ERROR, "%s", snapshot);
+    vm_stop(RUN_STATE_INTERNAL_ERROR);
+    return MEMTX_ERROR;
 }
 
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
