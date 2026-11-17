@@ -16,6 +16,9 @@
 #include "qemu/memfd.h"
 #include <sys/mman.h>
 #endif
+#if defined(CONFIG_LINUX) || defined(_WIN32)
+#define TEST_GPU 1
+#endif
 
 #define TEST_W 128
 #define TEST_H 64
@@ -23,10 +26,17 @@
 
 #define TEST_IMAGES 16
 
-/* A memfd standing in for a GPU image: the protocol carries the fd only. */
+/*
+ * A memfd, or a pagefile section on Windows, standing in for a GPU image: the
+ * protocol carries the handle only.
+ */
 typedef struct TestImage {
     uint32_t id;
+#ifdef _WIN32
+    HANDLE h;
+#else
     int fd;
+#endif
     uint8_t *map;
     size_t size;
     uint32_t stride;
@@ -108,7 +118,7 @@ static void test_resolve(void *opaque, unsigned y, uint32_t *dst)
     }
 }
 
-#ifdef CONFIG_LINUX
+#ifdef TEST_GPU
 static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
                               uint32_t hgt, DisplayShmGpuSlot *out)
 {
@@ -116,7 +126,11 @@ static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
     uint32_t stride = ROUND_UP(w * 4, 256);
     size_t size = (size_t)stride * hgt;
     TestImage *im = NULL;
+#ifdef _WIN32
+    HANDLE self = GetCurrentProcess(), dup, fence, fence_dup;
+#else
     int fd;
+#endif
 
     if (t->gpu_wait) {
         return false;
@@ -124,7 +138,41 @@ static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
     for (unsigned i = 0; i < TEST_IMAGES && !im; i++) {
         im = t->image[i].id ? NULL : &t->image[i];
     }
-    fd = im ? qemu_memfd_create("dshm-gpu", size, false, 0, 0, NULL) : -1;
+    if (!im) {
+        return false;
+    }
+#ifdef _WIN32
+    im->h = CreateFileMapping(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE,
+                              size >> 32, size & 0xffffffff, NULL);
+    im->map = im->h ? MapViewOfFile(im->h, FILE_MAP_ALL_ACCESS, 0, 0, size)
+                    : NULL;
+    /* an event stands in for the shared fence */
+    fence = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!im->map || !fence ||
+        !DuplicateHandle(self, im->h, self, &dup, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS) ||
+        !DuplicateHandle(self, fence, self, &fence_dup, 0, FALSE,
+                         DUPLICATE_SAME_ACCESS)) {
+        if (im->map) {
+            UnmapViewOfFile(im->map);
+        }
+        if (im->h) {
+            CloseHandle(im->h);
+        }
+        if (fence) {
+            CloseHandle(fence);
+        }
+        *im = (TestImage) { };
+        return false;
+    }
+    CloseHandle(fence);
+    *out = (DisplayShmGpuSlot) {
+        .kind = DSHM_GPU_WIN32, .width = w, .height = hgt, .stride = stride,
+        .fourcc = DSHM_FOURCC_XB24, .handle = (intptr_t)dup,
+        .fence = (intptr_t)fence_dup, .adapter_luid = 0x7256,
+    };
+#else
+    fd = qemu_memfd_create("dshm-gpu", size, false, 0, 0, NULL);
     if (fd < 0) {
         return false;
     }
@@ -134,21 +182,27 @@ static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
         im->map = NULL;
         return false;
     }
-    im->id = id;
     im->fd = fd;
-    im->size = size;
-    im->stride = stride;
     *out = (DisplayShmGpuSlot) {
         .kind = DSHM_GPU_DMABUF, .width = w, .height = hgt, .stride = stride,
         .fourcc = DSHM_FOURCC_XB24, .handle = qemu_dup(fd), .fence = -1,
     };
+#endif
+    im->id = id;
+    im->size = size;
+    im->stride = stride;
     return out->handle >= 0;
 }
 
 static void test_gpu_image_free(TestImage *im)
 {
+#ifdef _WIN32
+    UnmapViewOfFile(im->map);
+    CloseHandle(im->h);
+#else
     munmap(im->map, im->size);
     close(im->fd);
+#endif
     *im = (TestImage) { };
 }
 
@@ -221,7 +275,7 @@ static void test_gpu_free_all(TestHead *t)
 static void test_sample(void *opaque)
 {
     TestHead *t = opaque;
-#ifdef CONFIG_LINUX
+#ifdef TEST_GPU
     uint32_t id = dshm_head_sample_marks_gpu(t->h, test_resolve, t);
 
     if (id) {
@@ -243,7 +297,7 @@ static TestHead *test_head_new(DisplayShm *d, uint32_t w, uint32_t hgt)
     t->h->test = t;
     dshm_head_set_steerable(t->h, true);
     dshm_head_set_mode_owned(t->h, w, hgt, 60000);
-#ifdef CONFIG_LINUX
+#ifdef TEST_GPU
     dshm_head_set_gpu(t->h, &test_gpu_ops);
 #endif
     dshm_head_announce(t->h);
@@ -376,7 +430,7 @@ static void stimulus(DShmViewer *v, const DShmStimulus *m)
             test_head_new(d, TEST_W, TEST_H);
         } else if (h && h->test) {
             dshm_head_remove(h);
-#ifdef CONFIG_LINUX
+#ifdef TEST_GPU
             test_gpu_free_all(h->test);
 #endif
             g_free(h->test);

@@ -1819,10 +1819,13 @@ static void test_orphans_bad_count(void)
 }
 #endif
 
-/* ---- linux.dmabuf ------------------------------------------------------- */
+/* ---- linux.dmabuf and win32.handle -------------------------------------- */
 
-#ifdef CONFIG_LINUX
-/* A viewer that takes dma-buf slots; in these tests they are memfds. */
+#ifdef V_GPU
+/*
+ * A viewer that takes GPU slots; in these tests they are memfds, or pagefile
+ * sections on Windows, with an event for each slot's shared fence.
+ */
 static Viewer *open_gpu(uint32_t credit, bool ext, uint32_t class)
 {
     return v_open(sock_path, (VOpts) { .credit = credit, .test = true,
@@ -1854,10 +1857,22 @@ static void expect_slots(Viewer *v, uint32_t storage, unsigned n)
         g_assert_nonnull(r);
         g_assert_cmpuint(r->storage, ==, storage);
         g_assert_true(V_HANDLE_OK(r->h));
-        if (storage == DSHM_STORAGE_DMABUF) {
+        if (storage == V_GPU_CLASS) {
             g_assert_cmpuint(r->gflags & DSHM_GPU_WRITTEN, ==,
                              DSHM_GPU_WRITTEN);
             g_assert_cmpuint(r->gstride, >=, h->width * 4);
+#ifdef _WIN32
+            {
+                /* the shared fence came first, as a region of its own */
+                VRegion *fence = v_region(v, r->fence_region);
+
+                g_assert_nonnull(fence);
+                g_assert_cmpuint(fence->kind, ==, DSHM_KIND_FENCE);
+                g_assert_cmpuint(fence->storage, ==, DSHM_STORAGE_WIN32);
+                g_assert_true(V_HANDLE_OK(fence->h));
+                g_assert_true(fence->h != r->h);
+            }
+#endif
         }
     }
 }
@@ -1866,14 +1881,14 @@ static void expect_slots(Viewer *v, uint32_t storage, unsigned n)
 static void test_dmabuf_frames(void)
 {
     QTestState *qts = start();
-    Viewer *v = open_gpu(2, true, DSHM_STORAGE_DMABUF);
+    Viewer *v = open_gpu(2, true, V_GPU_CLASS);
     VStats before, after;
     uint64_t seen = 0;
     VFrame f;
 
     g_assert_cmpuint(v->gpu_alloc, ==, DSHM_ALLOC_GPU);
     /* the newest picture, the one being drawn and one per credit */
-    expect_slots(v, DSHM_STORAGE_DMABUF, 4);
+    expect_slots(v, V_GPU_CLASS, 4);
     before = v_stats(v);
     for (uint32_t step = 1; step <= 3; step++) {
         v_pattern(v, 0, 1, 7, step);
@@ -1901,7 +1916,7 @@ static void test_dmabuf_gpu_opens_late(void)
 
     v_stimulus(c, 0, 7, 0, 0, 1);
     v_stats(c);
-    v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    v = open_gpu(1, true, V_GPU_CLASS);
     expect_slots(v, DSHM_STORAGE_SHM, 3);   /* the set it shares with c */
     v_stimulus(c, 0, 7, 0, 0, 0);
     v_stats(c);
@@ -1909,12 +1924,12 @@ static void test_dmabuf_gpu_opens_late(void)
         const VHead *h = &v->head[0];
         VRegion *r = h->n_slots ? v_region(v, h->slot[0]) : NULL;
 
-        if (r && r->storage == DSHM_STORAGE_DMABUF) {
+        if (r && r->storage == V_GPU_CLASS) {
             break;
         }
         v_pump(v, 500);
     }
-    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    expect_slots(v, V_GPU_CLASS, 3);
     v_pattern(c, 0, 1, 5, 2);
     g_assert_true(fresh_frame(v, 0, 0, &f));
     check_gpu_picture(v, &f, 1, 5, 2);
@@ -1934,7 +1949,7 @@ static void test_dmabuf_negotiation(void)
     g_assert_cmpuint(v->gpu_alloc, ==, 0);
     expect_slots(v, DSHM_STORAGE_SHM, 2);
     v_close(v);
-    v = open_gpu(1, false, DSHM_STORAGE_DMABUF);    /* class, no extension */
+    v = open_gpu(1, false, V_GPU_CLASS);    /* class, no extension */
     g_assert_cmpuint(v->gpu_alloc, ==, 0);
     expect_slots(v, DSHM_STORAGE_SHM, 2);
     v_pattern(v, 0, 1, 3, 1);
@@ -1948,12 +1963,12 @@ static void test_dmabuf_negotiation(void)
 static void test_dmabuf_one_viewer(void)
 {
     QTestState *qts = start();
-    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
-    Viewer *w = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    Viewer *v = open_gpu(1, true, V_GPU_CLASS);
+    Viewer *w = open_gpu(1, true, V_GPU_CLASS);
     VStats before, after;
     VFrame f, g;
 
-    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    expect_slots(v, V_GPU_CLASS, 3);
     expect_slots(w, DSHM_STORAGE_SHM, 2);
     before = v_stats(v);
     v_pattern(v, 0, 1, 9, 5);
@@ -1972,7 +1987,7 @@ static void test_dmabuf_one_viewer(void)
 static void test_dmabuf_leases(void)
 {
     QTestState *qts = start();
-    Viewer *v = open_gpu(2, true, DSHM_STORAGE_DMABUF);
+    Viewer *v = open_gpu(2, true, V_GPU_CLASS);
     VFrame f1, f2, f3;
 
     v_pattern(v, 0, 1, 1, 1);
@@ -1996,7 +2011,7 @@ static void test_dmabuf_leases(void)
 static void test_dmabuf_import_failed(void)
 {
     QTestState *qts = start();
-    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    Viewer *v = open_gpu(1, true, V_GPU_CLASS);
     uint8_t b[8] = { };
     VMsg m = { };
     VFrame f;
@@ -2018,7 +2033,7 @@ static void test_dmabuf_import_failed(void)
 static void test_dmabuf_mode_change(void)
 {
     QTestState *qts = start();
-    Viewer *v = open_gpu(1, true, DSHM_STORAGE_DMABUF);
+    Viewer *v = open_gpu(1, true, V_GPU_CLASS);
     VMsg m = { };
     VFrame f;
 
@@ -2028,7 +2043,7 @@ static void test_dmabuf_mode_change(void)
         v_msg_free(&m);
     } while (v->head[0].width != 64);
     g_assert_cmpuint(v->head[0].height, ==, 32);
-    expect_slots(v, DSHM_STORAGE_DMABUF, 3);
+    expect_slots(v, V_GPU_CLASS, 3);
     v_pattern(v, 0, 3, 5, 12);
     g_assert_true(fresh_frame(v, 0, 0, &f));
     check_gpu_picture(v, &f, 3, 5, 12);
@@ -2114,7 +2129,7 @@ int main(int argc, char **argv)
     qtest_add_func("display-shm/steer-cancel-rel", test_steer_cancel_rel);
     qtest_add_func("display-shm/steer-cancel-other", test_steer_cancel_other);
     qtest_add_func("display-shm/connections", test_connections);
-#ifdef CONFIG_LINUX
+#ifdef V_GPU
     qtest_add_func("display-shm/dmabuf-frames", test_dmabuf_frames);
     qtest_add_func("display-shm/dmabuf-gpu-opens-late",
                    test_dmabuf_gpu_opens_late);

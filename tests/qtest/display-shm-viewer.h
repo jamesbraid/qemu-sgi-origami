@@ -40,6 +40,19 @@ typedef int VHandle;
 #define V_HANDLE_OK(h) ((h) >= 0)
 #endif
 
+/* The GPU class and extension this host's producer offers. */
+#ifdef _WIN32
+#define V_GPU_CLASS DSHM_STORAGE_WIN32
+#define V_GPU_EXT DSHM_EXT_WIN32
+#define V_GPU 1
+#elif defined(CONFIG_LINUX)
+#define V_GPU_CLASS DSHM_STORAGE_DMABUF
+#define V_GPU_EXT DSHM_EXT_DMABUF
+#define V_GPU 1
+#else
+#define V_GPU_EXT ""
+#endif
+
 typedef struct VMsg {
     uint16_t type, flags;
     uint32_t len;
@@ -50,6 +63,7 @@ typedef struct VMsg {
 typedef struct VRegion {
     uint32_t id, kind, access, storage;
     uint32_t fourcc, gflags, gstride;   /* a dma-buf's payload */
+    uint32_t fence_region;              /* win32.handle: its shared fence */
     uint64_t size;
     VHandle h;
     uint8_t *map;               /* mapped read-only on demand */
@@ -94,7 +108,7 @@ typedef struct Viewer {
     uint8_t *feedback;
     size_t state_size;
     unsigned test_idx, steer_idx, steer_block_off;
-    uint32_t gpu_alloc;         /* linux.dmabuf accepted: the allocator */
+    uint32_t gpu_alloc;         /* the GPU extension accepted: the allocator */
     uint64_t handles_parsed;
     uint64_t handles_taken;     /* trailing fields read, Windows */
     uint32_t last_orphans;      /* entries of the last ORPHANS, Windows */
@@ -365,6 +379,9 @@ static inline bool v_parse(Viewer *v, VMsg *m)
             r->fourcc = le32(m->d + 40);
             r->gflags = le32(m->d + 44);
             r->gstride = le32(m->d + 60);
+            if (r->storage == DSHM_STORAGE_WIN32) {
+                r->fence_region = le32(m->d + 56);
+            }
         }
         m->h = V_NO_HANDLE;
         break;
@@ -531,7 +548,7 @@ static inline Viewer *v_open(const char *path, VOpts o)
         n_ext++;
     }
     if (o.dmabuf) {
-        snprintf((char *)hello + off, 32, "linux.dmabuf");
+        snprintf((char *)hello + off, 32, "%s", V_GPU_EXT);
         stw_le_p(hello + off + 32, 1);
         stw_le_p(hello + off + 34, 1);
         stl_le_p(hello + off + 36, 8);
@@ -565,7 +582,7 @@ static inline Viewer *v_open(const char *path, VOpts o)
             } else if (!strcmp((const char *)a, "qemu.pointer-steering")) {
                 v->steer_idx = a[34];
                 v->steer_block_off = le32(a + 40);
-            } else if (!strcmp((const char *)a, "linux.dmabuf")) {
+            } else if (!strcmp((const char *)a, V_GPU_EXT)) {
                 v->gpu_alloc = le32(a + 40);
             }
             pos += 40 + ROUND_UP(plen, 8);
