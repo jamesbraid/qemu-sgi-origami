@@ -6,6 +6,9 @@ endif
 
 cargo_ws = import('rust').workspace()
 
+# cargo run through `meson devenv` must not write into the tracked target/.
+meson.add_devenv(environment({'CARGO_TARGET_DIR': meson.project_build_root() / 'rust-target'}))
+
 genrs = []
 
 subdir('qemu-macros')
