@@ -834,6 +834,45 @@ The read-only properties ``x-mesa-unavailable``, ``x-mesa-draws`` and
 missing, how many draws Mesa took and how many fell back, by reason.
 They are host diagnostics and are not migrated.
 
+.. _sgi-odyssey-gpu:
+
+Host GPU drawing and scan-out
+=============================
+
+``x-gpu=on`` lets the model draw the filled triangles and colour clears it
+can on the host GPU, and compose the scan-out there, when the host has a
+Vulkan or D3D12 adapter and QEMU was built with the GPU back end
+(``rust/sgi-gpu``, which needs rustc 1.90 or newer). The option changes host
+drawing only: every stored word equals what the model's own rasterizer
+would store, which the ``command-fifo-gl-gpu-parity`` qtest checks on
+random scenes, and the migration stream is the same either way. It is off
+by default, excludes ``x-mesa-renderer``, and the ``x-`` prefix marks it
+experimental.
+
+A draw goes to the GPU only in the simple fragment state: no depth test,
+polygon offset, texture, fog, blend or partial write mask, a flat colour,
+and no fragment depth outside 0 to 1; a draw that fails that for any
+triangle stays on the scalar path whole. Draws smaller than
+``x-gpu-min-pixels`` (default 4096) stay on the CPU, where a round trip
+costs more than the fill. Each colour buffer keeps a GPU plane beside the
+CPU's with an owner per row, and a CPU access to a row the GPU drew
+downloads it first. A lost GPU device stops the machine, since GPU-only rows
+cannot be recovered. Without an adapter the model warns once and draws on
+the CPU. ``SGI_GPU=off`` in the environment disables the back end and
+``SGI_GPU=software`` prefers a software adapter.
+
+When a display-shm viewer accepts GPU images, the scan-out is composed on
+the GPU into a buffer lent to the viewer (a dma-buf on Linux, a D3D12 shared
+buffer on Windows) and no pixel crosses host memory;
+setting ``SGI_GPU_SCANOUT_VERIFY`` in the environment compares every composed frame with the CPU
+resolve and reports the differing words when the board is freed. Other
+viewers and the console surface keep the CPU resolve.
+
+The read-only properties ``x-gpu-state`` (``opening``, ``ready`` or
+``unavailable``), ``x-gpu-draws``, ``x-gpu-clears``, ``x-gpu-offered``,
+``x-gpu-taken``, ``x-gpu-switches``, ``x-gpu-readback-bytes`` and
+``x-gpu-upload-bytes`` are host diagnostics and are not migrated.
+
 .. _sgi-odyssey-reset:
 
 Reset
