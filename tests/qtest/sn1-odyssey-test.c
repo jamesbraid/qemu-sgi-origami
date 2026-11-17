@@ -420,11 +420,19 @@ static QTestState *shared_board;
 static bool shared_case;
 static bool shared_in_use;
 
+/*
+ * ODSY_TEST_GPU=1 runs every case with x-gpu on to exercise the plane
+ * accessors; the Mesa cases keep their own renderer, which x-gpu excludes.
+ */
 static QTestState *board_launch(const char *extra)
 {
     g_autofree char *quoted = g_shell_quote(prom_path);
+    const char *gpu = g_getenv("ODSY_TEST_GPU") &&
+                      !strstr(extra, "x-mesa-renderer") ?
+        " -global sgi-odyssey.x-gpu=on -global sgi-odyssey.x-gpu-min-pixels=0"
+        : "";
 
-    return qtest_initf(MACHINE " -bios %s%s", quoted, extra);
+    return qtest_initf(MACHINE " -bios %s%s%s", quoted, gpu, extra);
 }
 
 static QTestState *board_start(const char *extra)
@@ -8136,6 +8144,145 @@ static void test_command_fifo_gl_depth_test(void)
     g_assert_cmphex(odsy_test_pixel(qts, 326, 340), ==, ODSY_PLANE_YELLOW);
 
     board_quit(qts);
+}
+
+/*
+ * x-gpu: the same random flat scenes on the GPU and the scalar path leave the
+ * same plane words; stores queue so draws run in head-thread slices.
+ */
+static uint32_t gpu_float(GRand *rng, double lo, double hi)
+{
+    float f = g_rand_double_range(rng, lo, hi);
+    uint32_t bits;
+
+    memcpy(&bits, &f, sizeof(bits));
+    return bits;
+}
+
+static void gpu_scene(QTestState *qts, uint32_t seed, unsigned triangles)
+{
+    GRand *rng = g_rand_new_with_seed(seed);
+    int base[2] = { 0 };
+
+    /* (-1.5, -1.5), (4.5, -1.5), (-1.5, 4.5): covers the whole window. */
+    const uint32_t cover[] = {
+        ODSY_CMD_GL_BEGIN, ODSY_GL_TRIANGLES,
+        ODSY_GL_VERTEX_2F, 0xbfc00000, 0xbfc00000,
+        ODSY_GL_VERTEX_2F, 0x40900000, 0xbfc00000,
+        ODSY_GL_VERTEX_2F, 0xbfc00000, 0x40900000,
+        ODSY_CMD_GL_END,
+    };
+
+    probe_window(qts);
+    set_reg(qts, ODSY_REG_GL_MODE, ODSY_GL_MODE_FLAT);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, gpu_float(rng, 0, 1), gpu_float(rng, 0, 1),
+                     gpu_float(rng, 0, 1), ODSY_DEPTH_2S);
+    /* The CPU holds the rows, so that clear stayed there; once drawn, not. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+    push_user_words(qts, cover, ARRAY_SIZE(cover));
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_ALL);
+    push_depth_clear(qts, gpu_float(rng, 0, 1), gpu_float(rng, 0, 1),
+                     gpu_float(rng, 0, 1), ODSY_DEPTH_2S);
+    set_reg(qts, ODSY_REG_WRITE_MASK, ODSY_WRITE_DRAW);
+    user_cmd_push(qts, ODSY_CMD_GL_BEGIN);
+    user_cmd_push(qts, ODSY_GL_TRIANGLES);
+    for (unsigned i = 0; i < triangles * 3; i++) {
+        /* A small cluster for the grid triangles, so their edges tie often. */
+        if (i % 3 == 0) {
+            base[0] = g_rand_int_range(rng, -60, 60);
+            base[1] = g_rand_int_range(rng, -60, 60);
+        }
+        user_cmd_push(qts, ODSY_GL_COLOR_3F);
+        for (unsigned k = 0; k < 3; k++) {
+            user_cmd_push(qts, gpu_float(rng, 0, 1));
+        }
+        user_cmd_push(qts, ODSY_GL_VERTEX_2F);
+        for (unsigned k = 0; k < 2; k++) {
+            /* Half the triangles sit on pixel centres, where edges tie. */
+            if ((i / 3) & 1) {
+                float f = ((base[k] + g_rand_int_range(rng, -6, 7)) * 2 + 1) /
+                          128.0f;
+                uint32_t bits;
+
+                memcpy(&bits, &f, sizeof(bits));
+                user_cmd_push(qts, bits);
+            } else {
+                user_cmd_push(qts, gpu_float(rng, -1.3, 1.3));
+            }
+        }
+    }
+    user_cmd_push(qts, ODSY_CMD_GL_END);
+    /* With every colour channel masked off, a draw stores nothing. */
+    set_reg(qts, ODSY_REG_WRITE_MASK, 0);
+    push_triangle_3f(qts, ODSY_F_ONE, 0, 0, odsy_near_yellow);
+    g_rand_free(rng);
+}
+
+static void gpu_run(const char *extra, uint32_t seed, unsigned triangles,
+                    uint32_t *plane, uint64_t *draws, uint64_t *clears,
+                    uint64_t *switches)
+{
+    QTestState *qts = board_launch(extra);
+    int64_t deadline = g_get_monotonic_time() + 300 * G_TIME_SPAN_SECOND;
+
+    qtest_writeq(qts, BEDROCK_NODE0 + BEDROCK_MD_MEMORY_CONFIG,
+                 BEDROCK_MD_INSTALLED_BANKS);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_qmp_assert_success(qts,
+        "{'execute': 'qom-set', 'arguments': {'path': %s, "
+        "'property': 'x-test-slice-words', 'value': 100000}}", BOARD);
+    /* The GPU opens on a worker thread; an earlier draw would not use it. */
+    while (strstr(extra, "x-gpu=on")) {
+        QDict *resp = qtest_qmp(qts,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-gpu-state'}}", BOARD);
+        g_autofree char *state = g_strdup(qdict_get_str(resp, "return"));
+
+        qobject_unref(resp);
+        if (!strcmp(state, "ready")) {
+            break;
+        }
+        if (strcmp(state, "opening") || g_get_monotonic_time() > deadline) {
+            qtest_quit(qts);
+            *draws = UINT64_MAX;
+            return;
+        }
+        g_usleep(10000);
+    }
+    gpu_scene(qts, seed, triangles);
+    while (work_pending(qts)) {
+        qtest_clock_step(qts, 1000 * 1000);
+    }
+    *draws = odsy_qom_get_uint(qts, "x-gpu-draws");
+    *clears = odsy_qom_get_uint(qts, "x-gpu-clears");
+    odsy_test_pixels(qts, 256, 256, 128, 128, plane);
+    *switches = odsy_qom_get_uint(qts, "x-gpu-switches");
+    qtest_quit(qts);
+}
+
+static void test_command_fifo_gl_gpu_parity(void)
+{
+    static uint32_t cpu[128 * 128], gpu[128 * 128];
+    const uint32_t seeds[] = { 1, 2, 3, 4, 5, 6 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(seeds); i++) {
+        uint64_t draws, clears, switches, off_draws, off_clears, off_switches;
+
+        gpu_run("", seeds[i], 48, cpu, &off_draws, &off_clears, &off_switches);
+        g_assert_cmpuint(off_draws + off_clears, ==, 0);
+        gpu_run(" -global sgi-odyssey.x-gpu=on"
+                " -global sgi-odyssey.x-gpu-min-pixels=0",
+                seeds[i], 48, gpu, &draws, &clears, &switches);
+        if (draws == UINT64_MAX) {
+            g_test_skip("no GPU adapter opened");
+            return;
+        }
+        g_assert_cmpuint(draws, >, 0);
+        g_assert_cmpuint(clears, ==, 1);
+        g_assert_cmpuint(switches, >, 0);
+        g_assert_cmpmem(cpu, sizeof(cpu), gpu, sizeof(gpu));
+    }
 }
 
 /*
@@ -25965,6 +26112,8 @@ int main(int argc, char **argv)
              test_scanout_main_id_0_uses_its_own_mode);
     add_case("sn1/odyssey/command-fifo-gl-raster-rules",
              test_command_fifo_gl_raster_rules);
+    add_fresh_case("sn1/odyssey/command-fifo-gl-gpu-parity",
+                   test_command_fifo_gl_gpu_parity);
     add_case("sn1/odyssey/command-fifo-gl-flat-shading",
              test_command_fifo_gl_flat_shading);
     add_case("sn1/odyssey/command-fifo-gl-vertex-3i",
