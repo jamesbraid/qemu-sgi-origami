@@ -26,7 +26,8 @@ macro_rules! include_trace {
             clippy::ptr_as_ptr,
             clippy::cast_lossless,
             clippy::nonminimal_bool,
-            clippy::used_underscore_binding
+            clippy::used_underscore_binding,
+            clippy::too_many_arguments
         )]
         mod trace {
             #[cfg(not(MESON))]
