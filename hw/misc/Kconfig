@@ -513,3 +513,8 @@ config TSB12LV22
 
 config SGI_VICE
     bool
+
+config SGI_GPU_TEST
+    bool
+    default y if SGI_DEVICES && HAVE_SGI_GPU
+    depends on TEST_DEVICES

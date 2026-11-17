@@ -328,6 +328,7 @@ hw/misc/sgi-kona-mesa-provider.h
 hw/misc/sgi-kona-ports.c
 hw/misc/sgi-kona-record.c
 hw/misc/sgi-kona-texture.c
+hw/misc/sgi-gpu-test.c
 hw/misc/sgi-kona.c
 hw/misc/sgi-l1-pbay.c
 hw/misc/sgi-l1-link.c
@@ -918,6 +919,7 @@ tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
 tests/qtest/sgi-fc-board-test.c
 tests/qtest/sgi-gbe-test.c
+tests/qtest/sgi-gpu-test.c
 tests/qtest/sgi-graphics-pipes-test.c
 tests/qtest/sgi-heart-cpu-test.c
 tests/qtest/sgi-heart-test.c

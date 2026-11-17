@@ -669,6 +669,7 @@ sgi_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and host_os != 'windows' ?
     ['sgi-display-shm-test'] : []) + \
   ['display-shm-test'] + \
+  (config_all_devices.has_key('CONFIG_SGI_GPU_TEST') ? ['sgi-gpu-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MALTA') and
    config_all_devices.has_key('CONFIG_VGA') and host_os != 'windows' ?

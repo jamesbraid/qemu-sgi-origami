@@ -285,3 +285,4 @@ system_ss.add(when: 'CONFIG_TSB12LV22', if_true: files('tsb12lv22.c'))
 
 system_ss.add(when: 'CONFIG_SGI_VICE',
               if_true: files('sgi-vice.c', 'sgi-vice-msp.c'))
+system_ss.add(when: 'CONFIG_SGI_GPU_TEST', if_true: files('sgi-gpu-test.c'))
