@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Two-process check of rust/sgi-gpu/src/frame_win.rs on a Windows host.
+# Standalone workspace, like rust/sgi-gpu.
+[workspace]
+
+[package]
+name = "sgi-gpu-win-check"
+version = "0.1.0"
+edition = "2021"
+license = "BSD-3-Clause"
+publish = false
+
+[dependencies]
+iris-wgpu = { git = "https://github.com/jamesbraid/iris", rev = "dc46b3c6a8a8bc569a4438b70ede2b32deadfadf" }
+wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12"] }
+windows = { version = "0.62", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Graphics_Direct3D12",
+  "Win32_Graphics_Dxgi_Common",
+  "Win32_System_Threading",
+] }
+pollster = "0.4"
+
+[profile.release]
+debug = 1

@@ -1,0 +1,51 @@
+# Two-process check of the Windows GPU frame export (rust/sgi-gpu/src/frame_win.rs):
+# a D3D12 shared texture and fence, opened in a second process, no CPU copy.
+# The runners have no compiler, so MinGW cross-builds the check on Linux and
+# WARP, the runner's software adapter, runs it. Dispatch only.
+name: windows gpu frame
+
+on:
+  workflow_dispatch:
+
+jobs:
+  cross-build:
+    if: ${{ github.server_url != 'https://github.com' }}
+    runs-on: podman-general
+    timeout-minutes: 45
+    container:
+      image: registry.fedoraproject.org/fedora:43
+    steps:
+      - name: git and node for the checkout action
+        run: dnf --quiet install -y git nodejs
+
+      - uses: actions/checkout@v4
+
+      - name: cross-compile the check for x86_64-pc-windows-gnu
+        run: |
+          dnf --quiet install -y mingw64-gcc mingw64-binutils cargo rust rust-std-static-x86_64-pc-windows-gnu
+          cd rust/sgi-gpu-win-check
+          cargo build --release --locked --target x86_64-pc-windows-gnu
+          mkdir -p "$GITHUB_WORKSPACE/win-stage"
+          cp target/x86_64-pc-windows-gnu/release/sgi-gpu-win-check.exe scripts/run.ps1 "$GITHUB_WORKSPACE/win-stage/"
+
+      - uses: actions/upload-artifact@v3
+        with:
+          name: windows-gpu-frame
+          path: win-stage
+          if-no-files-found: error
+          retention-days: 3
+
+  windows:
+    if: ${{ github.server_url != 'https://github.com' }}
+    needs: cross-build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/download-artifact@v3
+        with:
+          name: windows-gpu-frame
+          path: win-stage
+
+      - name: shared texture and fence between two processes
+        shell: powershell
+        run: ./win-stage/run.ps1 win-stage
