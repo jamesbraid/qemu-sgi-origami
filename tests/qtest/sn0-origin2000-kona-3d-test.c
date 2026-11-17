@@ -23,6 +23,7 @@
 #include "sgi-migrate.h"
 #include "sgi-test.h"
 #include "prereq.h"
+#include "sgi-raster-bands.h"
 
 #define SMALL_WINDOW_SIZE UINT64_C(0x1000000)
 #define KONA_WIDGET 11
@@ -14946,6 +14947,61 @@ static void texture_canaries(QTestState *s, char *digests[7])
     prepare_refused_reply(s);
 }
 
+/*
+ * The depth scene of test_depth_less_and_greater() drawn with @extra
+ * arguments: the digests of planes 0 to 6, and how many band workers the
+ * QEMU started.
+ */
+static char *band_scene_planes(const char *extra, int *workers)
+{
+    static const double a[3][3] = {
+        { -0.7, -0.6, 0 }, { 0.5, -0.5, 0 }, { -0.1, 0.6, 0 },
+    };
+    static const double b[3][3] = {
+        { -0.3, -0.2, 0 }, { 0.8, -0.1, 0 }, { 0.3, 0.75, 0 },
+    };
+    g_autofree char *log = NULL;
+    QTestState *s = kona_init_logged_args(&log, extra);
+    char *planes;
+
+    gl_make_current_depth(s, 24);
+    gl_window_cleared(s, 0.25, 0.5, 0.75);
+    kona_command(s, 0x1a, (uint32_t[]){ 0x4100 }, 1);
+    kona_command(s, 0x24, (uint32_t[]){ 0xb71 }, 1);
+    kona_command(s, 0xce, (uint32_t[]){ 0x201 }, 1);
+    kona_command_f(s, 0x63, (float[]){ 1, 0, 0 }, 3);
+    gl_triangle_z(s, a, -0.5);
+    kona_command_f(s, 0x63, (float[]){ 0, 1, 0 }, 3);
+    gl_triangle_z(s, b, 0.5);
+    planes = texture_plane_digest_string(s);
+    *workers = sgi_raster_band_workers(s);
+    qtest_quit(s);
+    g_free(kona_log_read(log));
+    return planes;
+}
+
+/*
+ * Every draw and clear in bands leaves the planes a single thread leaves,
+ * and band workers drew; with x-raster-bands off none are started.
+ */
+static void test_raster_bands_match_one_thread(void)
+{
+    g_autofree char *banded = NULL, *single = NULL;
+    int banded_workers, single_workers;
+
+    banded = band_scene_planes(" -global sgi-kona.x-test-raster-band-pixels=1",
+                               &banded_workers);
+    single = band_scene_planes(" -global sgi-kona.x-raster-bands=off",
+                               &single_workers);
+    g_assert_cmpstr(banded, ==, single);
+    if (banded_workers < 0) {
+        g_test_skip("needs Linux /proc and two host processors");
+        return;
+    }
+    g_assert_cmpint(banded_workers, >, 0);
+    g_assert_cmpint(single_workers, ==, 0);
+}
+
 static void test_texture_8x8_captured(void)
 {
     g_autofree char *log = NULL, *found = NULL;
@@ -20472,6 +20528,8 @@ int main(int argc, char **argv)
              test_depth_less_and_greater);
     add_case("sn0/origin2000/kona-3d/depth-without-buffer",
              test_depth_without_buffer);
+    add_case("sn0/origin2000/kona-3d/raster-bands-match-one-thread",
+             test_raster_bands_match_one_thread);
     add_case("sn0/origin2000/kona-3d/blended-triangle",
              test_blended_triangle);
     add_case("sn0/origin2000/kona-3d/smooth-point-and-line-coverage",

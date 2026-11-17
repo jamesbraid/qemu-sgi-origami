@@ -192,10 +192,9 @@ static uint32_t sgi_kona_desktop_color(SGIKonaState *s, unsigned id,
 
     if (((raw >> 3) & 15) != mode ||
         base > SGI_KONA_X_COLOR_MAP_ENTRIES - count) {
-        if (!s->desktop_map_reported[id]) {
+        if (!qatomic_xchg(&s->desktop_map_reported[id], true)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported desktop map "
                           "%u raw=0x%08x\n", id, raw);
-            s->desktop_map_reported[id] = true;
         }
         return 0;
     }
@@ -226,10 +225,9 @@ static uint32_t sgi_kona_desktop_index_color(SGIKonaState *s, uint32_t word,
     unsigned id = sgi_kona_display_id_at(s, x, y);
 
     if (id >= ARRAY_SIZE(s->desktop_map)) {
-        if (!s->desktop_id_reported) {
+        if (!qatomic_xchg(&s->desktop_id_reported, true)) {
             qemu_log_mask(LOG_UNIMP, "sgi-kona: unsupported display ID "
                           "%u\n", id);
-            s->desktop_id_reported = true;
         }
         return 0;
     }
@@ -5302,7 +5300,7 @@ static void sgi_kona_gl_store_index(void *opaque, SGIColourTarget target,
         old = sgi_plane_load(&s->desktop_mem, p, x, y);
         sgi_plane_store(&s->desktop_mem, p, x, y,
                         (old & ~mask) | (index & mask));
-        s->desktop_state_used = true;
+        qatomic_set(&s->desktop_state_used, true);
         sgi_kona_invalidate_store(s, p, y);
         return;
     }
@@ -5457,6 +5455,15 @@ static void sgi_kona_work_relock(SGIKonaState *s, bool unlocked)
     if (unlocked) {
         sgi_head_work_relock(&s->work);
     }
+}
+
+/*
+ * Callbacks touch only their own pixel; the host-draw shadow's are not safe.
+ */
+static void sgi_kona_gl_target_bands(SGIKonaState *s, SGIRasterTarget *t)
+{
+    t->concurrent_pixels = s->raster_bands;
+    t->band_min_pixels = s->raster_band_pixels;
 }
 
 static void sgi_kona_gl_target(SGIKonaState *s, SGIRasterTarget *t,
@@ -6383,6 +6390,7 @@ static void sgi_kona_shadow_init(SGIKonaShadow *sh, SGIKonaState *s,
     /* KONA's planes take no RGBA stores and no fog curve. */
     assert(!base->store_rgba && !base->load_rgba && !base->fog_factor);
     assert(base->opaque == s);
+    assert(!base->concurrent_pixels);
     *sh = (SGIKonaShadow) {
         .target = *base,
         .base = base,
@@ -6987,6 +6995,7 @@ scalar:
     if (s->host_gpu) {
         sgi_kona_count_fallback(s, reason, d);
     }
+    sgi_kona_gl_target_bands(s, &t);
     sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
     ret = sgi_soft_draw(&rules, &t, d);
@@ -7055,6 +7064,7 @@ static void sgi_kona_gl_raster(void *opaque, const SGIRasterOp *op)
         copy.pixels.state = &state;
         op = &copy;
     }
+    sgi_kona_gl_target_bands(s, &t);
     sgi_kona_invalidate_defer(s);
     unlocked = sgi_kona_work_unlock(s);
     sgi_soft_raster(&rules, &t, op);
@@ -22015,6 +22025,11 @@ static void sgi_kona_reset_hold(Object *obj, ResetType type)
 
 static const Property sgi_kona_properties[] = {
     DEFINE_PROP_BOOL("host-gpu", SGIKonaState, host_gpu, false),
+    /* Large software draws run in bands of rows on host threads. */
+    DEFINE_PROP_BOOL("x-raster-bands", SGIKonaState, raster_bands, true),
+    /* Host-only qtest: draws of at least this many pixels run in bands. */
+    DEFINE_PROP_UINT32("x-test-raster-band-pixels", SGIKonaState,
+                       raster_band_pixels, 0),
     DEFINE_PROP_LINK("fabric", SGIKonaState, fabric,
                      TYPE_MEMORY_REGION, MemoryRegion *),
     /* The node whose processor interfaces count the board's credits. */

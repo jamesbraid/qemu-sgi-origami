@@ -1330,6 +1330,10 @@ struct SGIKonaState {
     SGIRenderer *renderer;
     SGIKonaMesaProvider *mesa_provider;
     bool host_gpu;
+    /* Host-only: software draws may run in bands of rows (x-raster-bands). */
+    bool raster_bands;
+    /* Host-only qtest band threshold (x-test-raster-band-pixels). */
+    uint32_t raster_band_pixels;
     bool renderer_failed;
     bool mesa_failed;
     /* Pending host-only test arm; cleared on reset/load, not migrated. */
