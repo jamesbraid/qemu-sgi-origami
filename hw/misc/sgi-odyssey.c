@@ -13776,7 +13776,7 @@ typedef struct OdysseyQueuedStore {
 
 static bool odyssey_work_pending(SGIOdysseyState *s)
 {
-    return s->work_queue && s->work_queue->len;
+    return s->work_queue && s->work_queue->len > s->work_head;
 }
 
 static bool odyssey_fifo_port(hwaddr addr)
@@ -13817,10 +13817,11 @@ static void odyssey_return_credit(SGIOdysseyState *s)
  */
 static void odyssey_work_admit(SGIOdysseyState *s)
 {
-    while (s->work_in_fifo < s->work_queue->len &&
+    while (s->work_in_fifo < s->work_queue->len - s->work_head &&
            s->work_in_fifo < ODSY_CFIFO_DEPTH) {
         OdysseyQueuedStore *q = &g_array_index(s->work_queue,
                                                OdysseyQueuedStore,
+                                               s->work_head +
                                                s->work_in_fifo);
         if (q->owed) {
             if (s->pi) {
@@ -13847,7 +13848,8 @@ static void odyssey_work_append(SGIOdysseyState *s, hwaddr addr,
     g_array_append_val(s->work_queue, q);
     s->work_words += odyssey_store_words(size);
     odyssey_work_admit(s);
-    if (counted && s->work_in_fifo < s->work_queue->len && s->pi) {
+    if (counted && s->work_in_fifo < s->work_queue->len - s->work_head &&
+        s->pi) {
         g_array_index(s->work_queue, OdysseyQueuedStore,
                       s->work_queue->len - 1).owed = true;
         sgi_pi_gfx_owe_credits(s->pi, s->parent_obj.slot, 1);
@@ -13869,13 +13871,13 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
         sgi_head_work_relock(&s->work);
     }
 
-    while (s->work_queue->len) {
+    while (s->work_queue->len > s->work_head) {
         OdysseyQueuedStore q =
-            g_array_index(s->work_queue, OdysseyQueuedStore, 0);
+            g_array_index(s->work_queue, OdysseyQueuedStore, s->work_head);
         uint32_t before = odyssey_fifo_level(s);
         uint32_t words = odyssey_store_words(q.size);
 
-        g_array_remove_index(s->work_queue, 0);
+        s->work_head++;
         /* The store leaves the FIFO, and the next waiting one moves up. */
         s->work_in_fifo--;
         s->work_words -= words;
@@ -13886,6 +13888,9 @@ static void odyssey_work_step(void *opaque, SGIHeadWorkBudget *b)
             break;
         }
     }
+    /* Cut the run stores off once: removing each from the front is O(n^2). */
+    g_array_remove_range(s->work_queue, 0, s->work_head);
+    s->work_head = 0;
     if (s->work_queue->len) {
         trace_sgi_odyssey_work_behind(s->work_queue->len,
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
@@ -14114,6 +14119,7 @@ static void odyssey_work_reset(SGIOdysseyState *s)
         }
     }
     g_array_set_size(s->work_queue, 0);
+    s->work_head = 0;
     s->work_in_fifo = 0;
     s->work_words = 0;
     s->work_queued_until = 0;
@@ -15182,7 +15188,7 @@ static void odyssey_test_get_work_waiting(Object *obj, Visitor *v,
                                           Error **errp)
 {
     SGIOdysseyState *s = SGI_ODYSSEY(obj);
-    uint32_t value = s->work_queue ? s->work_queue->len : 0;
+    uint32_t value = s->work_queue ? s->work_queue->len - s->work_head : 0;
 
     visit_type_uint32(v, name, &value, errp);
 }

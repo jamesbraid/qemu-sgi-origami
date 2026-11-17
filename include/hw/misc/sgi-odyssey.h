@@ -407,6 +407,8 @@ struct SGIOdysseyState {
     GArray *work_queue;
     /* The oldest waiting stores, this many, are in the FIFO and credited. */
     guint work_in_fifo;
+    /* Stores odyssey_work_step() has run but not yet cut off the front. */
+    guint work_head;
     /* The 32-bit words of all the waiting stores. */
     uint32_t work_words;
     /* qtest: stores from outside a processor count as counted. */
