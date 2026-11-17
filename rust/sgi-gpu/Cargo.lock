@@ -1360,9 +1360,11 @@ dependencies = [
  "ash",
  "bytemuck",
  "iris-wgpu",
+ "libc",
  "log",
  "parking_lot",
  "wgpu",
+ "wgpu-hal",
 ]
 
 [[package]]
