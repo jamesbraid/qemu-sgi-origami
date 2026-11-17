@@ -1321,6 +1321,21 @@ static bool crime_render_gl_point(const uint64_t *p, CrimeRenderGeometry *g)
     return true;
 }
 
+static MemTxResult crime_render_fail(hwaddr offset, const char *reason,
+                                     const uint64_t *p, uint64_t value,
+                                     unsigned access_size)
+{
+    char detail[256];
+
+    g_snprintf(detail, sizeof(detail),
+               "%s (renderer offset 0x%03x size %u value 0x%" PRIx64
+               " draw 0x%08x primitive 0x%08x clip 0x%08x)",
+               reason, (unsigned)(offset - 0x1002800), access_size, value,
+               (uint32_t)p[0x18 / 4], (uint32_t)p[0x60 / 4],
+               (uint32_t)p[0x10 / 4]);
+    return crime_transfer_fail(offset, detail);
+}
+
 static bool crime_render_geometry(const uint64_t *p, CrimeRenderGeometry *g)
 {
     uint32_t primitive = p[0x60 / 4];
@@ -2857,7 +2872,8 @@ static bool crime_texture_ram(void *opaque, uint64_t address, unsigned size,
 
 static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                                            unsigned index, uint64_t value,
-                                           unsigned words)
+                                           unsigned words,
+                                           unsigned access_size)
 {
     uint64_t p[128], linear_first = 0, linear_pitch = 0, linear_last = 0;
     uint32_t draw, clip, plane, stipple_mode;
@@ -2934,7 +2950,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
                      (copy ? p[0x58 / 4] != 0 :
                              (p[0x58 / 4] & 0x80008000U)))) ||
         !crime_render_geometry(p, &geometry)) {
-        return crime_transfer_fail(offset, "unsupported primitive state");
+        return crime_render_fail(offset, "unsupported primitive state", p,
+                                 value, access_size);
     }
     if (draw & 0x8000) {
         if (!triangle || geometry.samples > CRIME_TEXTURE_MAX_FRAGMENTS) {
@@ -3045,7 +3062,8 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     inside = clip & 31;
     if ((clip & ~(native_gl ? 0x7ffU : 0x3ffU)) ||
         ((clip & 31) & ~((clip >> 5) & 31))) {
-        return crime_transfer_fail(offset, "unsupported clip mode");
+        return crime_render_fail(offset, "unsupported clip mode", p, value,
+                                 access_size);
     }
     for (unsigned n = 0; n < 5; n++) {
         if (clip & (1U << (5 + n))) {
@@ -3753,7 +3771,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
 
             if (point || upload) {
                 return crime_render_de_commit(s, offset, reg->offset / 4,
-                                               value, size / 4);
+                                               value, size / 4, size);
             }
         }
         if (reg && (!reg->native_only ||
@@ -3767,7 +3785,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
 
             if (size == reg->size || paired) {
                 return crime_render_de_commit(s, offset, reg->offset / 4,
-                                               value, paired ? 2 : 1);
+                                               value, paired ? 2 : 1, size);
             }
         }
         if (size == 4) {
@@ -3777,7 +3795,7 @@ static MemTxResult crime_transfer_write(SGICrimeState *s, hwaddr offset,
                 return MEMTX_OK;
             }
             if (offset == 0x10029f0) {
-                return crime_render_de_commit(s, offset, 0, 0, 0);
+                return crime_render_de_commit(s, offset, 0, value, 0, size);
             }
             if (offset == CRIME_TRANSFER + 0x870) {
                 return crime_transfer_commit(s, offset,

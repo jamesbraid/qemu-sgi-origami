@@ -543,6 +543,7 @@ sz-empty-parameter-free /mips64/sgi/crime/render/sz/empty-parameter-free
 
 sz-dependencies-line /mips64/sgi/crime/render/sz/dependencies-line
 sz-dependencies-triangles /mips64/sgi/crime/render/sz/dependencies-triangles
+rejection-context /mips64/sgi/crime/render/rejection-context
 sz-dependencies-discards /mips64/sgi/crime/render/sz/dependencies-discards
 sz-dependencies-starts /mips64/sgi/crime/render/sz/dependencies-starts
 sz-dependencies-migration /mips64/sgi/crime/render/sz/dependencies-migration

@@ -20325,6 +20325,54 @@ static void test_sz_dependencies_triangles(void)
     qtest_quit(s);
 }
 
+static void test_render_rejection_context(void)
+{
+    for (unsigned kind = 0; kind < 3; kind++) {
+        g_autofree char *dir = g_dir_make_tmp("crime-reject-context-XXXXXX",
+                                              NULL);
+        g_autofree char *log = g_strdup_printf("%s/qemu-%u.log", dir, kind);
+        g_autofree char *state = g_build_filename(dir, "state", NULL);
+        g_autofree char *extra = g_strdup_printf("-D %s", log);
+        g_autofree char *contents = NULL;
+        QTestState *s = start_profile_ram("legacy-software", false, true,
+                                          false, extra);
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        SZCase v = sz_case();
+        bool primitive_reject = kind == 1;
+        const char *reason = primitive_reject ? "unsupported primitive state" :
+                                                "unsupported clip mode";
+        uint64_t trigger = kind == 2 ? DE + 0x9f0 : DE + 0x8ec;
+        uint64_t value = kind == 2 ? 0xa5a5a5a5 : 0x40;
+
+        sz_initialize(s, &c, v.old);
+        triangle_vertices(s, sz_one_triangle, NULL, true);
+        qtest_writel(s, DE + 0x60, 0x02000000);
+        qtest_writel(s, DE + 0x10, primitive_reject ? 0 : 1);
+        qtest_writel(s, DE + 0x18,
+                     primitive_reject ? TRIANGLE_DRAW | 0x80000000U :
+                                        TRIANGLE_DRAW);
+        sz_atomic_failure(s, &c, state, trigger, value, 4);
+        qtest_quit(s);
+
+        g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+        g_assert_nonnull(strstr(contents, reason));
+        g_assert_nonnull(strstr(contents, kind == 2 ?
+                               "renderer offset 0x1f0" :
+                               "renderer offset 0x0ec"));
+        g_assert_nonnull(strstr(contents, "size 4"));
+        g_assert_nonnull(strstr(contents, kind == 2 ?
+                               "value 0xa5a5a5a5" : "value 0x40"));
+        g_assert_nonnull(strstr(contents, "primitive 0x02000000"));
+        g_assert_nonnull(strstr(contents, primitive_reject ?
+                               "clip 0x00000000" : "clip 0x00000001"));
+        g_assert_nonnull(strstr(contents, primitive_reject ?
+                               "draw 0x80400078" : "draw 0x00400078"));
+        g_unlink(log);
+        g_unlink(state);
+        g_rmdir(dir);
+    }
+}
+
 static void test_sz_dependencies_discards(void)
 {
     const int a[] = {64, 64}, b[] = {192, 64};
@@ -22751,6 +22799,8 @@ int main(int argc, char **argv)
              test_sz_dependencies_line);
     add_case("sgi/crime/render/sz/dependencies-triangles",
              test_sz_dependencies_triangles);
+    add_case("sgi/crime/render/rejection-context",
+             test_render_rejection_context);
     add_case("sgi/crime/render/sz/dependencies-discards",
              test_sz_dependencies_discards);
     add_case("sgi/crime/render/sz/dependencies-starts",
