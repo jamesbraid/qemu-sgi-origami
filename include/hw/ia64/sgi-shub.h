@@ -23,6 +23,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
 /* Node memory in the cacheable address space: AS 3 at bit 36, NASID 0. */
 #define SGI_SHUB_CACHEABLE_BASE 0x3000000000ULL
 
+/* AS 0 with space id 4 at bit 38: the node's local memory, any NASID. */
+#define SGI_SHUB_LOCAL_MEMORY_BASE 0x10000000000ULL
+
 /* Junk bus devices decode 64 KiB each; 0 to 3 are the LED rows. */
 #define SGI_SHUB_JUNK_BUS_DEVICE_SIZE 0x10000
 #define SGI_SHUB_JUNK_BUS_FIRST_FREE 4
@@ -40,7 +43,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
 #define SGI_SHUB_PROM_FLASH_IMAGE 0x200000
 
 /* Error, mask and alias words the PROM only writes (see sgi-shub.c). */
-#define SGI_SHUB_BLIND_CELLS 164
+#define SGI_SHUB_BLIND_CELLS 186
 
 /* NASID 0, revision 3, as the PROM's reads need; see the manual page. */
 #define SGI_SHUB_ID_DEFAULT 0x30000000ULL
@@ -93,12 +96,18 @@ enum {
     SHUB_SLOT_LOCAL_EN = SHUB_SLOT_LOCAL_CFG + 6,
     SHUB_SLOT_EVENT_OVF = SHUB_SLOT_LOCAL_EN + 6,
     SHUB_SLOT_PTC_PARMS,
-    SHUB_SLOT_II,
-    SHUB_SLOT_LLP_CSR = SHUB_SLOT_II + 150,
+    SHUB_SLOT_FSB_VGA_REMAP,
+    SHUB_SLOT_PIO_ERR,          /* two: error bits 2:0 of each slice */
+    SHUB_SLOT_LLP_RESET_EN = SHUB_SLOT_PIO_ERR + 2,  /* two ports */
+    SHUB_SLOT_LOCK = SHUB_SLOT_LLP_RESET_EN + 2,     /* two locks */
+    SHUB_SLOT_ITTE = SHUB_SLOT_LOCK + 2,             /* seven big windows */
+    SHUB_SLOT_II = SHUB_SLOT_ITTE + 7,
+    SHUB_SLOT_LLP_CSR = SHUB_SLOT_II + 143,
     SHUB_SLOT_CRB_MSG,
     SHUB_SLOT_II_INT_CFG,
     SHUB_SLOT_II_INT_EN = SHUB_SLOT_II_INT_CFG + 2,
-    SHUB_SLOT_COUNT = SHUB_SLOT_II_INT_EN + 2,
+    SHUB_SLOT_TOPO = SHUB_SLOT_II_INT_EN + 2,
+    SHUB_SLOT_COUNT = SHUB_SLOT_TOPO + 729,
 };
 
 struct SGIShubState {
@@ -114,6 +123,9 @@ struct SGIShubState {
         SGIShubState *shub;
         unsigned link;
     } widget_arg[16];
+    /* The crosstalk big windows 1 to 7 of the global window. */
+    MemoryRegion big_window[8];
+    struct SGIShubWidgetArg big_arg[8];
     /* Widget-originated packets: a PIC's interrupt writes (SHub 1). */
     MemoryRegion xio_packet;
 

@@ -224,7 +224,7 @@ static void test_blind_cells(void)
 {
     static const uint64_t cells[] = {
         0x150040508ULL, 0x1000000d8ULL, 0x100033040ULL, 0x110050480ULL,
-        0x120050a80ULL, 0x150040550ULL, 0x110040000ULL, 0x110040300ULL,
+        0x150040550ULL, 0x110040000ULL, 0x110040300ULL,
         0x110060380ULL, 0x110060100ULL, 0x100030110ULL, 0x100050370ULL,
         0x110060780ULL,
     };
@@ -236,6 +236,14 @@ static void test_blind_cells(void)
         g_assert_cmphex(qtest_readq(qts, LOCAL + cells[i]), ==,
                         0x7f77777ffULL + i);
     }
+    /* The PI error masks reset with every valid bit set. */
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x120050a80ULL), ==,
+                    0x7ffffffffULL);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x120050080ULL), ==,
+                    0x7ffe00000ULL);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x120050500ULL), ==, 0x1fffffULL);
+    qtest_writeq(qts, GLOBAL + 0x120050a80ULL, 0);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x120050a80ULL), ==, 0);
     /* The credit counts reset to 0x1f and the access words to all ones. */
     g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110060000ULL), ==, UINT64_MAX);
     g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110060180ULL), ==, UINT64_MAX);
