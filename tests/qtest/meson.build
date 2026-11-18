@@ -1098,6 +1098,16 @@ if dbus_display
   qtests += {'dbus-display-test': [dbus_display1, gio]}
 endif
 
+# The test viewer takes IOSurface slots over Mach.
+if host_os == 'darwin'
+  mach_viewer = dependency('appleframeworks',
+                           modules: ['IOSurface', 'CoreFoundation'])
+  foreach t : ['display-shm-test', 'display-shm-machine-test',
+               'sn1-odyssey-test']
+    qtests += {t: [mach_viewer]}
+  endforeach
+endif
+
 qtest_executables = {}
 foreach dir : target_dirs
   if not dir.endswith('-softmmu')

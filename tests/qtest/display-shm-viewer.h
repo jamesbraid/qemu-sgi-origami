@@ -18,9 +18,17 @@
 #endif
 #include "qemu/bswap.h"
 #include "ui/display-shm-proto.h"
+#ifdef CONFIG_DARWIN
+#include <mach/mach.h>
+#include <servers/bootstrap.h>
+#include <IOSurface/IOSurface.h>
+#endif
 
 #ifndef MSG_NOSIGNAL
 #define MSG_NOSIGNAL 0
+#endif
+#ifndef MSG_CMSG_CLOEXEC
+#define MSG_CMSG_CLOEXEC 0
 #endif
 
 #define V_WAIT_MS   10000
@@ -49,7 +57,12 @@ typedef int VHandle;
 #define V_GPU_CLASS DSHM_STORAGE_DMABUF
 #define V_GPU_EXT DSHM_EXT_DMABUF
 #define V_GPU 1
+#elif defined(CONFIG_DARWIN)
+#define V_GPU_CLASS DSHM_STORAGE_IOSURFACE
+#define V_GPU_EXT DSHM_EXT_IOSURFACE
+#define V_GPU 1
 #else
+#define V_GPU_CLASS 0
 #define V_GPU_EXT ""
 #endif
 
@@ -62,7 +75,7 @@ typedef struct VMsg {
 
 typedef struct VRegion {
     uint32_t id, kind, access, storage;
-    uint32_t fourcc, gflags, gstride;   /* a dma-buf's payload */
+    uint32_t fourcc, gflags, gstride;   /* a GPU slot's payload */
     uint32_t fence_region;              /* win32.handle: its shared fence */
     uint64_t size;
     VHandle h;
@@ -109,6 +122,15 @@ typedef struct Viewer {
     size_t state_size;
     unsigned test_idx, steer_idx, steer_block_off;
     uint32_t gpu_alloc;         /* the GPU extension accepted: the allocator */
+#ifdef CONFIG_DARWIN
+    uint64_t mach_token;        /* macos.iosurface: accepted with these */
+    char mach_service[DSHM_MACH_SERVICE_BYTES];
+    mach_port_t mach_rx;        /* our port, registered at the service */
+    struct {
+        uint32_t region;
+        IOSurfaceRef surface;
+    } mach_slot[V_REGIONS];
+#endif
     uint64_t handles_parsed;
     uint64_t handles_taken;     /* trailing fields read, Windows */
     uint32_t last_orphans;      /* entries of the last ORPHANS, Windows */
@@ -368,7 +390,8 @@ static inline bool v_parse(Viewer *v, VMsg *m)
             r = !v->reg[i].id || v->reg[i].gone ? &v->reg[i] : NULL;
         }
         g_assert_nonnull(r);
-        g_assert_true(V_HANDLE_OK(m->h));
+        g_assert_true(V_HANDLE_OK(m->h) ||
+                      le32(m->d + 16) == DSHM_STORAGE_IOSURFACE);
         v_unmap(r);
         v_handle_close(r->h);
         *r = (VRegion) { .id = le32(m->d + 8), .kind = le32(m->d + 12),
@@ -504,6 +527,45 @@ typedef struct VOpts {
     uint64_t prev_taken, prev_session;
 } VOpts;
 
+#ifdef CONFIG_DARWIN
+/* Our receive port, and the service told about it with the token. */
+static inline void v_mach_register(Viewer *v)
+{
+    struct {
+        mach_msg_base_t base;
+        mach_msg_port_descriptor_t port;
+        DShmMachRegister body;
+    } m = { };
+    mach_port_limits_t lim = { .mpl_qlimit = MACH_PORT_QLIMIT_LARGE };
+    mach_port_t service = MACH_PORT_NULL;
+
+    g_assert_cmpint(bootstrap_look_up(bootstrap_port, v->mach_service,
+                                      &service), ==, KERN_SUCCESS);
+    g_assert_cmpint(mach_port_allocate(mach_task_self(),
+                                       MACH_PORT_RIGHT_RECEIVE, &v->mach_rx),
+                    ==, KERN_SUCCESS);
+    g_assert_cmpint(mach_port_set_attributes(mach_task_self(), v->mach_rx,
+                                             MACH_PORT_LIMITS_INFO,
+                                             (mach_port_info_t)&lim,
+                                             MACH_PORT_LIMITS_INFO_COUNT),
+                    ==, KERN_SUCCESS);
+    m.base.header.msgh_bits = MACH_MSGH_BITS(MACH_MSG_TYPE_COPY_SEND, 0) |
+                              MACH_MSGH_BITS_COMPLEX;
+    m.base.header.msgh_size = sizeof(m);
+    m.base.header.msgh_remote_port = service;
+    m.base.header.msgh_id = DSHM_MACH_REGISTER;
+    m.base.body.msgh_descriptor_count = 1;
+    m.port.name = v->mach_rx;
+    m.port.disposition = MACH_MSG_TYPE_MAKE_SEND;
+    m.port.type = MACH_MSG_PORT_DESCRIPTOR;
+    m.body.token = v->mach_token;
+    g_assert_cmpint(mach_msg(&m.base.header, MACH_SEND_MSG, sizeof(m), 0,
+                             MACH_PORT_NULL, MACH_MSG_TIMEOUT_NONE,
+                             MACH_PORT_NULL), ==, MACH_MSG_SUCCESS);
+    mach_port_deallocate(mach_task_self(), service);
+}
+#endif
+
 /* HELLO, WELCOME, regions, heads, READY. */
 static inline Viewer *v_open(const char *path, VOpts o)
 {
@@ -584,11 +646,23 @@ static inline Viewer *v_open(const char *path, VOpts o)
                 v->steer_block_off = le32(a + 40);
             } else if (!strcmp((const char *)a, V_GPU_EXT)) {
                 v->gpu_alloc = le32(a + 40);
+#ifdef CONFIG_DARWIN
+                v->mach_token = le64(a + 48);
+                g_assert_cmpuint(strnlen((const char *)a + 56,
+                                         DSHM_MACH_SERVICE_BYTES), <,
+                                 DSHM_MACH_SERVICE_BYTES);
+                strcpy(v->mach_service, (const char *)a + 56);
+#endif
             }
             pos += 40 + ROUND_UP(plen, 8);
         }
     }
     v_msg_free(&m);
+#ifdef CONFIG_DARWIN
+    if (v->mach_token) {
+        v_mach_register(v);
+    }
+#endif
     g_assert_true(v_take(v, DSHM_MSG_READY, &m, V_WAIT_MS));
     v_msg_free(&m);
     v->state = v_map(v, v->state_region, false);
@@ -649,6 +723,19 @@ static inline void v_close(Viewer *v)
 #ifndef _WIN32
     for (unsigned i = 0; i < v->fdq_n; i++) {
         close(v->fdq[i]);
+    }
+#endif
+#ifdef CONFIG_DARWIN
+    for (unsigned i = 0; i < V_REGIONS; i++) {
+        if (v->mach_slot[i].surface) {
+            IOSurfaceUnlock(v->mach_slot[i].surface,
+                            kIOSurfaceLockReadOnly, NULL);
+            CFRelease(v->mach_slot[i].surface);
+        }
+    }
+    if (v->mach_rx) {
+        mach_port_mod_refs(mach_task_self(), v->mach_rx,
+                           MACH_PORT_RIGHT_RECEIVE, -1);
     }
 #endif
     g_free(v->in);
@@ -721,12 +808,55 @@ static inline uint32_t v_px(Viewer *v, const VFrame *f, unsigned x, unsigned y)
     return ldl_le_p(m + (size_t)y * stride + x * 4) & 0xffffff;
 }
 
-/* A dma-buf slot's pixels; a memfd in these tests, so it maps. */
+#ifdef CONFIG_DARWIN
+/* The slot's surface: wait for its Mach message, keeping others by region. */
+static inline IOSurfaceRef v_mach_surface(Viewer *v, uint32_t region)
+{
+    for (;;) {
+        for (unsigned i = 0; i < V_REGIONS; i++) {
+            if (v->mach_slot[i].surface && v->mach_slot[i].region == region) {
+                return v->mach_slot[i].surface;
+            }
+        }
+        struct {
+            mach_msg_base_t base;
+            mach_msg_port_descriptor_t port;
+            DShmMachSlot body;
+            mach_msg_trailer_t trailer;
+        } in = { };
+        unsigned i = 0;
+
+        g_assert_cmpint(mach_msg(&in.base.header,
+                                 MACH_RCV_MSG | MACH_RCV_TIMEOUT, 0,
+                                 sizeof(in), v->mach_rx, V_WAIT_MS,
+                                 MACH_PORT_NULL), ==, MACH_MSG_SUCCESS);
+        g_assert_cmpuint(in.base.header.msgh_id, ==, DSHM_MACH_SLOT);
+        g_assert_cmpuint(in.base.body.msgh_descriptor_count, ==, 1);
+        while (v->mach_slot[i].surface) {
+            i++;
+            g_assert_cmpuint(i, <, V_REGIONS);
+        }
+        v->mach_slot[i].region = in.body.region;
+        v->mach_slot[i].surface = IOSurfaceLookupFromMachPort(in.port.name);
+        g_assert_nonnull(v->mach_slot[i].surface);
+        mach_port_deallocate(mach_task_self(), in.port.name);
+        IOSurfaceLock(v->mach_slot[i].surface, kIOSurfaceLockReadOnly, NULL);
+    }
+}
+#endif
+
+/* A GPU slot's pixels: a memfd or IOSurface here, so the CPU reads them. */
 static inline uint32_t v_gpu_px(Viewer *v, const VFrame *f, unsigned x,
                                 unsigned y)
 {
+#ifdef CONFIG_DARWIN
+    IOSurfaceRef s = v_mach_surface(v, f->region);
+    uint8_t *m = IOSurfaceGetBaseAddress(s);
+    uint32_t stride = IOSurfaceGetBytesPerRow(s);
+#else
     uint8_t *m = v_map(v, f->region, false);
     uint32_t stride = v_region(v, f->region)->gstride;
+#endif
 
     return ldl_le_p(m + (size_t)y * stride + x * 4) & 0xffffff;
 }

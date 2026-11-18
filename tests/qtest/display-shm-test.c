@@ -1819,12 +1819,13 @@ static void test_orphans_bad_count(void)
 }
 #endif
 
-/* ---- linux.dmabuf and win32.handle -------------------------------------- */
+/* ---- linux.dmabuf, win32.handle and macos.iosurface ------------------ */
 
 #ifdef V_GPU
 /*
- * A viewer that takes GPU slots; in these tests they are memfds, or pagefile
- * sections on Windows, with an event for each slot's shared fence.
+ * A viewer that takes GPU slots; in these tests they are memfds, pagefile
+ * sections on Windows (with an event for each slot's shared fence) or
+ * IOSurfaces on macOS.
  */
 static Viewer *open_gpu(uint32_t credit, bool ext, uint32_t class)
 {
@@ -1856,7 +1857,7 @@ static void expect_slots(Viewer *v, uint32_t storage, unsigned n)
 
         g_assert_nonnull(r);
         g_assert_cmpuint(r->storage, ==, storage);
-        g_assert_true(V_HANDLE_OK(r->h));
+        g_assert_true(V_HANDLE_OK(r->h) || storage == DSHM_STORAGE_IOSURFACE);
         if (storage == V_GPU_CLASS) {
             g_assert_cmpuint(r->gflags & DSHM_GPU_WRITTEN, ==,
                              DSHM_GPU_WRITTEN);
