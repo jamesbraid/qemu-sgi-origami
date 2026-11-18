@@ -34,7 +34,9 @@ dispatch, operator console, display, log and power state), and
 ``sgi-l1-uart``, the eight-register UART window a Bedrock or router
 maps. The controller's own processor, its environmental bus, JTAG scan,
 flash and management USB are not modelled. No controller board or
-firmware revision is modelled. Where this page says what "the 1.44.0
+firmware revision is modelled. The Altix 350's node controller shares this
+page's frame codec (``hw/misc/sgi-l1-frame.c``) but is a separate device,
+described in :doc:`sn2-l1`. Where this page says what "the 1.44.0
 image" does, it states what the shipped L1 firmware image version 1.44.0
 for the Origin 300 product group, :src:`l1-firmware-1.44.0`, was read to
 do. Those statements are each a *software expectation*: the image is the

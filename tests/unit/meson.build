@@ -3,7 +3,7 @@ testblock = declare_dependency(dependencies: [block], sources: 'iothread.c')
 
 # Unit tests selected by the SGI Meson suite, listed by test name.
 fork_unit_tests = [
-  'test-net-crc', 'test-i960', 'test-sgi-l1-frame',
+  'test-net-crc', 'test-i960', 'test-sgi-l1-frame', 'test-sgi-sn2-l1',
   'test-onewire', 'test-i2c-masters', 'test-i2c-wire', 'test-crime-texture',
   'test-sgi-o2000-module-mgmt', 'test-sgi-o2000-module-mgmt-real',
   'test-sgi-router', 'test-sn0-fabric-routed',
@@ -54,6 +54,10 @@ tests = {
   # all code tested by test-int128 is inside int128.h
   'test-int128': [],
   'test-sgi-l1-frame': ['../../hw/misc/sgi-l1-frame.c'],
+  'test-sgi-sn2-l1': ['../../hw/misc/sgi-l1-sn2.c',
+                       '../../hw/misc/sgi-l1-frame.c',
+                       '../../hw/core/qdev-properties-system.c',
+                       qom, hwcore, migration, io, chardev, block],
   'test-i960': ['../../hw/coproc/i960/i960.c', migration, io],
   'test-crime-texture': ['../../hw/mips/sgi/crime-texture.c',
                          'crime-texture-361-reference.c',

@@ -70,6 +70,7 @@ docs/system/mips/sgi/ip30.rst
 docs/system/mips/sgi/ip32.rst
 docs/system/mips/sgi/ip35.rst
 docs/system/mips/sgi/ip53.rst
+docs/system/mips/sgi/hardware/sn2-l1.rst
 docs/system/mips/sgi/hardware/l1.rst
 docs/system/mips/sgi/hardware/l1-l2-link.rst
 docs/system/mips/sgi/hardware/l1-brick-profiles.rst
@@ -338,6 +339,7 @@ hw/misc/sgi-l1-link.c
 hw/misc/sgi-l1-signal-link.c
 hw/misc/sgi-l1.c
 hw/misc/sgi-l1-frame.c
+hw/misc/sgi-l1-sn2.c
 hw/misc/sgi-mgras-display.c
 hw/misc/sgi-mgras-display.h
 hw/misc/sgi-mgras-gl.c
@@ -453,6 +455,7 @@ include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1-pbay.h
 include/hw/misc/sgi-l1.h
 include/hw/misc/sgi-l1-frame.h
+include/hw/misc/sgi-l1-sn2.h
 include/hw/misc/sgi-l1-l2-link.h
 include/hw/misc/sgi-l1-provider.h
 include/hw/misc/sgi-l2-hub.h
@@ -1089,6 +1092,7 @@ tests/unit/test-i2c-masters.c
 tests/unit/test-i2c-wire.c
 tests/unit/test-onewire.c
 tests/unit/test-sgi-l1-frame.c
+tests/unit/test-sgi-sn2-l1.c
 tests/unit/test-sgi-bedrock-ni.c
 tests/unit/test-sgi-board-identity.c
 tests/unit/test-sgi-board-mac.c

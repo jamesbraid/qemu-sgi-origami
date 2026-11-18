@@ -224,7 +224,7 @@ system_ss.add(when: 'CONFIG_SGI_L1_IDENTITY', if_true: files('sgi-l1-identity.c'
 system_ss.add(when: 'CONFIG_SGI_L1',
               if_true: files('sgi-l1.c', 'sgi-l1-env.c', 'sgi-l1-pbay.c',
                              'sgi-l1-link.c', 'sgi-l1-signal-link.c',
-                             'sgi-l1-frame.c'))
+                             'sgi-l1-frame.c', 'sgi-l1-sn2.c'))
 system_ss.add(when: 'CONFIG_SGI_PBAY', if_true: files('sgi-pbay.c'))
 system_ss.add(when: 'CONFIG_SGI_BEDROCK_NI',
               if_true: files('sgi-bedrock-ni.c', 'sgi-bedrock-ni-regs.c'))

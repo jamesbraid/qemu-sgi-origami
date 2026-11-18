@@ -119,6 +119,7 @@ I/O and system control
    hardware/bic
    hardware/bricks
    hardware/l1
+   hardware/sn2-l1
    hardware/l1-l2-link
    hardware/l1-brick-profiles
    hardware/l1-board
