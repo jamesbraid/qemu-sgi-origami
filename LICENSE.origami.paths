@@ -1090,6 +1090,7 @@ tests/sgi-l2/meson.build
 tests/unit/sgi-gl-texture-test.h
 tests/unit/test-i2c-masters.c
 tests/unit/test-i2c-wire.c
+tests/unit/test-ia64-decode.c
 tests/unit/test-onewire.c
 tests/unit/test-sgi-l1-frame.c
 tests/unit/test-sgi-sn2-l1.c
