@@ -9,6 +9,7 @@
 #define HW_DISPLAY_SGI_GPU_BOARD_H
 
 #include "qapi/error.h"
+#include "qemu/notify.h"
 #include "qemu/thread.h"
 #include "hw/display/sgi-gpu.h"
 #include "hw/display/sgi/board-memory.h"
@@ -54,6 +55,7 @@ typedef struct SgiBoardGpu {
     uint8_t surface_of[SGI_PLANES_MAX];
     uint32_t width, height, min_pixels;
     bool lost;
+    Notifier shutdown;
     QemuMutex lock;
     uint32_t *stage;
     uint64_t fence;     /* of the last fill submitted, for pacing */

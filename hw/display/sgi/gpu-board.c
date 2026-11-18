@@ -11,6 +11,8 @@
 
 /* How long realize waits for the GPU to open before it carries on. */
 #define SBG_OPEN_WAIT_MS 30000
+/* How long shutdown waits for an open that realize gave up on. */
+#define SBG_EXIT_WAIT_MS 60000
 
 /* Rows a download takes beyond the one asked for, if the GPU holds them. */
 #define SBG_READ_AHEAD 64
@@ -29,6 +31,22 @@ static void sbg_lost(SgiBoardGpu *g)
                  adapter ? adapter : "unknown adapter", why ? ": " : "",
                  why ? why : "");
     qemu_system_vmstop_request(RUN_STATE_INTERNAL_ERROR);
+}
+
+static void sbg_wait_open(SgiBoardGpu *g, unsigned ms)
+{
+    int64_t deadline = g_get_monotonic_time() + ms * G_TIME_SPAN_MILLISECOND;
+
+    while (!sgi_gpu_ready(g->gpu) && !sgi_gpu_lost(g->gpu) &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(10 * 1000);
+    }
+}
+
+/* Exiting while the driver is still opening on its worker can crash. */
+static void sbg_shutdown(Notifier *n, void *data)
+{
+    sbg_wait_open(container_of(n, SgiBoardGpu, shutdown), SBG_EXIT_WAIT_MS);
 }
 
 SgiBoardGpu *sgi_board_gpu_new(const char *who, unsigned surfaces,
@@ -51,11 +69,9 @@ SgiBoardGpu *sgi_board_gpu_new(const char *who, unsigned surfaces,
         g_free(g);
         return NULL;
     }
-    /* Exiting while the driver is still opening on its worker can crash. */
-    for (int i = 0; i < SBG_OPEN_WAIT_MS / 10 && !sgi_gpu_ready(g->gpu) &&
-         !sgi_gpu_lost(g->gpu); i++) {
-        g_usleep(10 * 1000);
-    }
+    sbg_wait_open(g, SBG_OPEN_WAIT_MS);
+    g->shutdown.notify = sbg_shutdown;
+    qemu_register_shutdown_notifier(&g->shutdown);
     g->hook.opaque = g;
     qemu_mutex_init(&g->lock);
     sgi_board_gpu_resize(g, width, height);
@@ -77,6 +93,7 @@ void sgi_board_gpu_free(SgiBoardGpu *g)
     if (!g) {
         return;
     }
+    notifier_remove(&g->shutdown);
     sbg_drop_planes(g);
     for (unsigned b = 0; b < g->nsurfaces; b++) {
         g_free(g->rows[b]);
