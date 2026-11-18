@@ -10,7 +10,6 @@
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci-host/sgi-dma-placement.h"
 #include "hw/misc/sgi-xbow.h"
-#include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/mips/sgi-xio-port.h"
 #include "hw/mips/sgi/xio-widget.h"
 #include "hw/pci/pci.h"
@@ -36,6 +35,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIPICHead, SGI_PIC_HEAD)
 #define PIC_CPU_FACE_SIZE (2 * PIC_HEAD_OFFSET + 8)
 #define PIC_WIDGET_SIZE 0x100000000ULL
 #define PIC_REG_COUNT (0x640 / 8)
+#define PIC_ATE_COUNT 1024
+#define PIC_ATE_BASE 0x10000
 #define PIC_REQ_COUNT 256
 #define PIC_PIN_COUNT 8
 #define PIC_INTERNAL_SLOTS 4
@@ -134,8 +135,16 @@ struct SGIPICHead {
     AddressSpace pci_io_as;
     uint64_t reg[PIC_REG_COUNT];
     uint64_t req[3][PIC_REQ_COUNT];
+    /* Plain words and the translation table, for the SHub profile. */
+    uint64_t ate[PIC_ATE_COUNT];
+    uint64_t dma_regs[3];
     uint8_t pins;
     uint8_t head;
+    /* Forces waiting out the packet's flight time (PIC_FORCE_DELAY_NS). */
+    uint8_t force_always_due;
+    uint8_t force_pin_due;
+    int64_t force_expire_ns;
+    QEMUTimer *force_timer;
     uint8_t dma_64bit;
     uint32_t unsupported_logs;
     uint32_t set_requests[PIC_PIN_COUNT];
@@ -173,8 +182,9 @@ struct SGIPICState {
     /* A PIC on another PIC's crossbar (sgi_pic_join_pxbow()). */
     SGIPICState *crossbar_owner;
     uint8_t req64_slots[2];
-    SGIBedrockPIState *bedrock_pi[2];
-    unsigned bedrock_source_base;
+    /* Where level sources go, one sink per processor interface. */
+    Object *level_sink[2];
+    uint32_t level_source_base;
     SGIModelPicCompatibilityProfile compatibility_profile;
     bool peer_connected;
     bool widget_as_initialized;
@@ -213,6 +223,12 @@ struct SGIPICState {
     SGIXioPeer host_peer;
 };
 
+/* The profile is migrated as its number, so a new one goes last. */
+#define PIC_PROFILE(name) SGI_MODEL_PIC_COMPATIBILITY_PROFILE_##name
+QEMU_BUILD_BUG_ON(PIC_PROFILE(PIC_REV3_BEDROCK_TEZRO_COMPAT) != 2);
+QEMU_BUILD_BUG_ON(PIC_PROFILE(PIC_REV3_ENCLOSURE_EXPERIMENTAL) != 3);
+QEMU_BUILD_BUG_ON(PIC_PROFILE(PIC_REV3_SHUB_COMPAT) != 4);
+
 static bool pic_uses_runtime_profile(const SGIPICState *s)
 {
     SGIModelPicCompatibilityProfile profile = s->compatibility_profile;
@@ -220,7 +236,24 @@ static bool pic_uses_runtime_profile(const SGIPICState *s)
     return profile ==
        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_COMPAT ||
        profile ==
-       SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_COMPAT;
+       SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_TEZRO_COMPAT ||
+       profile == SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_SHUB_COMPAT;
+}
+
+/* The SHub host's behaviours are listed on the Bridge page. */
+static bool pic_uses_shub_profile(const SGIPICState *s)
+{
+    return s->compatibility_profile ==
+        SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_SHUB_COMPAT;
+}
+
+#define PIC_FORCE_DELAY_NS 1000
+
+/* Bit 21 (16 KiB translation pages) exists only under the SHub profile. */
+static uint64_t pic_widget_control_mask(const SGIPICState *s)
+{
+    return pic_uses_shub_profile(s) ? UINT64_C(0x0f20f20f) :
+                                      UINT64_C(0x0f00f20f);
 }
 
 /*
@@ -571,11 +604,19 @@ static MemTxResult pic_direct64_rw(SGIPICDMA *dma, hwaddr address,
     uint64_t payload = address & ((UINT64_C(1) << 48) - 1);
     hwaddr packet = (hwaddr)(address >> 60) * SGI_XIO_PACKET_SIZE + payload;
     unsigned lane_xor = head->dma_64bit & BIT(dma->slot) ? 7 : 3;
+    static bool le_host_dma_logged;
 
     if (!pic_direct64_valid(dma, address, size)) {
         return MEMTX_DECODE_ERROR;
     }
-    if (address & (UINT64_C(1) << 55)) {
+    /* A little-endian host's memory takes the bytes in order unless asked. */
+    if (pic_uses_shub_profile(head->pic) && !le_host_dma_logged) {
+        le_host_dma_logged = true;
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-pic: the SHub profile's byte order is inferred\n");
+    }
+    if (!!(address & (UINT64_C(1) << 55)) !=
+        pic_uses_shub_profile(head->pic)) {
         return pic_direct64_send(dma, packet, buffer, size, write,
                                  MEMTXATTRS_UNSPECIFIED);
     }
@@ -683,6 +724,39 @@ static const MemoryRegionOps pic_swap_ops = {
     .impl.max_access_size = 8,
 };
 
+/*
+ * Translated window 0x40000000-0x7fffffff: valid bit 0, page address 47:12,
+ * 4/16 KiB by control bit 21, address bit 29 swaps; entry widget 11:8 unused.
+ */
+static IOMMUTLBEntry pic_ate_translate(SGIPICDMA *dma, hwaddr addr)
+{
+    SGIPICHead *s = dma->head;
+    IOMMUTLBEntry entry = {
+        .iova = addr & ~0xfffULL,
+        .addr_mask = 0xfff,
+        .perm = IOMMU_NONE,
+    };
+    unsigned shift = REG(s, 0x20) & (1ULL << 21) ? 14 : 12;
+    /* PCI address bit 29 selects the byte swap: not part of the index. */
+    uint64_t index = ((addr - 0x40000000) & ~(1ULL << 29)) >> shift;
+    uint64_t ate = index < PIC_ATE_COUNT ? s->ate[index] : 0;
+    uint64_t page = (1ULL << shift) - 1;
+
+    if (!(ate & 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-pic: head %u DMA 0x%" HWADDR_PRIx " from slot %u "
+                      "uses an invalid translation entry\n",
+                      s->head, addr, dma->slot);
+        return entry;
+    }
+    entry.translated_addr = (((ate & 0xffffffffffffULL) & ~page) |
+                             (addr & page)) & ~0xfffULL;
+    entry.target_as = addr & (1U << 29) ? &dma->linked_swap_as :
+                                           &dma->linked_as;
+    entry.perm = IOMMU_RW;
+    return entry;
+}
+
 static IOMMUTLBEntry pic_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
                                    IOMMUAccessFlags flag, int iommu_idx)
 {
@@ -706,6 +780,10 @@ static IOMMUTLBEntry pic_translate(IOMMUMemoryRegion *iommu, hwaddr addr,
         entry.translated_addr = addr & ~entry.addr_mask;
         entry.perm = IOMMU_RW;
         return entry;
+    }
+    if (pic_uses_shub_profile(s->pic) && pic_uses_linked_transport(s->pic) &&
+        addr >= 0x40000000 && addr < 0x80000000) {
+        return pic_ate_translate(dma, addr);
     }
     if (addr < 0x80000000 || addr > UINT32_MAX) {
         qemu_log_mask(LOG_UNIMP,
@@ -780,6 +858,29 @@ static const TypeInfo pic_iommu_info = {
     .parent = TYPE_IOMMU_MEMORY_REGION,
     .class_init = pic_iommu_class_init,
 };
+
+/*
+ * Under the SHub profile the PIC also holds plain words at +0x48, +0x280 and
+ * +0x288 and the 1024 translation entries at +0x10000.
+ */
+static uint64_t *pic_dma_reg(SGIPICHead *s, hwaddr addr)
+{
+    if (!pic_uses_shub_profile(s->pic)) {
+        return NULL;
+    }
+    switch (addr) {
+    case 0x48:
+        return &s->dma_regs[0];
+    case 0x280:
+    case 0x288:
+        return &s->dma_regs[1 + (addr - 0x280) / 8];
+    default:
+        if (addr >= PIC_ATE_BASE && addr < PIC_ATE_BASE + PIC_ATE_COUNT * 8) {
+            return &s->ate[(addr - PIC_ATE_BASE) / 8];
+        }
+        return NULL;
+    }
+}
 
 static void pic_unsupported(SGIPICHead *s, hwaddr addr, unsigned size,
                             uint64_t value, bool write)
@@ -1174,9 +1275,15 @@ static bool pic_packet(SGIPICHead *s, unsigned pin, bool set)
             .widget = REG(s, 0x20) & 0xf,
         };
 
-        stq_be_p(packet, bedrock ?
-                 level | (set ? 0x100 : 0) :
-                 level | (set ? 0x10000 : 0));
+        uint64_t word = bedrock ? level | (set ? 0x100 : 0) :
+                                  level | (set ? 0x10000 : 0);
+
+        /* A word aimed at node memory lands in the host's byte order. */
+        if (pic_uses_shub_profile(s->pic) && !(address & BIT_ULL(47))) {
+            stq_le_p(packet, word);
+        } else {
+            stq_be_p(packet, word);
+        }
         result = pic_send_interrupt(s->pic, address, packet, sizeof(packet),
                                     &source);
     } else if (!s->pic->target[widget]) {
@@ -1214,16 +1321,18 @@ static void pic_update_level_source(SGIPICHead *s, unsigned pin,
     bool active = packet_delivered && (s->pins & (1U << pin)) &&
                   (REG(s, 0x108) & (1U << pin)) &&
                   level >= 7 && level <= 127;
-    unsigned source = s->pic->bedrock_source_base +
+    unsigned source = s->pic->level_source_base +
                       s->head * PIC_PIN_COUNT + pin;
 
     if (!pic_uses_runtime_profile(s->pic)) {
         return;
     }
-    for (unsigned pi = 0; pi < ARRAY_SIZE(s->pic->bedrock_pi); pi++) {
-        if (s->pic->bedrock_pi[pi]) {
-            sgi_bedrock_pi_set_level_source(s->pic->bedrock_pi[pi], source,
-                                             level, active && pi == pi_index);
+    for (unsigned pi = 0; pi < ARRAY_SIZE(s->pic->level_sink); pi++) {
+        Object *sink = s->pic->level_sink[pi];
+
+        if (sink) {
+            SGI_PIC_LEVEL_SINK_GET_CLASS(sink)->set_level_source(
+                sink, source, level, active && pi == pi_index);
         }
     }
 }
@@ -1234,25 +1343,15 @@ static bool pic_force_register(hwaddr addr)
 }
 
 /*
- * Force-always (0x180 + 8n) and force-with-pin (0x1c0 + 8n) are
- * write-only and ignore the data written. A write sends pin n's set
- * packet with no new edge: force-always whatever the input's level,
- * force-with-pin only while the input is high. The chip sends a packet
- * only on a transition, so drivers write force-with-pin after servicing
- * an input to have one still high serviced again (Linux SN2
- * pcibr_intr.c). Neither touches the status register.
- *
- * The offsets and names are the Linux IA64 PIC header's; the behaviour
- * is inferred from the XBridge, whose registers at the same offsets work
- * this way. Whether a force reaches a disabled input is unknown; the
- * model sends nothing, as the XBridge model does.
+ * Force-always (0x180 + 8n) and force-with-pin (0x1c0 + 8n) send pin n's
+ * packet without an edge; with-pin only while the input is high.
  */
-static void pic_force(SGIPICHead *s, hwaddr addr)
+static void pic_force_send(SGIPICHead *s, unsigned pin, bool with_pin)
 {
-    unsigned pin = (addr - 0x180) / 8 % PIC_PIN_COUNT;
-    bool with_pin = addr >= 0x1c0;
+    /* The SHub profile covers force-always only (an approximation). */
+    bool ignore_enable = pic_uses_shub_profile(s->pic) && !with_pin;
 
-    if (!(REG(s, 0x108) & BIT(pin))) {
+    if (!ignore_enable && !(REG(s, 0x108) & BIT(pin))) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-pic: head %u force of disabled pin %u sends"
                       " nothing\n", s->head, pin);
@@ -1264,14 +1363,42 @@ static void pic_force(SGIPICHead *s, hwaddr addr)
     pic_update_level_source(s, pin, pic_packet(s, pin, true));
 }
 
-void sgi_pic_set_bedrock_pi(SGIPICState *s, unsigned pi,
-                            SGIBedrockPIState *bedrock_pi,
-                            unsigned source_base)
+/* A forced packet lands after a flight time, not in the same instruction. */
+static void pic_force_timer(void *opaque)
 {
-    s->bedrock_source_base = source_base;
-    if (pi < ARRAY_SIZE(s->bedrock_pi)) {
-        s->bedrock_pi[pi] = bedrock_pi;
+    SGIPICHead *s = opaque;
+    uint8_t always = s->force_always_due;
+    uint8_t with_pin = s->force_pin_due;
+
+    s->force_always_due = 0;
+    s->force_pin_due = 0;
+    for (unsigned pin = 0; pin < PIC_PIN_COUNT; pin++) {
+        if (always & BIT(pin)) {
+            pic_force_send(s, pin, false);
+        }
+        if (with_pin & BIT(pin)) {
+            pic_force_send(s, pin, true);
+        }
     }
+}
+
+static void pic_force(SGIPICHead *s, hwaddr addr)
+{
+    unsigned pin = (addr - 0x180) / 8 % PIC_PIN_COUNT;
+    bool with_pin = addr >= 0x1c0;
+
+    if (!pic_uses_shub_profile(s->pic)) {
+        pic_force_send(s, pin, with_pin);
+        return;
+    }
+    if (with_pin) {
+        s->force_pin_due |= BIT(pin);
+    } else {
+        s->force_always_due |= BIT(pin);
+    }
+    s->force_expire_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                         PIC_FORCE_DELAY_NS;
+    timer_mod(s->force_timer, s->force_expire_ns);
 }
 
 static uint32_t pic_config_address(SGIPICHead *s, hwaddr addr, unsigned size)
@@ -1354,6 +1481,12 @@ static MemTxResult pic_read_result(SGIPICHead *s, hwaddr addr, unsigned size,
             pic_config_master_timeout(s);
             *out = MAKE_64BIT_MASK(0, size * 8);
             trace_sgi_pic_head_reg_read(s->head, addr, size, *out);
+            if (pic_uses_shub_profile(s->pic)) {
+                qemu_log_mask(LOG_UNIMP,
+                              "sgi-pic: an unclaimed configuration read "
+                              "returns all ones (approximation)\n");
+                return MEMTX_OK;
+            }
             return MEMTX_ERROR;
         }
         value = pci_data_read(PCI_HOST_BRIDGE(s)->bus, cfg, size);
@@ -1373,6 +1506,11 @@ static MemTxResult pic_read_result(SGIPICHead *s, hwaddr addr, unsigned size,
 
         trace_sgi_pic_head_reg_read(s->head, addr, size, value);
         *out = value;
+        return MEMTX_OK;
+    }
+    if (size == 8 && !(addr & 7) && pic_dma_reg(s, addr)) {
+        *out = *pic_dma_reg(s, addr);
+        trace_sgi_pic_head_reg_read(s->head, addr, size, *out);
         return MEMTX_OK;
     }
     if (size == 8 && !(addr & 7) && addr >= 0x18000 && addr < 0x19800) {
@@ -1418,6 +1556,13 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         pic_unsupported(s, addr, size, value, true);
         return;
     }
+    if (pic_dma_reg(s, addr)) {
+        *pic_dma_reg(s, addr) = value;
+        if (trace) {
+            trace_sgi_pic_head_reg_write(s->head, addr, size, requested_value);
+        }
+        return;
+    }
     if (addr >= 0x18000 && addr < 0x19800) {
         unsigned bank = (addr - 0x18000) / 0x800;
         unsigned index = ((addr - 0x18000) % 0x800) / 8;
@@ -1453,9 +1598,9 @@ static void pic_write_internal(SGIPICHead *s, hwaddr addr, uint64_t value,
         return;
     case 0x20:
         if (pic_uses_runtime_profile(s->pic) &&
-            (value & ~UINT64_C(0x0f00f20f))) {
+            (value & ~pic_widget_control_mask(s->pic))) {
             pic_unsupported(s, addr, size, value, true);
-            value &= UINT64_C(0x0f00f20f);
+            value &= pic_widget_control_mask(s->pic);
         } else if (!pic_uses_runtime_profile(s->pic) && (value & ~0xfULL)) {
             pic_unsupported(s, addr, size, value, true);
             value &= 0xf;
@@ -1897,6 +2042,11 @@ static void pic_head_reset_hold(Object *obj, ResetType type)
     memset(s->reg, 0, sizeof(s->reg));
     memset(s->req, 0, sizeof(s->req));
     s->pins = 0;
+    s->force_always_due = 0;
+    s->force_pin_due = 0;
+    timer_del(s->force_timer);
+    memset(s->ate, 0, sizeof(s->ate));
+    memset(s->dma_regs, 0, sizeof(s->dma_regs));
     for (unsigned pin = 0; pin < PIC_PIN_COUNT; pin++) {
         pic_update_level_source(s, pin, false);
     }
@@ -1926,6 +2076,55 @@ static void pic_head_reset_exit(Object *obj, ResetType type)
         PCI_HOST_BRIDGE(s)->bus, s->pic->req64_slots[s->head]);
 }
 
+static bool pic_head_ate_needed(void *opaque)
+{
+    SGIPICHead *s = opaque;
+
+    return pic_uses_shub_profile(s->pic);
+}
+
+static const VMStateDescription vmstate_pic_head_ate = {
+    .name = TYPE_SGI_PIC_HEAD "/ate-dma",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = pic_head_ate_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(ate, SGIPICHead, PIC_ATE_COUNT),
+        VMSTATE_UINT64_ARRAY(dma_regs, SGIPICHead, 3),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool pic_head_force_needed(void *opaque)
+{
+    SGIPICHead *s = opaque;
+
+    return s->force_always_due || s->force_pin_due;
+}
+
+static int pic_head_force_post_load(void *opaque, int version_id)
+{
+    SGIPICHead *s = opaque;
+
+    timer_mod(s->force_timer, s->force_expire_ns);
+    return 0;
+}
+
+/* Forced packets still in flight, and when they land. */
+static const VMStateDescription vmstate_pic_head_force = {
+    .name = TYPE_SGI_PIC_HEAD "/force",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = pic_head_force_needed,
+    .post_load = pic_head_force_post_load,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT8(force_always_due, SGIPICHead),
+        VMSTATE_UINT8(force_pin_due, SGIPICHead),
+        VMSTATE_INT64(force_expire_ns, SGIPICHead),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_pic_head = {
     .name = TYPE_SGI_PIC_HEAD,
     .version_id = 1,
@@ -1938,6 +2137,11 @@ static const VMStateDescription vmstate_pic_head = {
         VMSTATE_UINT64_ARRAY(reg, SGIPICHead, PIC_REG_COUNT),
         VMSTATE_UINT64_2DARRAY(req, SGIPICHead, 3, PIC_REQ_COUNT),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_pic_head_ate,
+        &vmstate_pic_head_force,
+        NULL
     }
 };
 
@@ -1956,6 +2160,7 @@ static void pic_head_realize(DeviceState *dev, Error **errp)
     }
     name = g_strdup_printf("%s-head-%u.0", pic_component, s->head);
 
+    s->force_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, pic_force_timer, s);
     qdev_init_gpio_in(dev, pic_set_pin, PIC_PIN_COUNT);
     qdev_init_gpio_out_named(dev, s->pci_irq, "pci-intx", 32);
     if (s->pic->test_fixture ||
@@ -2039,6 +2244,9 @@ static void pic_head_unrealize(DeviceState *dev)
 {
     SGIPICHead *s = SGI_PIC_HEAD(dev);
     unsigned i;
+
+    timer_free(s->force_timer);
+    s->force_timer = NULL;
 
     for (i = 0; i < G_N_ELEMENTS(s->dma); i++) {
         if (s->dma[i].direct64_initialized) {
@@ -2933,6 +3141,12 @@ static void pic_class_init(ObjectClass *klass, const void *data)
                     compatibility_profile, qdev_prop_sgi_pic_profile,
                     SGIModelPicCompatibilityProfile),
         DEFINE_PROP_BOOL("test-fixture", SGIPICState, test_fixture, false),
+        DEFINE_PROP_LINK("level-sink0", SGIPICState, level_sink[0],
+                         TYPE_SGI_PIC_LEVEL_SINK, Object *),
+        DEFINE_PROP_LINK("level-sink1", SGIPICState, level_sink[1],
+                         TYPE_SGI_PIC_LEVEL_SINK, Object *),
+        DEFINE_PROP_UINT32("level-source-base", SGIPICState,
+                           level_source_base, 0),
         DEFINE_PROP_BOOL("linked-transport", SGIPICState, linked, false),
         DEFINE_PROP_BOOL("bedrock-interrupts", SGIPICState,
                          bedrock_interrupts, false),
@@ -3079,8 +3293,15 @@ static const TypeInfo pic_v6_test_info = {
     .class_init = pic_v6_test_class_init,
 };
 
+static const TypeInfo pic_level_sink_info = {
+    .name = TYPE_SGI_PIC_LEVEL_SINK,
+    .parent = TYPE_INTERFACE,
+    .class_size = sizeof(SGIPICLevelSinkClass),
+};
+
 static void pic_register_types(void)
 {
+    type_register_static(&pic_level_sink_info);
     type_register_static(&pic_fixture_info);
     type_register_static(&pic_iommu_info);
     type_register_static(&pic_head_info);

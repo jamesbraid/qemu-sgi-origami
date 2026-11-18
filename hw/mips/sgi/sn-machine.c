@@ -5453,6 +5453,18 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
                        host->id);
             return false;
         }
+        if (s->ip53_runtime_enabled) {
+            SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
+
+            if (!object_property_set_link(OBJECT(pic), "level-sink0",
+                                          OBJECT(&bedrock->pi[0]), errp) ||
+                !object_property_set_link(OBJECT(pic), "level-sink1",
+                                          OBJECT(&bedrock->pi[1]), errp) ||
+                !object_property_set_uint(OBJECT(pic), "level-source-base",
+                                          i * SGI_PIC_LEVEL_SOURCES, errp)) {
+                return false;
+            }
+        }
         sgi_xio_link_init(&s->pic_links[i], OBJECT(s), link_name,
                           OBJECT(bedrock_io), 0, OBJECT(pic), 0);
         if (!sgi_xio_link_connect(&s->pic_links[i], errp) ||
@@ -5463,14 +5475,6 @@ static bool sgi_machine_build_pic_io9(SGIMachineState *s,
             !sysbus_realize(SYS_BUS_DEVICE(pic), errp) ||
             !sgi_xio_link_connect(&s->pic_links[i], errp)) {
             return false;
-        }
-        if (s->ip53_runtime_enabled) {
-            SGIBedrockState *bedrock = SGI_BEDROCK(node->bedrock);
-
-            sgi_pic_set_bedrock_pi(pic, 0, &bedrock->pi[0],
-                                   i * SGI_PIC_LEVEL_SOURCES);
-            sgi_pic_set_bedrock_pi(pic, 1, &bedrock->pi[1],
-                                   i * SGI_PIC_LEVEL_SOURCES);
         }
     }
 

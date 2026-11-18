@@ -3994,6 +3994,123 @@ static void test_force_registers(void)
     qtest_quit(qts);
 }
 
+#define SHUB_ARGS "-M none -cpu R10000 -S -d unimp,guest_errors " \
+    "-device sgi-xio-test-target,id=fabric,size=65536,pic-peer=on," \
+    "pic-runtime-profile=on,pic-shub-profile=on,pic-linked=off," \
+    "pic-bedrock-interrupts=off"
+
+static void pic_shub_map(QTestState *qts)
+{
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 0, TARGET);
+    qtest_sysbus_mmio_map(qts, "/machine/peripheral/fabric", 1, BASE);
+}
+
+/*
+ * Under the SHub profile a force-always write sends for an input whose
+ * enable is clear; a force-with-pin write still sends nothing there, as an
+ * XBridge's forces do. The delay holds the packet back, so the clock steps.
+ */
+static void test_shub_force_disabled_is_force_always_only(void)
+{
+    QTestState *qts = qtest_init(SHUB_ARGS);
+    const unsigned pin = 2;
+    const uint64_t always = HEAD(0) + 0x180 + pin * 8;
+    const uint64_t with_pin = HEAD(0) + 0x1c0 + pin * 8;
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    pic_shub_map(qts);
+    qtest_writeq(qts, HEAD(0) + 0x130 + pin * 8, 0x3400000000001000ULL);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, pin, 1);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, pin, true), ==, 0);
+
+    qtest_writeq(qts, with_pin, 1);
+    qtest_clock_step(qts, 2000);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, pin, true), ==, 0);
+    qtest_writeq(qts, always, 1);
+    qtest_clock_step(qts, 2000);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, pin, true), ==, 1);
+    qtest_quit(qts);
+}
+
+/* Control bit 21 (16 KiB pages) is kept only under the SHub profile. */
+static void test_widget_control_bit_21_is_shub_only(void)
+{
+    QTestState *mips = pic_runtime_cpu_start(false, NULL);
+    QTestState *shub = qtest_init(SHUB_ARGS);
+
+    qtest_writeq(mips, CPU_HEAD(0) + 0x20, 0x0f20f20f);
+    g_assert_cmphex(qtest_readq(mips, CPU_HEAD(0) + 0x20), ==, 0x0f00f20f);
+    qtest_quit(mips);
+    qtest_qmp_assert_success(shub, "{'execute': 'cont'}");
+    pic_shub_map(shub);
+    qtest_writeq(shub, HEAD(0) + 0x20, 0x0f20f20f);
+    g_assert_cmphex(qtest_readq(shub, HEAD(0) + 0x20), ==, 0x0f20f20f);
+    qtest_quit(shub);
+}
+
+/* A force-always and a force-with-pin write in one flight both send. */
+static void test_shub_force_delay_sends_both_forces(void)
+{
+    QTestState *qts = qtest_init(SHUB_ARGS);
+    const unsigned pin = 2;
+    const uint64_t always = HEAD(0) + 0x180 + pin * 8;
+    const uint64_t with_pin = HEAD(0) + 0x1c0 + pin * 8;
+    unsigned sent;
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    pic_shub_map(qts);
+    qtest_writeq(qts, HEAD(0) + 0x130 + pin * 8, 0x3400000000001000ULL);
+    qtest_writeq(qts, HEAD(0) + 0x108, 1U << pin);
+    qtest_set_irq_in(qts, PIC_CHILD "/head-0", NULL, pin, 1);
+    sent = pic_requests_at(qts, PIC_CHILD, 0, pin, true);
+    qtest_writeq(qts, always, 1);
+    qtest_writeq(qts, with_pin, 1);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, pin, true), ==, sent);
+    qtest_clock_step(qts, 2000);
+    g_assert_cmpuint(pic_requests_at(qts, PIC_CHILD, 0, pin, true), ==,
+                     sent + 2);
+    qtest_quit(qts);
+}
+
+/* A forced packet still in flight is migrated and sent on the destination. */
+static void test_shub_force_delay_migration(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sgi-pic-force-migration-XXXXXX",
+                                           NULL);
+    g_autofree char *socket = g_build_filename(dir, "migration.sock", NULL);
+    g_autofree char *uri = g_strdup_printf("unix:%s", socket);
+    QTestState *from = qtest_init(SHUB_ARGS);
+    QTestState *to = qtest_init(SHUB_ARGS " -incoming defer");
+    const unsigned pin = 2;
+    unsigned sent;
+
+    pic_shub_map(from);
+    pic_shub_map(to);
+    qtest_writeq(from, HEAD(0) + 0x130 + pin * 8, 0x3400000000001000ULL);
+    qtest_writeq(from, HEAD(0) + 0x108, 1U << pin);
+    qtest_set_irq_in(from, PIC_CHILD "/head-0", NULL, pin, 1);
+    sent = pic_requests_at(from, PIC_CHILD, 0, pin, true);
+    qtest_writeq(from, HEAD(0) + 0x180 + pin * 8, 1);
+    g_assert_cmpuint(pic_requests_at(from, PIC_CHILD, 0, pin, true), ==,
+                     sent);
+
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    sgi_migrate_stopped(from, uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    qtest_qmp_assert_success(to, "{'execute': 'cont'}");
+    qtest_clock_step(to, 2000);
+    g_assert_cmpuint(pic_requests_at(to, PIC_CHILD, 0, pin, true), ==,
+                     sent + 1);
+
+    qtest_quit(to);
+    qtest_quit(from);
+    if (unlink(socket) < 0) {
+        g_assert_cmpint(errno, ==, ENOENT);
+    }
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 /*
  * The 32-bit processor view at +4 reaches the force registers too, and
  * a forced packet reaches the Bedrock as an interrupt packet.
@@ -5628,6 +5745,14 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-pic/remaining-pin-edges",
                    test_remaining_pin_edges);
     qtest_add_func("/sgi-pic/force-registers", test_force_registers);
+    qtest_add_func("/sgi-pic/shub/widget-control-bit-21",
+                   test_widget_control_bit_21_is_shub_only);
+    qtest_add_func("/sgi-pic/shub/force-disabled-is-force-always-only",
+                   test_shub_force_disabled_is_force_always_only);
+    qtest_add_func("/sgi-pic/shub/force-delay-sends-both-forces",
+                   test_shub_force_delay_sends_both_forces);
+    qtest_add_func("/sgi-pic/shub/force-delay-migration",
+                   test_shub_force_delay_migration);
     qtest_add_func("/sgi-pic/cpu-word-view-force", test_cpu_word_view_force);
     qtest_add_func("/sgi-pic/force-restores-level-source",
                    test_force_restores_level_source);

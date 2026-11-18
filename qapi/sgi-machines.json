@@ -1185,12 +1185,21 @@
 #     and packets carried through the enclosure's crossbar rather
 #     than a direct Bedrock peer.  Hardware remains unknown.
 #
+# @pic-rev3-shub-compat:
+#     Altix 350 compatibility policy: the IP53 compatibility policy
+#     plus the opt-ins the SHub host and its firmware expect (a
+#     configuration read that finds no device returns ones, translated
+#     DMA, little-endian host byte order, forces that reach a disabled
+#     input and forced packets that take a flight time).  Hardware
+#     remains unknown.
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelPicCompatibilityProfile',
   'data': ['pic-rev3-bedrock', 'pic-rev3-bedrock-compat',
            'pic-rev3-bedrock-tezro-compat',
-           'pic-rev3-enclosure-experimental'] }
+           'pic-rev3-enclosure-experimental',
+           'pic-rev3-shub-compat'] }
 
 ##
 # @SGIModelPciHostBridge:

@@ -7,6 +7,7 @@
 #include "qapi/error.h"
 #include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-bedrock.h"
+#include "hw/pci-host/sgi-pic.h"
 #include "hw/core/cpu.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
@@ -1361,6 +1362,13 @@ static void pi_finalize(Object *obj)
     timer_free(s->gfx_int_timer[1]);
 }
 
+static void pi_level_sink_set(Object *sink, unsigned source, unsigned level,
+                              bool active)
+{
+    sgi_bedrock_pi_set_level_source(SGI_BEDROCK_PI(sink), source, level,
+                                    active);
+}
+
 static void pi_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
@@ -1373,6 +1381,7 @@ static void pi_class_init(ObjectClass *klass, const void *data)
     device_class_set_props(dc, pi_properties);
     rc->phases.enter = pi_reset_enter;
     rc->phases.hold = pi_reset_hold;
+    SGI_PIC_LEVEL_SINK_CLASS(klass)->set_level_source = pi_level_sink_set;
 }
 
 static const TypeInfo pi_info = {
@@ -1382,6 +1391,10 @@ static const TypeInfo pi_info = {
     .instance_init = pi_init,
     .instance_finalize = pi_finalize,
     .class_init = pi_class_init,
+    .interfaces = (const InterfaceInfo[]) {
+        { TYPE_SGI_PIC_LEVEL_SINK },
+        { }
+    },
 };
 
 static void pi_register_types(void)

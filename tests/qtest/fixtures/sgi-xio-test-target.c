@@ -20,6 +20,8 @@
 #define TYPE_SGI_XIO_TEST_TARGET "sgi-xio-test-target"
 #define PIC_RUNTIME_PROFILE \
     SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_BEDROCK_COMPAT
+#define PIC_SHUB_PROFILE \
+    SGI_MODEL_PIC_COMPATIBILITY_PROFILE_PIC_REV3_SHUB_COMPAT
 OBJECT_DECLARE_SIMPLE_TYPE(SGIXioTestTargetState, SGI_XIO_TEST_TARGET)
 
 struct SGIXioTestTargetState {
@@ -78,6 +80,7 @@ struct SGIXioTestTargetState {
     bool pic_linked;
     bool pic_bedrock_interrupts;
     bool pic_runtime_profile;
+    bool pic_shub_profile;
     bool pic_v5_migration_source;
     bool pic_v6_migration_source;
     bool pic_switched;
@@ -681,7 +684,8 @@ static void target_realize(DeviceState *dev, Error **errp)
         object_property_add_child(OBJECT(s), "pic", OBJECT(s->pic));
         if (s->pic_runtime_profile) {
             qdev_prop_set_enum(s->pic, "compatibility-profile",
-                               PIC_RUNTIME_PROFILE);
+                               s->pic_shub_profile ? PIC_SHUB_PROFILE :
+                                                     PIC_RUNTIME_PROFILE);
             qdev_prop_set_bit(s->pic, "test-fixture", false);
             qdev_prop_set_bit(s->pic, "linked-transport", false);
             qdev_prop_set_bit(s->pic, "bedrock-interrupts", false);
@@ -703,10 +707,6 @@ static void target_realize(DeviceState *dev, Error **errp)
             error_propagate(errp, local_err);
             return;
         }
-        if (!sysbus_realize(SYS_BUS_DEVICE(s->pic), &local_err)) {
-            error_propagate(errp, local_err);
-            return;
-        }
         if (s->pic_runtime_profile && s->target_port) {
             SGIBedrockIOState *ii = SGI_BEDROCK_IO(object_dynamic_cast(
                 s->target_port, TYPE_SGI_BEDROCK_IO));
@@ -714,11 +714,19 @@ static void target_realize(DeviceState *dev, Error **errp)
             if (ii && ii->bedrock) {
                 SGIBedrockState *bedrock = SGI_BEDROCK(ii->bedrock);
 
-                sgi_pic_set_bedrock_pi(SGI_PIC(s->pic), 0,
-                                       &bedrock->pi[0], 0);
-                sgi_pic_set_bedrock_pi(SGI_PIC(s->pic), 1,
-                                       &bedrock->pi[1], 0);
+                if (!object_property_set_link(OBJECT(s->pic), "level-sink0",
+                                              OBJECT(&bedrock->pi[0]),
+                                              errp) ||
+                    !object_property_set_link(OBJECT(s->pic), "level-sink1",
+                                              OBJECT(&bedrock->pi[1]),
+                                              errp)) {
+                    return;
+                }
             }
+        }
+        if (!sysbus_realize(SYS_BUS_DEVICE(s->pic), &local_err)) {
+            error_propagate(errp, local_err);
+            return;
         }
         if (s->pic_test_irq_route) {
             DeviceState *head = sgi_pic_head_device(SGI_PIC(s->pic), 0);
@@ -760,6 +768,8 @@ static const Property target_properties[] = {
                       pic_bedrock_interrupts, false),
     DEFINE_PROP_BOOL("pic-runtime-profile", SGIXioTestTargetState,
                      pic_runtime_profile, false),
+    DEFINE_PROP_BOOL("pic-shub-profile", SGIXioTestTargetState,
+                     pic_shub_profile, false),
     DEFINE_PROP_BOOL("pic-v5-migration-source", SGIXioTestTargetState,
                      pic_v5_migration_source, false),
     DEFINE_PROP_BOOL("pic-v6-migration-source", SGIXioTestTargetState,

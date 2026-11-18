@@ -4,7 +4,6 @@
 
 #include "hw/pci/pci_host.h"
 #include "hw/core/sysbus.h"
-#include "hw/misc/sgi-bedrock-pi.h"
 #include "hw/misc/sgi-xbow.h"
 #include "qapi/error.h"
 #include "qom/object.h"
@@ -20,9 +19,21 @@ MemoryRegion *sgi_pic_widget(SGIPICState *s);
 PCIBus *sgi_pic_pci_bus(SGIPICState *s, unsigned head);
 /* Board code wires each head's pci-intx outputs to its eight pin inputs. */
 DeviceState *sgi_pic_head_device(SGIPICState *s, unsigned head);
-void sgi_pic_set_bedrock_pi(SGIPICState *s, unsigned pi,
-                            SGIBedrockPIState *bedrock_pi,
-                            unsigned source_base);
+/*
+ * Where a PIC reports an interrupt level source: its host links one sink per
+ * processor interface (level-sink0, level-sink1), so the PIC does not depend
+ * on the Bedrock model.
+ */
+#define TYPE_SGI_PIC_LEVEL_SINK "sgi-pic-level-sink"
+typedef struct SGIPICLevelSinkClass SGIPICLevelSinkClass;
+DECLARE_CLASS_CHECKERS(SGIPICLevelSinkClass, SGI_PIC_LEVEL_SINK,
+                       TYPE_SGI_PIC_LEVEL_SINK)
+
+struct SGIPICLevelSinkClass {
+    InterfaceClass parent_class;
+    void (*set_level_source)(Object *sink, unsigned source, unsigned level,
+                             bool active);
+};
 
 /* Select the reviewed IP53 functional composition before node construction. */
 bool sgi_pic_enable_pxbow_experiment(SGIPICState *s, uint64_t span,

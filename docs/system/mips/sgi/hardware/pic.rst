@@ -156,13 +156,17 @@ windows.
 Profiles
 ========
 
-The ``compatibility-profile`` property selects one of three profiles:
+The ``compatibility-profile`` property selects a profile:
 
 ``pic-rev3-bedrock-experimental``
   The runtime profile of the Origin 350, Onyx 350 and Onyx4 host.
 ``pic-rev3-bedrock-tezro-experimental``
   The Tezro runtime profile. Its PIC behaviour is identical to the first;
   only the name differs, so migration can tell the two apart.
+``pic-rev3-shub-compat``
+  The Altix 350 host's runtime profile: the first profile's behaviour plus
+  the SHub opt-ins described on the Bridge page (:ref:`sgi-bridge-config`
+  and the paragraphs after it).
 ``pic-rev3-bedrock``
   A synthetic register fixture for qtest, with ``test-fixture=on``. It
   refuses to realize outside qtest.
@@ -217,6 +221,10 @@ processor view's 32-bit word view also reaches the slot.
      - ``0x0f00320f``
      - read/write
      - Write mask ``0x0f00f20f``. Bits 3:0 are the head's widget number.
+       The runtime profiles keep bits 27:24, 15:12, 9 and 3:0 and the fixture
+       profile bits 3:0 only. Under ``pic-rev3-shub-compat`` bit 21 is kept
+       too: it selects 16 KiB translation pages, which the Linux kernel's
+       attach sets (*software expectation*).
    * - ``0x028``
      - Request timeout
      - 64, +4
@@ -717,6 +725,13 @@ the hardware is expected to write only its enabled bytes in one access,
 an *approximation*. Transfers with bit 55 set are cut into the same
 pieces.
 
+Under the ``pic-rev3-shub-compat`` profile the sense of bit 55 is reversed:
+clear puts each byte at its own address, as for a little-endian processor's
+memory, and set applies the exchange above. The Altix 350 selects it, because
+its drivers never set bit 55 and expect descriptors to arrive in order. No
+source states the net lane rule for this host, so it is *inferred* from that
+use. Under the other profiles the placements are as above.
+
 These placements are each an *approximation*. They rest on two software
 expectations: the Linux IP35 port's producer, which names bit 55 the
 swap attribute (``pci-sgipic.c``), and the IRIX 6.5.30 BCM5701 driver,
@@ -797,8 +812,9 @@ behaviour is *inferred* from the XBridge, whose force registers sit at
 the same offsets (:ref:`sgi-xbridge-interrupts`); no PIC specification
 is held. Whether a force reaches a disabled input is *unknown*. The
 model sends nothing and logs ``LOG_UNIMP``, an *approximation*, as the
-XBridge model does. A delivered force updates the input's Bedrock level
-source the same way a rising edge does (:ref:`sgi-pic-reassert`).
+XBridge model does, except for force-always under the
+``pic-rev3-shub-compat`` profile (see the Bridge page). A delivered force
+updates the input's Bedrock level source the same way a rising edge does (:ref:`sgi-pic-reassert`).
 
 .. _sgi-pic-reassert:
 

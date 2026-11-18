@@ -456,6 +456,8 @@ config SGI_BEDROCK_FLASH
 
 config SGI_BEDROCK
     bool
+    # The processor interface implements the PIC's level-sink interface.
+    select SGI_PIC
     select SGI_PI_GFX
     select SGI_PIO_FORWARD
     select SGI_BEDROCK_IO

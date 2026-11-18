@@ -690,6 +690,53 @@ read back to the requester, which a processor takes as a bus error, and
 returns all ones to a caller that sees the value without the failure. An
 unclaimed write completes. Both are *inferred*.
 
+The Altix 350 selects the ``pic-rev3-shub-compat`` profile (see
+:ref:`sgi-pic-profiles`), which makes the unclaimed read complete with all
+ones and the same recorded time-out instead of failing. The IA-64 PROM's
+probe reads an empty slot as vendor ``0xffff``, and a bus error that is not
+delivered to it as a machine check cannot be recovered. Whether a real PIC
+completes or raises a machine check is not known, so completing is an
+*approximation*. A read of an empty slot on a real PIC, or a capture of the
+PROM's probe, would settle it. The other profiles take the failing read above.
+
+The same profile adds four things to the PIC for translated DMA: plain
+64-bit words at ``+0x48`` (the link configuration) and ``+0x280`` and
+``+0x288`` (the response buffer maps), the 1024 translation entries at
+``+0x10000``, and the translated DMA window, PCI ``0x4000_0000`` to
+``0x7fff_ffff``. An entry holds a valid bit (0), a target widget (11:8) and
+the :term:`Crosstalk` page address (47:12); the page is 4 KiB, or 16 KiB when control
+bit 21 is set, and PCI address bit 29 selects a byte swap. The layout and the
+window are from ``arch/ia64/sn/pci/pcibr/pcibr_dma.c`` in Linux and the PROM,
+rated *software expectation*. The entry's target widget is not used, because the one peer is
+reached whatever it says, and a DMA to an invalid entry or beyond the
+1024 entries fails, an *approximation*: what the device sees is not known,
+and a DMA through an invalid entry on a real PIC would settle it.
+The words reset to 0 and mean nothing to the model. Under the other
+profiles all of these accesses behave as before.
+
+The profile makes three more changes. A force-always write (``+0x180`` plus
+8 per input) sends for an input whose enable bit is clear. The kernel's DMA flush (``arch/ia64/sn/pci/pcibr/pcibr_dma.c`` and
+``arch/ia64/include/asm/sn/io.h`` in Linux) programs
+an input's destination to a node memory word, forces it and waits for the
+packet's value there, and never sets the enable bit itself (about Linux, from its source); that the
+chip sends for a disabled input is not even inferred, so this is an
+*approximation*. The PROM routine behind SAL service ``0x5a`` (the DMA flush
+list) read for whether it sets the enable, or a force write to a disabled
+input on a real PIC, would settle it. A force-with-pin write
+(``+0x1c0`` plus 8 per input) is unaffected and needs an enabled, high input.
+The profile delivers a forced packet 1000 ns after the write instead of in
+the same instruction, because a guest that
+forces from its interrupt exit, as the SN2 kernels do, would otherwise take
+the interrupt again before it ran another instruction. The value is a choice,
+an *approximation* that a trace of a force write and the resulting interrupt
+on a real node would settle. The profile stores the data word of an interrupt packet written to node
+memory in the processor's order; the 3.2 kernel's flush waits for the
+value ``0x10f`` there, which only reads back that way. The hub's real byte
+order for that word is not documented (*inferred*); a capture of the word
+in node memory from a real node would settle it. Forces
+in flight and the time they land are migrated, and the timer is re-armed on
+load.
+
 Type 1 configuration space and the interrupt-acknowledge cycle are not
 decoded: no board this model serves has a PCI-to-PCI bridge or a PCI
 interrupt controller. Their register, ``0x0c8``, is storage.
