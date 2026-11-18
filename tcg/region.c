@@ -49,6 +49,7 @@
 struct tcg_region_tree {
     QemuMutex lock;
     QTree *tree;
+    TranslationBlock *last_tb;
     /* padding to avoid false sharing is computed at run-time */
 };
 
@@ -188,6 +189,7 @@ static void tcg_region_trees_init(void)
 
         qemu_mutex_init(&rt->lock);
         rt->tree = q_tree_new_full(tb_tc_cmp, NULL, NULL, tb_destroy);
+        rt->last_tb = NULL;
     }
 }
 
@@ -226,6 +228,7 @@ void tcg_tb_insert(TranslationBlock *tb)
 
     g_assert(rt != NULL);
     qemu_mutex_lock(&rt->lock);
+    rt->last_tb = NULL;
     q_tree_insert(rt->tree, &tb->tc, tb);
     qemu_mutex_unlock(&rt->lock);
 }
@@ -236,6 +239,7 @@ void tcg_tb_remove(TranslationBlock *tb)
 
     g_assert(rt != NULL);
     qemu_mutex_lock(&rt->lock);
+    rt->last_tb = NULL;
     q_tree_remove(rt->tree, &tb->tc);
     qemu_mutex_unlock(&rt->lock);
 }
@@ -256,7 +260,13 @@ TranslationBlock *tcg_tb_lookup(uintptr_t tc_ptr)
     }
 
     qemu_mutex_lock(&rt->lock);
-    tb = q_tree_lookup(rt->tree, &s);
+    tb = rt->last_tb;
+    if (!tb || ptr_cmp_tb_tc(s.ptr, &tb->tc)) {
+        tb = q_tree_lookup(rt->tree, &s);
+        if (tb) {
+            rt->last_tb = tb;
+        }
+    }
     qemu_mutex_unlock(&rt->lock);
     return tb;
 }
@@ -319,6 +329,7 @@ static void tcg_region_tree_reset_all(void)
     for (i = 0; i < region.n; i++) {
         struct tcg_region_tree *rt = region_trees + i * tree_size;
 
+        rt->last_tb = NULL;
         /* Increment the refcount first so that destroy acts as a reset */
         q_tree_ref(rt->tree);
         q_tree_destroy(rt->tree);
