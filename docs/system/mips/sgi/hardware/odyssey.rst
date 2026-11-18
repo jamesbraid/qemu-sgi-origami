@@ -708,7 +708,7 @@ SDRAM pool with no separate texture memory. The IRIX 6.5.30 kernel
 manages that pool and pages objects out to host memory when it fills, a
 *software expectation* from the shipped kernel. The board's address map, framebuffer base, stride, tiling and
 pixel packing are *unknown*. The model therefore keeps its own planes,
-each 1280 by 1024, none reachable through the aperture:
+each 1920 by 1200, none reachable through the aperture:
 
 - two RGBA8 colour buffers, 0 and 1, red in the high byte;
 - an 8-bit drawable-id plane, bits 7:3 the main id and bits 2:0 the
@@ -780,11 +780,20 @@ The guest writes the active width and height to back-end indices
 on the model with the ``v6`` product. That these indices set the
 displayed size is *inferred* from those writes and the format gfxinfo
 then reports. The model shows the top-left of its planes at the latest
-nonzero size; a zero leaves the picture alone, and a size beyond 1280 by
-1024 is cut to it with a ``LOG_UNIMP`` report. The timing table the
+nonzero size; a zero leaves the picture alone, and a size beyond the
+1920 by 1200 planes is cut to them with a ``LOG_UNIMP`` report. Reset
+returns the size to 1280 by 1024. IRIX on a V12 defaults to 1920x1200,
+which the planes now hold in full. The timing table the
 guest loads at indices ``0x2000``-``0x247f`` is not decoded, so the
 frame rate stays 60 Hz at every size (*approximation*): 1688 by 1066
 total pixels at 107,964,476 Hz.
+
+Grades: that the guest writes the selected format's active size to these
+indices is *established* for the 1280x1024 and 1280x720 formats and
+*observed* for 1920x1200 on the model. That they set the displayed size
+rather than a pan origin is *inferred*. What the timing table adds, and
+the board's maximum size, are *unknown*; the 1920 by 1200 limit is the
+model's plane size, not a hardware figure.
 
 .. _sgi-odyssey-swaps:
 
@@ -1024,7 +1033,7 @@ None of these is a reset value.
 Model limits
 ============
 
-- One fixed 1280 by 1024 plane set and a 60 Hz retrace at every display
+- One fixed 1920 by 1200 plane set and a 60 Hz retrace at every display
   size. No DDC, EDID, second channel or video timing.
 - No uploaded program runs. Program uploads are stored; the model
   recognises the known geometry programs and does their work itself.

@@ -194,6 +194,9 @@
  */
 #define ODSY_CHANNEL_WIDTH 0x2802
 #define ODSY_CHANNEL_HEIGHT 0x2803
+/* The size the PROM and kernel program at boot, and reset returns to. */
+#define ODSY_BOOT_WIDTH 1280
+#define ODSY_BOOT_HEIGHT 1024
 
 /*
  * The crosstalk configuration block: eight 64-bit registers on an 8-byte
@@ -3178,7 +3181,7 @@ static uint64_t odyssey_read(void *opaque, hwaddr addr, unsigned size)
     return value;
 }
 
-/* Present the plane's top-left width x height at the 1280x1024 rate. */
+/* Present the plane's top-left width x height at the fixed 60 Hz rate. */
 static void odyssey_set_scanout_size(SGIOdysseyState *s, uint32_t width,
                                      uint32_t height)
 {
@@ -14942,7 +14945,7 @@ static void odyssey_realize(DeviceState *dev, Error **errp)
      * timer at the mode's rate.
      */
     sgi_scanout_init(&s->scanout, dev, &odyssey_head_ops, s);
-    odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+    odyssey_set_scanout_size(s, ODSY_BOOT_WIDTH, ODSY_BOOT_HEIGHT);
     if (s->gpu) {
         s->gpu_scanout = odyssey_gpu_scanout_new(s, s->gpu->gpu,
                                                  odyssey_gpu_scanout_planes);
@@ -15053,9 +15056,9 @@ static void odyssey_reset_hold(Object *obj, ResetType type)
      * Back to the boot size, then forget swaps and the cursor, repaint the
      * cleared plane and restart the phase.
      */
-    if (s->scanout.mode.width != SGI_ODYSSEY_WIDTH ||
-        s->scanout.mode.height != SGI_ODYSSEY_HEIGHT) {
-        odyssey_set_scanout_size(s, SGI_ODYSSEY_WIDTH, SGI_ODYSSEY_HEIGHT);
+    if (s->scanout.mode.width != ODSY_BOOT_WIDTH ||
+        s->scanout.mode.height != ODSY_BOOT_HEIGHT) {
+        odyssey_set_scanout_size(s, ODSY_BOOT_WIDTH, ODSY_BOOT_HEIGHT);
     }
     sgi_scanout_reset(&s->scanout);
 }

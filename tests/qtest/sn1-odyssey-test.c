@@ -644,7 +644,7 @@ static void user_cmd_push(QTestState *qts, uint32_t word)
 }
 
 /*
- * The modeled framebuffer's host-only introspection: a fixed 1280x1024
+ * The modeled framebuffer's host-only introspection: a fixed 1920x1200
  * surface (SGI_ODYSSEY_WIDTH/HEIGHT, include/hw/misc/sgi-odyssey.h), not a
  * guest-visible register. The command FIFO and data port stay
  * accept-and-trace only (test_unmodeled_offsets_are_visible), so this is
@@ -2485,16 +2485,33 @@ static void test_display_channel_size_sets_scanout(void)
     g_assert_cmphex(odsy_screendump_pixel_sized(qts, 5, 5, 1024, 768), ==,
                     0x00112233);
 
-    /* Larger than the modeled planes: kept to them and reported. */
+    /* A 1920x1200 channel scans out past 1280 columns and 1024 lines. */
     backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 2));
-    backend_push32(qts, 1600);
+    backend_push32(qts, 1920);
     backend_push32(qts, 1200);
     size = odsy_screendump_size(qts);
-    g_assert_cmpstr(size, ==, "1280 1024");
+    g_assert_cmpstr(size, ==, "1920 1200");
+    g_free(size);
+    odsy_test_pixel_write(qts, 1700, 5, 0x11223344);
+    odsy_test_pixel_write(qts, 5, 1100, 0x11223344);
+    odsy_test_pixel_write(qts, 1919, 1199, 0x11223344);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 1700, 5, 1920, 1200), ==,
+                    0x00112233);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 5, 1100, 1920, 1200), ==,
+                    0x00112233);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 1919, 1199, 1920, 1200),
+                    ==, 0x00112233);
+    g_assert_cmphex(odsy_screendump_pixel_sized(qts, 1701, 5, 1920, 1200), !=,
+                    0x00112233);
+
+    /* Larger than the modeled planes: kept to them and reported. */
+    backend_push32(qts, ODSY_BACKEND_HDR(0x2802, 2));
+    backend_push32(qts, 2560);
+    backend_push32(qts, 1600);
+    size = odsy_screendump_size(qts);
+    g_assert_cmpstr(size, ==, "1920 1200");
     g_free(size);
 
-    backend_push32(qts, ODSY_BACKEND_HDR(0x2803, 1));
-    backend_push32(qts, 720);
     qtest_system_reset(qts);
     size = odsy_screendump_size(qts);
     g_assert_cmpstr(size, ==, "1280 1024");
@@ -2503,10 +2520,10 @@ static void test_display_channel_size_sets_scanout(void)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, &error));
     g_assert_no_error(error);
-    g_assert_nonnull(strstr(log, "display channel 1600x768 is larger than "
-                                 "the modeled 1280x1024 planes"));
-    g_assert_nonnull(strstr(log, "display channel 1280x1200 is larger than "
-                                 "the modeled 1280x1024 planes"));
+    g_assert_nonnull(strstr(log, "display channel 2560x1200 is larger than "
+                                 "the modeled 1920x1200 planes"));
+    g_assert_nonnull(strstr(log, "display channel 1920x1600 is larger than "
+                                 "the modeled 1920x1200 planes"));
     g_assert_cmpint(g_unlink(log_path), ==, 0);
 }
 
@@ -2542,10 +2559,10 @@ static void test_framebuffer_pixel_accessor_bounds(void)
     QTestState *qts = board_start("");
     QDict *resp;
 
-    g_assert_cmphex(odsy_test_pixel(qts, 1280, 0), ==, 0);
-    g_assert_cmphex(odsy_test_pixel(qts, 0, 1024), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 1920, 0), ==, 0);
+    g_assert_cmphex(odsy_test_pixel(qts, 0, 1200), ==, 0);
 
-    odsy_test_pixel_select(qts, 1280, 0);
+    odsy_test_pixel_select(qts, 1920, 0);
     resp = qtest_qmp(qts,
         "{'execute': 'qom-set', 'arguments': {'path': %s, "
         "'property': 'x-test-pixel', 'value': %u}}", BOARD, 0xffffffffu);
@@ -13969,6 +13986,7 @@ static void odsy_buffer_pixel_write(QTestState *qts, uint32_t buffer,
                                     uint32_t x, uint32_t y, uint32_t value);
 
 #define ODSY_ID_PLANE_BASE 0x142000
+/* The boot size, not the plane size. */
 #define ODSY_TEST_WIDTH 1280
 #define ODSY_TEST_HEIGHT 1024
 
@@ -22026,9 +22044,9 @@ static void test_rgba_read_bounds(void)
         bool readable;
     } cases[] = {
         { 0, 0, true },
-        { 1279, 1023, true },
-        { 1280, 0, false },
-        { 0, 1024, false },
+        { 1919, 1199, true },
+        { 1920, 0, false },
+        { 0, 1200, false },
         { UINT32_MAX, 0, false },
     };
     QTestState *qts = board_start("");
@@ -25079,7 +25097,7 @@ static void test_readback_failures(void)
         { RB_READ_SENTINEL, 0x003f0040, 0x10001, RB_GL_FRONT_RGBA, 4,
           0xf3010000, 8, "disagrees with itself" },
         /* A rectangle past the plane's right edge. */
-        { RB_READ_SENTINEL, (0 << 16) | 767, 0x10002, RB_GL_FRONT_RGBA, 8,
+        { RB_READ_SENTINEL, (0 << 16) | 1407, 0x10002, RB_GL_FRONT_RGBA, 8,
           0xf3010000, 8, "leaves its source" },
         /* A board base that holds no buffer. */
         { 0x16a000, 0, 0x10001, 0x80025000, 4, 0xf301004c, 4,

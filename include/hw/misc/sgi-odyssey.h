@@ -83,13 +83,12 @@ typedef struct SGIRenderer SGIRenderer;
 #define SGI_ODYSSEY_GL_WINDOW_ENTRIES 0xc7
 
 /*
- * The one modeled mode: the SI/desktop target size a later increment's
- * command interpreter will render into. A real V12 board supports other
- * VFO-described modes; picking one fixed size to model first is scope, not
- * a claim that it is the only mode the hardware supports.
+ * The plane size, the largest active size the display channel can scan out.
+ * IRIX on a V12 defaults to 1920x1200; the 1280x1024 PROM mode is shown from
+ * the top-left corner of the same planes.
  */
-#define SGI_ODYSSEY_WIDTH 1280
-#define SGI_ODYSSEY_HEIGHT 1024
+#define SGI_ODYSSEY_WIDTH 1920
+#define SGI_ODYSSEY_HEIGHT 1200
 
 typedef struct SGIOdysseyOpenVertex {
     uint32_t word;
