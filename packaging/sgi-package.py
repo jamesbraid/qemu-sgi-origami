@@ -64,7 +64,11 @@ PLATFORMS = {
 
 # Extra vcpkg build environment per platform: nettle's -fpic overflows the
 # GOT of QEMU's executable on arm64 Linux, and its configure reads CCPIC.
-VCPKG_ENV = {('linux', 'arm64'): {'CCPIC': '-fPIC'}}
+VCPKG_ENV = {
+    ('linux', 'arm64'): {'CCPIC': '-fPIC'},
+    # GnuTLS's arm64 assembly does not assemble for Windows.
+    ('windows', 'arm64'): {'enable_hardware_acceleration': 'no'},
+}
 
 # Executables in the archive, as paths in the build directory.
 PROGRAMS = ['qemu-system-mips64', 'qemu-img', 'tools/sgi/qemu-sgi-machine-init']
@@ -128,11 +132,15 @@ def host_architecture():
     return {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
 
 
-def configure_flags(name):
-    """The configure arguments of platform `name`, from the shared list."""
+def configure_flags(name, arch=None):
+    """The configure arguments of platform `name`, from the shared list.
+
+    `arch` adds the list for that architecture, if the file has one.
+    """
     with open(HERE / 'configure-flags.json', encoding='utf-8') as f:
         flags = json.load(f)
-    return flags['common'] + flags[name]
+    return (flags['common'] + flags[name]
+            + flags.get(f'{name}-{arch}', []))
 
 
 def source_version():
@@ -258,9 +266,9 @@ def meson_tool(build):
     raise PackageError(f'no meson in {build}/pyvenv; did configure fail?')
 
 
-def build_qemu(name, build, env, pkgversion, jobs):
+def build_qemu(name, arch, build, env, pkgversion, jobs):
     build.mkdir(parents=True, exist_ok=True)
-    configure = [SOURCE / 'configure', *configure_flags(name)]
+    configure = [SOURCE / 'configure', *configure_flags(name, arch)]
     if name == 'windows':
         # Link the libraries statically, MSYS2's included: left alone,
         # Meson resolves -lgnutls to MSYS2's import library and the program
@@ -462,13 +470,32 @@ LINUX_RUNTIME_LICENCES = [
     ('/usr/share/common-licenses/GPL-3', 'libstdc++.GPL-3'),
 ]
 
-# The MinGW runtime libraries, as DLL names and the MSYS2 package each one
-# comes from.
-RUNTIME_PACKAGES = [
+# DLL names of an MSYS2 toolchain's runtime and the package whose licence
+# covers each: GCC's for MINGW64, LLVM's for CLANGARM64.
+GCC_RUNTIME_PACKAGES = [
     (re.compile(r'^libstdc\+\+-\d+\.dll$'), 'libstdc++'),
     (re.compile(r'^libgcc_s_\w+-\d+\.dll$'), 'libgcc'),
     (re.compile(r'^libwinpthread-\d+\.dll$'), 'winpthreads'),
 ]
+LLVM_RUNTIME_PACKAGES = [
+    (re.compile(r'^libc\+\+\.dll$'), 'libc++'),
+    (re.compile(r'^libunwind\.dll$'), 'libunwind'),
+    (re.compile(r'^libwinpthread-\d+\.dll$'), 'libwinpthread'),
+]
+
+
+def runtime_packages():
+    if os.environ.get('MSYSTEM', '').startswith('CLANG'):
+        return LLVM_RUNTIME_PACKAGES
+    return GCC_RUNTIME_PACKAGES
+
+
+def runtime_licence_packages():
+    """Packages whose licences ship: the runtime's, plus the static ones."""
+    names = [package for _, package in runtime_packages()]
+    if runtime_packages() is LLVM_RUNTIME_PACKAGES:
+        names.append('compiler-rt')  # builtins linked in, with no DLL
+    return names
 
 
 def copy_windows_dlls(bin_dir, extra_dirs):
@@ -510,12 +537,12 @@ def copy_windows_dlls(bin_dir, extra_dirs):
 
 
 def toolchain_prefix():
-    """The MSYS2 prefix of the MinGW toolchain on PATH, such as .../mingw64."""
-    gcc = shutil.which('gcc')
-    if not gcc:
-        raise PackageError('gcc is not on PATH; build in an MSYS2 MINGW64 '
-                           'shell')
-    return Path(gcc).resolve().parents[1]
+    """The MSYS2 prefix of the toolchain on PATH, such as .../mingw64."""
+    compiler = shutil.which('gcc') or shutil.which('clang')
+    if not compiler:
+        raise PackageError('no gcc or clang on PATH; build in an MSYS2 '
+                           'MINGW64 or CLANGARM64 shell')
+    return Path(compiler).resolve().parents[1]
 
 
 def copy_runtime_licences(prefix, dlls, licences):
@@ -528,10 +555,10 @@ def copy_runtime_licences(prefix, dlls, licences):
     in bin/ is refused, so no DLL ships with an unknown licence.
     """
     for dll in dlls:
-        if not any(pattern.match(dll) for pattern, _ in RUNTIME_PACKAGES):
+        if not any(pattern.match(dll) for pattern, _ in runtime_packages()):
             raise PackageError(f'{dll} is in bin/ but is no known MinGW '
                                'runtime library, so its licence is unknown')
-    for _, package in RUNTIME_PACKAGES:
+    for package in runtime_licence_packages():
         directory = prefix / 'share/licenses' / package
         texts = (sorted(p for p in directory.iterdir() if p.is_file())
                  if directory.is_dir() else [])
@@ -625,7 +652,7 @@ def package(args):
 
     build = work / 'qemu-build'
     env = build_environment(name, prefix, work)
-    build_qemu(name, build, env, f'sgi-origami {label}', args.jobs)
+    build_qemu(name, arch, build, env, f'sgi-origami {label}', args.jobs)
 
     stage_dir = work / 'stage'
     stage(name, build, prefix, stage_dir, not args.no_strip)
