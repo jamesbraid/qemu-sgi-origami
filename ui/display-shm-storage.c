@@ -156,6 +156,23 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
     return r;
 }
 
+/* Release what a GPU slot owns: a descriptor or NT handles. */
+static void dshm_gpu_handle_drop(const DisplayShmGpuSlot *g)
+{
+#ifdef _WIN32
+    if (g->handle > 0) {
+        CloseHandle((HANDLE)(intptr_t)g->handle);
+    }
+    if (g->fence > 0) {
+        CloseHandle((HANDLE)(intptr_t)g->fence);
+    }
+#else
+    if (g->handle >= 0) {
+        close(g->handle);
+    }
+#endif
+}
+
 /* A GPU slot: only the dma-buf's descriptor or NT handles, ours to close. */
 DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
                                 uint32_t id)
@@ -169,18 +186,7 @@ DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
 #endif
 
     if (!kind_ok || !g->width || !g->height || g->stride < g->width * 4) {
-#ifdef _WIN32
-        if (g->handle > 0) {
-            CloseHandle((HANDLE)(intptr_t)g->handle);
-        }
-        if (g->fence > 0) {
-            CloseHandle((HANDLE)(intptr_t)g->fence);
-        }
-#else
-        if (g->handle >= 0) {
-            close(g->handle);
-        }
-#endif
+        dshm_gpu_handle_drop(g);
         return NULL;
     }
     r = g_new0(DShmRegion, 1);
@@ -220,14 +226,7 @@ void dshm_region_unref(DisplayShm *d, DShmRegion *r)
     }
     if (r->gpu) {
         /* GPU memory is not host memory: not counted in d->retained */
-#ifdef _WIN32
-        CloseHandle(r->h);
-        if (r->fence_h) {
-            CloseHandle(r->fence_h);
-        }
-#else
-        close(r->h);
-#endif
+        dshm_gpu_handle_drop(&r->gpu_slot);
         g_free(r);
         return;
     }
