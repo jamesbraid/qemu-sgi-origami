@@ -7,6 +7,7 @@ import importlib.util
 import tarfile
 import tempfile
 import unittest
+from unittest import mock
 import zipfile
 from pathlib import Path
 
@@ -62,6 +63,24 @@ class Flags(unittest.TestCase):
         self.assertIn('--enable-vmnet', pkg.configure_flags('macos'))
         self.assertIn('--enable-dsound', pkg.configure_flags('windows'))
         self.assertNotIn('--enable-dsound', pkg.configure_flags('linux'))
+
+    def test_architecture_flags_apply_to_that_architecture_only(self):
+        self.assertIn('--disable-werror',
+                      pkg.configure_flags('windows', 'arm64'))
+        self.assertNotIn('--disable-werror',
+                         pkg.configure_flags('windows', 'x86_64'))
+        self.assertNotIn('--disable-werror', pkg.configure_flags('windows'))
+
+
+class Runtime(unittest.TestCase):
+    def test_clang_environment_has_llvm_runtime(self):
+        with mock.patch.dict('os.environ', {'MSYSTEM': 'CLANGARM64'}):
+            names = [p for _, p in pkg.runtime_packages()]
+        self.assertIn('libc++', names)
+        self.assertNotIn('libstdc++', names)
+        with mock.patch.dict('os.environ', {'MSYSTEM': 'MINGW64'}):
+            names = [p for _, p in pkg.runtime_packages()]
+        self.assertIn('libstdc++', names)
 
 
 class Libraries(unittest.TestCase):

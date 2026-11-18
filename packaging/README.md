@@ -10,7 +10,7 @@ merging upstream QEMU never touches it.
 
 `sgi-origami-<version>-<platform>.tar.gz` (Windows: `.zip`), with
 `<platform>` one of `linux-x86_64`, `linux-arm64`, `macos-arm64`,
-`macos-x86_64`, `windows-x86_64` and
+`macos-x86_64`, `windows-x86_64`, `windows-arm64` and
 `<version>` the release tag without its `sgi-origami-` prefix, for example
 `sgi-origami-11.1.50-1-linux-x86_64.tar.gz`. There is no wrapping directory:
 
@@ -109,6 +109,12 @@ pacman -S --needed git base-devel autoconf-archive mingw-w64-x86_64-toolchain \
     mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
 python packaging/sgi-package.py
 ```
+
+Windows on Arm builds in an MSYS2 CLANGARM64 shell with the same steps and
+the `mingw-w64-clang-aarch64-*` packages. vcpkg takes Clang from `PATH` through
+`triplets/arm64-mingw-origami-toolchain.cmake`, and it runs its own x86-64
+MSYS2 under emulation, so a build with a cold vcpkg cache takes hours; the
+workflow saves the cache even when the build fails.
 
 The archive lands in `build-package/dist`. The script stops when an
 executable needs a shared library that is neither in `bin/` nor one the host
