@@ -333,7 +333,6 @@ static bool crime_texture_coordinates(const CrimeTexture *t, int x, int y,
                                        CrimeRational *coordinate)
 {
     int64_t extracted[3];
-    CrimeRational one = crime_rational(1, 1);
 
     for (unsigned i = 0; i < 3; i++) {
         Int128 value = int128_makes64(t->plane[i][0]);
@@ -358,14 +357,13 @@ static bool crime_texture_coordinates(const CrimeTexture *t, int x, int y,
     for (unsigned i = 0; i < 2; i++) {
         int64_t n = extracted[2] < 0 ? -extracted[i] : extracted[i];
         uint64_t d = extracted[2] < 0 ? -extracted[2] : extracted[2];
-        CrimeRational quotient = crime_rational(n, d);
-        CrimeRational scale = crime_rational(1,
-            1U << (14 - 4 * ((t->flags >> i) & 1)));
+        uint64_t scale = UINT64_C(1) <<
+            (14 - 4 * ((t->flags >> i) & 1));
+        uint64_t denominator = d * scale;
+        int64_t numerator = n - (int64_t)denominator;
 
-        if (!crime_rational_multiply(&coordinate[i], &quotient, &scale) ||
-            !crime_rational_subtract(&coordinate[i], &coordinate[i], &one)) {
-            return false;
-        }
+        /* The plane bounds above keep this combined numerator within int64. */
+        coordinate[i] = crime_rational(numerator, denominator);
     }
     return true;
 }
@@ -943,6 +941,12 @@ int crime_texture_test_setup_axis64(
 {
     return (int)crime_texture_setup_axis64(coordinate, size, wrap, linear,
                                            index, weights);
+}
+
+bool crime_texture_test_coordinates(CrimeTexture *t, int x, int y,
+                                    CrimeRational *coordinate)
+{
+    return crime_texture_coordinates(t, x, y, coordinate);
 }
 
 bool crime_texture_test_level(CrimeTexture *t,

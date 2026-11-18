@@ -736,6 +736,151 @@ static void sampler_state(uint64_t p[128], uint64_t tlb[28])
     }
 }
 
+static Int128 texture_coordinate_product(int64_t a, int64_t b)
+{
+    uint64_t low, high;
+    muls64(&low, &high, a, b);
+    return int128_make128(low, high);
+}
+
+static bool texture_coordinates_reference(const uint64_t p[128], int anchor_x,
+                                           int anchor_y, int x, int y,
+                                           CrimeRational *coordinate)
+{
+    static const unsigned reg[3][3] = {
+        {0x120, 0x138, 0x140}, {0x128, 0x148, 0x150}, {0x130, 0x158, 0x15c},
+    };
+    int64_t plane[3][3], extracted[3];
+    CrimeRational one = crime_rational(1, 1);
+
+    for (unsigned i = 0; i < 3; i++) {
+        for (unsigned j = 0; j < 3; j++) {
+            plane[i][j] = p[reg[i][j] / 4];
+        }
+        Int128 value = int128_makes64(plane[i][0]);
+        int64_t lo = i == 2 ? INT32_MIN : INT64_MIN;
+        int64_t hi = i == 2 ? INT32_MAX : INT64_MAX;
+
+        value = int128_add(value, texture_coordinate_product(
+            plane[i][1], (int64_t)x - anchor_x));
+        value = int128_add(value, texture_coordinate_product(
+            plane[i][2], (int64_t)y - anchor_y));
+        if (int128_lt(value, int128_makes64(lo)) ||
+            int128_gt(value, int128_makes64(hi))) {
+            return false;
+        }
+        extracted[i] = int128_getlo(int128_rshift(value, 12));
+    }
+    if (!extracted[2]) {
+        return false;
+    }
+    for (unsigned i = 0; i < 2; i++) {
+        int64_t n = extracted[2] < 0 ? -extracted[i] : extracted[i];
+        uint64_t d = extracted[2] < 0 ? -extracted[2] : extracted[2];
+        CrimeRational quotient = crime_rational(n, d);
+        CrimeRational scale = crime_rational(1,
+            1U << (14 - 4 * ((p[0x134 / 4] >> i) & 1)));
+
+        if (!crime_rational_multiply(&coordinate[i], &quotient, &scale) ||
+            !crime_rational_subtract(&coordinate[i], &coordinate[i], &one)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void test_texture_coordinate_rational(void)
+{
+    const int delta[] = {-1, 0, 1};
+    const int point[][2] = { {597, 621}, {342, 537}, {800, 800}, {0, 0} };
+    g_autofree uint8_t *data = g_malloc(224 * 65536);
+
+    for (unsigned i = 0; i < 224 * 65536; i++) {
+        data[i] = (i * 13) ^ (i >> 8) ^ (i >> 16);
+    }
+    for (unsigned flags = 0; flags < 4; flags++) {
+        for (unsigned negative_q = 0; negative_q < 2; negative_q++) {
+            for (unsigned derivative = 0; derivative < 2; derivative++) {
+                for (unsigned d = 0; d < ARRAY_SIZE(delta); d++) {
+                    uint64_t p[128], tlb[28];
+                    const uint64_t q = 0x20000;
+                    uint64_t scale_u = UINT64_C(1) <<
+                        (14 - 4 * (flags & 1));
+                    uint64_t scale_v = UINT64_C(1) <<
+                        (14 - 4 * ((flags >> 1) & 1));
+                    int64_t s = q * scale_u + delta[d];
+                    int64_t t = q * scale_v - delta[d];
+                    SamplerRam ram = {.data = data};
+
+                    sampler_state(p, tlb);
+                    p[0x134 / 4] = flags;
+                    p[0x120 / 4] = s * 4096;
+                    p[0x128 / 4] = t * 4096;
+                    p[0x130 / 4] = q * 4096;
+                    if (!derivative) {
+                        p[0x138 / 4] = p[0x140 / 4] = 0;
+                        p[0x148 / 4] = p[0x150 / 4] = 0;
+                    }
+                    p[0x158 / 4] = p[0x15c / 4] = 0;
+                    if (negative_q) {
+                        for (unsigned i = 0; i < 6; i++) {
+                            static const unsigned numerator[] = {
+                                0x120, 0x138, 0x140, 0x128, 0x148, 0x150,
+                            };
+                            p[numerator[i] / 4] = -p[numerator[i] / 4];
+                        }
+                        p[0x130 / 4] = -p[0x130 / 4];
+                    }
+                    g_autoptr(CrimeTexture) texture = crime_texture_new(
+                        p, tlb, 597, 621, false, sampler_ram, &ram);
+                    g_assert_nonnull(texture);
+                    for (unsigned v = 0; v < ARRAY_SIZE(point); v++) {
+                        CrimeRational actual[2], expected[2];
+                        bool ok = crime_texture_test_coordinates(
+                            texture, point[v][0], point[v][1], actual);
+                        bool reference = texture_coordinates_reference(
+                            p, 597, 621, point[v][0], point[v][1], expected);
+
+                        g_assert_cmpint(ok, ==, reference);
+                        if (ok) {
+                            assert_rational(&actual[0], &expected[0]);
+                            assert_rational(&actual[1], &expected[1]);
+                        }
+                    }
+                    g_assert_cmpuint(ram.reads, ==, 0);
+                }
+            }
+        }
+    }
+    for (unsigned failure = 0; failure < 2; failure++) {
+        uint64_t p[128], tlb[28];
+        CrimeRational actual[2], expected[2];
+        SamplerRam ram = {.data = data};
+        sampler_state(p, tlb);
+        if (failure) {
+            p[0x138 / 4] = INT64_MAX;
+        } else {
+            p[0x130 / 4] = 0;
+            p[0x158 / 4] = p[0x15c / 4] = 0;
+        }
+        g_autoptr(CrimeTexture) texture = crime_texture_new(
+            p, tlb, 597, 621, false, sampler_ram, &ram);
+        g_assert_nonnull(texture);
+        actual[0] = actual[1] = crime_rational(7, 11);
+        expected[0] = expected[1] = crime_rational(7, 11);
+        bool ok = crime_texture_test_coordinates(
+            texture, 598, 621, actual);
+        bool reference = texture_coordinates_reference(
+            p, 597, 621, 598, 621, expected);
+        g_assert_cmpint(ok, ==, reference);
+        if (!ok) {
+            assert_rational(&actual[0], &expected[0]);
+            assert_rational(&actual[1], &expected[1]);
+        }
+        g_assert_cmpuint(ram.reads, ==, 0);
+    }
+}
+
 static void test_texture_fallback_tap_failure(void)
 {
     const uint64_t bytes = 224 * 65536;
@@ -1097,6 +1242,8 @@ int main(int argc, char **argv)
     g_test_add_func("/crime/texture/constant-point", test_point_constant);
     g_test_add_func("/crime/texture/axis-setup64",
                     test_texture_axis_setup64);
+    g_test_add_func("/crime/texture/coordinate-rational",
+                    test_texture_coordinate_rational);
     g_test_add_func("/crime/texture/fallback-tap-failure",
                     test_texture_fallback_tap_failure);
     g_test_add_func("/crime/rational/division-vectors", test_division_vectors);

@@ -27,6 +27,8 @@ bool crime_texture_test_environment(CrimeTexture *texture,
 int crime_texture_test_setup_axis64(
     const struct CrimeRational *coordinate, unsigned size, unsigned wrap,
     bool linear, int64_t *index, struct CrimeRational *weights);
+bool crime_texture_test_coordinates(CrimeTexture *texture, int x, int y,
+                                    struct CrimeRational *coordinate);
 bool crime_texture_test_level(CrimeTexture *texture,
                               const struct CrimeRational *coordinate,
                               unsigned level, bool linear,
