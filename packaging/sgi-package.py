@@ -12,7 +12,8 @@ else, in a fixed layout with no wrapping directory:
     bin/*.dll                Windows only: the MinGW runtime DLLs
     share/qemu/keymaps/      keyboard maps
     licenses/                QEMU's licences, one file per library built in,
-                             and on Windows the MinGW runtime's
+                             and on Windows the MinGW runtime's and
+                             Rust's
 
 and is named sgi-origami-<version>-<platform>.tar.gz (Windows: .zip), where
 <version> is the release tag without its sgi-origami- prefix. Without --tag
@@ -26,8 +27,9 @@ vcpkg-commit. Each platform builds natively:
     macos    on an Arm or Intel Mac with Xcode's tools and Homebrew's ninja,
              pkgconf and python
     windows  in an MSYS2 MINGW64 shell with the mingw-w64-x86_64 toolchain,
-             pkgconf, ninja, python and git installed. QEMU cannot build
-             with MSVC, so vcpkg uses its MinGW triplet there.
+             pkgconf, ninja, python, git, rust, rust-bindgen and clang
+             installed. QEMU cannot build with MSVC, so vcpkg uses its MinGW
+             triplet there.
 
 Everything is written under --work-dir, which a rerun reuses. The configure
 arguments are in configure-flags.json, which scripts/ci/sgi-check shares.
@@ -98,6 +100,10 @@ LICENSE_FILES = [
     ('LICENSE.origami.paths', 'qemu.LICENSE.origami.paths'),
     ('hw/mips/sgi/models/LICENSE', 'qemu.sgi-models.LICENSE'),
 ]
+# Platforms whose archive carries the Rust devices, built with the "rust" list
+# of configure-flags.json.
+RUST_PLATFORMS = ('windows',)
+
 LICENSE_NAME = re.compile(r'^(LICEN[CS]E|COPYING|COPYRIGHT)', re.I)
 
 
@@ -139,7 +145,8 @@ def configure_flags(name, arch=None):
     """
     with open(HERE / 'configure-flags.json', encoding='utf-8') as f:
         flags = json.load(f)
-    return (flags['common'] + flags[name]
+    extra = flags['rust'] if name in RUST_PLATFORMS else []
+    return (flags['common'] + flags[name] + extra
             + flags.get(f'{name}-{arch}', []))
 
 
@@ -249,6 +256,9 @@ def build_environment(name, prefix, work):
         env['PKG_CONFIG_LIBDIR'] = pkgconfig
     if name == 'macos':
         env['MACOSX_DEPLOYMENT_TARGET'] = '15.0'
+    if name == 'windows':
+        # bindgen does not look for libclang.dll on PATH, where MSYS2 keeps it.
+        env.setdefault('LIBCLANG_PATH', str(toolchain_prefix() / 'bin'))
     return env
 
 
@@ -320,8 +330,16 @@ def used_subproject_licences(build):
                            f'in {build}: {error}') from None
     names = {sub['name'] for sub in projects.get('subprojects', [])}
     for sub in sorted(names):
-        for directory in sorted(glob.glob(str(SOURCE / 'subprojects' /
-                                              (sub + '*')))):
+        directories = glob.glob(str(SOURCE / 'subprojects' / (sub + '*')))
+        # A Rust crate's wrap is named for its API version (anyhow-1-rs) and
+        # unpacks to its full version (anyhow-1.0.98), which the wrap names.
+        wrap = SOURCE / 'subprojects' / (sub + '.wrap')
+        if wrap.is_file():
+            match = re.search(r'^directory\s*=\s*(\S+)', wrap.read_text(
+                encoding='utf-8'), re.M)
+            if match:
+                directories.append(str(SOURCE / 'subprojects' / match.group(1)))
+        for directory in sorted(set(directories)):
             directory = Path(directory)
             if not directory.is_dir() or directory.name == 'packagefiles':
                 continue
@@ -364,6 +382,7 @@ def stage(name, build, prefix, stage_dir, strip):
     if name == 'windows':
         origins = copy_windows_dlls(bin_dir, [prefix / 'bin'])
         copy_runtime_licences(toolchain_prefix(), origins, licences)
+        copy_rust_licences(toolchain_prefix(), licences)
 
 
 def copy_library_licences(prefix, licences):
@@ -567,6 +586,21 @@ def copy_runtime_licences(prefix, dlls, licences):
                                f'{directory}')
         for text in texts:
             shutil.copy2(text, licences / f'{package}.{text.name}')
+
+
+def copy_rust_licences(prefix, licences):
+    """Copy the Rust toolchain's licence texts into `licences`.
+
+    The executables link Rust's standard library statically. MSYS2's rust
+    package keeps the texts of everything it bundles in one directory.
+    """
+    directory = prefix / 'share/doc/rustc/licenses'
+    texts = (sorted(p for p in directory.iterdir() if p.is_file())
+             if directory.is_dir() else [])
+    if not texts:
+        raise PackageError(f'no Rust licence texts in {directory}')
+    for text in texts:
+        shutil.copy2(text, licences / f'rust.{text.name}')
 
 
 # ---------------------------------------------------------------- archive --

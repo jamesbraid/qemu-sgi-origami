@@ -46,13 +46,18 @@ in `licenses/`:
   gettext). Each library's copyright file is `licenses/<library>.copyright`.
   Where vcpkg's file leaves out a licence the library is offered under,
   `packaging/licenses/` holds the replacement (nettle and libunistring).
+- The Rust crates of QEMU's Rust devices, linked statically from the
+  `subprojects/` crate wraps: each crate's licence files are
+  `licenses/<crate>-<version>.LICENSE*`, and the standard library's texts on
+  Windows are `licenses/rust.*`.
 - Linux: libstdc++, which the CHD library's C++ links with
   `-static-libstdc++`. Its texts are `licenses/libstdc++.copyright` and
   `licenses/libstdc++.GPL-3`.
 - Windows: the MinGW runtime the programs are linked with, libstdc++, libgcc
   and winpthreads, whose texts are `licenses/libstdc++.*`, `licenses/libgcc.*`
   and `licenses/winpthreads.COPYING`. A runtime DLL the programs import is
-  also copied into `bin/`.
+  also copied into `bin/`. The Rust standard library the Rust devices link
+  statically has its texts in `licenses/rust.*`.
 
 Sources for each are the upstream tarballs the vcpkg ports download, with
 URLs and SHA-512 checksums in each port's `portfile.cmake` (see
@@ -98,7 +103,8 @@ runs with a MinGW triplet and the MSYS2 compiler on `PATH`:
 
 ```sh
 pacman -S --needed git base-devel autoconf-archive mingw-w64-x86_64-toolchain \
-    mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
+    mingw-w64-x86_64-ninja mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python \
+    mingw-w64-x86_64-rust mingw-w64-x86_64-rust-bindgen mingw-w64-x86_64-clang
 python packaging/sgi-package.py
 ```
 
