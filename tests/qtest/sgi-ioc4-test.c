@@ -494,6 +494,31 @@ static char *ioc4_log_file_take(const char *path)
     return contents;
 }
 
+/* Wait until the device has logged NEEDLE COUNT times: input consumed. */
+static void ioc4_log_file_wait(const char *path, const char *needle,
+                               unsigned count)
+{
+    unsigned i;
+
+    for (i = 0; i < 10000; i++) {
+        g_autofree char *contents = NULL;
+        const char *at;
+        unsigned seen = 0;
+
+        if (g_file_get_contents(path, &contents, NULL, NULL)) {
+            for (at = contents; (at = strstr(at, needle));
+                 at += strlen(needle)) {
+                seen++;
+            }
+            if (seen >= count) {
+                return;
+            }
+        }
+        g_usleep(1000);
+    }
+    g_assert_not_reached();
+}
+
 static QTestState *ioc4_start_dma_full(bool incoming, bool enabled,
                                        unsigned serial_port, int serial_fd,
                                        const char *log, bool observer,
@@ -1213,7 +1238,8 @@ static void test_dma_loopback_discards_external_input(void)
     qtest_writeb(qts, UART(0) + 4, 0x10);
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1));
     g_assert_cmpint(write(sv[0], input, sizeof(input)), ==, sizeof(input));
-    g_usleep(20000);
+    /* The chardev reads one byte at a time, so each logs its own line. */
+    ioc4_log_file_wait(log, "while in loopback", sizeof(input));
     reg_write(qts, SDMA_CONTROL(0), SSCR_DMA_EN | SSCR_THRESHOLD(1) |
                                     SSCR_DRAIN);
     g_assert_cmphex(reg_read(qts, SDMA_RX_PRODUCE(0)), ==, 0);
