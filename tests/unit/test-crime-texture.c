@@ -852,6 +852,46 @@ static void test_texture_coordinate_rational(void)
             }
         }
     }
+    for (unsigned flags = 0; flags < 4; flags++) {
+        for (unsigned negative_q = 0; negative_q < 2; negative_q++) {
+            uint64_t p[128], tlb[28];
+            CrimeRational actual[2], expected[2], reference[2];
+            const int64_t extracted[] = {
+                -(INT64_C(1) << 51), (INT64_C(1) << 51) - 1,
+            };
+            int64_t q = negative_q ? -(INT64_C(1) << 19) :
+                                     (INT64_C(1) << 19) - 1;
+            SamplerRam ram = {.data = data};
+
+            sampler_state(p, tlb);
+            p[0x134 / 4] = flags;
+            p[0x120 / 4] = INT64_MIN;
+            p[0x128 / 4] = INT64_MAX;
+            p[0x130 / 4] = negative_q ? (uint64_t)(int64_t)INT32_MIN :
+                                         INT32_MAX;
+            g_autoptr(CrimeTexture) texture = crime_texture_new(
+                p, tlb, 597, 621, false, sampler_ram, &ram);
+            g_assert_nonnull(texture);
+            bool ok = crime_texture_test_coordinates(texture, 597, 621, actual);
+            bool reference_ok = texture_coordinates_reference(
+                p, 597, 621, 597, 621, reference);
+
+            g_assert_true(ok);
+            g_assert_true(reference_ok);
+            for (unsigned i = 0; i < 2; i++) {
+                uint64_t d = q < 0 ? -q : q;
+                uint64_t scale = UINT64_C(1) <<
+                    (14 - 4 * ((flags >> i) & 1));
+                int64_t n = q < 0 ? -extracted[i] : extracted[i];
+
+                expected[i] = crime_rational(n - (int64_t)(d * scale),
+                                              d * scale);
+                assert_rational(&actual[i], &expected[i]);
+                assert_rational(&reference[i], &expected[i]);
+            }
+            g_assert_cmpuint(ram.reads, ==, 0);
+        }
+    }
     for (unsigned failure = 0; failure < 2; failure++) {
         uint64_t p[128], tlb[28];
         CrimeRational actual[2], expected[2];
