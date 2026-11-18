@@ -12,6 +12,10 @@ config ALTIX350
     bool
     imply TEST_DEVICES
     select SGI_SHUB
+    select SGI_IOC4
+    select BCM570X
+    select QLOGIC_ISP_SCSI_PCI
+    select SGI_L1
 
 # The PCI bus-master fixture, built into the emulator for test builds only.
 config ALTIX350_TEST_FIXTURES

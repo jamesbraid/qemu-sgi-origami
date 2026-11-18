@@ -131,6 +131,7 @@ hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
 hw/ia64/Kconfig
 hw/ia64/meson.build
+hw/ia64/sgi-altix350.c
 hw/ia64/sgi-shub-test.c
 hw/ia64/sgi-shub-uart.c
 hw/ia64/sgi-shub.c
@@ -911,6 +912,7 @@ tests/qtest/fixtures/sgi-iommu-notifier-test.c
 tests/qtest/fixtures/sgi-pi-gfx-test-head.c
 tests/qtest/fixtures/sgi-router-test.c
 tests/qtest/fixtures/sgi-xbow-transport-test.c
+tests/qtest/ia64-cpu-test.c
 tests/qtest/ics1890-test.c
 tests/qtest/ioc3-release-fixture.c
 tests/qtest/kona-read-fixture.c
@@ -938,6 +940,7 @@ tests/qtest/qlogic-isp-test.c
 tests/qtest/qtest-irq-test.c
 tests/qtest/r10000-identity-test.c
 tests/qtest/scsi-tape-test.c
+tests/qtest/sgi-altix350-test.c
 tests/qtest/sgi-bic-board-interface-test.c
 tests/qtest/sgi-board-test.c
 tests/qtest/sgi-bridge-bus-test.c

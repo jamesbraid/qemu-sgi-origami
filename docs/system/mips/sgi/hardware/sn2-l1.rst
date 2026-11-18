@@ -5,7 +5,7 @@
 SN2 L1: node serial link
 ========================
 
-Used in no machine yet. A platform attaches the device to a node's 16550
+Used in the Altix 350 machine, which attaches the device to the node's 16550
 through a Chardev. The device is the
 node's controller link: the node :term:`PROM` and the kernel's console driver talk to
 it through the node's 16550.

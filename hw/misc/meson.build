@@ -251,6 +251,8 @@ system_ss.add(when: 'CONFIG_SGI_DEVICES', if_true: files('sgi-heart.c'))
 # or bus it only makes sense with.
 system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_PCI'],
               if_true: files('../../tests/qtest/fixtures/sgi-bridge-dma-test.c'))
+system_ss.add(when: ['CONFIG_ALTIX350_TEST_FIXTURES', 'CONFIG_PCI'],
+              if_true: files('../../tests/qtest/fixtures/sgi-bridge-dma-test.c'))
 system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_ODYSSEY'],
               if_true: files('../../tests/qtest/fixtures/sgi-dma-word-test.c'))
 system_ss.add(when: ['CONFIG_SGI_TEST_FIXTURES', 'CONFIG_SGI_PI_GFX'],

@@ -5,7 +5,7 @@
 SHub 1: SN2 node controller
 ===========================
 
-Used by the ``x-shub1-test`` fixture machine; the Altix 350 machine arrives in a later change. The SHub is the node controller of the Altix 3000
+Used by the Altix 350 machine. The SHub is the node controller of the Altix 3000
 family and the Altix 350: one chip per node, joining the Itanium 2
 processors and memory to NUMAlink and I/O. The ``sgi-shub`` device models
 the registers that reviewed public sources define and that the stock PROM's
@@ -499,7 +499,9 @@ Ratings
   manufacturer and device ID words (``0x0001``, ``0x227e``) are *inferred*:
   the PROM keeps them and never compares them. Contents start erased
   (``0xff``) with the firmware image given with ``-bios`` copied to the top
-  6 MiB, and are migrated. The
+  6 MiB, and are migrated. The machine maps the top 6 MiB at ``0xffa00000`` as the
+  CPU's reset window, a read view of the array bytes, so a program or erase
+  here shows there. The
   kernel's read of the firmware table pointer at ``0x6_ffff_ffe0`` is
   answered from the same flash: both windows also answer at
   ``0x6_ff80_0000`` to ``0x6_ffff_ffff``, with the same contents for reads. A
@@ -672,4 +674,11 @@ Migration is supported between identical builds only.
 Tests
 -----
 
-``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine and covers the junk-bus UART and its event bit, the comparator gate, the PROM flash, the XN and blind cells and two processors. The rest of the register behaviour is tested in a later change, through the Altix 350 machine.
+``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine
+and covers the junk-bus UART and its event bit, the comparator gate, the PROM
+flash, the XN and blind cells and two processors. The rest of the register
+behaviour is covered through the ``altix350`` machine by
+``tests/qtest/sgi-altix350-test.c``: reset, storage, widths, the ID fields and
+the global window following the NASID, the election and lock, the clock
+sequence the PROM issues, the PIO write-error latch, block transfers, PIC DMA
+and the refusals.

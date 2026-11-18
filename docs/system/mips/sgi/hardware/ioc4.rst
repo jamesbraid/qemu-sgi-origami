@@ -550,6 +550,13 @@ offset ``0x80000``, and the published dmesg shows it there
 label does not identify the fitted part. Byte-bus selects 1-3 at
 ``0xa0000``, ``0xc0000`` and ``0xe0000`` are not modelled.
 
+The Altix 350 machine puts an M48T35-style 32 KiB chip in the same window
+through the IOC4's ``clock`` link, implemented in ``hw/ia64/sgi-altix350.c``.
+The clock is the top eight bytes of the window, shows host UTC shifted by
+``-rtc base=`` with the year kept as years since 1970 (the PROM's base), and
+ignores writes to the clock registers. The rest is RAM. Which part a real
+board carries is not known, so the chip is an *approximation*.
+
 The IOC4 maps the board's timekeeper as a subregion. A 32 KiB DS1744
 device appears whole at ``0x80000``; that is what every IP53 machine
 uses (:ref:`sgi-ip53-ds1744`). A 2 KiB DS1742 device exposes only its

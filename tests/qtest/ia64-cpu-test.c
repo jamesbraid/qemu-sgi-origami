@@ -1546,6 +1546,50 @@ static void test_alat_store_fault_does_not_wedge_the_next_store(void)
     qtest_quit(s);
 }
 
+/*
+ * Under -icount an I/O store restarts in a new block; with the ALAT on, the
+ * restart must not begin a second ALAT write.
+ */
+static void test_alat_io_store_under_icount(void)
+{
+    g_autofree char *flash = NULL;
+    g_autofree char *args = NULL;
+    g_autoptr(GError) err = NULL;
+    uint64_t at = 0x2000;
+    QTestState *s;
+    int fd = g_file_open_tmp("ia64-io-XXXXXX.bin", &flash, &err);
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 6 * 1024 * 1024), ==, 0);
+    close(fd);
+    args = g_strdup_printf("-machine altix350 -cpu madison-1600-3m -bios %s "
+                           "-accel tcg -S -icount shift=0,align=off,sleep=off "
+                           "-device loader,addr=0x2000,cpu-num=0", flash);
+    s = qtest_init(args);
+    /* SHub RTC control and counter, the PROM's clock set-up stores. */
+    qtest_writeq(s, 0x1000, 0x8000008000000000ULL + 0x110060280ULL);
+    qtest_writeq(s, 0x1008, 0x100000000ULL);
+    qtest_writeq(s, 0x1010, 0x8000008000000000ULL + 0x1101c0000ULL);
+    qtest_writeq(s, 0x1018, 0);
+    step(s, &at, adds(5, 0x1000, 0));
+    step(s, &at, adds(6, 0x1008, 0));
+    step(s, &at, adds(7, 0x1010, 0));
+    step(s, &at, adds(8, 0x1018, 0));
+    step(s, &at, ld8(10, 5));
+    step(s, &at, ld8(11, 6));
+    step(s, &at, ld8(12, 7));
+    step(s, &at, ld8(13, 8));
+    step(s, &at, st8(10, 11));
+    step(s, &at, st8(12, 13));
+    step(s, &at, st8(10, 11));
+    step(s, &at, adds(14, 0x42, 0));
+    step(s, &at, adds(15, 0x1100, 0));
+    step(s, &at, st8(15, 14));
+    bundle(s, at, 0x11, NOP, NOP, branch(0));
+    run_to_marker_at(s, 0x1100);
+    qtest_quit(s);
+    unlink(flash);
+}
 
 static bool alat_check_hits(const uint64_t *insns, unsigned n, uint64_t last)
 {
@@ -5302,6 +5346,25 @@ static void test_single_step_trap_reports_the_completed_slot(void)
     single_step_trap_ei(true);
 }
 
+/* Two vCPUs under MTTCG, each running a RAM program from its loader cpu-num. */
+static QTestState *smp_start(void)
+{
+    g_autofree char *flash = NULL;
+    g_autofree char *args = NULL;
+    int fd = g_file_open_tmp("ia64-smp-XXXXXX.bin", &flash, NULL);
+    QTestState *s;
+
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, 6 * 1024 * 1024), ==, 0);
+    close(fd);
+    args = g_strdup_printf("-machine altix350 -smp 2 -m 2G -bios %s "
+                           "-accel tcg,thread=multi -S "
+                           "-device loader,addr=0x2000,cpu-num=0 "
+                           "-device loader,addr=0x4000,cpu-num=1", flash);
+    s = qtest_init(args);
+    unlink(flash);
+    return s;
+}
 
 static uint64_t ld8_acq(unsigned dest, unsigned base)
 {
@@ -5309,25 +5372,425 @@ static uint64_t ld8_acq(unsigned dest, unsigned base)
            ((uint64_t)base << 20) | (dest << 6);
 }
 
+static uint64_t st8_rel(unsigned base, unsigned source)
+{
+    return (UINT64_C(4) << 37) | (UINT64_C(0x37) << 30) |
+           ((uint64_t)base << 20) | (source << 13);
+}
 
+/* fetchadd8.acq r8 = [r14], 1 (M17, x6 0x13, inc 1) */
+static uint64_t fetchadd8_acq(void)
+{
+    return (UINT64_C(4) << 37) | (UINT64_C(0x13) << 30) | (UINT64_C(1) << 27) |
+           (UINT64_C(14) << 20) | (UINT64_C(3) << 13) | (8 << 6);
+}
 
+static void smp_wait_markers(QTestState *s, uint64_t a, uint64_t b)
+{
+    int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
 
+    qtest_qmp_assert_success(s, "{ 'execute': 'cont' }");
+    while ((qtest_readq(s, a) != 0x42 || qtest_readq(s, b) != 0x42) &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(s, "{ 'execute': 'stop' }");
+    g_assert_cmphex(qtest_readq(s, a), ==, 0x42);
+    g_assert_cmphex(qtest_readq(s, b), ==, 0x42);
+}
 
+/* ar.lc counted loop of fetchadd8.acq on the dword at 0x1000, then a marker. */
+static void smp_fetchadd_program(QTestState *s, uint64_t at, uint64_t marker)
+{
+    step(s, &at, adds(14, 0x1000, 0));
+    step(s, &at, adds(9, 3999, 0));
+    bundle(s, at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    at += 16;
+    bundle(s, at, 0x11, fetchadd8_acq(), NOP, branch(0) | (5 << 6));
+    at += 16;
+    step(s, &at, adds(15, marker, 0));
+    step(s, &at, adds(16, 0x42, 0));
+    bundle(s, at, 1, st8(15, 16), NOP, NOP);
+    bundle(s, at + 16, 0x11, NOP, NOP, branch(0));
+}
 
+static void test_smp_fetchadd_loses_no_increment(void)
+{
+    QTestState *s = smp_start();
 
+    smp_fetchadd_program(s, 0x2000, 0x1008);
+    smp_fetchadd_program(s, 0x4000, 0x1010);
+    smp_wait_markers(s, 0x1008, 0x1010);
+    g_assert_cmpuint(qtest_readq(s, 0x1000), ==, 8000);
+    qtest_quit(s);
+}
 
+/* cpu 0 writes data and releases a flag; cpu 1 acquires it, sees the data. */
+static void test_smp_release_acquire_message_passing(void)
+{
+    QTestState *s = smp_start();
+    uint64_t at = 0x2000;
+    uint64_t bt = 0x4000;
+    const unsigned rounds = 200;
 
+    /* cpu 0: per round, [0x1800+8i] = 7 then st8.rel [0x1100+8i] = 1 */
+    step(s, &at, adds(14, 0x1800, 0));
+    step(s, &at, adds(15, 0x1100, 0));
+    step(s, &at, adds(16, 7, 0));
+    step(s, &at, adds(17, 1, 0));
+    step(s, &at, adds(9, rounds - 1, 0));
+    bundle(s, at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    at += 16;
+    bundle(s, at, 1, st8(14, 16), adds(14, 8, 14), NOP);
+    at += 16;
+    bundle(s, at, 1, st8_rel(15, 17), adds(15, 8, 15), NOP);
+    at += 16;
+    bundle(s, at, 0x11, NOP, NOP, branch(-32) | (5 << 6));
+    at += 16;
+    step(s, &at, adds(18, 0x1008, 0));
+    step(s, &at, adds(19, 0x42, 0));
+    bundle(s, at, 1, st8(18, 19), NOP, NOP);
+    bundle(s, at + 16, 0x11, NOP, NOP, branch(0));
 
+    /* cpu 1: wait for each flag, sum the data, store the sum at 0x1020 */
+    step(s, &bt, adds(14, 0x1800, 0));
+    step(s, &bt, adds(15, 0x1100, 0));
+    step(s, &bt, adds(20, 0, 0));
+    step(s, &bt, adds(9, rounds - 1, 0));
+    bundle(s, bt, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    bt += 16;
+    /* wait: r10 = ld8.acq [r15]; p6 = r10 bit 0 clear; (p6) br wait */
+    bundle(s, bt, 0x01, ld8_acq(10, 15), NOP, NOP);
+    bundle(s, bt + 16, 0x01, NOP,
+           tbit_insn('b', false, CT_NONE, 6, 7, 10, 0, 0), NOP);
+    bundle(s, bt + 32, 0x11, NOP, NOP, branch(-32) | 6);
+    bt += 48;
+    bundle(s, bt, 1, ld8(11, 14), adds(14, 8, 14), adds(15, 8, 15));
+    bt += 16;
+    bundle(s, bt, 0x01, NOP, add(20, 20, 11), NOP);
+    bt += 16;
+    bundle(s, bt, 0x11, NOP, NOP, branch(-80) | (5 << 6));
+    bt += 16;
+    step(s, &bt, adds(18, 0x1020, 0));
+    bundle(s, bt, 1, st8(18, 20), adds(19, 0x42, 0), adds(21, 0x1010, 0));
+    bt += 16;
+    bundle(s, bt, 1, st8(21, 19), NOP, NOP);
+    bundle(s, bt + 16, 0x11, NOP, NOP, branch(0));
+    smp_wait_markers(s, 0x1008, 0x1010);
+    g_assert_cmpuint(qtest_readq(s, 0x1020), ==, 7 * rounds);
+    qtest_quit(s);
+}
 
+/* cmpxchg8.acq r8 = [r14], r16, ar.ccv (M16, x6 0x03). */
+static uint64_t cmpxchg8_acq(void)
+{
+    return (UINT64_C(4) << 37) | (UINT64_C(0x03) << 30) | (UINT64_C(1) << 27) |
+           (UINT64_C(14) << 20) | (UINT64_C(16) << 13) | (8 << 6);
+}
 
+/* A cmpxchg8.acq/st8.rel lock guards a plain load-add-store counter. */
+static void smp_lock_program(QTestState *s, uint64_t at, uint64_t marker,
+                             unsigned rounds, uint64_t acquire)
+{
+    uint64_t loop;
 
+    step(s, &at, adds(14, 0x1200, 0));
+    step(s, &at, adds(15, 0x1208, 0));
+    step(s, &at, adds(16, 1, 0));
+    step(s, &at, m_to_ar(32, 0));                   /* ar.ccv = 0 */
+    step(s, &at, adds(9, rounds - 1, 0));
+    bundle(s, at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    at += 16;
+    loop = at;
+    bundle(s, at, 0x01, acquire, NOP, NOP);
+    bundle(s, at + 16, 0x01, NOP,
+           tbit_insn('b', false, CT_NONE, 6, 7, 8, 0, 0), NOP);
+    bundle(s, at + 32, 0x11, NOP, NOP, branch(-32) | 7);   /* (p7) retry */
+    bundle(s, at + 48, 0x01, ld8(11, 15), NOP, NOP);
+    bundle(s, at + 64, 0x01, NOP, adds(11, 1, 11), NOP);
+    bundle(s, at + 80, 0x01, st8(15, 11), NOP, NOP);
+    bundle(s, at + 96, 0x11, st8_rel(14, 0), NOP,
+           branch(-96) | (5 << 6));                           /* release */
+    at = loop + 112;
+    step(s, &at, adds(18, marker, 0));
+    step(s, &at, adds(19, 0x42, 0));
+    bundle(s, at, 1, st8(18, 19), NOP, NOP);
+    bundle(s, at + 16, 0x11, NOP, NOP, branch(0));
+}
 
+static void test_smp_lock_gives_mutual_exclusion(void)
+{
+    QTestState *s = smp_start();
 
+    smp_lock_program(s, 0x2000, 0x1008, 3000, cmpxchg8_acq());
+    smp_lock_program(s, 0x4000, 0x1010, 3000, cmpxchg8_acq());
+    smp_wait_markers(s, 0x1008, 0x1010);
+    g_assert_cmpuint(qtest_readq(s, 0x1208), ==, 6000);
+    qtest_quit(s);
+}
 
+/* xchg8.acq r8 = [r14], r16 (M16, x6 0x0b). */
+static uint64_t xchg8_acq(void)
+{
+    return (UINT64_C(4) << 37) | (UINT64_C(0x0b) << 30) | (UINT64_C(1) << 27) |
+           (UINT64_C(14) << 20) | (UINT64_C(16) << 13) | (8 << 6);
+}
 
+/* The same lock taken with a test-and-set xchg8.acq. */
+static void test_smp_xchg_lock_gives_mutual_exclusion(void)
+{
+    QTestState *s = smp_start();
 
+    smp_lock_program(s, 0x2000, 0x1008, 3000, xchg8_acq());
+    smp_lock_program(s, 0x4000, 0x1010, 3000, xchg8_acq());
+    smp_wait_markers(s, 0x1008, 0x1010);
+    g_assert_cmpuint(qtest_readq(s, 0x1208), ==, 6000);
+    qtest_quit(s);
+}
 
+/* Read ar.itc 2000 times: count readings below the last, report first/last. */
+static void smp_itc_program(QTestState *s, uint64_t at, uint64_t out)
+{
+    uint64_t loop;
 
+    step(s, &at, adds(22, 0, 0));
+    step(s, &at, adds(9, 1999, 0));
+    bundle(s, at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    at += 16;
+    step(s, &at, m_from_ar(19, 44));
+    step(s, &at, adds(20, 0, 19));
+    loop = at;
+    bundle(s, at, 0x01, m_from_ar(21, 44), NOP, NOP);
+    bundle(s, at + 16, 0x01, NOP,
+           cmp_insn('r', false, R_LTU, CT_NONE, 6, 7, 21, 20, 0), NOP);
+    bundle(s, at + 32, 0x01, NOP, adds(22, 1, 22) | 6, NOP);
+    bundle(s, at + 48, 0x01, NOP, adds(20, 0, 21), NOP);
+    bundle(s, at + 64, 0x11, NOP, NOP, branch(-64) | (5 << 6));
+    at = loop + 80;
+    step(s, &at, adds(18, out, 0));
+    step(s, &at, adds(23, out + 8, 0));
+    step(s, &at, adds(24, out + 16, 0));
+    step(s, &at, adds(25, out + 24, 0));
+    step(s, &at, adds(26, 0x42, 0));
+    step(s, &at, st8(18, 22));
+    step(s, &at, st8(23, 19));
+    step(s, &at, st8(24, 20));
+    step(s, &at, st8(25, 26));
+    bundle(s, at, 0x11, NOP, NOP, branch(0));
+}
+
+/* Each CPU's ITC never reads below an earlier reading and keeps advancing. */
+static void test_smp_itc_is_monotonic_on_each_cpu(void)
+{
+    QTestState *s = smp_start();
+    const uint64_t outs[2] = { 0x1000, 0x1100 };
+
+    smp_itc_program(s, 0x2000, outs[0]);
+    smp_itc_program(s, 0x4000, outs[1]);
+    smp_wait_markers(s, outs[0] + 24, outs[1] + 24);
+    for (unsigned i = 0; i < 2; i++) {
+        uint64_t first = qtest_readq(s, outs[i] + 8);
+        uint64_t last = qtest_readq(s, outs[i] + 16);
+
+        g_assert_cmpuint(qtest_readq(s, outs[i]), ==, 0);
+        g_assert_cmpuint(last - first, >=, 2000 * 5);
+    }
+    qtest_quit(s);
+}
+
+/*
+ * cpu 0 maps 0x30000 to 0x6000 with itc.d, stores through it and signals; cpu 1
+ * purges the page with ptc.g and signals back; cpu 0's next store must miss.
+ */
+static void smp_ptc_cpu0_program(QTestState *s, uint64_t at)
+{
+    ia64_translation_setup(s, &at, 0x8000, (1ULL << 8) | (12 << 2));
+    load_const(s, &at, 12, 0x1850, 0x30000);
+    step(s, &at, to_cr(20, 12));
+    step(s, &at, adds(10, 12 << 2, 0));
+    step(s, &at, to_cr(21, 10));
+    step(s, &at, SRLZ_D);
+    load_const(s, &at, 11, 0x1858, 0x6000 | (2 << 9) | 0x61);
+    bundle(s, at, 0x0a, m42(0x2e, 0, 11), NOP, NOP);        /* itc.d */
+    at += 16;
+    step(s, &at, SRLZ_D);
+    ia64_rfi_virtual(s, &at, 0x3000);
+    qtest_writeq(s, 0x1848, 0x30000);
+    bundle(s, 0x3000, 1, adds(5, 0x1848, 0), adds(14, 0x1100, 0),
+           adds(13, 0x42, 0));
+    bundle(s, 0x3010, 1, ld8(10, 5), adds(16, 0x1108, 0), adds(17, 0x77, 0));
+    bundle(s, 0x3020, 1, st8(10, 13), adds(15, 1, 0), NOP);     /* mapped */
+    bundle(s, 0x3030, 1, st8_rel(14, 15), NOP, NOP);            /* ready */
+    bundle(s, 0x3040, 0x01, ld8_acq(11, 16), NOP, NOP);
+    bundle(s, 0x3050, 0x01, NOP,
+           tbit_insn('b', false, CT_NONE, 6, 7, 11, 0, 0), NOP);
+    bundle(s, 0x3060, 0x11, NOP, NOP, branch(-32) | 6);
+    bundle(s, 0x3070, 1, st8(10, 17), adds(18, 0x1010, 0),
+           adds(19, 0x42, 0));                                  /* purged? */
+    bundle(s, 0x3080, 1, st8(18, 19), NOP, NOP);
+    bundle(s, 0x3090, 0x11, NOP, NOP, branch(0));
+    /* Alternate Data TLB vector: record the miss, then the marker. */
+    bundle(s, 0x9000, 1, adds(14, 0x1000, 0), adds(16, 1, 0),
+           adds(17, 0x42, 0));
+    bundle(s, 0x9010, 1, st8(14, 16), adds(15, 0x1010, 0), NOP);
+    bundle(s, 0x9020, 1, st8(15, 17), NOP, NOP);
+    bundle(s, 0x9030, 0x11, NOP, NOP, branch(0));
+}
+
+static void smp_ptc_cpu1_program(QTestState *s, uint64_t at)
+{
+    load_const(s, &at, 9, 0x1900, (1ULL << 8) | (12 << 2));
+    step(s, &at, m42(0, 0, 9));                             /* rr0 as cpu 0 */
+    step(s, &at, SRLZ_D);
+    step(s, &at, adds(15, 0x1100, 0));
+    bundle(s, at, 0x01, ld8_acq(11, 15), NOP, NOP);
+    bundle(s, at + 16, 0x01, NOP,
+           tbit_insn('b', false, CT_NONE, 6, 7, 11, 0, 0), NOP);
+    bundle(s, at + 32, 0x11, NOP, NOP, branch(-32) | 6);
+    at += 48;
+    load_const(s, &at, 9, 0x1908, 0x30000);
+    step(s, &at, adds(10, 12 << 2, 0));
+    step(s, &at, m42(0x0a, 9, 10));                         /* ptc.g */
+    step(s, &at, SRLZ_D);
+    step(s, &at, adds(16, 0x1108, 0));
+    step(s, &at, adds(17, 1, 0));
+    step(s, &at, adds(18, 0x1018, 0));
+    step(s, &at, adds(19, 0x42, 0));
+    bundle(s, at, 0x01, st8_rel(16, 17), NOP, NOP);
+    at += 16;
+    bundle(s, at, 0x01, st8(18, 19), NOP, NOP);
+    bundle(s, at + 16, 0x11, NOP, NOP, branch(0));
+}
+
+static void test_smp_ptc_g_purges_the_other_cpus_translation(void)
+{
+    QTestState *s = smp_start();
+
+    smp_ptc_cpu0_program(s, 0x2000);
+    smp_ptc_cpu1_program(s, 0x4000);
+    smp_wait_markers(s, 0x1010, 0x1018);
+    g_assert_cmphex(qtest_readq(s, 0x6000), ==, 0x42);  /* store before ptc.g */
+    g_assert_cmphex(qtest_readq(s, 0x1000), ==, 1);     /* store after: miss */
+    qtest_quit(s);
+}
+
+/*
+ * Another processor's store invalidates an ALAT entry only if it overlaps the
+ * entry (SDM Vol. 1 4.4.5.3.2). cpu 1 holds an ld8.a entry for 0x1000, the host
+ * changes that dword behind its back, and cpu 0 stores to 0x1040 or
+ * to 0x1000. The ld8.c.nc that follows reloads only if the entry is gone.
+ */
+static QTestState *smp_alat_program(uint64_t cpu0_store_address,
+                                     unsigned stores)
+{
+    QTestState *s = smp_start();
+    uint64_t at = 0x2000;
+    uint64_t bt = 0x4000;
+    int64_t deadline = g_get_monotonic_time() + 20 * G_TIME_SPAN_SECOND;
+
+    qtest_writeq(s, 0x1000, 0x11);
+    /* cpu 0: wait for the host's go, store `stores` times, say done. */
+    step(s, &at, adds(14, 0x1200, 0));
+    bundle(s, at, 0x01, ld8_acq(11, 14), NOP, NOP);
+    bundle(s, at + 16, 0x01, NOP,
+           cmp_insn('r', false, R_EQ, CT_NONE, 6, 7, 11, 0, 0), NOP);
+    bundle(s, at + 32, 0x11, NOP, NOP, branch(-32) | 6);
+    at += 48;
+    step(s, &at, adds(15, cpu0_store_address, 0));
+    step(s, &at, adds(16, 0x88, 0));
+    step(s, &at, adds(9, stores - 1, 0));
+    bundle(s, at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    at += 16;
+    bundle(s, at, 0x11, st8(15, 16), NOP, branch(0) | (5 << 6));
+    at += 16;
+    step(s, &at, adds(14, 0x1208, 0));
+    step(s, &at, adds(17, 1, 0));
+    bundle(s, at, 1, st8_rel(14, 17), NOP, NOP);
+    bundle(s, at + 16, 0x11, NOP, NOP, branch(0));
+    /* cpu 1: ld8.a, announce, wait for done, ld8.c.nc, report. */
+    step(s, &bt, adds(14, 0x1000, 0));
+    step(s, &bt, ld8_x(0x0b, 11, 14));                  /* ld8.a r11 = [r14] */
+    step(s, &bt, adds(15, 0x1100, 0));
+    step(s, &bt, adds(17, 1, 0));
+    bundle(s, bt, 1, st8_rel(15, 17), NOP, NOP);
+    bt += 16;
+    /* Wait on the ITC, which loads nothing: cpu 0's stores pile up unseen. */
+    qtest_writeq(s, 0x1900, 3200000);
+    step(s, &bt, adds(15, 0x1900, 0));
+    step(s, &bt, ld8(13, 15));
+    step(s, &bt, m_from_ar(12, 44));
+    step(s, &bt, add(13, 13, 12));
+    bundle(s, bt, 0x01, m_from_ar(12, 44), NOP, NOP);
+    bundle(s, bt + 16, 0x01, NOP,
+           cmp_insn('r', false, R_LTU, CT_NONE, 6, 7, 12, 13, 0), NOP);
+    bundle(s, bt + 32, 0x11, NOP, NOP, branch(-32) | 6);
+    bt += 48;
+    step(s, &bt, adds(15, 0x1208, 0));
+    bundle(s, bt, 0x01, ld8_acq(12, 15), NOP, NOP);
+    bundle(s, bt + 16, 0x01, NOP,
+           cmp_insn('r', false, R_EQ, CT_NONE, 6, 7, 12, 0, 0), NOP);
+    bundle(s, bt + 32, 0x11, NOP, NOP, branch(-32) | 6);
+    bt += 48;
+    step(s, &bt, ld8_x(0x27, 11, 14));              /* ld8.c.nc r11 = [r14] */
+    step(s, &bt, adds(15, 0x1010, 0));
+    step(s, &bt, st8(15, 11));
+    step(s, &bt, adds(15, 0x1018, 0));
+    step(s, &bt, adds(17, 0x42, 0));
+    bundle(s, bt, 1, st8(15, 17), NOP, NOP);
+    bundle(s, bt + 16, 0x11, NOP, NOP, branch(0));
+    qtest_qmp_assert_success(s, "{ 'execute': 'cont' }");
+    while (qtest_readq(s, 0x1100) != 1 &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(1000);
+    }
+    qtest_writeq(s, 0x1000, 0x77);              /* not a store by a CPU */
+    qtest_writeq(s, 0x1200, 1);
+    while (qtest_readq(s, 0x1018) != 0x42 &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(1000);
+    }
+    qtest_qmp_assert_success(s, "{ 'execute': 'stop' }");
+    g_assert_cmphex(qtest_readq(s, 0x1018), ==, 0x42);
+    return s;
+}
+
+static void test_smp_store_elsewhere_keeps_an_alat_entry(void)
+{
+    QTestState *s = smp_alat_program(0x1040, 400);
+
+    g_assert_cmphex(qtest_readq(s, 0x1010), ==, 0x11);   /* hit: no reload */
+    qtest_quit(s);
+}
+
+static void test_smp_store_to_the_same_dword_invalidates_an_alat_entry(void)
+{
+    QTestState *s = smp_alat_program(0x1000, 400);
+
+    g_assert_cmphex(qtest_readq(s, 0x1010), ==, 0x88);   /* miss: reload */
+    qtest_quit(s);
+}
+
+/*
+ * cpu 1 replays up to 1023 unseen stores of cpu 0 (the loop and its final flag
+ * store). With 1024 the writer may already have refilled the first slot, so it
+ * drops the table instead, as the SDM allows.
+ */
+static void test_smp_alat_log_holds_1023_stores_and_then_laps(void)
+{
+    QTestState *s = smp_alat_program(0x1040, 1022);
+
+    g_assert_cmphex(qtest_readq(s, 0x1010), ==, 0x11);   /* replayed: kept */
+    qtest_quit(s);
+    s = smp_alat_program(0x1040, 1023);
+    g_assert_cmphex(qtest_readq(s, 0x1010), ==, 0x77);   /* lapped: dropped */
+    qtest_quit(s);
+}
 
 /*
  * PAL 520 installs an L3 way with one range tag write (array 6, type 5, MSR
@@ -5435,8 +5898,79 @@ static void test_l3_way_does_not_survive_a_reset(void)
     qtest_quit(p.s);
 }
 
+/* The machine needs a PROM image to start: one with a FIT pointer and entry. */
+static QTestState *l3_start(void)
+{
+    g_autofree char *flash = NULL;
+    g_autofree char *args = NULL;
+    const uint32_t flash_size = 6 * 1024 * 1024;
+    uint8_t fit[32] = "_FIT_   ";
+    const uint8_t ptr[4] = { 0x00, 0x01, 0xa0, 0xff };  /* table at +0x100 */
+    int fd = g_file_open_tmp("ia64-l3-XXXXXX.bin", &flash, NULL);
+    QTestState *s;
 
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpint(ftruncate(fd, flash_size), ==, 0);
+    fit[8] = 2;                                 /* the header and one entry */
+    fit[18] = 0xa0;                             /* entry: 0xffa00000, */
+    fit[19] = 0xff;
+    fit[24] = 1;                                /* 16 bytes, */
+    fit[30] = 1;                                /* type 1 */
+    g_assert_cmpint(pwrite(fd, fit, sizeof(fit), 0x100), ==, sizeof(fit));
+    g_assert_cmpint(pwrite(fd, ptr, 4, flash_size - 0x20), ==, 4);
+    close(fd);
+    args = g_strdup_printf("-machine altix350 -smp 2 -m 2G -bios %s "
+                           "-accel tcg,thread=multi -S "
+                           "-device loader,addr=0x1100000,cpu-num=0 "
+                           "-device loader,addr=0x1104000,cpu-num=1", flash);
+    s = qtest_init(args);
+    unlink(flash);
+    return s;
+}
 
+/* Store an own value 2000 times, sum the reads, drop the way, report. */
+static void l3_private_program(QTestState *s, uint64_t at, uint64_t own,
+                               uint64_t result)
+{
+    CaProgram p = { .s = s, .at = at, .slot = 0 };
+
+    step(s, &p.at, adds(10, 4096, 0));
+    load_const(s, &p.at, 8, 0x1c10, L3_WAY_BASE);
+    ca_msr_set(&p, 1504, L3_MSR1504_ON);
+    l3_range_write(&p, L3_TAG_STATE3);
+    step(s, &p.at, adds(9, 1999, 0));
+    step(s, &p.at, adds(14, own, 0));
+    step(s, &p.at, adds(20, 0, 0));
+    bundle(s, p.at, 1, NOP, (UINT64_C(0x2a) << 27) | (UINT64_C(65) << 20) |
+           (UINT64_C(9) << 13), NOP);
+    p.at += 16;
+    bundle(s, p.at, 1, st8(8, 14), NOP, NOP);
+    p.at += 16;
+    bundle(s, p.at, 1, ld8(11, 8), NOP, NOP);
+    p.at += 16;
+    bundle(s, p.at, 0x11, NOP, add(20, 20, 11), branch(-32) | (5 << 6));
+    p.at += 16;
+    ca_msr_set(&p, 1504, L3_MSR1504_OFF);
+    step(s, &p.at, adds(18, result, 0));
+    bundle(s, p.at, 1, st8(18, 20), adds(19, 0x42, 0), adds(21, result + 8, 0));
+    p.at += 16;
+    bundle(s, p.at, 1, st8(21, 19), NOP, NOP);
+    bundle(s, p.at + 16, 0x11, NOP, NOP, branch(0));
+}
+
+static void test_l3_way_is_private_to_each_cpu(void)
+{
+    QTestState *s = l3_start();
+
+    l3_private_program(s, 0x1100000, 0x11, 0x1000);
+    l3_private_program(s, 0x1104000, 0x22, 0x1100);
+    smp_wait_markers(s, 0x1008, 0x1108);
+    g_assert_cmphex(qtest_readq(s, 0x1000), ==, 2000 * 0x11);
+    g_assert_cmphex(qtest_readq(s, 0x1100), ==, 2000 * 0x22);
+    /* The host reads through cpu 0, whose way is gone: RAM is untouched. */
+    g_assert_cmphex(qtest_readq(s, L3_WAY_BASE), ==, 0);
+    qtest_quit(s);
+}
 
 /*
  * The PAL's timer round: read the ITC, set it and cr.itm 100 ticks ahead, then
@@ -5716,18 +6250,40 @@ int main(int argc, char **argv)
                    test_halt_word_halts_after_an_earlier_array_command);
     qtest_add_func("ia64/sapic-id-is-the-platform-assignment",
                    test_sapic_id_is_the_platform_assignment);
+    qtest_add_func("ia64/smp-fetchadd-loses-no-increment",
+                   test_smp_fetchadd_loses_no_increment);
+    qtest_add_func("ia64/smp-lock-gives-mutual-exclusion",
+                   test_smp_lock_gives_mutual_exclusion);
+    qtest_add_func("ia64/smp-xchg-lock-gives-mutual-exclusion",
+                   test_smp_xchg_lock_gives_mutual_exclusion);
+    qtest_add_func("ia64/smp-store-elsewhere-keeps-an-alat-entry",
+                   test_smp_store_elsewhere_keeps_an_alat_entry);
+    qtest_add_func("ia64/smp-store-to-the-same-dword-invalidates-an-alat-entry",
+                   test_smp_store_to_the_same_dword_invalidates_an_alat_entry);
+    qtest_add_func("ia64/smp-alat-log-holds-1023-stores-and-then-laps",
+                   test_smp_alat_log_holds_1023_stores_and_then_laps);
+    qtest_add_func("ia64/smp-itc-is-monotonic-on-each-cpu",
+                   test_smp_itc_is_monotonic_on_each_cpu);
+    qtest_add_func("ia64/smp-ptc-g-purges-the-other-cpus-translation",
+                   test_smp_ptc_g_purges_the_other_cpus_translation);
+    qtest_add_func("ia64/smp-release-acquire-message-passing",
+                   test_smp_release_acquire_message_passing);
     qtest_add_func("ia64/l3-way-is-private-and-dropped-without-write-back",
                    test_l3_way_is_private_and_dropped_without_write_back);
     qtest_add_func("ia64/l3-way-moves-when-its-tag-is-rewritten",
                    test_l3_way_moves_when_its_tag_is_rewritten);
     qtest_add_func("ia64/l3-way-does-not-survive-a-reset",
                    test_l3_way_does_not_survive_a_reset);
+    qtest_add_func("ia64/l3-way-is-private-to-each-cpu",
+                   test_l3_way_is_private_to_each_cpu);
     qtest_add_func("ia64/interval-timer-round-delivers-exactly-once",
                    test_interval_timer_round_delivers_exactly_once);
     qtest_add_func("ia64/itc-counts-virtual-time-in-either-mode",
                    test_itc_counts_virtual_time_in_either_mode);
     qtest_add_func("ia64/interval-timer-fires-on-virtual-time-while-running",
                    test_interval_timer_fires_on_virtual_time_while_running);
+    qtest_add_func("ia64/alat-io-store-under-icount",
+                   test_alat_io_store_under_icount);
     qtest_add_func("ia64/alat-store-fault-does-not-wedge",
                    test_alat_store_fault_does_not_wedge_the_next_store);
     qtest_add_func("ia64/madison-pmu-readback", test_madison_pmu_readback);
