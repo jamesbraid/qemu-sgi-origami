@@ -13,6 +13,7 @@ docs/devel/sgi-mesa-renderer.rst
 docs/devel/testing/sgi.rst
 docs/sphinx/sgidiagram.py
 docs/sphinx/sgiref.py
+docs/system/ia64/shub.rst
 docs/system/mips/sgi/hardware/scsi-cdrom.rst
 docs/system/mips/sgi/hardware/scsi-hd-inquiry.rst
 docs/sphinx/sgirun.py
@@ -128,6 +129,9 @@ hw/display/sgi/video-file.c
 hw/display/sgi/video-port.c
 hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
+hw/ia64/Kconfig
+hw/ia64/meson.build
+hw/ia64/sgi-shub.c
 hw/input/psitech-rad4-km.c
 hw/input/sgi-ioc3-kbc.c
 hw/input/wacom-iv.c
@@ -407,6 +411,9 @@ include/hw/display/sgi/video-port.h
 include/hw/display/sgi/x-gc.h
 include/hw/i2c/pcf8584.h
 include/hw/ia64/sapic.h
+include/hw/ia64/sgi-shub-ii-regs.h
+include/hw/ia64/sgi-shub-regs.h
+include/hw/ia64/sgi-shub.h
 include/hw/input/psitech-rad4-km.h
 include/hw/input/sgi-ioc3-kbc.h
 include/hw/mips/r10k-coherence.h

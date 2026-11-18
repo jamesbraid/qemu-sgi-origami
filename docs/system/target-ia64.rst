@@ -11,3 +11,4 @@ The target runs native IA-64 code only; IA-32 execution is not implemented.
 .. toctree::
    :maxdepth: 1
 
+   ia64/shub

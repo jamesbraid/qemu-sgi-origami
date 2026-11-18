@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: BSD-3-Clause
+config SGI_SHUB
+    bool
+    select SERIAL_MM
+    select PFLASH_CFI02
+    select SGI_PIC
+    select SGI_XIO_LINK
+    select SGI_XBOW
+    select SGI_DMA_PLACEMENT
+
+config ALTIX350
+    bool
+    imply TEST_DEVICES
+    select SGI_SHUB

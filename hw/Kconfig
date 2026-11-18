@@ -57,6 +57,7 @@ source alpha/Kconfig
 source avr/Kconfig
 source hexagon/Kconfig
 source hppa/Kconfig
+source ia64/Kconfig
 source i386/Kconfig
 source loongarch/Kconfig
 source m68k/Kconfig
