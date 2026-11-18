@@ -973,7 +973,7 @@ static void test_framing(void)
         stl_le_p(hello + 8, 3);
         v_send(v, hello, 48);
     }
-    g_assert_false(v_take(v, DSHM_MSG_WELCOME, &m, 500));
+    g_assert_false(v_take(v, DSHM_MSG_WELCOME, &m, V_WAIT_MS));
     g_assert_true(v->closed);
     v_close(v);
     qtest_quit(qts);
