@@ -62,6 +62,7 @@ static void bcm570x_phy_settle_done(void *opaque)
     Bcm570xPhyState *s = opaque;
 
     s->autoneg_done = true;
+    qemu_irq_pulse(s->link_changed);
 }
 
 /*
@@ -256,6 +257,15 @@ static void bcm570x_phy_init(Object *obj)
 
     s->settle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
                                    bcm570x_phy_settle_done, s);
+    qdev_init_gpio_out_named(DEVICE(obj), &s->link_changed, "link-changed", 1);
+}
+
+static void bcm570x_phy_class_init(ObjectClass *klass, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(klass);
+
+    /* Only the MAC creates it, and the MAC migrates its state. */
+    dc->user_creatable = false;
 }
 
 static void bcm570x_phy_finalize(Object *obj)
@@ -284,8 +294,9 @@ const VMStateDescription vmstate_bcm570x_phy = {
 static const TypeInfo bcm570x_phy_types[] = {
     {
         .name = TYPE_BCM570X_PHY,
-        .parent = TYPE_OBJECT,
+        .parent = TYPE_DEVICE,
         .instance_size = sizeof(Bcm570xPhyState),
+        .class_init = bcm570x_phy_class_init,
         .instance_init = bcm570x_phy_init,
         .instance_finalize = bcm570x_phy_finalize,
     },

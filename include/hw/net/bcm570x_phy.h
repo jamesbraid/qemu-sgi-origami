@@ -8,6 +8,8 @@
 #ifndef HW_NET_BCM570X_PHY_H
 #define HW_NET_BCM570X_PHY_H
 
+#include "hw/core/irq.h"
+#include "hw/core/qdev.h"
 #include "migration/vmstate.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
@@ -106,7 +108,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(Bcm570xPhyState, BCM570X_PHY)
 #define BCM570X_PHY_AUTONEG_SETTLE_NS (100 * SCALE_MS)
 
 struct Bcm570xPhyState {
-    Object parent_obj;
+    DeviceState parent_obj;
 
     /* Writable registers, held as the words a driver reads back. */
     uint16_t bmcr;
@@ -127,6 +129,9 @@ struct Bcm570xPhyState {
 
     QEMUTimer *settle_timer;
     bool settle_armed;
+
+    /* GPIO out "link-changed", pulsed when the link a driver sees changes. */
+    qemu_irq link_changed;
 };
 
 extern const VMStateDescription vmstate_bcm570x_phy;

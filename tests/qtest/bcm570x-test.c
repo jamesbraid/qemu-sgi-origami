@@ -1510,6 +1510,101 @@ static void test_self_clearing_reset_bits(const void *data)
     bcm_close(&b);
 }
 
+/* The offset of a PCI capability in the function's list, or 0. */
+static uint8_t bcm_find_cap(QPCIDevice *dev, uint8_t id)
+{
+    uint8_t ptr = qpci_config_readb(dev, PCI_CAPABILITY_LIST);
+
+    for (unsigned i = 0; ptr && i < 16; i++) {
+        if (qpci_config_readb(dev, ptr) == id) {
+            return ptr;
+        }
+        ptr = qpci_config_readb(dev, ptr + 1);
+    }
+    return 0;
+}
+
+/*
+ * By default the function has no capability list. pm-cap adds the
+ * power-management capability tg3 insists on, and pci-x the PCI-X capability
+ * with a 64-bit, 133 MHz status and PCISTATE without its conventional-PCI bit.
+ * The status and bus mode are approximations: tg3 only checks the capability
+ * and that bit.
+ */
+static void test_pci_x_and_pm_capabilities(const void *data)
+{
+    Bcm b;
+    uint8_t cap;
+
+    bcm_open(&b, bcm_init());
+    g_assert_cmpuint(bcm_find_cap(b.dev, PCI_CAP_ID_PM), ==, 0);
+    g_assert_cmpuint(bcm_find_cap(b.dev, PCI_CAP_ID_PCIX), ==, 0);
+    g_assert_cmphex(qpci_config_readl(b.dev, BCM_PCI_PCISTATE) & 0x4, ==, 0x4);
+    bcm_close(&b);
+
+    bcm_open(&b, qtest_initf(BCM_MACHINE " -netdev user,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0,"
+                             "pci-x=on,pm-cap=on", BCM_SLOT));
+    g_assert_cmpuint(bcm_find_cap(b.dev, PCI_CAP_ID_PM), !=, 0);
+    cap = bcm_find_cap(b.dev, PCI_CAP_ID_PCIX);
+    g_assert_cmpuint(cap, !=, 0);
+    g_assert_cmphex(qpci_config_readl(b.dev, cap + PCI_X_STATUS) &
+                    (PCI_X_STATUS_64BIT | PCI_X_STATUS_133MHZ), ==,
+                    PCI_X_STATUS_64BIT | PCI_X_STATUS_133MHZ);
+    g_assert_cmphex(qpci_config_readl(b.dev, BCM_PCI_PCISTATE) & 0x4, ==, 0);
+    bcm_close(&b);
+}
+
+/*
+ * tg3's DMA self-test on a 5701: a descriptor in on-chip SRAM, the read
+ * engine copies a host buffer to the chip's memory, the write engine copies
+ * it back, and each engine posts the descriptor's address on its completion
+ * queue. The pattern must come back unchanged.
+ */
+static void bcm_dma_desc(Bcm *b, uint32_t addr, uint32_t host, uint32_t len,
+                         uint32_t cqid_sqid)
+{
+    ind_mem_writel(b, addr + 0, 0);                 /* addr_hi */
+    ind_mem_writel(b, addr + 4, host);              /* addr_lo */
+    ind_mem_writel(b, addr + 8, 0x2100);            /* nic_mbuf */
+    ind_mem_writel(b, addr + 12, len | (cqid_sqid << 16));
+    ind_mem_writel(b, addr + 16, 5);                /* flags */
+}
+
+static void test_dma_engines_roundtrip(const void *data)
+{
+    enum { RDMAC_MODE = 0x4800, WDMAC_MODE = 0x4c00, FTQ_READ = 0x5c28,
+           FTQ_WRITE = 0x5c78, COMP_RCVBD = 0x5cd8, COMP_RCVDATA = 0x5d08,
+           DESCS = 0x2000, SIZE = 0x2000 };
+    uint32_t pattern[SIZE / 4], back[SIZE / 4];
+    Bcm b;
+
+    for (unsigned i = 0; i < SIZE / 4; i++) {
+        pattern[i] = i;
+    }
+    bcm_open(&b, bcm_init());
+    qtest_memwrite(b.qts, TX_BUF_PHYS, pattern, sizeof(pattern));
+
+    bar_writel(&b, COMP_RCVBD, 0);
+    bar_writel(&b, RDMAC_MODE, 2);
+    bcm_dma_desc(&b, DESCS, TX_BUF_PHYS, SIZE, (13 << 8) | 2);
+    bar_writel(&b, FTQ_READ, DESCS);
+    g_assert_cmphex(bar_readl(&b, COMP_RCVBD) & 0xffff, ==, DESCS);
+
+    /* Clear the host copy so the write engine has to restore it. */
+    memset(back, 0, sizeof(back));
+    qtest_memwrite(b.qts, TX_BUF_PHYS, back, sizeof(back));
+    bar_writel(&b, COMP_RCVDATA, 0);
+    bar_writel(&b, WDMAC_MODE, 2);
+    bcm_dma_desc(&b, DESCS, TX_BUF_PHYS, SIZE, (16 << 8) | 7);
+    bar_writel(&b, FTQ_WRITE, DESCS);
+    g_assert_cmphex(bar_readl(&b, COMP_RCVDATA) & 0xffff, ==, DESCS);
+
+    qtest_memread(b.qts, TX_BUF_PHYS, back, sizeof(back));
+    g_assert_cmpmem(back, sizeof(back), pattern, sizeof(pattern));
+    bcm_close(&b);
+}
+
 /*
  * HCC_MODE stores and reads back faithfully: the driver's idle sequence
  * writes ENABLE, then writes 0 and polls up to ~2000 times for ENABLE to read
@@ -1972,6 +2067,94 @@ static void test_phy_aux_status_link_up(const void *data)
     g_assert_cmphex(aux & BRGPHY_AUXSTS_AN_RES, ==, BRGPHY_AUXSTS_1000TFDX);
     g_assert_cmphex(aux, !=, 0xffff);
 
+    bcm_close(&b);
+}
+
+/*
+ * Without a link-change register or MI interrupt, tg3 learns the link came up
+ * from the status block's link-changed bit (0x2 in the status word) and
+ * re-reads the PHY then. Autonegotiation finishing must therefore post the
+ * block with that bit, or a driver that only looked once never sees the link.
+ */
+static void test_phy_settle_posts_link_changed(const void *data)
+{
+    Bcm b;
+    uint8_t sb[BCM_STATUS_BLK_SIZE];
+
+    bcm_open(&b, qtest_initf(BCM_MACHINE " -netdev user,id=n0"
+                             " -device bcm570x,addr=%02x.0,netdev=n0,"
+                             "link-change-status=on", BCM_SLOT));
+    bcm_arm_status(&b);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+
+    mii_write(&b, BCM_PHY_ADDR, MII_BMCR,
+              MII_BMCR_AUTOEN | MII_BMCR_STARTNEG);
+    qtest_memset(b.qts, STATUS_PHYS, 0, BCM_STATUS_BLK_SIZE);
+    qtest_clock_step(b.qts, BCM_PHY_SETTLE_NS + 1000);
+
+    qtest_memread(b.qts, STATUS_PHYS, sb, sizeof(sb));
+    g_assert_cmphex(get32dma(sb + 0) & 0x3, ==, 0x3);   /* updated, link */
+    bcm_close(&b);
+}
+
+/*
+ * A PCI-X 5701 driver writes its mailboxes through the indirect register
+ * window, at the mailbox's offset plus 0x5600 (tg3_write_indirect_mbox), so
+ * the chip's own register map must carry the mailboxes at 0x5800 + (offset -
+ * 0x200). The transmit producer at 0x304 is then at 0x5904.
+ */
+static void test_indirect_mailbox_alias(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+    ind_reg_writel(&b, 0x5904, 5);
+    g_assert_cmphex(bar_readl(&b, BCM_MBX_TX_PROD_LO), ==, 5);
+    g_assert_cmphex(ind_reg_readl(&b, 0x5904), ==, 5);
+    bcm_close(&b);
+}
+
+/*
+ * With tagged status (MISC_HOST_CTRL bit 9), the byte a driver writes to the
+ * interrupt mailbox is the last status tag it has seen, and the chip keeps
+ * the line asserted while the block it posted carries a newer tag. A write of
+ * the stale tag with nothing else set unmasks and leaves the interrupt
+ * pending; a write of the posted tag acknowledges it.
+ */
+static void test_tagged_status_keeps_interrupt_pending(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+    qpci_config_writel(b.dev, BCM_PCI_MISC_CTL,
+                       qpci_config_readl(b.dev, BCM_PCI_MISC_CTL) | 0x200);
+    bcm_arm_status(&b);
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    bar_writel(&b, BCM_RX_MODE, BCM_RXMODE_ENABLE);
+    bar_writel(&b, BCM_MBX_TX_PROD_LO, 0);      /* posts tag 1 */
+
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 0);         /* unmask, tag 0 is stale */
+    g_assert_true(intr_line_up(b.dev));
+    bar_writel(&b, BCM_MBX_IRQ0_LO, 1u << 24);  /* the posted tag */
+    g_assert_false(intr_line_up(b.dev));
+    bcm_close(&b);
+}
+
+/*
+ * The register window reaches past the 32 KiB register file: a 5701 driver
+ * clears and loads the on-chip CPU scratch at 0x30000 and up through it. The
+ * model must not wrap those addresses onto the registers, or the clear zeroes
+ * host coalescing and the status block address.
+ */
+static void test_register_window_beyond_file_leaves_registers(const void *data)
+{
+    Bcm b;
+
+    bcm_open(&b, bcm_init());
+    bar_writel(&b, BCM_HCC_MODE, BCM_HCC_ENABLE);
+    ind_reg_writel(&b, 0x30000 + BCM_HCC_MODE, 0);
+    g_assert_cmphex(bar_readl(&b, BCM_HCC_MODE), ==, BCM_HCC_ENABLE);
     bcm_close(&b);
 }
 
@@ -7420,6 +7603,18 @@ int main(int argc, char **argv)
                         test_reset_handshake_via_indirect);
     qtest_add_data_func("/bcm570x/self-clearing-reset-bits", NULL,
                         test_self_clearing_reset_bits);
+    qtest_add_data_func("/bcm570x/tagged-status-keeps-interrupt-pending", NULL,
+                        test_tagged_status_keeps_interrupt_pending);
+    qtest_add_data_func("/bcm570x/indirect-mailbox-alias", NULL,
+                        test_indirect_mailbox_alias);
+    qtest_add_data_func("/bcm570x/pci-x-and-pm-capabilities", NULL,
+                        test_pci_x_and_pm_capabilities);
+    qtest_add_data_func("/bcm570x/register-window-beyond-file", NULL,
+                        test_register_window_beyond_file_leaves_registers);
+    qtest_add_data_func("/bcm570x/phy-settle-posts-link-changed", NULL,
+                        test_phy_settle_posts_link_changed);
+    qtest_add_data_func("/bcm570x/dma-engines-roundtrip", NULL,
+                        test_dma_engines_roundtrip);
     qtest_add_data_func("/bcm570x/hcc-mode-idle-poll", NULL,
                         test_hcc_mode_idle_poll);
     qtest_add_data_func("/bcm570x/bufmgr-registers/bcm5701", "",

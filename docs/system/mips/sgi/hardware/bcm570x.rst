@@ -17,7 +17,8 @@ Tezro and Onyx 4 host machines carries one at PCI device 4 behind the
 The BCM5701 is a single-port, 10/100/1000 Mb/s PCI Ethernet MAC with an
 integrated copper PHY. QEMU models the MAC as ``hw/net/bcm570x.c`` (QOM type
 ``bcm570x``, selected by ``model=bcm5701``) and the PHY as
-``hw/net/bcm570x_phy.c``, a child object of the MAC. The same type with
+``hw/net/bcm570x_phy.c``, a child device of the MAC that reports a settled
+link on its ``link-changed`` GPIO output. The same type with
 ``model=bcm5704`` is a dual-port BCM5704; this page covers the BCM5701
 only. :ref:`sgi-ip53-bcm570x` is the short entry in the IP53 platform
 page (:doc:`/system/mips/sgi/ip53`); this page is the reference behind it. Facts are rated as described
@@ -105,8 +106,14 @@ revision and subsystem identity the IO9 part really carries are
 *unknown*. A read of its configuration space on an IP53 machine would
 settle both.
 
-BAR0 is one 64 KiB memory BAR. The model programs no other BAR and no
-capability list.
+BAR0 is one 64 KiB memory BAR. The model programs no other BAR. By default
+there is no capability list. Two optional properties add one each, for the
+Altix 350's drivers: ``pm-cap`` adds the power-management capability that
+Linux's ``tg3`` insists on before it probes (*software expectation*), and
+``pci-x`` adds the PCI-X capability with a 64-bit, 133 MHz status word and
+clears the PCISTATE conventional-PCI bit. No source gives the slot's PCI-X
+status or bus mode, so those values are an *approximation* bounded by ``tg3``
+only checking that the capability exists and that bit.
 
 Chip identification
 -------------------
@@ -788,16 +795,74 @@ set.
 interrupt check reads true exactly when the line is low. Bit 2 (PCI bus
 mode) is set because the chip runs as a conventional PCI function. Bit 4
 (32-bit bus) is set when the device is created and follows the host
-bridge's REQ64# sample. Which of these the IO9 slot would show is
-*unknown*; the PIC's PCI-X mode is not modelled by this device.
+bridge's REQ64# sample. With ``pci-x`` set, bit 2 is clear (*approximation*,
+see above). Which of these the IO9 slot would show is *unknown*; the PIC's
+own PCI-X mode is not modelled by this device.
 
 An update that lands while the mailbox is masked sets the pending latch,
 but the next write to the mailbox, the unmask included, clears it, so no
 interrupt follows. The specification says every write to the mailbox
 clears interrupt state, *established*; software has to re-read the status
-block after unmasking. Tagged status mode and the set-interrupt bit in
-local control are not modelled, so a driver that relies on them gets no
+block after unmasking.
+
+With tagged status (``MISC_CTL`` bit 9) the byte in bits 31:24 of the value
+written to the interrupt mailbox is the last status tag the driver saw. It is
+not a mask: the low 24 bits mask as before, and the line stays pending while
+the tag written differs from the tag of the block the chip last posted. This
+is the semantics ``tg3`` relies on (*software expectation*); the chip's own
+rule is not documented to the register level here. The set-interrupt bit in
+local control is not modelled, so a driver that relies on it gets no
 interrupt, *approximation*.
+
+Altix 350 additions
+-------------------
+
+These are rated by what they rest on. The first two rows are properties that
+default off; the rest apply to every ``bcm570x`` device.
+
+.. list-table::
+   :header-rows: 1
+
+   * - Behaviour
+     - Rating
+     - Basis and limit
+   * - ``pm-cap``, ``pci-x`` capabilities
+     - *software expectation*
+     - ``tg3`` checks the capabilities and the PCISTATE bit.
+   * - The PCI-X status word and the PCISTATE bus mode
+     - *approximation*
+     - The status word has no source for the slot.
+   * - ``link-change-status``: when autonegotiation settles, the next status
+       block carries the link-changed flag (``0x2`` in the status word) and
+       MAC status bit 12 (link state changed) is set
+     - *software expectation*
+     - A 5701 has neither a link-change register nor an MI interrupt, so
+       ``tg3`` learns of a link change from this flag. The settle is a
+       100 ms timer, as above; real timing is *unknown*.
+   * - The mailboxes also appear at ``0x5800`` to ``0x59ff`` of the register
+       file
+     - *software expectation*
+     - ``tg3_write_indirect_mbox`` in ``drivers/net/ethernet/broadcom/tg3.c``
+       in Linux writes a mailbox through the indirect register window at the
+       mailbox offset plus ``0x5600``, for chips with a mailbox write bug. That
+       the 2.6.9 and 2.6.18 drivers of the CentOS and RHEL guests do so on a
+       PCI-X 5701 is what those boots needed; their source was not
+       available to check.
+   * - Register-window offsets at or past the 32 KiB register file are
+       ignored on a write (logged as unimplemented) and read as zero
+     - *approximation*
+     - ``tg3`` clears and loads the on-chip CPU scratch at ``0x30000`` and up
+       through the window. The scratch is not modelled, so a 5701 that needs
+       its firmware fix gets none.
+   * - The DMA engines run a descriptor written through the queue-test
+       registers (``0x5c28``, ``0x5c78``): a host buffer is copied to or from
+       the chip's memory and the completion queue is posted
+     - *software expectation*
+     - ``tg3``'s DMA self-test. Writes to those two registers are no longer
+       stored. Only the 32-byte test ``tg3`` runs is modelled.
+   * - Tagged status
+     - *software expectation*
+     - See the interrupt mailbox above.
 
 .. _sgi-bcm570x-eeprom:
 
@@ -885,17 +950,19 @@ Model limits
 - ``MISC_CTL`` bits other than the two interrupt controls are stored;
   ``PCISTATE`` is read-only.
 - The MAC has no statistics, flow control, VLAN, hash filter, promiscuous
-  or wake-on-LAN logic. MAC status never changes.
+  or wake-on-LAN logic. MAC status changes only with ``link-change-status``,
+  which sets the link-state-changed bit when negotiation settles.
 - Autopolling the PHY is absent. The PHY has no forced mode, no loopback
   and no power-down, and answers every MII address.
 - Frame size is limited to 9600 bytes both ways.
-- Interrupt coalescing is at the stated criteria; tagged status and
-  coalesce-now are absent.
+- Interrupt coalescing is at the stated criteria; coalesce-now is absent.
+  Tagged status is as above.
 - Timing is invented: 8 ms buffer manager startup, 100 ms negotiation,
   200 microseconds arrival latency, immediate MII, EEPROM and DMA
   completion.
-- The IO9's PCI-X mode, 64-bit bus width and the slot's byte-lane
-  placement are the PIC's concern, not this device's.
+- The IO9's 64-bit bus width and the slot's byte-lane placement are the
+  PIC's concern, not this device's; the device's own PCI-X capability is
+  above.
 - Migration works only between identical builds.
 
 Tests
@@ -911,7 +978,10 @@ block gating, byte order and word swap, transmit with its errors, source
 address, segmentation and checksum offload, split doorbells and coalescing,
 receive on both rings with every checksum case, shortages, oversize frames and
 ring wrap, the arrival deadline, DMA errors, reset during coalescing, state and
-link migration, and the dual-port variant.
+link migration, and the dual-port variant. The additions for the Altix 350 are
+covered by the PCI-X and power-management capabilities, the DMA self-test round
+trip, the link-changed status post after the PHY settle, the mailbox alias, the
+tagged-status interrupt and the register-window guard.
 
 ``tests/qtest/sn-builder-test.c`` covers the IP53 instantiation:
 ``sn/builder/ip53-static-bcm5701-network-backend`` and

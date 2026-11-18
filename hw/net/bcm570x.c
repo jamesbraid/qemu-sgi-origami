@@ -168,6 +168,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_MISCCTL_MASK_PCI_INTR   0x00000002u
 #define BCM570X_MISCCTL_ENDIAN_BYTESWAP 0x00000004u
 #define BCM570X_MISCCTL_ENDIAN_WORDSWAP 0x00000008u
+#define BCM570X_MISCCTL_TAGGED_STATUS   0x00000200u
 
 /*
  * Config 0x70 (PCISTATE) reports the bus and the interrupt line. The chip
@@ -186,13 +187,9 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 
 /* Register-file offsets with modelled behaviour. */
 #define BCM570X_MAC_MODE            0x0400
-/*
- * The MAC's status word. Its change bits are latches the driver clears by
- * writing them back, so storing what it wrote leaves every bit it tried to
- * clear reading as set. The driver then sees the same condition it just
- * acknowledged, and keeps handling it.
- */
+/* The MAC's status word: its change bits are write-one-to-clear latches. */
 #define BCM570X_MAC_STATUS          0x0404
+#define BCM570X_MACSTATUS_LNKSTATE_CHANGED 0x00001000u
 /*
  * MAC address filter slot 0. The chip loads the station address here from the
  * serial EEPROM at power-on, so a driver may read it back straight from these
@@ -231,6 +228,15 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_EEPROM_MIN_SIZE     4
 #define BCM570X_EEPROM_MAX_SIZE     65536
 #define BCM570X_EEPROM_NO_DEVICE_ID UINT8_MAX
+
+/* The DMA engines' test path, as tg3's 5701 self-test drives it. */
+#define BCM570X_RDMAC_MODE          0x4800
+#define BCM570X_WDMAC_MODE          0x4c00
+#define BCM570X_DMAC_MODE_ENABLE    0x00000002u
+#define BCM570X_FTQ_DMA_HIGH_READ   0x5c28
+#define BCM570X_FTQ_DMA_HIGH_WRITE  0x5c78
+#define BCM570X_FTQ_RCVBD_COMP      0x5cd8
+#define BCM570X_FTQ_RCVDATA_COMP    0x5d08
 
 /*
  * Bit 0 of a *_MODE register is a self-clearing reset the driver sets and
@@ -369,6 +375,7 @@ DECLARE_INSTANCE_CHECKER(Bcm570xState, BCM570X, TYPE_BCM570X)
 #define BCM570X_HCC_TX_MAX_COAL_BDS 0x3c14  /* tx coalescing frame count */
 #define BCM570X_STATUS_BLK_SIZE     0x50
 #define BCM570X_STATFLAG_UPDATED    0x00000001u
+#define BCM570X_STATFLAG_LINK_CHG   0x00000002u
 /*
  * Status-block idx[0]: rx_producer at 0x10, tx_consumer at 0x12 (tg3 layout).
  */
@@ -537,6 +544,11 @@ struct Bcm570xState {
 
     /* The modelled minimum between a frame arriving and its completion. */
     uint32_t rx_arrival_latency_us;
+    /* Report PHY link changes in the status block (see link_changed). */
+    bool link_change_status;
+    /* Present as a PCI-X device: the capability and PCISTATE's bus mode. */
+    bool pcix;
+    bool pm_cap;
     SGINetRxLatency rx_latency;
     uint16_t rx_std_cons;       /* the chip's standard-ring consumer */
     uint16_t rx_jumbo_cons;     /* the chip's jumbo-ring consumer */
@@ -1131,7 +1143,7 @@ static MemTxResult bcm570x_frame_dma_write(Bcm570xState *s, uint64_t phys,
  * bus through the non-frame swap controls. Host address composition keeps its
  * MISC_CTL handling.
  */
-static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
+static bool bcm570x_post_status_block(Bcm570xState *s)
 {
     uint8_t blk[BCM570X_STATUS_BLK_SIZE];
     uint64_t base;
@@ -1147,7 +1159,10 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
 
     memset(blk, 0, sizeof(blk));
     next_tag = s->status_tag + 1;
-    bcm570x_dma_st32(blk, BCM570X_STATFLAG_UPDATED);
+    bcm570x_dma_st32(blk, BCM570X_STATFLAG_UPDATED |
+                     (bcm570x_regfile_read(s, BCM570X_MAC_STATUS) &
+                      BCM570X_MACSTATUS_LNKSTATE_CHANGED ?
+                      BCM570X_STATFLAG_LINK_CHG : 0));
     bcm570x_dma_st32(blk + BCM570X_STATUS_TAG_OFF, next_tag);
     stw_be_p(blk + BCM570X_STATUS_RX_STD_CONS_IMAGE_OFF,
              s->rx_std_cons);
@@ -1165,30 +1180,16 @@ static bool bcm570x_post_status_block(Bcm570xState *s, bool raise)
     if (trace_event_get_state_backends(TRACE_BCM570X_RX_STATUS_PUBLISH)) {
         trace_bcm570x_rx_status_publish(
             qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), base, s->status_tag,
-            s->status_rx_prod, s->status_tx_cons, raise);
+            s->status_rx_prod, s->status_tx_cons);
     }
 
     /*
-     * The block now carries an update the driver has not taken. The line
-     * asserts while that pending latch is set and interrupts are unmasked,
-     * and drops when the driver acknowledges by writing the interrupt
-     * mailbox. The monotonic tag is delivered in the block for the driver's
-     * own use, not to gate the line. Reached only past the enable gate above,
-     * so a disabled host-coalescing block raises no interrupt either. Returns
-     * whether the update reached the host, which the bring-up shot needs to
-     * know not to spend itself on a dropped update.
+     * The line asserts while an update is pending and interrupts are
+     * unmasked, and drops when the driver writes the interrupt mailbox.
      */
-    if (raise) {
-        s->irq_pending = true;
-        bcm570x_update_irq(s);
-    }
+    s->irq_pending = true;
+    bcm570x_update_irq(s);
     return true;
-}
-
-/* An update the driver is meant to be interrupted for. */
-static bool bcm570x_dma_status_block(Bcm570xState *s)
-{
-    return bcm570x_post_status_block(s, true);
 }
 
 
@@ -1239,12 +1240,29 @@ static void bcm570x_coal_arm(Bcm570xState *s)
 }
 
 /*
+ * A driver with no link-change register (tg3 on a 5701) learns of a link
+ * change from the status block's flag, so the PHY's settle posts an update.
+ */
+static void bcm570x_link_changed(void *opaque, int n, int level)
+{
+    Bcm570xState *s = opaque;
+
+    if (!level || !s->link_change_status) {
+        return;
+    }
+    bcm570x_regfile_write(s, BCM570X_MAC_STATUS,
+                          bcm570x_regfile_read(s, BCM570X_MAC_STATUS) |
+                          BCM570X_MACSTATUS_LNKSTATE_CHANGED);
+    bcm570x_post_status_block(s);
+}
+
+/*
  * One host update. All the ring indices are in one status block, so whichever
  * criterion fired reports every ring and restarts every count and timer.
  */
 static bool bcm570x_status_update(Bcm570xState *s)
 {
-    if (!bcm570x_dma_status_block(s)) {
+    if (!bcm570x_post_status_block(s)) {
         return false;
     }
     s->rx_coal_pending = 0;
@@ -1805,6 +1823,57 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
 }
 
 /*
+ * Run one descriptor of the DMA self-test: words 0 and 1 the host address,
+ * word 2 the SRAM address, the low half of word 3 the length.
+ */
+static void bcm570x_test_dma(Bcm570xState *s, uint32_t desc, bool to_chip)
+{
+    uint32_t mode = bcm570x_regfile_read(s, to_chip ? BCM570X_RDMAC_MODE :
+                                                      BCM570X_WDMAC_MODE);
+    uint64_t host = ((uint64_t)bcm570x_sram_read(s, desc) << 32) |
+                    bcm570x_sram_read(s, desc + 4);
+    uint32_t mbuf = bcm570x_sram_read(s, desc + 8);
+    uint32_t len = bcm570x_sram_read(s, desc + 12) & 0xffff;
+    uint8_t *chip = (uint8_t *)s->sram;
+    MemTxResult res;
+
+    if (!(mode & BCM570X_DMAC_MODE_ENABLE)) {
+        return;
+    }
+    if (mbuf > sizeof(s->sram) || len > sizeof(s->sram) - mbuf) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: DMA test descriptor 0x%x is outside the "
+                      "on-chip memory\n", desc);
+        return;
+    }
+    if (to_chip) {
+        res = bcm570x_dma_read_buf(s, host, chip + mbuf, len);
+    } else {
+        res = bcm570x_dma_write_buf(s, host, chip + mbuf, len);
+    }
+    if (res != MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "bcm570x: DMA test transfer to 0x%" PRIx64 " failed\n",
+                      host);
+        return;
+    }
+    bcm570x_regfile_write(s, to_chip ? BCM570X_FTQ_RCVBD_COMP :
+                                       BCM570X_FTQ_RCVDATA_COMP, desc);
+}
+
+/*
+ * The chip's own register map carries the mailboxes at 0x5800, where a driver
+ * using the indirect register window reaches them (mailbox + 0x5600).
+ */
+static uint32_t bcm570x_mailbox_alias(uint32_t off)
+{
+    if (off >= 0x5800 && off < 0x5a00) {
+        return off - 0x5800 + 0x200;
+    }
+    return off;
+}
+
+/*
  * Register-file writes, reached identically from the BAR and from the
  * indirect register window, so a side effect fires whichever path the driver
  * uses. The 5700/5701 issue the global reset through the indirect window,
@@ -1812,9 +1881,18 @@ static void bcm570x_tx_kick(Bcm570xState *s, uint32_t prod_raw)
  */
 static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
 {
-    off &= (BCM570X_REG_FILE_SIZE - 1);
+    off = bcm570x_mailbox_alias(off);
+    if (off >= BCM570X_REG_FILE_SIZE) {
+        qemu_log_mask(LOG_UNIMP, "bcm570x: write to 0x%x beyond the register "
+                      "file (on-chip CPU scratch) is not modelled\n", off);
+        return;
+    }
 
     switch (off) {
+    case BCM570X_FTQ_DMA_HIGH_READ:
+    case BCM570X_FTQ_DMA_HIGH_WRITE:
+        bcm570x_test_dma(s, val, off == BCM570X_FTQ_DMA_HIGH_READ);
+        return;
     case BCM570X_MISC_CFG:
         if (val & BCM570X_MISCCFG_RESET_CORE_CLOCKS) {
             bcm570x_global_reset(s);
@@ -1907,12 +1985,19 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
             trace_bcm570x_rx_mailbox_write(
                 qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL), off, val);
         }
-        /* Every write clears pending state; a nonzero value masks. */
-        s->irq_pending = false;
-        if (val != 0) {
-            s->irq_masked = true;
+        /*
+         * Every write clears pending state; a nonzero value masks. With
+         * tagged status the top byte is a tag, not a mask.
+         */
+        if (pci_get_long(PCI_DEVICE(s)->config + BCM570X_PCI_MISC_CTL) &
+            BCM570X_MISCCTL_TAGGED_STATUS) {
+            s->irq_pending = (val >> 24) != s->status_tag;
+            s->irq_masked = (val & 0x00ffffffu) != 0;
         } else {
-            s->irq_masked = false;
+            s->irq_pending = false;
+            s->irq_masked = val != 0;
+        }
+        if (!s->irq_masked) {
             bcm570x_retry_rx_flush(s);
         }
         bcm570x_regfile_write(s, off, val);
@@ -2101,8 +2186,12 @@ static void bcm570x_reg_write(Bcm570xState *s, uint32_t off, uint32_t val)
  */
 static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
 {
-    uint32_t o = off & (BCM570X_REG_FILE_SIZE - 1);
+    uint32_t o = bcm570x_mailbox_alias(off);
     uint32_t val;
+
+    if (o >= BCM570X_REG_FILE_SIZE) {
+        return 0;
+    }
 
     switch (o) {
     case BCM570X_MI_STS:
@@ -2112,7 +2201,7 @@ static uint32_t bcm570x_reg_read(Bcm570xState *s, uint32_t off)
         val = BCM570X_FW_PROGRESS_INIT;
         break;
     default:
-        val = bcm570x_regfile_read(s, off);
+        val = bcm570x_regfile_read(s, o);
         break;
     }
 
@@ -2200,7 +2289,7 @@ static bool bcm570x_bar0_accepts(void *opaque, hwaddr addr, unsigned size,
  * the guest. A guest dword read of a register returns the value written,
  * pinned by the device's golden byte-layout qtest on a generic host. The DMA
  * byte order is handled separately in bcm570x_tx_kick and
- * bcm570x_dma_status_block.
+ * bcm570x_post_status_block.
  */
 static const MemoryRegionOps bcm570x_bar0_ops = {
     .read = bcm570x_bar0_read,
@@ -2888,6 +2977,13 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
                    "(expected bcm5701 or bcm5704)", s->model);
         return;
     }
+    /* The link needs the device in the tree, so it is made here, not at init. */
+    qdev_connect_gpio_out_named(DEVICE(&s->phy), "link-changed", 0,
+                                qdev_get_gpio_in_named(DEVICE(s),
+                                                       "link-changed", 0));
+    if (!qdev_realize(DEVICE(&s->phy), NULL, errp)) {
+        return;
+    }
 
     /*
      * The model selects the identity. bcm5704 defaults to the copper
@@ -2948,6 +3044,30 @@ static void bcm570x_realize(PCIDevice *dev, Error **errp)
     memory_region_init_io(&s->bar0, OBJECT(s), &bcm570x_bar0_ops, s,
                           "bcm570x-bar0", BCM570X_BAR0_SIZE);
     pci_register_bar(dev, 0, PCI_BASE_ADDRESS_SPACE_MEMORY, &s->bar0);
+
+    if (s->pm_cap) {
+        /* Linux's tg3 refuses to probe a function without this capability. */
+        if (pci_pm_init(dev, 0, errp) < 0) {
+            return;
+        }
+    }
+
+    if (s->pcix) {
+        /* A PCI-X function: the capability and status word tg3 checks. */
+        int cap = pci_add_capability(dev, PCI_CAP_ID_PCIX, 0, 8,
+                                     errp);
+
+        if (cap < 0) {
+            return;
+        }
+        pci_set_word(pci_conf + cap + PCI_X_CMD, 0);
+        pci_set_word(dev->wmask + cap + PCI_X_CMD, 0x007f);
+        pci_set_long(pci_conf + cap + PCI_X_STATUS,
+                     PCI_X_STATUS_64BIT | PCI_X_STATUS_133MHZ);
+        pci_set_long(pci_conf + BCM570X_PCI_PCISTATE,
+                     pci_get_long(pci_conf + BCM570X_PCI_PCISTATE) &
+                     ~BCM570X_PCISTATE_BUSMODE_PCI);
+    }
 
     qemu_macaddr_default_if_unset(&s->conf.macaddr);
     s->nic = qemu_new_nic(&net_bcm570x_info, &s->conf,
@@ -3170,6 +3290,10 @@ static const Property bcm570x_properties[] = {
     DEFINE_PROP_DRIVE("eeprom", Bcm570xState, eeprom_blk),
     DEFINE_PROP_UINT8("eeprom-device-id", Bcm570xState, eeprom_device_id,
                       BCM570X_EEPROM_NO_DEVICE_ID),
+    DEFINE_PROP_BOOL("pci-x", Bcm570xState, pcix, false),
+    DEFINE_PROP_BOOL("link-change-status", Bcm570xState, link_change_status,
+                     false),
+    DEFINE_PROP_BOOL("pm-cap", Bcm570xState, pm_cap, false),
     DEFINE_PROP_UINT32("rx-arrival-latency-us", Bcm570xState,
                        rx_arrival_latency_us, SGI_NET_RX_LATENCY_DEFAULT_US),
     DEFINE_NIC_PROPERTIES(Bcm570xState, conf),
@@ -3180,6 +3304,8 @@ static void bcm570x_init(Object *obj)
     Bcm570xState *s = BCM570X(obj);
 
     object_initialize_child(obj, "phy", &s->phy, TYPE_BCM570X_PHY);
+    qdev_init_gpio_in_named(DEVICE(obj), bcm570x_link_changed, "link-changed",
+                            1);
     timer_init_ns(&s->bufmgr_start_timer, QEMU_CLOCK_VIRTUAL,
                   bcm570x_bufmgr_start, s);
     timer_init_ns(&s->coal_timer, QEMU_CLOCK_VIRTUAL, bcm570x_rx_coal_timer,
