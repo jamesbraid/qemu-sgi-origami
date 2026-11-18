@@ -18,6 +18,9 @@ from pathlib import Path
 SOURCE = Path(__file__).resolve().parents[2]
 PAGES = 'docs/system/mips/sgi'
 GUIDE = 'docs/devel/sgi-manual-pages.rst'
+# Pages outside PAGES that follow the same rating and prose rules.
+EXTRA_PAGES = ('docs/system/ia64/altix350.rst',
+               'docs/system/ia64/shub.rst')
 # Split so the licence check does not read this line as the file's own
 # SPDX header naming a different licence.
 SPDX = '.. SPDX-' 'License-Identifier: BSD-3-Clause'
@@ -619,14 +622,19 @@ def lint(root):
         if page.parent.name == 'hardware':
             findings += lint_used_in(rel, page.read_text(), cat)
             findings += lint_seealso(rel, page.read_text(), where)
-    for page in pages:
+    extra = [root / p for p in EXTRA_PAGES if (root / p).exists()]
+    for page in extra:
+        rel = str(page.relative_to(root))
+        findings += lint_page(rel, page.read_text())
+        findings += lint_hex(rel, page.read_text())
+    for page in pages + extra:
         findings += lint_private(str(page.relative_to(root)),
                                  page.read_text(), literal_tmp_ok=True)
     sources = sorted({p for g in SOURCE_GLOBS for p in root.glob(g)})
     for src in sources:
         findings += lint_private(str(src.relative_to(root)),
                                  c_comments(src.read_text(errors='replace')))
-    for page in pages + [root / GUIDE]:
+    for page in pages + extra + [root / GUIDE]:
         rel = str(page.relative_to(root))
         if page.exists() and rel not in listed:
             findings.append(f'{rel}:1: not listed in LICENSE.origami.paths')

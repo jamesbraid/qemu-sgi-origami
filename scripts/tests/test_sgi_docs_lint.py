@@ -70,6 +70,22 @@ class DocsLintTests(unittest.TestCase):
     def messages(self, pages, **kwargs):
         return '\n'.join(self.run_lint(pages, **kwargs))
 
+    def test_ia64_pages_follow_the_rating_rule(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / lint.CATALOGUE
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(CATALOGUE))
+            page = root / 'docs/system/ia64/altix350.rst'
+            page.parent.mkdir(parents=True)
+            page.write_text(lint.SPDX + '\n\n'
+                            'Altix 350\n=========\n\nThe row is *estimated*.\n')
+            (root / 'LICENSE.origami.paths').write_text(
+                'docs/system/ia64/altix350.rst\n')
+            out = '\n'.join(lint.lint(root))
+        self.assertIn('ia64/altix350.rst:6: italic "*estimated*" is not a '
+                      'rating', out)
+
     def test_good_part_page_is_clean(self):
         self.assertEqual(self.run_lint({'hardware/demo.rst': GOOD_PART}), [])
 
