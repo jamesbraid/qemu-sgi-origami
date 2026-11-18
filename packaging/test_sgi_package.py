@@ -71,6 +71,11 @@ class Flags(unittest.TestCase):
                          pkg.configure_flags('windows', 'x86_64'))
         self.assertNotIn('--disable-werror', pkg.configure_flags('windows'))
 
+    def test_rust_follows_rust_platforms(self):
+        for name in {n for n, _ in pkg.PLATFORMS}:
+            self.assertEqual('--enable-rust' in pkg.configure_flags(name),
+                             name in pkg.RUST_PLATFORMS, name)
+
 
 class Runtime(unittest.TestCase):
     def test_clang_environment_has_llvm_runtime(self):
@@ -81,6 +86,29 @@ class Runtime(unittest.TestCase):
         with mock.patch.dict('os.environ', {'MSYSTEM': 'MINGW64'}):
             names = [p for _, p in pkg.runtime_packages()]
         self.assertIn('libstdc++', names)
+
+
+class SubprojectLicences(unittest.TestCase):
+    def test_rust_crate_licences_are_found_through_the_wrap(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp)
+            crate = source / 'subprojects/anyhow-1.0.98'
+            crate.mkdir(parents=True)
+            (crate / 'LICENSE-MIT').write_text('mit')
+            (crate / 'Cargo.toml').write_text('')
+            (source / 'subprojects/anyhow-1-rs.wrap').write_text(
+                '[wrap-file]\ndirectory = anyhow-1.0.98\n')
+            build = source / 'build'
+            (build / 'meson-info').mkdir(parents=True)
+            (build / 'meson-info/intro-projectinfo.json').write_text(
+                '{"subprojects": [{"name": "anyhow-1-rs"}]}')
+            old, pkg.SOURCE = pkg.SOURCE, source
+            try:
+                found = pkg.used_subproject_licences(build)
+            finally:
+                pkg.SOURCE = old
+        self.assertEqual([(p.name, n) for p, n in found],
+                         [('LICENSE-MIT', 'anyhow-1.0.98.LICENSE-MIT')])
 
 
 class Libraries(unittest.TestCase):
@@ -255,6 +283,21 @@ class Archives(unittest.TestCase):
             with zipfile.ZipFile(target) as archive:
                 self.assertEqual(sorted(archive.namelist()),
                                  ['bin/qemu-img', 'share/keymaps/de'])
+
+
+class RustLicences(unittest.TestCase):
+    def test_texts_are_copied_and_a_missing_directory_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            prefix, licences = Path(tmp) / 'mingw64', Path(tmp) / 'licenses'
+            licences.mkdir()
+            with self.assertRaises(pkg.PackageError):
+                pkg.copy_rust_licences(prefix, licences)
+            texts = prefix / 'share/doc/rustc/licenses'
+            texts.mkdir(parents=True)
+            (texts / 'MIT.txt').write_text('mit')
+            pkg.copy_rust_licences(prefix, licences)
+            self.assertEqual([p.name for p in licences.iterdir()],
+                             ['rust.MIT.txt'])
 
 
 if __name__ == '__main__':
