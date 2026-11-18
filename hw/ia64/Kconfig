@@ -12,3 +12,9 @@ config ALTIX350
     bool
     imply TEST_DEVICES
     select SGI_SHUB
+
+# The PCI bus-master fixture, built into the emulator for test builds only.
+config ALTIX350_TEST_FIXTURES
+    bool
+    default y
+    depends on TEST_DEVICES && ALTIX350

@@ -131,6 +131,7 @@ hw/display/sgi/x-gc.c
 hw/i2c/pcf8584.c
 hw/ia64/Kconfig
 hw/ia64/meson.build
+hw/ia64/sgi-shub-test.c
 hw/ia64/sgi-shub.c
 hw/input/psitech-rad4-km.c
 hw/input/sgi-ioc3-kbc.c
@@ -985,6 +986,7 @@ tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-rad1-pci-test.c
 tests/qtest/sgi-replay-test.c
 tests/qtest/sgi-scsi-inquiry-test.h
+tests/qtest/sgi-shub-test.c
 tests/qtest/sgi-sonic-hdsp-image.h
 tests/qtest/sgi-sonic-hdsp-test.c
 tests/qtest/sgi-synthetic-serial-test.c
