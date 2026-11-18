@@ -440,6 +440,12 @@ void dshm_mach_pump(DShmViewer *v);
 void dshm_mach_queue_slot(DShmViewer *v, uint32_t region, uint32_t port);
 void dshm_mach_forget(DShmViewer *v, uint32_t region);
 void dshm_mach_viewer_free(DShmViewer *v);
+/* display-shm-mach-test.c: IOSurfaces for qemu.test's GPU images */
+bool dshm_mach_test_surface_new(uint32_t w, uint32_t h, DisplayShmGpuSlot *out,
+                                void **surface);
+uint8_t *dshm_mach_test_surface_lock(void *surface);
+void dshm_mach_test_surface_unlock(void *surface);
+void dshm_mach_test_surface_free(void *surface);
 #endif
 
 #ifdef _WIN32

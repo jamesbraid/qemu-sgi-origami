@@ -1346,3 +1346,4 @@ rust/hw/misc/sgi-bic-board-interface/meson.build
 rust/hw/misc/sgi-bic-board-interface/src/device.rs
 rust/hw/misc/sgi-bic-board-interface/src/lib.rs
 ui/display-shm-mach.c
+ui/display-shm-mach-test.c

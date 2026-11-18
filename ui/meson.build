@@ -9,7 +9,7 @@ if host_os == 'windows'
   system_ss.add(files('display-shm-win32.c'))
 endif
 if host_os == 'darwin'
-  system_ss.add(files('display-shm-mach.c'))
+  system_ss.add(files('display-shm-mach.c', 'display-shm-mach-test.c'))
   system_ss.add(dependency('appleframeworks', modules: ['IOSurface', 'CoreFoundation']))
 endif
 # The Vulkan loader is opened at run time, never linked; only dlopen needs a

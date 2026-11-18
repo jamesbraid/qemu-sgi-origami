@@ -16,7 +16,8 @@
 #include "qemu/memfd.h"
 #include <sys/mman.h>
 #endif
-#if defined(CONFIG_LINUX) || defined(_WIN32)
+/* The test head's GPU images: memfds, pagefile sections or IOSurfaces. */
+#if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN) || defined(_WIN32)
 #define TEST_GPU 1
 #endif
 
@@ -27,8 +28,8 @@
 #define TEST_IMAGES 16
 
 /*
- * A memfd, or a pagefile section on Windows, standing in for a GPU image: the
- * protocol carries the handle only.
+ * A memfd, a pagefile section on Windows or an IOSurface on macOS, standing in
+ * for a GPU image: the protocol carries the handle only.
  */
 typedef struct TestImage {
     uint32_t id;
@@ -40,6 +41,7 @@ typedef struct TestImage {
     uint8_t *map;
     size_t size;
     uint32_t stride;
+    void *surface;              /* macOS */
 } TestImage;
 
 typedef struct TestHead {
@@ -123,9 +125,20 @@ static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
                               uint32_t hgt, DisplayShmGpuSlot *out)
 {
     TestHead *t = opaque;
+    TestImage *im = NULL;
+#ifdef CONFIG_DARWIN
+    for (unsigned i = 0; i < TEST_IMAGES && !im; i++) {
+        im = t->image[i].id ? NULL : &t->image[i];
+    }
+    if (!im || !dshm_mach_test_surface_new(w, hgt, out, &im->surface)) {
+        return false;
+    }
+    im->id = id;
+    im->stride = out->stride;
+    return true;
+#else
     uint32_t stride = ROUND_UP(w * 4, 256);
     size_t size = (size_t)stride * hgt;
-    TestImage *im = NULL;
 #ifdef _WIN32
     HANDLE self = GetCurrentProcess(), dup, fence, fence_dup;
 #else
@@ -192,11 +205,14 @@ static bool test_gpu_slot_new(void *opaque, uint32_t id, uint32_t w,
     im->size = size;
     im->stride = stride;
     return out->handle >= 0;
+#endif
 }
 
 static void test_gpu_image_free(TestImage *im)
 {
-#ifdef _WIN32
+#ifdef CONFIG_DARWIN
+    dshm_mach_test_surface_free(im->surface);
+#elif defined(_WIN32)
     UnmapViewOfFile(im->map);
     CloseHandle(im->h);
 #else
@@ -249,14 +265,24 @@ static void test_gpu_draw(TestHead *t, uint32_t id)
 
     for (unsigned i = 0; i < TEST_IMAGES; i++) {
         TestImage *im = &t->image[i];
+        uint8_t *map;
 
         if (im->id != id) {
             continue;
         }
+#ifdef CONFIG_DARWIN
+        map = dshm_mach_test_surface_lock(im->surface);
+#else
+        map = im->map;
+#endif
+
         for (unsigned y = 0; y < t->h->height; y++) {
             test_resolve(t, y, row);
-            memcpy(im->map + (size_t)y * im->stride, row, t->h->width * 4);
+            memcpy(map + (size_t)y * im->stride, row, t->h->width * 4);
         }
+#ifdef CONFIG_DARWIN
+        dshm_mach_test_surface_unlock(im->surface);
+#endif
     }
     *d = (TestDone) { .h = t->h, .id = id };
     aio_bh_schedule_oneshot(qemu_get_aio_context(), test_gpu_done, d);
