@@ -3752,6 +3752,7 @@ if have_system or have_user
     'target/arm/tcg',
     'target/hexagon',
     'target/hppa',
+    'target/ia64',
     'target/i386',
     'target/i386/kvm',
     'target/i386/whpx',

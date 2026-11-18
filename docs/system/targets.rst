@@ -31,3 +31,4 @@ Contents:
    target-i386
    target-xtensa
    target-hexagon
+   target-ia64
