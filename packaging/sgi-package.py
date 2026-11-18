@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: BSD-3-Clause
-"""Build the SGI release programs and pack them into a per-OS archive.
+"""Build the SGI release programs and pack them into one archive per platform.
 
 The archive holds everything needed to run the SGI machines and nothing
 else, in a fixed layout with no wrapping directory:
@@ -23,7 +23,7 @@ built statically from the manifest in this directory at the commit named in
 vcpkg-commit. Each platform builds natively:
 
     linux    inside the image built from debian-bookworm.docker
-    macos    on an arm64 Mac with Xcode's tools and Homebrew's ninja,
+    macos    on an Arm or Intel Mac with Xcode's tools and Homebrew's ninja,
              pkgconf and python
     windows  in an MSYS2 MINGW64 shell with the mingw-w64-x86_64 toolchain,
              pkgconf, ninja, python and git installed. QEMU cannot build
@@ -52,12 +52,19 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 SOURCE = HERE.parent
 
-# platform -> (archive suffix, vcpkg triplet, executable suffix)
+# (OS, architecture) -> (archive suffix, vcpkg triplet, executable suffix)
 PLATFORMS = {
-    'linux': ('linux-x86_64', 'x64-linux-release', ''),
-    'macos': ('macos-arm64', 'arm64-osx-origami', ''),
-    'windows': ('windows-x86_64', 'x64-mingw-origami', '.exe'),
+    ('linux', 'x86_64'): ('linux-x86_64', 'x64-linux-release', ''),
+    ('linux', 'arm64'): ('linux-arm64', 'arm64-linux-origami', ''),
+    ('macos', 'arm64'): ('macos-arm64', 'arm64-osx-origami', ''),
+    ('macos', 'x86_64'): ('macos-x86_64', 'x64-osx-origami', ''),
+    ('windows', 'x86_64'): ('windows-x86_64', 'x64-mingw-origami', '.exe'),
+    ('windows', 'arm64'): ('windows-arm64', 'arm64-mingw-origami', '.exe'),
 }
+
+# Extra vcpkg build environment per platform: nettle's -fpic overflows the
+# GOT of QEMU's executable on arm64 Linux, and its configure reads CCPIC.
+VCPKG_ENV = {('linux', 'arm64'): {'CCPIC': '-fPIC'}}
 
 # Executables in the archive, as paths in the build directory.
 PROGRAMS = ['qemu-system-mips64', 'qemu-img', 'tools/sgi/qemu-sgi-machine-init']
@@ -67,7 +74,8 @@ TAG_RE = re.compile(r'^sgi-origami-(\d+\.\d+\.\d+)-(\d+)$')
 # Libraries the host must provide, because they sit in front of its drivers
 # and services. Anything else an executable needs has to be in the archive.
 LINUX_HOST_LIBS = re.compile(
-    r'^(ld-linux-x86-64|lib(c|m|dl|rt|pthread|gcc_s|X11|X11-xcb|xcb|'
+    r'^(ld-linux-x86-64|ld-linux-aarch64|'
+    r'lib(c|m|dl|rt|pthread|gcc_s|X11|X11-xcb|xcb|'
     r'xkbcommon|wayland-[a-z]+|udev|asound|pulse))\.so')
 MACOS_HOST_PREFIXES = ('/usr/lib/', '/System/Library/')
 WINDOWS_HOST_DLLS = re.compile(
@@ -115,16 +123,9 @@ def host_platform():
     return name
 
 
-def check_architecture(name):
+def host_architecture():
     machine = host_platform_module.machine().lower()
-    wanted = 'arm64' if name == 'macos' else 'x86_64'
-    if machine == 'amd64':
-        machine = 'x86_64'
-    if machine == 'aarch64':
-        machine = 'arm64'
-    if machine != wanted:
-        raise PackageError(f'{name} archives are built on {wanted} hosts, '
-                           f'not {machine}')
+    return {'amd64': 'x86_64', 'aarch64': 'arm64'}.get(machine, machine)
 
 
 def configure_flags(name):
@@ -158,8 +159,8 @@ def development_label(version, commit):
     return f'{version}-g{commit[:7]}'
 
 
-def archive_name(label, name):
-    suffix = PLATFORMS[name][0]
+def archive_name(label, name, arch):
+    suffix = PLATFORMS[name, arch][0]
     ext = 'zip' if name == 'windows' else 'tar.gz'
     return f'sgi-origami-{label}-{suffix}.{ext}'
 
@@ -211,11 +212,11 @@ def ensure_vcpkg(root, commit):
     return tool
 
 
-def install_libraries(tool, triplet, install_root, binary_cache):
+def install_libraries(tool, triplet, install_root, binary_cache, extra_env):
     """Build the manifest's libraries; return the triplet's install prefix."""
     binary_cache.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, VCPKG_DISABLE_METRICS='1',
-               VCPKG_DEFAULT_BINARY_CACHE=str(binary_cache))
+               VCPKG_DEFAULT_BINARY_CACHE=str(binary_cache), **extra_env)
     # Host tools build with the same triplet, so a MinGW build needs no MSVC
     # and Linux and macOS skip the debug half of the stock host triplets.
     run([tool, 'install', f'--triplet={triplet}', f'--host-triplet={triplet}',
@@ -288,7 +289,7 @@ def build_qemu(name, build, env, pkgversion, jobs):
     if glob.glob(str(SOURCE / 'subprojects/libslirp*/meson.build')):
         run([*meson, 'subprojects', 'update', '--reset', '--sourcedir', SOURCE,
              'libslirp'], cwd=build, env=env)
-    exe = PLATFORMS[name][2]
+    exe = '.exe' if name == 'windows' else ''
     run(['ninja', '-C', build, '-j', jobs,
          *[p + exe for p in PROGRAMS]], env=env)
 
@@ -324,7 +325,7 @@ def used_subproject_licences(build):
 
 def stage(name, build, prefix, stage_dir, strip):
     """Lay the archive's tree out in an empty `stage_dir`."""
-    exe = PLATFORMS[name][2]
+    exe = '.exe' if name == 'windows' else ''
     if stage_dir.exists():
         shutil.rmtree(stage_dir)
     bin_dir = stage_dir / 'bin'
@@ -597,23 +598,30 @@ def write_archive(name, stage_dir, target, epoch):
 # ------------------------------------------------------------------- main --
 
 def package(args):
-    name = args.platform or host_platform()
-    if name != host_platform():
-        raise PackageError(f'{name} archives build natively; this host is '
-                           f'{host_platform()}')
-    check_architecture(name)
+    if args.platform:
+        name, arch = next(key for key, value in PLATFORMS.items()
+                          if value[0] == args.platform)
+    else:
+        name, arch = host_platform(), host_architecture()
+    if (name, arch) != (host_platform(), host_architecture()):
+        raise PackageError(f'{name}-{arch} archives build natively; this '
+                           f'host is {host_platform()}-'
+                           f'{host_architecture()}')
+    if (name, arch) not in PLATFORMS:
+        raise PackageError(f'no {name} archive for {arch} hosts')
     version = source_version()
     commit = git_commit(args.commit)
     label = (parse_tag(args.tag, version) if args.tag
              else development_label(version, commit))
     work = args.work_dir.resolve()
     work.mkdir(parents=True, exist_ok=True)
-    triplet = PLATFORMS[name][1]
+    triplet = PLATFORMS[name, arch][1]
 
     vcpkg_commit = (HERE / 'vcpkg-commit').read_text(encoding='utf-8').strip()
     tool = ensure_vcpkg(args.vcpkg_root or work / 'vcpkg', vcpkg_commit)
     prefix = install_libraries(tool, triplet, work / 'vcpkg-installed',
-                               work / 'vcpkg-binary-cache')
+                               work / 'vcpkg-binary-cache',
+                               VCPKG_ENV.get((name, arch), {}))
 
     build = work / 'qemu-build'
     env = build_environment(name, prefix, work)
@@ -626,7 +634,7 @@ def package(args):
         raise PackageError('executables need libraries outside the archive:\n'
                            + '\n'.join('  ' + p for p in problems))
 
-    target = args.output_dir.resolve() / archive_name(label, name)
+    target = args.output_dir.resolve() / archive_name(label, name, arch)
     write_archive(name, stage_dir, target, source_epoch())
     print(f'{target} ({target.stat().st_size} bytes)')
     return 0
@@ -634,7 +642,8 @@ def package(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split('\n\n')[0])
-    parser.add_argument('--platform', choices=sorted(PLATFORMS),
+    parser.add_argument('--platform',
+                        choices=sorted(v[0] for v in PLATFORMS.values()),
                         help='default: this host (the build is always native)')
     parser.add_argument('--tag', help='release tag, sgi-origami-<VERSION>-<n>;'
                         ' without it the archive is a development build')

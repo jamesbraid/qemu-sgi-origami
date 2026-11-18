@@ -229,9 +229,12 @@ class WorkflowTests(unittest.TestCase):
     @unittest.skipUnless(RELEASE.exists(), 'release.yml has not landed')
     def test_each_os_downloads_the_archive_release_yml_uploads(self):
         release = RELEASE.read_text()
-        for artifact in ('archive-linux-x86_64', 'archive-macos-arm64',
-                         'archive-windows-x86_64'):
-            self.assertIn(artifact, release)
+        # release.yml names the Linux and macOS archives from a matrix arch.
+        for artifact, uploaded in (
+                ('archive-linux-x86_64', 'archive-linux-${{ matrix.arch }}'),
+                ('archive-macos-arm64', 'archive-macos-${{ matrix.arch }}'),
+                ('archive-windows-x86_64', 'archive-windows-x86_64')):
+            self.assertIn(uploaded, release)
             self.assertIn(artifact, self.text)
 
 
