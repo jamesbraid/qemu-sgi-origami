@@ -34,12 +34,18 @@ class Naming(unittest.TestCase):
             pkg.parse_tag('sgi-origami-11.2.50-1', '11.1.50')
 
     def test_archive_names(self):
-        self.assertEqual(pkg.archive_name('11.1.50-1', 'linux'),
-                         'sgi-origami-11.1.50-1-linux-x86_64.tar.gz')
-        self.assertEqual(pkg.archive_name('11.1.50-1', 'macos'),
-                         'sgi-origami-11.1.50-1-macos-arm64.tar.gz')
-        self.assertEqual(pkg.archive_name('11.1.50-1', 'windows'),
-                         'sgi-origami-11.1.50-1-windows-x86_64.zip')
+        names = {
+            ('linux', 'x86_64'): 'linux-x86_64.tar.gz',
+            ('linux', 'arm64'): 'linux-arm64.tar.gz',
+            ('macos', 'arm64'): 'macos-arm64.tar.gz',
+            ('macos', 'x86_64'): 'macos-x86_64.tar.gz',
+            ('windows', 'x86_64'): 'windows-x86_64.zip',
+            ('windows', 'arm64'): 'windows-arm64.zip',
+        }
+        self.assertEqual(set(names), set(pkg.PLATFORMS))
+        for (name, arch), suffix in names.items():
+            self.assertEqual(pkg.archive_name('11.1.50-1', name, arch),
+                             f'sgi-origami-11.1.50-1-{suffix}')
 
     def test_development_label(self):
         self.assertEqual(pkg.development_label('11.1.50', 'abcdef0123'),
@@ -48,7 +54,7 @@ class Naming(unittest.TestCase):
 
 class Flags(unittest.TestCase):
     def test_every_platform_gets_the_common_list(self):
-        for name in pkg.PLATFORMS:
+        for name, _arch in pkg.PLATFORMS:
             flags = pkg.configure_flags(name)
             self.assertIn('--target-list=mips64-softmmu', flags)
             self.assertIn('--enable-chd', flags)
@@ -87,6 +93,7 @@ bin/qemu-img:
     def test_host_libraries(self):
         self.assertTrue(pkg.is_host_library('linux', 'libasound.so.2'))
         self.assertFalse(pkg.is_host_library('linux', 'libz.so.1'))
+        self.assertTrue(pkg.is_host_library('linux', 'ld-linux-aarch64.so.1'))
         self.assertTrue(pkg.is_host_library('macos',
                                             '/usr/lib/libSystem.B.dylib'))
         self.assertFalse(pkg.is_host_library('macos',

@@ -6,10 +6,10 @@
 # this directory too, so every job carries the same guard as the other
 # workflows, inverted.
 #
-#   tag sgi-origami-*     build all three, then publish a Release; the Release
-#                         is created as a draft and published only once the
+#   tag sgi-origami-*     build every archive, then publish a Release; it is
+#                         created as a draft and published only once the
 #                         archives and checksums are attached
-#   push to sgi-origami   packaging check: build all three, publish nothing
+#   push to sgi-origami   packaging check: build every archive, publish nothing
 #   weekly                same check, to catch drift in the runners' tools
 #   manual dispatch       same check, on the chosen ref
 name: Build and release QEMU archives (Linux, Windows, macOS)
@@ -40,9 +40,15 @@ env:
 
 jobs:
   linux:
-    name: Build Linux archive
+    name: Build Linux ${{ matrix.arch }} archive
     if: ${{ github.server_url == 'https://github.com' }}
-    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: x86_64, runner: ubuntu-24.04}
+          - {arch: arm64, runner: ubuntu-24.04-arm}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -52,7 +58,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build-package/vcpkg-binary-cache
-          key: vcpkg-linux-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/debian-bookworm.docker') }}
+          key: vcpkg-linux-${{ matrix.arch }}-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/debian-bookworm.docker', 'packaging/triplets/*-linux-origami.cmake') }}
       - name: build the packaging image
         run: docker build -t sgi-package -f packaging/debian-bookworm.docker packaging
       - name: build the archive
@@ -91,7 +97,7 @@ jobs:
           '
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: archive-linux-x86_64
+          name: archive-linux-${{ matrix.arch }}
           path: build-package/dist/*
           if-no-files-found: error
 
@@ -163,9 +169,15 @@ jobs:
           if-no-files-found: error
 
   macos:
-    name: Build macOS archive
+    name: Build macOS ${{ matrix.arch }} archive
     if: ${{ github.server_url == 'https://github.com' }}
-    runs-on: macos-15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {arch: arm64, runner: macos-15}
+          - {arch: x86_64, runner: macos-15-intel}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -177,7 +189,7 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: build-package/vcpkg-binary-cache
-          key: vcpkg-macos-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/arm64-osx-origami.cmake') }}
+          key: vcpkg-macos-${{ matrix.arch }}-${{ hashFiles('packaging/vcpkg.json', 'packaging/vcpkg-commit', 'packaging/triplets/*-osx-origami.cmake') }}
       - name: build the archive
         run: python3 packaging/sgi-package.py ${RELEASE_TAG:+--tag "$RELEASE_TAG"}
       - name: run the archive
@@ -200,13 +212,13 @@ jobs:
               -o key-secret=s "$RUNNER_TEMP/test.luks" 1M
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: archive-macos-arm64
+          name: archive-macos-${{ matrix.arch }}
           path: build-package/dist/*
           if-no-files-found: error
 
   publish:
     name: Publish GitHub release
-    # A tag push only. The other triggers stop after the three builds.
+    # A tag push only. The other triggers stop after the builds.
     if: ${{ github.server_url == 'https://github.com' && github.event_name == 'push' && startsWith(github.ref, 'refs/tags/sgi-origami-') }}
     needs: [linux, windows, macos]
     runs-on: ubuntu-24.04

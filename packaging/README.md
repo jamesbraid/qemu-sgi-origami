@@ -9,7 +9,8 @@ merging upstream QEMU never touches it.
 ## Archive
 
 `sgi-origami-<version>-<platform>.tar.gz` (Windows: `.zip`), with
-`<platform>` one of `linux-x86_64`, `macos-arm64`, `windows-x86_64` and
+`<platform>` one of `linux-x86_64`, `linux-arm64`, `macos-arm64`,
+`macos-x86_64`, `windows-x86_64` and
 `<version>` the release tag without its `sgi-origami-` prefix, for example
 `sgi-origami-11.1.50-1-linux-x86_64.tar.gz`. There is no wrapping directory:
 
@@ -83,7 +84,8 @@ The libraries are linked statically, under the licences in the archive's
 Meson's bundled libslirp and CHD library.
 
 Linux, in a container, so the glibc floor is the image's (Debian 12, glibc
-2.36):
+2.36). The image is multi-architecture, so the same commands build the
+`linux-arm64` archive on an arm64 host:
 
 ```sh
 docker build -t sgi-package -f packaging/debian-bookworm.docker packaging
@@ -91,7 +93,8 @@ docker run --rm -v "$PWD":/src -w /src sgi-package \
     python3 packaging/sgi-package.py --tag sgi-origami-11.1.50-1
 ```
 
-macOS, on an arm64 Mac with the Xcode command line tools and
+macOS, on an Arm or Intel Mac (the archive matches the host) with the Xcode
+command line tools and
 `brew install ninja pkgconf python autoconf autoconf-archive automake libtool`:
 
 ```sh
