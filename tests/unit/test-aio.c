@@ -368,6 +368,78 @@ static void test_wait_event_notifier_noflush(void)
     event_notifier_cleanup(&data.e);
 }
 
+typedef struct TimerNotifyTestData {
+    int due;
+    int future;
+    int empty;
+    int fired;
+} TimerNotifyTestData;
+
+static void count_timer_notify(void *opaque, QEMUClockType type)
+{
+    int *count = opaque;
+
+    (*count)++;
+}
+
+static void unexpected_timer(void *opaque)
+{
+    g_assert_not_reached();
+}
+
+static void count_default_timer(void *opaque)
+{
+    TimerNotifyTestData *data = opaque;
+
+    g_assert_cmpint(data->due, ==, 1);
+    data->fired++;
+}
+
+static void test_timer_due_notifications(void)
+{
+    TimerNotifyTestData data = { 0 };
+    QEMUTimerListGroup due = { 0 }, future = { 0 }, empty = { 0 };
+    QEMUTimer due_timer, future_timer, default_timer;
+    int64_t now;
+
+    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
+    due.tl[QEMU_CLOCK_VIRTUAL] = timerlist_new(QEMU_CLOCK_VIRTUAL,
+                                              count_timer_notify, &data.due);
+    future.tl[QEMU_CLOCK_VIRTUAL] = timerlist_new(QEMU_CLOCK_VIRTUAL,
+                                                 count_timer_notify,
+                                                 &data.future);
+    empty.tl[QEMU_CLOCK_VIRTUAL] = timerlist_new(QEMU_CLOCK_VIRTUAL,
+                                                count_timer_notify,
+                                                &data.empty);
+    timer_init_full(&due_timer, &due, QEMU_CLOCK_VIRTUAL, SCALE_NS,
+                    QEMU_TIMER_ATTR_EXTERNAL, unexpected_timer, NULL);
+    timer_init_full(&future_timer, &future, QEMU_CLOCK_VIRTUAL, SCALE_NS,
+                    0, unexpected_timer, NULL);
+    timer_init_full(&default_timer, NULL, QEMU_CLOCK_VIRTUAL, SCALE_NS,
+                    0, count_default_timer, &data);
+    now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    timer_mod_ns(&due_timer, now);
+    timer_mod_ns(&future_timer, now + 60 * NANOSECONDS_PER_SECOND);
+    timer_mod_ns(&default_timer, now);
+    data.due = data.future = data.empty = 0;
+
+    if (qemu_clock_notify_expired(QEMU_CLOCK_VIRTUAL)) {
+        qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+    }
+
+    g_assert_cmpint(data.due, ==, 1);
+    g_assert_cmpint(data.future, ==, 0);
+    g_assert_cmpint(data.empty, ==, 0);
+    g_assert_cmpint(data.fired, ==, 1);
+    timer_del(&due_timer);
+    timer_del(&future_timer);
+    timer_del(&default_timer);
+    timerlist_free(due.tl[QEMU_CLOCK_VIRTUAL]);
+    timerlist_free(future.tl[QEMU_CLOCK_VIRTUAL]);
+    timerlist_free(empty.tl[QEMU_CLOCK_VIRTUAL]);
+    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, false);
+}
+
 static void test_timer_schedule(void)
 {
     TimerTestData data = { .n = 0, .ctx = ctx, .ns = SCALE_MS * 750LL,
@@ -852,6 +924,8 @@ int main(int argc, char **argv)
     g_test_add_func("/aio/event/wait/no-flush-cb",  test_wait_event_notifier_noflush);
     g_test_add_func("/aio/event/flush",             test_flush_event_notifier);
     g_test_add_func("/aio/timer/schedule",          test_timer_schedule);
+    g_test_add_func("/aio/timer/due-notifications",
+                    test_timer_due_notifications);
 
     g_test_add_func("/aio/coroutine/queue-chaining", test_queue_chaining);
     g_test_add_func("/aio/coroutine/worker-thread-co-enter", test_worker_thread_co_enter);

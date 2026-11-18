@@ -16,6 +16,7 @@
 #include "qemu/thread.h"
 #include "qemu/error-report.h"
 #include "iothread.h"
+#include "system/cpu-timers.h"
 
 /* AioContext management */
 
@@ -102,6 +103,54 @@ static void test_lifecycle(void)
 {
     create_aio_contexts();
     join_aio_contexts();
+}
+
+static int64_t virtual_time_ns;
+
+int64_t cpus_get_virtual_clock(void)
+{
+    return qatomic_read(&virtual_time_ns);
+}
+
+void cpus_set_virtual_clock(int64_t time)
+{
+    qatomic_set(&virtual_time_ns, time);
+}
+
+static void timer_fired(void *opaque)
+{
+    qemu_sem_post(opaque);
+}
+
+static void test_virtual_timer_notification(void)
+{
+    const int64_t expires = 3600 * NANOSECONDS_PER_SECOND;
+    const int64_t deadline = g_get_monotonic_time() + 5 * G_USEC_PER_SEC;
+    QemuSemaphore fired;
+    QEMUTimer timer;
+    int64_t old_time = qatomic_read(&virtual_time_ns);
+    int context_id = 0;
+
+    qatomic_set(&virtual_time_ns, 0);
+    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, true);
+    create_aio_contexts();
+    qemu_sem_init(&fired, 0);
+    aio_timer_init(ctx[0], &timer, QEMU_CLOCK_VIRTUAL, SCALE_NS,
+                   timer_fired, &fired);
+    timer_mod_ns(&timer, expires);
+    ctx_run(0, set_id_cb, &context_id);
+    while (!(qatomic_read(&ctx[0]->notify_me) & 2)) {
+        g_assert_cmpint(g_get_monotonic_time(), <, deadline);
+        g_thread_yield();
+    }
+    qatomic_set(&virtual_time_ns, expires);
+    g_assert_true(qemu_clock_notify_expired(QEMU_CLOCK_VIRTUAL));
+    g_assert_cmpint(qemu_sem_timedwait(&fired, 5000), ==, 0);
+    timer_del(&timer);
+    qemu_sem_destroy(&fired);
+    join_aio_contexts();
+    qemu_clock_enable(QEMU_CLOCK_VIRTUAL, false);
+    qatomic_set(&virtual_time_ns, old_time);
 }
 
 /* aio_co_schedule test.  */
@@ -447,6 +496,8 @@ int main(int argc, char **argv)
 
     g_test_init(&argc, &argv, NULL);
     g_test_add_func("/aio/multi/lifecycle", test_lifecycle);
+    g_test_add_func("/aio/multi/virtual-timer-notification",
+                    test_virtual_timer_notification);
     if (g_test_quick()) {
         g_test_add_func("/aio/multi/schedule", test_multi_co_schedule_1);
         g_test_add_func("/aio/multi/mutex/contended", test_multi_co_mutex_1);

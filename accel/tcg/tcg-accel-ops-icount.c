@@ -76,15 +76,12 @@ static void icount_notify_aio_contexts(void)
 void icount_handle_deadline(void)
 {
     assert(qemu_in_vcpu_thread());
-    int64_t deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
-                                                  QEMU_TIMER_ATTR_ALL);
-
-    /*
-     * Instructions, interrupts, and exceptions are processed in cpu-exec.
-     * Don't interrupt cpu thread, when these events are waiting
-     * (i.e., there is no checkpoint)
-     */
-    if (deadline == 0) {
+    if (replay_mode == REPLAY_MODE_NONE) {
+        if (qemu_clock_notify_expired(QEMU_CLOCK_VIRTUAL)) {
+            qemu_clock_run_timers(QEMU_CLOCK_VIRTUAL);
+        }
+    } else if (qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL,
+                                          QEMU_TIMER_ATTR_ALL) == 0) {
         icount_notify_aio_contexts();
     }
 }

@@ -200,6 +200,9 @@ int64_t qemu_clock_deadline_ns_all(QEMUClockType type, int attr_mask);
  */
 void qemu_clock_notify(QEMUClockType type);
 
+/* Notify due non-default lists; return true if any list is due. Hold BQL. */
+bool qemu_clock_notify_expired(QEMUClockType type);
+
 /**
  * qemu_clock_enable:
  * @type: the clock type
