@@ -44,13 +44,21 @@ static bool next_frame(Viewer *v, unsigned head, uint64_t seen, VFrame *f,
     return v_frame(v, f, ms);
 }
 
+/* A sample up to a quarter refresh period old may be shared; wait two. */
+static void past_shared_sample(Viewer *v, unsigned head)
+{
+    uint32_t mhz = v->head[head].mhz;
+
+    g_usleep(2 * (mhz ? 250000000ull / mhz : 4000));
+}
+
 /*
  * A frame that shows the latest stimulus whoever asked before: a sample of
  * its own, so past the quarter period in which one is shared.
  */
 static bool fresh_frame(Viewer *v, unsigned head, uint64_t seen, VFrame *f)
 {
-    g_usleep(10000);
+    past_shared_sample(v, head);
     v_request(v, head, DSHM_REQ_FRAME, seen, 0, DSHM_REQ_SAMPLE_NOW);
     return v_frame(v, f, V_WAIT_MS);
 }
@@ -2051,6 +2059,64 @@ static void test_dmabuf_mode_change(void)
     v_close(v);
     qtest_quit(qts);
 }
+
+#ifdef CONFIG_DARWIN
+static int cmp_double(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+
+    return (x > y) - (x < y);
+}
+
+/* Stimulus to a checksummed picture in an IOSurface slot, a frame at a time. */
+static void test_iosurface_latency(void)
+{
+    enum { N = 120 };
+    QTestState *qts = start();
+    Viewer *v = open_gpu(2, true, V_GPU_CLASS);
+    double frame_ms[N], check_ms[N];
+    uint64_t seen = 0;
+
+    for (uint32_t i = 0; i < N; i++) {
+        const VHead *h = &v->head[0];
+        uint64_t want = 0, got = 0;
+        gint64 t0, t1, t2;
+        VFrame f;
+
+        for (unsigned y = 0; y < h->height; y++) {
+            for (unsigned x = 0; x < h->width; x++) {
+                want += t_pixel(1, 11, i + 1, x, y, h->width, h->height);
+            }
+        }
+        past_shared_sample(v, 0);
+        t0 = g_get_monotonic_time();
+        v_pattern(v, 0, 1, 11, i + 1);
+        v_request(v, 0, DSHM_REQ_FRAME, seen, 0, DSHM_REQ_SAMPLE_NOW);
+        g_assert_true(v_frame(v, &f, V_WAIT_MS));
+        t1 = g_get_monotonic_time();
+        for (unsigned y = 0; y < h->height; y++) {
+            for (unsigned x = 0; x < h->width; x++) {
+                got += v_gpu_px(v, &f, x, y);
+            }
+        }
+        t2 = g_get_monotonic_time();
+        g_assert_cmphex(got, ==, want);
+        v_release(v, &f);
+        seen = f.serial;
+        frame_ms[i] = (t1 - t0) / 1000.0;
+        check_ms[i] = (t2 - t0) / 1000.0;
+    }
+    qsort(frame_ms, N, sizeof(double), cmp_double);
+    qsort(check_ms, N, sizeof(double), cmp_double);
+    g_test_message("iosurface %ux%u, %d frames: stimulus to FRAME p50 %.2f p95 "
+                   "%.2f ms; to checked picture p50 %.2f p95 %.2f ms",
+                   v->head[0].width, v->head[0].height, N, frame_ms[N / 2],
+                   frame_ms[N * 95 / 100], check_ms[N / 2],
+                   check_ms[N * 95 / 100]);
+    v_close(v);
+    qtest_quit(qts);
+}
+#endif
 #endif
 
 int main(int argc, char **argv)
@@ -2140,6 +2206,9 @@ int main(int argc, char **argv)
     qtest_add_func("display-shm/dmabuf-import-failed",
                    test_dmabuf_import_failed);
     qtest_add_func("display-shm/dmabuf-mode-change", test_dmabuf_mode_change);
+#ifdef CONFIG_DARWIN
+    qtest_add_func("display-shm/iosurface-latency", test_iosurface_latency);
+#endif
 #endif
     ret = g_test_run();
 
