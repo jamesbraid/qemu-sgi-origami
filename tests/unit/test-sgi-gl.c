@@ -7783,6 +7783,56 @@ static void test_smooth_two_pixel_filter_draw(void)
     g_assert_cmphex(frag_pixel(&f, 12, 22), ==, 0x0000ff);
 }
 
+/* A smoothed line a quarter pixel from the plane's edge spreads past it. */
+static void test_smooth_line_past_plane_edge(void)
+{
+    static const SGIRasterRules rules_base = {
+        .subpixel_bits = 8, .color_bits = 8, .depth_bits = 24,
+        .stencil_bits = 8, .rounding = SGI_ROUND_HALF_AWAY,
+        .tie_rule = SGI_TIE_TOP_LEFT_BOTTOM_ORIGIN,
+        .arith = SGI_ARITH_DOUBLE, .line_rule = SGI_LINE_COVERAGE_DOUBLE,
+        .smooth_primitives = true,
+    };
+    static const SGISmoothRule smooth_rules[] = {
+        SGI_SMOOTH_AREA, SGI_SMOOTH_TWO_PIXEL_FILTER,
+    };
+    uint32_t white[4] = { bits(1), bits(1), bits(1), bits(1) };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(smooth_rules); i++) {
+        for (unsigned k = 0; k < 4; k++) {
+            bool y_major = k & 1, low = k & 2;
+            SGIRasterRules rules = rules_base;
+            FragScene f;
+            float edge = low ? 0.25f : W - 0.25f;
+            int last = low ? 0 : W - 1;
+
+            rules.smooth_rule = smooth_rules[i];
+            frag_init(&f);
+            f.rec.rules = &rules;
+            frag_quad(&f, 0, 0, 1, 1);
+            frag_blend(&f, SGI_GL_SRC_ALPHA, SGI_GL_ONE_MINUS_SRC_ALPHA,
+                       SGI_GL_FUNC_ADD);
+            enable(&f.c, SGI_GL_BLEND, true);
+            enable(&f.c, SGI_GL_LINE_SMOOTH, true);
+            frag_command(&f, SGI_GL_OP_COLOR4F, white, ARRAY_SIZE(white));
+            frag_command(&f, SGI_GL_OP_BEGIN,
+                         (uint32_t[]) { SGI_GL_LINES }, 1);
+            if (y_major) {
+                wide_vertex(&f, edge, 10);
+                wide_vertex(&f, edge, 20);
+            } else {
+                wide_vertex(&f, 10, edge);
+                wide_vertex(&f, 20, edge);
+            }
+            frag_command(&f, SGI_GL_OP_END, NULL, 0);
+            /* The edge row or column keeps its three quarters, blended once. */
+            g_assert_cmphex(y_major ? frag_pixel(&f, last, 15) :
+                                      frag_pixel(&f, 15, last), ==,
+                            0xbfbfff);
+        }
+    }
+}
+
 /*
  * In colour-index mode the filter's weight replaces the low four bits.
  * The geometry is where the filter and OpenGL's area coverage differ. A
@@ -16067,6 +16117,8 @@ int main(int argc, char **argv)
                     test_smooth_two_pixel_filter_exact);
     g_test_add_func("/sgi-gl/smooth-two-pixel-filter-draw",
                     test_smooth_two_pixel_filter_draw);
+    g_test_add_func("/sgi-gl/smooth-line-past-plane-edge",
+                    test_smooth_line_past_plane_edge);
     g_test_add_func("/sgi-gl/smooth-two-pixel-filter-index",
                     test_smooth_two_pixel_filter_index);
     g_test_add_func("/sgi-gl/volume-clip-triangle-near-and-far",

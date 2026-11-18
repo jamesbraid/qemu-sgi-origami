@@ -5715,8 +5715,10 @@ static void sgi_soft_line_projected(const SGISoftDraw *r,
         for (int64_t n = minor0; n <= minor1; n++) {
             int64_t base_x = x_major ? m : n, base_y = x_major ? n : m;
             int64_t replica0 = MAX(n, x_major ? by0 : bx0);
-            int64_t replica1 = r->line_smooth ? replica0 :
-                MIN(n + r->line_width - 1, x_major ? by1 : bx1);
+            /* A smoothed candidate is one pixel: n itself, or none. */
+            int64_t replica1 = MIN(r->line_smooth ? n :
+                                   n + r->line_width - 1,
+                                   x_major ? by1 : bx1);
 
             bool keep = true;
 
