@@ -264,6 +264,14 @@ jobs:
           fetch-depth: 1
       - name: install build tools
         run: brew install ninja pkgconf python autoconf autoconf-archive automake libtool
+      # QEMU's Rust devices need rustc, cargo and bindgen; bindgen is not on the runner.
+      - name: install the Rust toolchain and bindgen
+        run: |
+          set -e
+          rustup toolchain install 1.100.0 --profile minimal --no-self-update
+          rustup default 1.100.0
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+          cargo install bindgen-cli --version 0.73.2 --locked
       - name: cache vcpkg binaries
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -280,6 +288,8 @@ jobs:
           unpacked/bin/qemu-img --version
           unpacked/bin/qemu-system-mips64 -M help | tee machines.txt
           grep -qw octane2 machines.txt
+          # The O2 needs the Rust devices; a build without them lacks it.
+          grep -qw o2 machines.txt
           unpacked/bin/qemu-system-mips64 -L help
           quit() { printf '%s\n' '{"execute":"qmp_capabilities"}' '{"execute":"quit"}'; }
           quit | unpacked/bin/qemu-system-mips64 -M none -S -display none -monitor none \

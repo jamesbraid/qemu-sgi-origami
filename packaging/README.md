@@ -91,10 +91,12 @@ docker run --rm -v "$PWD":/src -w /src sgi-package \
 ```
 
 macOS, on an Arm or Intel Mac (the archive matches the host) with the Xcode
-command line tools and
-`brew install ninja pkgconf python autoconf autoconf-archive automake libtool`:
+command line tools, a Rust toolchain from rustup and
+`brew install ninja pkgconf python autoconf autoconf-archive automake libtool`.
+The build enables QEMU's Rust devices, which need `bindgen` on `PATH`:
 
 ```sh
+cargo install bindgen-cli --version 0.73.2 --locked
 python3 packaging/sgi-package.py
 ```
 

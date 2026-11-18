@@ -24,8 +24,9 @@ built statically from the manifest in this directory at the commit named in
 vcpkg-commit. Each platform builds natively:
 
     linux    inside the image built from debian-bookworm.docker
-    macos    on an Arm or Intel Mac with Xcode's tools and Homebrew's ninja,
-             pkgconf and python
+    macos    on an Arm or Intel Mac with Xcode's tools, Homebrew's ninja,
+             pkgconf and python, and rustc, cargo and bindgen for QEMU's
+             Rust devices
     windows  in an MSYS2 MINGW64 shell with the mingw-w64-x86_64 toolchain,
              pkgconf, ninja, python, git, rust, rust-bindgen and clang
              installed. QEMU cannot build with MSVC, so vcpkg uses its MinGW
@@ -102,7 +103,7 @@ LICENSE_FILES = [
 ]
 # Platforms whose archive carries the Rust devices, built with the "rust" list
 # of configure-flags.json.
-RUST_PLATFORMS = ('windows',)
+RUST_PLATFORMS = ('macos', 'windows')
 
 LICENSE_NAME = re.compile(r'^(LICEN[CS]E|COPYING|COPYRIGHT)', re.I)
 
