@@ -3002,7 +3002,7 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     int sx, sy, destination_x, destination_y;
     bool copy, stipple, overlap, inside, upload, download, transfer;
     bool alpha, alpha_pass, triangle, sz_active, gl_rectangle;
-    bool native_gl, gl_line, gl_point, gl_span;
+    bool native_gl, gl_line, gl_point, gl_span, textured_alpha_triangle;
     CrimeRenderClip scissor, screen[5];
     CrimeRenderGeometry geometry = { 0 };
     CrimeTriangleOutput output = { 0 };
@@ -3047,12 +3047,17 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
         }
         return result;
     }
+    triangle = (p[0x60 / 4] >> 24) == 2;
     sz_active = draw & 5;
+    textured_alpha_triangle = triangle &&
+        (draw & 0x408800) == 0x408800 &&
+        !(draw & (0x10000 | 0xe0000 | 0x200000 | 0x4000 | 0x1000 |
+                  0x400 | 5)) &&
+        (p[0x8 / 4] & 0x3ff) == 0x228;
     alpha = draw & 0x800;
     if (alpha && (p[0x198 / 4] & ~0x7ffULL)) {
         return crime_transfer_fail(offset, "unsupported alpha comparison");
     }
-    triangle = (p[0x60 / 4] >> 24) == 2;
     gl_rectangle = (p[0x60 / 4] >> 24) == 3 && (draw & 0x400000);
     gl_line = (p[0x60 / 4] >> 24) == 1 && (draw & 0x400000);
     gl_point = !(p[0x60 / 4] >> 24) && (draw & 0x400000);
@@ -3060,7 +3065,9 @@ static MemTxResult crime_render_de_commit(SGICrimeState *s, hwaddr offset,
     gl_span = gl_rectangle && (draw & 0x40000);
     if ((draw & ~(gl_line ? (draw & 0x1000 ? 0x511ff8U : 0x590fffU) :
                  gl_rectangle ? 0x551fffU : gl_point ? 0x511fffU :
-                    triangle ? (0x5b97ffU | (sz_active ? 0x800U : 0)) :
+                    triangle ? (0x5b97ffU |
+                                (sz_active || textured_alpha_triangle ?
+                                 0x800U : 0)) :
                                0x3e0affU)) ||
         (native_gl ? (!(draw & 0x400000) ||
                       !crime_triangle_output(p[0x8 / 4], &output)) :

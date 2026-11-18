@@ -13930,6 +13930,60 @@ static void test_texture_output_order(void)
     qtest_quit(s);
 }
 
+static void test_texture_alpha_composition(void)
+{
+    static const struct {
+        uint32_t foreground, texture;
+        bool pass;
+    } cases[] = {
+        { 0x13579b80, 0x2468ac20, false },
+        { 0x13579b20, 0x97531b80, true },
+    };
+    QTestState *s = start_indexed_state();
+
+    for (unsigned n = 0; n < ARRAY_SIZE(cases); n++) {
+        Shape c = triangle_prepare(s, 0, 0, 0);
+        const uint8_t *rows;
+
+        if (cases[n].pass) {
+            rows = triangle_ten;
+        } else {
+            rows = triangle_empty;
+        }
+        triangle_vertices(s, triangle_integer, NULL, true);
+        texture_constant(s);
+        qtest_writel(s, 0xafc00, cases[n].texture);
+        qtest_writel(s, DE + 0x18, TRIANGLE_DRAW | 0x8000 | 0x800);
+        qtest_writel(s, DE + 0x198, 0x440);
+        qtest_writel(s, DE + 0xd0, cases[n].foreground);
+        g_assert_cmpint(memtx_writel(s, DE + 0x8d0, TRIANGLE_COLOR), ==,
+                        MEMTX_OK);
+        triangle_pixels(s, &c, rows, cases[n].texture, 3, UINT32_MAX);
+    }
+    qtest_quit(s);
+
+    for (unsigned invalid = 0; invalid < 4; invalid++) {
+        g_autofree char *dir =
+            g_dir_make_tmp("crime-texture-alpha-fail-XXXXXX", NULL);
+        g_autofree char *path = g_build_filename(dir, "state", NULL);
+        QTestState *failed = start_indexed_state();
+        Shape c = triangle_prepare(failed, 0, 0, 0);
+
+        triangle_vertices(failed, triangle_integer, NULL, true);
+        texture_constant(failed);
+        qtest_writel(failed, DE + 0x18, invalid == 2 ?
+                     TRIANGLE_DRAW | 0x800 :
+                     TRIANGLE_DRAW | 0x8000 | 0x800 |
+                     (invalid == 3 ? 0x400 : 0));
+        qtest_writel(failed, DE + 0x198, invalid == 1 ? 0x208ea4a9 : 0x440);
+        qtest_writel(failed, DE + 8, invalid == 0 ? 0x227 : 0x228);
+        pipeline_failure(failed, &c, path, DE + 0x8d0, TRIANGLE_COLOR, 4);
+        qtest_quit(failed);
+        g_unlink(path);
+        g_rmdir(dir);
+    }
+}
+
 static void test_texture_anchor(void)
 {
     const int scenes[][3][2] = {
@@ -23063,6 +23117,8 @@ int main(int argc, char **argv)
     add_case("sgi/crime/render/texture/addresses", test_texture_addresses);
     add_case("sgi/crime/render/texture/output-order",
              test_texture_output_order);
+    add_case("sgi/crime/render/texture/alpha-composition",
+             test_texture_alpha_composition);
     add_case("sgi/crime/render/texture/anchor", test_texture_anchor);
     add_case("sgi/crime/render/texture/migration", test_texture_migration);
     add_case("sgi/crime/render/texture/border-components",

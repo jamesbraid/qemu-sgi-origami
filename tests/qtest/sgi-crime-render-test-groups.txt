@@ -269,6 +269,7 @@ texture-lod /mips64/sgi/crime/render/texture/lod
 texture-transactions /mips64/sgi/crime/render/texture/transactions
 texture-addresses /mips64/sgi/crime/render/texture/addresses
 texture-output-order /mips64/sgi/crime/render/texture/output-order
+texture-alpha-composition /mips64/sgi/crime/render/texture/alpha-composition
 texture-anchor /mips64/sgi/crime/render/texture/anchor
 texture-migration /mips64/sgi/crime/render/texture/migration
 texture-border-components /mips64/sgi/crime/render/texture/border-components
