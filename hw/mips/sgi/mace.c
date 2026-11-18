@@ -17,6 +17,7 @@
 #include "hw/pci/pci_device.h"
 #include "hw/pci/pci_host.h"
 #include "hw/mips/sgi/mace-timer.h"
+#include "mace-pci-offsets.h"
 #include "mace-serial-dma.h"
 #include "mace-audio.h"
 #include "mace-i2c.h"
@@ -38,12 +39,6 @@
 #define MACE_ETH_BASE      0x280000
 #define MACE_PCI_BASE      0x080000
 #define MACE_PCI_SIZE      0x080000
-#define MACE_PCI_ERROR_ADDR  0x0000
-#define MACE_PCI_ERROR_FLAGS 0x0004
-#define MACE_PCI_CONTROL     0x0008
-#define MACE_PCI_REVISION    0x000c
-#define MACE_PCI_CFGADDR     0x0cf8
-#define MACE_PCI_CFGDATA     0x0cfc
 #define MACE_PCI_MASTER_ABORT (1U << 31)
 #define MACE_PCI_ADDR_VALID   (1U << 19)
 #define MACE_PCI_SUPPORTED_CONTROL (0xff0085ffU)
@@ -473,23 +468,23 @@ static bool mace_pci_byte_test_card(SGIMACEState *s, uint32_t addr)
            object_dynamic_cast(OBJECT(dev), "sgi-mace-pio-test");
 }
 
-static uint32_t mace_pci_config_address(SGIMACEState *s, hwaddr offset,
+static uint32_t mace_pci_config_address(SGIMACEState *s, hwaddr reg,
                                         unsigned size)
 {
-    unsigned lane = offset - MACE_PCI_CFGDATA;
+    unsigned lane = reg - MACE_PCI_CONFIG_DATA;
 
     return (s->pci_config_addr & ~3U) | (lane ^ (4 - size));
 }
 
-static bool mace_pci_listed(hwaddr offset)
+static bool mace_pci_listed(hwaddr reg)
 {
-    switch (offset & ~3ULL) {
-    case MACE_PCI_ERROR_ADDR:
-    case MACE_PCI_ERROR_FLAGS:
+    switch (reg & ~3ULL) {
+    case MACE_PCI_ERR_ADDR:
+    case MACE_PCI_ERR_FLAGS:
     case MACE_PCI_CONTROL:
-    case MACE_PCI_REVISION:
-    case MACE_PCI_CFGADDR:
-    case MACE_PCI_CFGDATA:
+    case MACE_PCI_FLUSH_REV:
+    case MACE_PCI_CONFIG_ADDR:
+    case MACE_PCI_CONFIG_DATA:
         return true;
     default:
         return false;
@@ -501,11 +496,12 @@ static MemTxResult mace_pci_read(void *opaque, hwaddr offset, uint64_t *value,
 {
     SGIMACEState *s = opaque;
     uint32_t addr;
+    hwaddr reg = MACE_PCI_BASE + offset;
 
-    if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
-        size <= 4 && !(offset & (size - 1)) &&
-        offset + size <= MACE_PCI_CFGDATA + 4) {
-        addr = mace_pci_config_address(s, offset, size);
+    if (reg >= MACE_PCI_CONFIG_DATA && reg < MACE_PCI_CONFIG_DATA + 4 &&
+        size <= 4 && !(reg & (size - 1)) &&
+        reg + size <= MACE_PCI_CONFIG_DATA + 4) {
+        addr = mace_pci_config_address(s, reg, size);
         if (!mace_pci_config_claimed(s, addr)) {
             mace_pci_master_abort(s, addr);
             *value = MAKE_64BIT_MASK(0, size * 8);
@@ -514,24 +510,24 @@ static MemTxResult mace_pci_read(void *opaque, hwaddr offset, uint64_t *value,
         *value = pci_data_read(PCI_HOST_BRIDGE(s)->bus, addr, size);
         return MEMTX_OK;
     }
-    if (!mace_pci_listed(offset)) {
+    if (!mace_pci_listed(reg)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-mace: unlisted PCI host read at 0x%" HWADDR_PRIx
                       "\n", offset);
         *value = MAKE_64BIT_MASK(0, size * 8);
         return MEMTX_OK;
     }
-    if (size != 4 || (offset & 3)) {
+    if (size != 4 || (reg & 3)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-mace: illegal PCI host read width/address\n");
         *value = 0;
         return MEMTX_ERROR;
     }
-    switch (offset) {
-    case MACE_PCI_ERROR_ADDR:
+    switch (reg) {
+    case MACE_PCI_ERR_ADDR:
         *value = s->pci_error_addr;
         return MEMTX_OK;
-    case MACE_PCI_ERROR_FLAGS:
+    case MACE_PCI_ERR_FLAGS:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-mace: PCI fixed error capability bits unresolved\n");
         *value = s->pci_error_flags;
@@ -539,7 +535,7 @@ static MemTxResult mace_pci_read(void *opaque, hwaddr offset, uint64_t *value,
     case MACE_PCI_CONTROL:
         *value = s->pci_control;
         return MEMTX_OK;
-    case MACE_PCI_REVISION:
+    case MACE_PCI_FLUSH_REV:
         *value = 1;
         return MEMTX_OK;
     default:
@@ -556,11 +552,12 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
 {
     SGIMACEState *s = opaque;
     uint32_t addr, unsupported;
+    hwaddr reg = MACE_PCI_BASE + offset;
 
-    if (offset >= MACE_PCI_CFGDATA && offset < MACE_PCI_CFGDATA + 4 &&
-        size <= 4 && !(offset & (size - 1)) &&
-        offset + size <= MACE_PCI_CFGDATA + 4) {
-        addr = mace_pci_config_address(s, offset, size);
+    if (reg >= MACE_PCI_CONFIG_DATA && reg < MACE_PCI_CONFIG_DATA + 4 &&
+        size <= 4 && !(reg & (size - 1)) &&
+        reg + size <= MACE_PCI_CONFIG_DATA + 4) {
+        addr = mace_pci_config_address(s, reg, size);
         if (!mace_pci_config_claimed(s, addr)) {
             mace_pci_master_abort(s, addr);
             return MEMTX_OK;
@@ -603,19 +600,19 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
         pci_data_write(PCI_HOST_BRIDGE(s)->bus, addr, value, size);
         return MEMTX_OK;
     }
-    if (!mace_pci_listed(offset)) {
+    if (!mace_pci_listed(reg)) {
         qemu_log_mask(LOG_UNIMP,
                       "sgi-mace: unlisted PCI host write at 0x%" HWADDR_PRIx
                       "\n", offset);
         return MEMTX_OK;
     }
-    if (size != 4 || (offset & 3)) {
+    if (size != 4 || (reg & 3)) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-mace: illegal PCI host write width/address\n");
         return MEMTX_ERROR;
     }
-    switch (offset) {
-    case MACE_PCI_ERROR_FLAGS:
+    switch (reg) {
+    case MACE_PCI_ERR_FLAGS:
         if (!(value & MACE_PCI_MASTER_ABORT)) {
             s->pci_error_flags &= ~(MACE_PCI_MASTER_ABORT |
                                     MACE_PCI_ADDR_VALID);
@@ -633,10 +630,10 @@ static MemTxResult mace_pci_write(void *opaque, hwaddr offset, uint64_t value,
         s->pci_control = value;
         mace_update_pci_irqs(s);
         return MEMTX_OK;
-    case MACE_PCI_REVISION:
+    case MACE_PCI_FLUSH_REV:
         /* The write side invalidates prefetch buffers, which are absent. */
         return MEMTX_OK;
-    case MACE_PCI_CFGADDR:
+    case MACE_PCI_CONFIG_ADDR:
         s->pci_config_addr = value & 0x00fffffcU;
         return MEMTX_OK;
     default:
