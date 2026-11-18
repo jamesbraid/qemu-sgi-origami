@@ -2116,6 +2116,7 @@ static void test_socket_in_use(void)
     qtest_quit(qts);
 }
 
+#ifdef CONFIG_LINUX
 /*
  * A reader that stops reading while the guest keeps changing mode must not
  * leave a frame's memory pinned for each change: a region QEMU frees before
@@ -2184,6 +2185,7 @@ static void test_unread_regions(void)
     session_close(&s);
     qtest_quit(qts);
 }
+#endif
 
 /* The socket is removed when QEMU exits. */
 static void test_cleanup_on_exit(void)
@@ -2784,7 +2786,9 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-display-shm/pending-connection",
                    test_pending_connection);
     qtest_add_func("sgi-display-shm/socket-in-use", test_socket_in_use);
+#ifdef CONFIG_LINUX
     qtest_add_func("sgi-display-shm/unread-regions", test_unread_regions);
+#endif
     qtest_add_func("sgi-display-shm/cleanup-on-exit", test_cleanup_on_exit);
     ret = g_test_run();
 
