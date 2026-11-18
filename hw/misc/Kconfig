@@ -364,6 +364,8 @@ config SGI_SONIC_HDSP
 config SGI_IOC4
     bool
     depends on PCI
+    select IDE_BUS
+    select IDE_DEV
     select SERIAL
     select SGI_IOC3_KBC
     select SGI_IOC_SERIAL_DMA

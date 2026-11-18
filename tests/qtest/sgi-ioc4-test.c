@@ -2454,6 +2454,129 @@ static void test_serial_idle_status_default_pio(void)
     g_assert_nonnull(strstr(contents, "unsupported BAR offset 0x100"));
 }
 
+/* INT_OUT needs attach-compat: without it the offset stays unsupported. */
+static void test_int_out_unsupported_by_default(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_dma(false, false, 0, -1, log);
+    g_autofree char *contents = NULL;
+
+    reg_write(qts, 0x28, 7u << 16);
+    g_assert_cmphex(reg_read(qts, 0x28), ==, 0);
+    qtest_quit(qts);
+    contents = ioc4_log_file_take(log);
+    g_assert_nonnull(strstr(contents, "unsupported BAR offset 0x28"));
+}
+
+/* A reset drops an ATA interrupt the drive raised before it. */
+static void test_ata_interrupt_cleared_by_reset(void)
+{
+    g_autofree char *log = ioc4_log_file_new();
+    QTestState *qts = ioc4_start_ps2(false, log);
+
+    qtest_set_irq_in(qts, "/machine/peripheral/ioc4", "ata-irq", 0, 1);
+    g_assert_cmphex(reg_read(qts, 0x0c) & 1, ==, 1);
+    qtest_system_reset(qts);
+    ioc4_map(qts);
+    g_assert_cmphex(reg_read(qts, 0x0c) & 1, ==, 0);
+    qtest_quit(qts);
+    g_free(ioc4_log_file_take(log));
+}
+
+/* With attach-compat the ATA channel is the IDE bus "ide.0". */
+static QTestState *ioc4_start_ata(bool incoming, bool drive)
+{
+    QTestState *qts = qtest_initf(
+        "-M none -cpu R10000 -S %s -d unimp,guest_errors,invalid_mem "
+        "-device sgi-xio-test-target,id=fabric "
+        "-device sgi-xbridge,id=xbridge,host-port=0xb,xio-port=0xc,"
+        "fabric=/machine/peripheral/fabric/fabric.ram[0] "
+        "-device sgi-ioc4,bus=head-e.0,addr=0,attach-compat=on %s",
+        incoming ? "-incoming defer" : "",
+        drive ? "-drive if=none,id=hd0,driver=null-co,size=1048576 "
+                "-device ide-hd,drive=hd0,bus=ide.0" : "");
+
+    qtest_sysbus_mmio_map(qts, CHIP, 0, UINT64_C(0x100000000000));
+    ioc4_map(qts);
+    return qts;
+}
+
+/* A task-file register is a byte at lane 3 of its word, data a halfword. */
+#define ATA_REG(n) (BAR + 0x100 + 4 * (n))
+#define ATA_STATUS 7
+#define ATA_DRQ 0x08
+
+static void ioc4_ata_identify(QTestState *qts)
+{
+    qtest_writeb(qts, ATA_REG(6) + 3, 0xa0);
+    g_assert_cmphex(qtest_readb(qts, ATA_REG(ATA_STATUS) + 3) & 0xc0, ==,
+                    0x40);
+    qtest_writeb(qts, ATA_REG(ATA_STATUS) + 3, 0xec);
+}
+
+static void ioc4_ata_check_identify(QTestState *qts)
+{
+    uint16_t words[256];
+
+    g_assert_cmphex(qtest_readb(qts, ATA_REG(ATA_STATUS) + 3) & ATA_DRQ, ==,
+                    ATA_DRQ);
+    for (unsigned i = 0; i < 256; i++) {
+        words[i] = qtest_readw(qts, ATA_REG(0) + 2);
+    }
+    g_assert_cmphex(words[49] & 0x0200, ==, 0x0200);
+    g_assert_cmpuint(words[60] | words[61] << 16, ==, 2048);
+}
+
+/* IDENTIFY by programmed I/O reaches the disk and raises the other status. */
+static void test_ata_identify(void)
+{
+    QTestState *qts = ioc4_start_ata(false, true);
+
+    g_assert_cmphex(reg_read(qts, 0x0c) & 1, ==, 0);
+    ioc4_ata_identify(qts);
+    g_assert_cmphex(reg_read(qts, 0x0c) & 1, ==, 1);
+    ioc4_ata_check_identify(qts);
+    qtest_quit(qts);
+}
+
+/* With no drive the task file floats and writes go nowhere. */
+static void test_ata_empty_channel_floats(void)
+{
+    QTestState *qts = ioc4_start_ata(false, false);
+
+    qtest_writeb(qts, ATA_REG(6) + 3, 0xa0);
+    g_assert_cmphex(qtest_readb(qts, ATA_REG(ATA_STATUS) + 3), ==, 0x7f);
+    g_assert_cmphex(qtest_readw(qts, ATA_REG(0) + 2), ==, 0xff7f);
+    qtest_quit(qts);
+}
+
+/* The IDE state and the interrupt level follow a migration. */
+static void test_ata_migration(void)
+{
+    GError *error = NULL;
+    g_autofree char *dir = g_dir_make_tmp("sgi-ioc4-ata-migration-XXXXXX",
+                                         &error);
+    g_autofree char *socket = NULL, *uri = NULL;
+    QTestState *from, *to;
+
+    g_assert_no_error(error);
+    socket = g_build_filename(dir, "migration.sock", NULL);
+    uri = g_strdup_printf("unix:%s", socket);
+    from = ioc4_start_ata(false, true);
+    to = ioc4_start_ata(true, true);
+    ioc4_ata_identify(from);
+    qtest_qmp_assert_success(to,
+        "{'execute':'migrate-incoming','arguments':{'uri':%s}}", uri);
+    qtest_qmp_assert_success(from,
+        "{'execute':'migrate','arguments':{'uri':%s}}", uri);
+    sgi_wait_migration_status(to, "completed", 30);
+    g_assert_cmphex(reg_read(to, 0x0c) & 1, ==, 1);
+    ioc4_ata_check_identify(to);
+    qtest_quit(from);
+    qtest_quit(to);
+    g_assert_cmpint(rmdir(dir), ==, 0);
+}
+
 static void test_serial_idle_status_dma_callbacks(void)
 {
     g_autofree char *log = ioc4_log_file_new();
@@ -3735,6 +3858,14 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-ioc4/identity-reset", test_identity_and_reset);
     qtest_add_func("/sgi-ioc4/ata-readback-latch",
                    test_ata_readback_latch);
+    qtest_add_func("/sgi-ioc4/int-out-unsupported-by-default",
+                   test_int_out_unsupported_by_default);
+    qtest_add_func("/sgi-ioc4/ata-interrupt-cleared-by-reset",
+                   test_ata_interrupt_cleared_by_reset);
+    qtest_add_func("/sgi-ioc4/ata-identify", test_ata_identify);
+    qtest_add_func("/sgi-ioc4/ata-empty-channel-floats",
+                   test_ata_empty_channel_floats);
+    qtest_add_func("/sgi-ioc4/ata-migration", test_ata_migration);
     qtest_add_func("/sgi-ioc4/ata-readback-default-unsupported",
                    test_ata_readback_default_unsupported);
     qtest_add_func("/sgi-ioc4/ata-readback-rejects-width",

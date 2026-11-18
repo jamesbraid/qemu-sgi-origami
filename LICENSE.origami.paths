@@ -363,6 +363,7 @@ hw/misc/sgi-sonic-hdsp.c
 hw/misc/sgi-xbow.c
 hw/misc/sgi-xbridge-xbow.c
 hw/misc/sgi-xt-digvid.c
+hw/ide/sgi-ioc4-ata.c
 hw/net/bcm570x.c
 hw/net/bcm570x_phy.c
 hw/net/dp83840.c
@@ -468,6 +469,7 @@ include/hw/misc/sgi-sonic-ada8824.h
 include/hw/misc/sgi-sonic-hdsp.h
 include/hw/misc/sgi-xbow.h
 include/hw/misc/sgi-xbridge-xbow.h
+include/hw/ide/sgi-ioc4-ata.h
 include/hw/net/bcm570x_phy.h
 include/hw/net/dp83840.h
 include/hw/net/ics1890.h

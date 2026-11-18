@@ -17,6 +17,8 @@
 #include "hw/char/serial.h"
 #include "hw/core/irq.h"
 #include "hw/core/resettable.h"
+#include "hw/ide/sgi-ioc4-ata.h"
+#include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc4.h"
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/pci/pci_device.h"
@@ -36,6 +38,21 @@
 #define SGI_IOC4_CLOCK_NATIVE 0x7f8
 #define SGI_IOC4_CLOCK_SIZE 8
 #define SGI_IOC4_LEGACY_NVRAM_SIZE 0x800
+#define SGI_IOC4_ATA_TASK 0x100
+#define SGI_IOC4_ATA_TASK_END 0x124
+/*
+ * An empty ATA channel floats: a byte reads 0x7f, the data register 0xff7f
+ * (an approximation).
+ */
+#define SGI_IOC4_ATA_FLOAT 0xff7fff7fULL
+#define SGI_IOC4_SIO_CR 0x20
+#define SGI_IOC4_SIO_CR_STROBE 0xf
+/* With no serial or ATA request in flight both idle bits read set. */
+#define SGI_IOC4_SIO_CR_IDLE 0x180
+#define SGI_IOC4_INT_OUT 0x28
+#define SGI_IOC4_INT_OUT_MASK 0x4007ffff
+#define SGI_IOC4_INT_OUT_TOGGLE 7
+#define SGI_IOC4_INT_OUT_TICK_CLOCKS 520
 #define SGI_IOC4_KBC_BASE 0x200
 #define SGI_IOC4_KBC_SIZE SGI_IOC3_KBC_MMIO_SIZE
 #define SGI_IOC4_KBC_IRQ 0x40
@@ -103,7 +120,8 @@ static void sgi_ioc4_update_irq(SGIIOC4State *s)
                    (s->threshold_level & s->serial_enable) |
                    (s->tx_empty_level & s->serial_enable) |
                    (s->rx_full_level & s->serial_enable) |
-                   (s->other_pending & s->other_enable)));
+                   ((s->other_pending | (s->ata_irq ? 1 : 0)) &
+                    s->other_enable)));
 }
 
 static void sgi_ioc4_kbc_irq(void *opaque, int n, int level)
@@ -399,9 +417,116 @@ static void sgi_ioc4_sdma_write(SGIIOC4State *s, bool base, unsigned index,
     sgi_ioc_sdma_port_write(&s->sdma, index, offset, value);
 }
 
+/*
+ * INT_OUT in toggle mode: bit 31 flips every COUNT + 1 ticks of 520 clocks;
+ * the other modes leave it low.
+ */
+static uint32_t sgi_ioc4_int_out_read(SGIIOC4State *s)
+{
+    uint32_t value = s->int_out;
+
+    if (((value >> 16) & 7) == SGI_IOC4_INT_OUT_TOGGLE) {
+        uint64_t half = ((value & 0xffff) + 1ULL) *
+                        SGI_IOC4_INT_OUT_TICK_CLOCKS *
+                        NANOSECONDS_PER_SECOND / s->clock_hz;
+        uint64_t elapsed = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) -
+                           s->int_out_start;
+
+        value |= (uint32_t)((elapsed / half) & 1) << 31;
+    }
+    return value;
+}
+
+static bool sgi_ioc4_ata_task_file(hwaddr addr)
+{
+    return addr >= SGI_IOC4_ATA_TASK && addr < SGI_IOC4_ATA_TASK_END;
+}
+
+/*
+ * The ATA channel is QEMU's IDE core, one register per word: a byte at lane 3
+ * and the 16-bit data register at lane 2 (the BAR is big-endian).
+ */
+static bool sgi_ioc4_ata_access(SGIIOC4State *s, hwaddr addr, unsigned size,
+                                bool write, uint64_t *val)
+{
+    unsigned reg = (addr - SGI_IOC4_ATA_TASK) >> 2;
+    bool data = reg == 0;
+    unsigned lane = data ? 2 : 3;
+
+    if ((addr & 3) != lane || size != (data ? 2 : 1)) {
+        qemu_log_mask(LOG_GUEST_ERROR,
+                      "sgi-ioc4: ATA %s width %u at 0x%" HWADDR_PRIx "\n",
+                      write ? "write" : "read", size, addr);
+        if (!write) {
+            *val = 0;
+        }
+        return true;
+    }
+    if (!s->ata_bus.ifs[0].blk && !s->ata_bus.ifs[1].blk) {
+        /* No drive: pulled-up lines with DD7 low, writes go nowhere. */
+        if (!write) {
+            *val = SGI_IOC4_ATA_FLOAT & MAKE_64BIT_MASK(0, size * 8);
+        }
+        return true;
+    }
+    if (write) {
+        sgi_ioc4_ata_write(&s->ata_bus, reg, *val);
+    } else {
+        *val = sgi_ioc4_ata_read(&s->ata_bus, reg);
+    }
+    return true;
+}
+
+static void sgi_ioc4_ata_irq(void *opaque, int n, int level)
+{
+    SGIIOC4State *s = opaque;
+
+    s->ata_irq = level;
+    sgi_ioc4_update_irq(s);
+}
+
+void sgi_ioc4_ata_init_drives(PCIDevice *dev, DriveInfo *hd0, DriveInfo *hd1)
+{
+    SGIIOC4State *s = (SGIIOC4State *)dev;
+
+    assert(s->attach_compat);
+    if (hd0) {
+        ide_bus_create_drive(&s->ata_bus, 0, hd0);
+    }
+    if (hd1) {
+        ide_bus_create_drive(&s->ata_bus, 1, hd1);
+    }
+}
+
+/* With attach-compat, SIO_CR answers what Linux's IOC4 attach polls. */
+static bool sgi_ioc4_attach_read(SGIIOC4State *s, hwaddr addr, uint64_t *val)
+{
+    if (!s->attach_compat) {
+        return false;
+    }
+    if (addr == SGI_IOC4_SIO_CR) {
+        *val = s->sio_cr | SGI_IOC4_SIO_CR_IDLE;
+        return true;
+    }
+    return false;
+}
+
+static bool sgi_ioc4_attach_write(SGIIOC4State *s, hwaddr addr, uint64_t val)
+{
+    if (!s->attach_compat) {
+        return false;
+    }
+    if (addr == SGI_IOC4_SIO_CR) {
+        s->sio_cr = val & SGI_IOC4_SIO_CR_STROBE;
+        return true;
+    }
+    return false;
+}
+
 static uint64_t sgi_ioc4_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIIOC4State *s = opaque;
+    uint64_t attach_value;
     bool base;
     unsigned index;
     hwaddr offset;
@@ -420,18 +545,30 @@ static uint64_t sgi_ioc4_read(void *opaque, hwaddr addr, unsigned size)
     if (addr == SGI_IOC4_ATA_READBACK && s->ata_readback_compat) {
         return s->ata_readback;
     }
+    if (s->attach_compat && sgi_ioc4_ata_task_file(addr) &&
+        sgi_ioc4_ata_access(s, addr, size, false, &attach_value)) {
+        return attach_value;
+    }
+    if (sgi_ioc4_attach_read(s, addr, &attach_value)) {
+        return attach_value;
+    }
     switch (addr) {
     case 0x08:
         return s->serial_pending | s->uart_level | s->threshold_level |
                s->tx_empty_level | s->rx_full_level;
     case 0x0c:
-        return s->other_pending;
+        return s->other_pending | (s->ata_irq ? 1 : 0);
     case 0x10:
         return s->serial_enable;
     case 0x14:
         return s->other_enable;
     case 0x24:
         return s->clock_hz == 66666667;
+    case SGI_IOC4_INT_OUT:
+        if (s->attach_compat) {
+            return sgi_ioc4_int_out_read(s);
+        }
+        QEMU_FALLTHROUGH;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc4: read of unsupported BAR offset 0x%"
@@ -469,6 +606,13 @@ static void sgi_ioc4_write(void *opaque, hwaddr addr, uint64_t val,
         s->ata_readback = val;
         return;
     }
+    if (s->attach_compat && sgi_ioc4_ata_task_file(addr)) {
+        sgi_ioc4_ata_access(s, addr, size, true, &val);
+        return;
+    }
+    if (sgi_ioc4_attach_write(s, addr, val)) {
+        return;
+    }
     switch (addr) {
     case 0x08:
         s->serial_pending &= ~(uint32_t)val;
@@ -493,6 +637,13 @@ static void sgi_ioc4_write(void *opaque, hwaddr addr, uint64_t val,
                       "sgi-ioc4: unsupported misc control write 0x%"
                       PRIx64 "\n", val);
         break;
+    case SGI_IOC4_INT_OUT:
+        if (s->attach_compat) {
+            s->int_out = val & SGI_IOC4_INT_OUT_MASK;
+            s->int_out_start = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+            break;
+        }
+        QEMU_FALLTHROUGH;
     default:
         qemu_log_mask(LOG_UNIMP,
                       "sgi-ioc4: write to unsupported BAR offset 0x%"
@@ -507,6 +658,10 @@ static bool sgi_ioc4_accepts(void *opaque, hwaddr addr, unsigned size,
 {
     SGIIOC4State *s = opaque;
 
+    /* The task file's registers are bytes and its data register is 16 bits. */
+    if (s->attach_compat && sgi_ioc4_ata_task_file(addr) && size <= 2) {
+        return true;
+    }
     if (size != 4) {
         if (addr == SGI_IOC4_ATA_READBACK && s->ata_readback_compat) {
             qemu_log_mask(LOG_GUEST_ERROR,
@@ -668,11 +823,17 @@ static void sgi_ioc4_reset_hold(Object *obj, ResetType type)
     s->tx_empty_level = 0;
     s->rx_full_level = 0;
     s->ata_readback = 0;
+    s->ata_irq = false;
+    if (s->attach_compat) {
+        sgi_ioc4_ata_reset(&s->ata_bus);
+    }
     if (s->pci_status_compat) {
         pci_set_word(s->parent_obj.config + PCI_STATUS,
                      SGI_IOC4_PCI_STATUS_COMPAT);
     }
     s->dma_error_low = s->dma_error_high = 0;
+    s->int_out = 0;
+    s->sio_cr = 0;
     sgi_ioc_sdma_reset(&s->sdma);
     for (i = 0; i < SGI_IOC4_PORTS; i++) {
         s->uart[i].baudbase = s->clock_hz / 16;
@@ -704,6 +865,57 @@ static int sgi_ioc4_pre_load(void *opaque)
     return 0;
 }
 
+static bool sgi_ioc4_int_out_needed(void *opaque)
+{
+    return ((SGIIOC4State *)opaque)->int_out != 0;
+}
+
+static const VMStateDescription vmstate_ioc4_int_out = {
+    .name = "sgi-ioc4/int-out",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc4_int_out_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(int_out, SGIIOC4State),
+        VMSTATE_INT64(int_out_start, SGIIOC4State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool sgi_ioc4_sio_cr_needed(void *opaque)
+{
+    return ((SGIIOC4State *)opaque)->sio_cr != 0;
+}
+
+static const VMStateDescription vmstate_ioc4_sio_cr = {
+    .name = "sgi-ioc4/sio-cr",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc4_sio_cr_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT32(sio_cr, SGIIOC4State),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
+static bool sgi_ioc4_ata_needed(void *opaque)
+{
+    return ((SGIIOC4State *)opaque)->attach_compat;
+}
+
+/* The IDE core does not save its interrupt line, so the level is here. */
+static const VMStateDescription vmstate_ioc4_ata = {
+    .name = "sgi-ioc4/ata",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .needed = sgi_ioc4_ata_needed,
+    .fields = (const VMStateField[]) {
+        VMSTATE_BOOL(ata_irq, SGIIOC4State),
+        VMSTATE_STRUCT(ata_bus, SGIIOC4State, 1, vmstate_sgi_ioc4_ata, IDEBus),
+        VMSTATE_END_OF_LIST()
+    }
+};
+
 static const VMStateDescription vmstate_ioc4 = {
     .name = "sgi-ioc4",
     .version_id = 3,
@@ -728,6 +940,12 @@ static const VMStateDescription vmstate_ioc4 = {
         VMSTATE_UINT32(dma_error_high, SGIIOC4State),
         VMSTATE_SGI_IOC_SDMA(sdma, SGIIOC4State),
         VMSTATE_END_OF_LIST()
+    },
+    .subsections = (const VMStateDescription * const []) {
+        &vmstate_ioc4_int_out,
+        &vmstate_ioc4_sio_cr,
+        &vmstate_ioc4_ata,
+        NULL
     }
 };
 
@@ -764,6 +982,10 @@ static void sgi_ioc4_realize(PCIDevice *dev, Error **errp)
     if (s->clock_hz != 33333333 && s->clock_hz != 66666667) {
         error_setg(errp, "sgi-ioc4 clock-hz must be 33333333 or 66666667");
         return;
+    }
+    if (s->attach_compat) {
+        sgi_ioc4_ata_init(&s->ata_bus, DEVICE(dev),
+                          qdev_get_gpio_in_named(DEVICE(dev), "ata-irq", 0));
     }
     if (s->clock) {
         uint64_t region_size = memory_region_size(s->clock);
@@ -868,6 +1090,7 @@ static const Property sgi_ioc4_properties[] = {
                      serial_dma_experimental, false),
     DEFINE_PROP_BOOL("pci-status-compat", SGIIOC4State, pci_status_compat,
                      false),
+    DEFINE_PROP_BOOL("attach-compat", SGIIOC4State, attach_compat, false),
     DEFINE_PROP_BOOL("ata-readback-compat", SGIIOC4State,
                      ata_readback_compat, false),
     DEFINE_PROP_LINK("clock", SGIIOC4State, clock, TYPE_MEMORY_REGION,
@@ -887,6 +1110,7 @@ static void sgi_ioc4_instance_init(Object *obj)
               DEVICE(obj), "kbc-bus");
     object_initialize_child(obj, "kbc", &s->kbc, TYPE_SGI_IOC3_KBC);
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc4_kbc_irq, "kbc-irq", 1);
+    qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc4_ata_irq, "ata-irq", 1);
 
     s->clock_hz = 33333333;
     qdev_init_gpio_in_named(DEVICE(obj), sgi_ioc4_uart_tx_ready,

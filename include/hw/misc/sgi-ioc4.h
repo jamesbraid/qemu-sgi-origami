@@ -10,6 +10,7 @@
 #include "hw/char/sgi-ioc-serial-dma.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev.h"
+#include "hw/ide/ide-bus.h"
 #include "hw/input/sgi-ioc3-kbc.h"
 #include "hw/pci/pci_device.h"
 #include "qom/object.h"
@@ -73,6 +74,19 @@ struct SGIIOC4State {
     /* The receive-ring-full sources, a level per port. */
     uint32_t rx_full_level;
     uint32_t clock_hz;
+    /* INT_OUT's control bits and when the output started toggling. */
+    uint32_t int_out;
+    int64_t int_out_start;
+    /* A programmed-I/O ATA/ATAPI channel on the IOC4 (see sgi-ioc4.c). */
+    IDEBus ata_bus;
+    bool ata_irq;
+    /* Answer the way Linux's IOC4 attach expects: see sgi-ioc4.c. */
+    bool attach_compat;
+    /* SIO_CR's writable strobe width, bits 3:0. */
+    uint32_t sio_cr;
 };
+
+/* Attach up to two drives to the IOC4's ATA channel (needs attach-compat). */
+void sgi_ioc4_ata_init_drives(PCIDevice *dev, DriveInfo *hd0, DriveInfo *hd1);
 
 #endif

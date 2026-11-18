@@ -7,7 +7,8 @@ IOC4: I/O controller
 ====================
 
 Used in :ref:`sgi-ip53`: the IO9 base I/O board of the Origin 350, Onyx
-350, Tezro and Onyx 4 host machines (:ref:`sgi-ip53-ioc4`).
+350, Tezro and Onyx 4 host machines (:ref:`sgi-ip53-ioc4`), and, with the
+properties described below, in the Altix 350's base I/O card.
 
 .. seealso::
 
@@ -24,7 +25,9 @@ QEMU models PCI revision ``0x53`` as ``sgi-ioc4`` in
 ``hw/misc/sgi-ioc4.c``, with ``sgi-ioc3-kbc``
 (``hw/input/sgi-ioc3-kbc.c``) as its PS/2 child. The model covers the
 serial ports, their DMA, the PS/2 controller, the interrupt registers and
-the timekeeper window. ATA and the general-purpose pins are not modelled.
+the timekeeper window. The ATA channel is modelled only with
+``attach-compat`` (:ref:`sgi-ioc4-ata`), and of the general-purpose pins only
+INT_OUT is, with the same property.
 
 Facts are rated as described in :ref:`sgi-ratings`. SGI published no
 IOC4 specification. Register offsets and field names come from the
@@ -198,7 +201,10 @@ OpenBSD uses 32-bit accesses here and bytes in the UART windows,
      - ``0x80``
      - R
      - Serial DMA profile only: bit 7 is the arbitration idle bit.
-       Otherwise not modelled.
+       With ``attach-compat``, bits 3:0 keep what is written (the strobe
+       width) and bits 7 and 8, the serial and ATA request-idle indications,
+       read set, *inferred* from the public driver's names for them
+       (``drivers/tty/serial/ioc4_serial.c`` in Linux). Otherwise not modelled.
    * - ``0x024``
      - Miscellaneous control
      - 32
@@ -211,13 +217,19 @@ OpenBSD uses 32-bit accesses here and bytes in the UART windows,
      - 32
      -
      -
-     - Not modelled.
+     - Not modelled, except INT_OUT at ``0x028`` with ``attach-compat``: it
+       keeps its control bits and, in toggle mode (mode field 7), bit 31 reads
+       as a square wave off the virtual clock, one half-period of (count + 1) x 520 IOC4
+       clocks, count being the low 16 bits of the register (an *approximation*; ``drivers/misc/ioc4.c`` in Linux,
+       ``ioc4_clock_calibrate``). Without the property the offset is
+       unsupported.
    * - ``0x100``-``0x160``
      - ATA task file, control and DMA
      - 32
      -
      -
-     - Not modelled, except the ``0x148`` latch on IP53 boards.
+     - Not modelled, except the ``0x148`` latch on IP53 boards and, with
+       ``attach-compat``, the task file at ``0x100``-``0x124``.
    * - ``0x200``-``0x210``
      - PS/2 controller
      - 32
@@ -554,8 +566,19 @@ Linux ``sgiioc4.c`` maps one channel with task-file registers at ``0x100`` on a
 four-byte stride, alternate control at ``0x120`` and DMA registers from
 ``0x140``, a *software expectation*. The published announcement states that
 OpenBSD did not support the IO9 ATAPI interface
-(:src:`miod-openbsd-sgi-story Origin 350 support`). The model implements no ATA
-function: reads return zero and log ``LOG_UNIMP``.
+(:src:`miod-openbsd-sgi-story Origin 350 support`). Without
+``attach-compat`` the model implements no ATA function: reads return zero and
+log ``LOG_UNIMP``.
+
+With ``attach-compat`` the IOC4 owns an IDE bus, ``ide.0``, and the task file at
+``0x100``-``0x124`` is QEMU's IDE core, one register per word: a byte at lane 3
+of its word and the 16-bit data register at lane 2. A machine attaches up to
+two drives as master and slave, and ``-device ide-hd,bus=ide.0`` works too. The
+drive's interrupt shows in bit 0 of the other status word at ``0x0c``. A reset
+drops a pending drive interrupt. With no drive the task file reads as a
+floating bus, a byte ``0x7f`` and the data register ``0xff7f``, and writes go
+nowhere; no source states what the board returns, an *approximation*. The DMA
+block at ``0x140`` is not modelled.
 
 The one exception is ``0x148`` with the ``ata-readback-compat``
 property, which IP53 boards set. The IP35 PROM writes each one-bit
@@ -596,18 +619,22 @@ UART clock, the ring bases and sizes, the error address, the ``0x148``
 latch and every port's registers, staging, transmit progress and
 remaining timer and delay time. A paused port stays paused after
 restore; a running one resumes its work once without repeating output.
-The serial DMA, PCI status and ATA readback properties must match on
-both sides, or restore fails. The PS/2 controller migrates as its own
-device. Migration works only between identical builds.
+With ``attach-compat`` it also saves the IDE bus, its two drives and the
+level of the drive's interrupt line. The serial DMA, PCI status and ATA
+readback properties must match on both sides, or restore fails. The PS/2
+controller migrates as its own device. Migration works only between
+identical builds.
 
 .. _sgi-ioc4-limits:
 
 Model limits
 ============
 
-- ATA and ATAPI are absent apart from the ``0x148`` latch. No IRIX or
+- ATA and ATAPI are absent apart from the ``0x148`` latch, except with
+  ``attach-compat``, which has no DMA. No IRIX or
   PROM path to an IO9 optical drive works.
-- General-purpose pins, the external interrupt output, byte-bus selects
+- General-purpose pins, the external interrupt output (except INT_OUT with
+  ``attach-compat``), byte-bus selects
   1-3 and the PCI error capture for anything but serial DMA are absent.
   Accesses log ``LOG_UNIMP``; reads return zero.
 - Carrier-detect and clear-to-send change sources are never raised.
