@@ -425,6 +425,20 @@ is that the same offset holds different values under different selections.
   ISP1040's bank 0 and is an *approximation*. The model keeps only bits 9:8
   of the register, and the full writable mask and reset value are
   *unknown*. The banked layout replaces the flat DMA registers.
+- With the ``cfg1-sxp-select`` property (generic: on the ISP1040 bit 3 is
+  already kept, and the property only turns the warning on), bit 3 is also
+  kept and reads back on the ISP12160. The Altix 350's EFI driver writes it,
+  requires it to read back and clears it again, as for the ISP1040
+  (*software expectation*, ``software/firmware/snprom/efi-qlogic.md`` in the
+  chips repository, read from the driver binary). What the bit does on this
+  part is not known, so it only stores and selects no bank. The model logs a
+  note when the bit is stored. The property is not part of the migration
+  stream, so both ends of a migration must set it alike.
+- Every microcode download command (opcode ``0x0001``, ``0x0009`` or the
+  word-at-a-time ``0x0004`` the EFI driver uses) logs a note, whatever the
+  property says, that the firmware is not executed: the download is accepted
+  and the mailbox and queue commands are answered at the register level
+  (*approximation*, listed on the Altix 350 page).
 
 Bank accesses are traced, not logged as unimplemented.
 

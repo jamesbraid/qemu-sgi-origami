@@ -445,6 +445,8 @@ struct QLogicISPState {
     MemoryRegion mmio;  /* Base address register 1: an alias of io. */
 
     uint16_t bus_cfg1;
+    bool cfg1_sxp_select;   /* bit 3 stores, as the EFI driver expects */
+    bool download_noted;    /* the not-executed note was logged since reset */
     uint16_t bus_ctrl;
     uint16_t bus_status;
     uint16_t semaphore;
@@ -669,6 +671,7 @@ static void qlogic_isp_reset_state(QLogicISPState *s)
 {
     unsigned int i;
 
+    s->download_noted = false;
     s->bus_cfg1 = 0;
     s->bus_ctrl = 0;
     s->bus_status = 0;
@@ -1007,6 +1010,16 @@ static void qlogic_isp_channel_unplug(const HotplugHandler *hotplug_dev,
     }
 }
 
+/* A microcode download is accepted and its words kept, never executed. */
+static void qlogic_isp_note_download(QLogicISPState *s)
+{
+    if (!s->download_noted) {
+        s->download_noted = true;
+        qemu_log_mask(LOG_UNIMP, "qlogic-isp: firmware is not executed "
+                      "(approximation)\n");
+    }
+}
+
 /* The answer for an opcode this part of the family does not carry. */
 static void qlogic_isp_mbox_not_modelled(QLogicISPState *s, uint16_t cmd)
 {
@@ -1028,6 +1041,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
         break;
 
     case ISP_MBOX_CMD_WRITE_RAM_WORD:
+        qlogic_isp_note_download(s);
         s->risc_ram[s->mailbox[1]] = s->mailbox[2];
         s->mailbox[0] = ISP_MBOX_COMPLETE;
         break;
@@ -1044,6 +1058,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             qlogic_isp_mbox_not_modelled(s, cmd);
             break;
         }
+        qlogic_isp_note_download(s);
         s->mailbox[0] = qlogic_isp_ram_load(s);
         break;
 
@@ -1053,6 +1068,7 @@ static void qlogic_isp_mailbox_command(QLogicISPState *s)
             qlogic_isp_mbox_not_modelled(s, cmd);
             break;
         }
+        qlogic_isp_note_download(s);
         s->mailbox[0] = qlogic_isp_ram_load(s);
         break;
 
@@ -2824,8 +2840,17 @@ static void qlogic_isp_reg_write(void *opaque, hwaddr addr, uint64_t val,
 
     switch (addr) {
     case ISP_REG_BUS_CFG1: {
-        uint16_t mask = QLOGIC_ISP_GET_CLASS(s)->info->cfg1_write_mask;
+        uint16_t mask = QLOGIC_ISP_GET_CLASS(s)->info->cfg1_write_mask |
+                        (s->cfg1_sxp_select ? ISP_BUS_CFG1_BANK_SELECT : 0);
 
+        /*
+         * Bit 3 is stored, read back and restored (software/firmware/snprom/
+         * efi-qlogic.md); its meaning here is unknown.
+         */
+        if (s->cfg1_sxp_select && (val & ISP_BUS_CFG1_BANK_SELECT)) {
+            qemu_log_mask(LOG_UNIMP, "qlogic-isp: bus configuration 1 bit 3 "
+                          "is only stored (approximation; 12160 only)\n");
+        }
         if (val & ~mask) {
             qemu_log_mask(LOG_UNIMP,
                           "qlogic-isp: bus configuration 1 bits 0x%04x are "
@@ -3507,6 +3532,11 @@ static const VMStateDescription vmstate_qlogic_isp = {
     }
 };
 
+static const Property qlogic_isp_properties[] = {
+    DEFINE_PROP_BOOL("cfg1-sxp-select", QLogicISPState, cfg1_sxp_select,
+                     false),
+};
+
 static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
@@ -3516,6 +3546,7 @@ static void qlogic_isp_class_init(ObjectClass *oc, const void *data)
 
     pc->realize = qlogic_isp_realize;
     pc->exit = qlogic_isp_exit;
+    device_class_set_props(dc, qlogic_isp_properties);
     pc->vendor_id = QLOGIC_ISP_VENDOR_ID;
     pc->class_id = PCI_CLASS_STORAGE_SCSI;
     rc->phases.hold = qlogic_isp_reset_hold;

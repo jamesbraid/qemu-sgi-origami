@@ -504,6 +504,70 @@ static void test_cfg1_retains_only_the_bank_select(const void *data)
 }
 
 /*
+ * With cfg1-sxp-select the Altix 350's EFI driver can store bit 3 of bus
+ * configuration 1 and read it back; without the property the bit is dropped.
+ */
+static void test_cfg1_sxp_select_keeps_bit_3(const void *data)
+{
+    static const char *const args[] = {
+        "-M origin200 -m 64 -device qlogic-isp12160,bus=pci,addr=%u,"
+        "cfg1-sxp-select=on",
+        "-M origin200 -m 64 -device qlogic-isp12160,bus=pci,addr=%u",
+    };
+
+    for (unsigned int i = 0; i < ARRAY_SIZE(args); i++) {
+        g_autofree char *cmd = g_strdup_printf(args[i], isp_slot);
+        QTestState *s = qtest_init(cmd);
+
+        aim_window_at_memory_bar(s);
+        isp_writew(s, ISP_REG_BUS_CFG1, 0x0008);
+        g_assert_cmphex(isp_readw(s, ISP_REG_BUS_CFG1), ==,
+                        i == 0 ? 0x0008 : 0x0000);
+        isp_writew(s, ISP_REG_BUS_CFG1, 0x0000);
+        g_assert_cmphex(isp_readw(s, ISP_REG_BUS_CFG1), ==, 0x0000);
+        qtest_quit(s);
+    }
+}
+
+/*
+ * The first firmware download command after a reset notes through the
+ * unimplemented-feature mask that the firmware is not executed, with or
+ * without cfg1-sxp-select; the Altix 350's EFI driver downloads a word at a
+ * time (WRITE RAM WORD), so a note per command would flood the log.
+ */
+static void test_download_is_noted(const void *data)
+{
+    for (unsigned int i = 0; i < 2; i++) {
+        g_autofree char *log = NULL;
+        g_autofree char *contents = NULL;
+        g_autofree char *cmd = NULL;
+        QTestState *s;
+        const char *at;
+        unsigned notes = 0;
+        int fd = g_file_open_tmp("isp12160-XXXXXX", &log, NULL);
+
+        g_assert_cmpint(fd, >=, 0);
+        close(fd);
+        cmd = g_strdup_printf("-M origin200 -m 64 -d unimp -D %s "
+                              "-device qlogic-isp12160,bus=pci,addr=%u%s",
+                              log, isp_slot,
+                              i == 0 ? ",cfg1-sxp-select=on" : "");
+        s = qtest_init(cmd);
+        aim_window_at_memory_bar(s);
+        isp_write_ram_word(s, 0x1000, 0x1234);
+        isp_write_ram_word(s, 0x1001, 0x5678);
+        qtest_quit(s);
+        g_assert_true(g_file_get_contents(log, &contents, NULL, NULL));
+        for (at = contents; (at = strstr(at, "firmware is not executed"));
+             at++) {
+            notes++;
+        }
+        g_assert_cmpuint(notes, ==, 1);
+        g_unlink(log);
+    }
+}
+
+/*
  * The guest's soft reset puts the window and its selector back to the
  * power-on state. A bank that survived would hand a re-initialising driver
  * the previous run's contents, and every selection is checked because
@@ -4375,6 +4439,10 @@ int main(int argc, char **argv)
                         test_three_banks_hold_distinct_words);
     qtest_add_data_func("sn0/isp12160/cfg1-retains-only-the-bank-select", NULL,
                         test_cfg1_retains_only_the_bank_select);
+    qtest_add_data_func("sn0/isp12160/download-is-noted", NULL,
+                        test_download_is_noted);
+    qtest_add_data_func("sn0/isp12160/cfg1-sxp-select-keeps-bit-3", NULL,
+                        test_cfg1_sxp_select_keeps_bit_3);
     qtest_add_data_func("sn0/isp12160/soft-reset-clears-banks-and-cfg1", NULL,
                         test_soft_reset_clears_banks_and_cfg1);
     qtest_add_data_func("sn0/isp12160/flat-dma-registers-are-unimplemented",
