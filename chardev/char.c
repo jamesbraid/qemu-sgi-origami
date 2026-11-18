@@ -1013,6 +1013,9 @@ QemuOptsList qemu_chardev_opts = {
             .name = "model",
             .type = QEMU_OPT_STRING,
         },{
+            .name = "margin",
+            .type = QEMU_OPT_NUMBER,
+        },{
             .name = "name",
             .type = QEMU_OPT_STRING,
         },{

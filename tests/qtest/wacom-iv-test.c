@@ -325,6 +325,36 @@ static void test_margin_insets_console_range(void)
     qtest_quit(qts);
 }
 
+/* The creation option gives the same inset as qom-set, and is range checked. */
+static void test_margin_creation_option(void)
+{
+    QTestState *qts = qtest_init("-M malta -display none "
+                                 "-chardev wacom-iv,id=tab,margin=5 "
+                                 "-serial chardev:tab");
+    const uint8_t low_x[PACKET_LEN] = { 0xe0, 0x05, 0x7a, 0x00, 0x71, 0x0e,
+                                        0x44 };
+    QDict *r;
+
+    open_tablet(qts);
+    r = qtest_qmp(qts, "{'execute': 'qom-get', 'arguments': {'path':"
+                  " '/chardevs/tab', 'property': 'margin'}}");
+    g_assert_cmpint(qdict_get_int(r, "return"), ==, 5);
+    qobject_unref(r);
+    move(qts, 0, 32767);
+    expect_packet(qts, low_x);
+    qtest_quit(qts);
+
+    /* Out of range is refused when the chardev is created. */
+    qts = start();
+    r = qtest_qmp(qts, "{'execute': 'chardev-add', 'arguments': {'id': 'm',"
+                  " 'backend': {'type': 'wacom-iv', 'data': {'margin': 50}}}}");
+    g_assert(qdict_haskey(r, "error"));
+    g_assert_nonnull(strstr(qdict_get_str(qdict_get_qdict(r, "error"), "desc"),
+                            "margin must be 0 to 49 percent"));
+    qobject_unref(r);
+    qtest_quit(qts);
+}
+
 static void test_increment(void)
 {
     QTestState *qts = start();
@@ -579,6 +609,8 @@ int main(int argc, char **argv)
                    test_resolution_scales_coordinates);
     qtest_add_func("/wacom-iv/margin-insets-console-range",
                    test_margin_insets_console_range);
+    qtest_add_func("/wacom-iv/margin-creation-option",
+                   test_margin_creation_option);
     qtest_add_func("/wacom-iv/increment", test_increment);
     qtest_add_func("/wacom-iv/interval", test_interval);
     qtest_add_func("/wacom-iv/stop-and-start", test_stop_and_start);

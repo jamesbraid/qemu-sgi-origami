@@ -323,8 +323,10 @@ scales the console's 0 to 32767 range onto the far edge on both axes,
 *approximation*: a real tablet's active area is what the stylus can reach,
 not the console's.
 
-The ``margin`` property (0 to 49, default 0, set with ``qom-set`` on the
-chardev) insets the console's range by that percent of the axis at each end.
+The ``margin`` option (0 to 49, default 0) insets the console's range by that
+percent of the axis at each end. Give it at creation, as
+``-chardev wacom-iv,id=tablet,margin=5``, or change it later with ``qom-set``
+on ``/chardevs/ID``. A value outside 0 to 49 is refused either way.
 It is host-side input mapping only: the device's replies are unchanged. It
 exists because dlwacom 3.03 under Inferno 4.7.2 IR2 appears to leave about 5
 percent of the tablet at each edge outside its screen mapping, *inferred*

@@ -375,6 +375,20 @@
   'base': 'ChardevCommon' }
 
 ##
+# @ChardevWacomIv:
+#
+# Configuration info for Wacom IV UD-series serial tablet chardevs.
+#
+# @margin: percent of the host pointer range, 0 to 49, cut from each
+#     end of both axes before it is mapped to the tablet.  Default: 0.
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevWacomIv',
+  'data': { '*margin': 'int' },
+  'base': 'ChardevCommon' }
+
+##
 # @ChardevSpiceChannel:
 #     Configuration info for spice vm channel chardevs.
 #
@@ -537,6 +551,8 @@
 # @wctablet: emulated Wacom serial tablet, a Penpartner CT-0045R by
 #     default (since 2.9)
 #
+# @wacom-iv: emulated Wacom IV UD-1212-R serial tablet (since 11.2)
+#
 # @braille: Baum Braille device (since 1.5)
 #
 # @testdev: device for test-suite control (since 2.2)
@@ -580,6 +596,7 @@
             'rfc2217',
             'msmouse',
             'wctablet',
+            'wacom-iv',
             { 'name': 'braille', 'if': 'CONFIG_BRLAPI' },
             'testdev',
             'stdio',
@@ -681,6 +698,16 @@
 ##
 { 'struct': 'ChardevRfc2217Wrapper',
   'data': { 'data': 'ChardevRfc2217' } }
+
+##
+# @ChardevWacomIvWrapper:
+#
+# @data: Configuration info for Wacom IV serial tablet chardevs
+#
+# Since: 11.2
+##
+{ 'struct': 'ChardevWacomIvWrapper',
+  'data': { 'data': 'ChardevWacomIv' } }
 
 ##
 # @ChardevStdioWrapper:
@@ -803,6 +830,7 @@
             'rfc2217': 'ChardevRfc2217Wrapper',
             'msmouse': 'ChardevCommonWrapper',
             'wctablet': 'ChardevWctabletWrapper',
+            'wacom-iv': 'ChardevWacomIvWrapper',
             'braille': { 'type': 'ChardevCommonWrapper',
                          'if': 'CONFIG_BRLAPI' },
             'testdev': 'ChardevCommonWrapper',

@@ -11,12 +11,11 @@
  * docs/system/mips/sgi/hardware/wacom-iv.rst lists the commands, the packet
  * fields and the approximations.
  *
- * Use it as "-chardev wacom-iv,id=tablet" behind a serial port. It needs no
- * option parser: a chardev class without chr_parse gets a plain common
- * backend from qemu_chr_parse_opts().
+ * Use it as "-chardev wacom-iv,id=tablet[,margin=N]" behind a serial port.
  */
 
 #include "qemu/osdep.h"
+#include "qemu/option.h"
 #include "qemu/module.h"
 #include "qemu/timer.h"
 #include "chardev/char.h"
@@ -607,11 +606,27 @@ static int wacom_iv_chr_ioctl(Chardev *chr, int cmd, void *arg)
     return 0;
 }
 
+static bool wacom_iv_check_margin(int64_t value, Error **errp)
+{
+    if (value < 0 || value > 49) {
+        error_setg(errp, "margin must be 0 to 49 percent");
+        return false;
+    }
+    return true;
+}
+
 static bool wacom_iv_chr_open(Chardev *chr, ChardevBackend *backend,
                               Error **errp)
 {
     WacomIvChardev *w = WACOM_IV_CHARDEV(chr);
+    ChardevWacomIv *opts = backend->u.wacom_iv.data;
 
+    if (opts->has_margin) {
+        if (!wacom_iv_check_margin(opts->margin, errp)) {
+            return false;
+        }
+        w->margin = opts->margin;
+    }
     w->timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, wacom_iv_timer_cb, w);
     wacom_iv_reset_settings(w);
     qemu_chr_be_event(chr, CHR_EVENT_OPENED);
@@ -646,21 +661,33 @@ static void wacom_iv_set_margin(Object *obj, Visitor *v, const char *name,
     if (!visit_type_int(v, name, &value, errp)) {
         return;
     }
-    if (value < 0 || value > 49) {
-        error_setg(errp, "margin must be 0 to 49 percent");
-        return;
+    if (wacom_iv_check_margin(value, errp)) {
+        WACOM_IV_CHARDEV(obj)->margin = value;
     }
-    WACOM_IV_CHARDEV(obj)->margin = value;
+}
+
+static void wacom_iv_chr_parse(QemuOpts *opts, ChardevBackend *backend,
+                               Error **errp)
+{
+    ChardevWacomIv *w = backend->u.wacom_iv.data = g_new0(ChardevWacomIv, 1);
+
+    backend->type = CHARDEV_BACKEND_KIND_WACOM_IV;
+    qemu_chr_parse_common(opts, qapi_ChardevWacomIv_base(w));
+    if (qemu_opt_get(opts, "margin")) {
+        w->has_margin = true;
+        w->margin = qemu_opt_get_number(opts, "margin", 0);
+    }
 }
 
 static void wacom_iv_chr_class_init(ObjectClass *oc, const void *data)
 {
     ChardevClass *cc = CHARDEV_CLASS(oc);
 
-    /* Set it with qom-set on /chardevs/ID; a chardev option needs QAPI. */
+    /* Also settable at runtime with qom-set on /chardevs/ID. */
     object_class_property_add(oc, "margin", "int", NULL, wacom_iv_get_margin,
                               wacom_iv_set_margin, NULL, NULL);
 
+    cc->chr_parse = wacom_iv_chr_parse;
     cc->chr_open = wacom_iv_chr_open;
     cc->chr_write = wacom_iv_chr_write;
     cc->chr_ioctl = wacom_iv_chr_ioctl;

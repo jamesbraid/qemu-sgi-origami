@@ -4118,6 +4118,7 @@ DEF("chardev", HAS_ARG, QEMU_OPTION_chardev,
     "-chardev ycable,id=id,legs.0=id[,legs.N=id]\n"
     "         [,logfile=PATH][,logappend=on|off]\n"
     "-chardev rfc2217,id=id,chardev=id[,logfile=PATH][,logappend=on|off]\n"
+    "-chardev wacom-iv,id=id[,margin=N][,logfile=PATH][,logappend=on|off]\n"
     "-chardev msmouse,id=id[,mux=on|off][,logfile=PATH][,logappend=on|off]\n"
     "-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]]\n"
     "         [,mux=on|off][,logfile=PATH][,logappend=on|off][,encoding=ENCODING]\n"
@@ -4156,7 +4157,7 @@ The general form of a character device option is:
 
 ``-chardev backend,id=id[,mux=on|off][,options]``
     Backend is one of: ``null``, ``socket``, ``udp``, ``msmouse``, ``hub``,
-    ``ycable``, ``rfc2217``, ``vc``, ``ringbuf``, ``file``, ``pipe``,
+    ``ycable``, ``rfc2217``, ``wacom-iv``, ``vc``, ``ringbuf``, ``file``, ``pipe``,
     ``console``, ``serial``, ``pty``, ``stdio``, ``braille``, ``parallel``,
     ``spicevmc``, ``spiceport``, ``dbus``. The specific backend will
     determine the applicable options.
@@ -4372,6 +4373,12 @@ The available backends are:
     input lines are not carried back; CTS, DSR and DCD read as
     asserted. See :doc:`/system/rfc2217-chardev`.
     (Since 11.2)
+
+``-chardev wacom-iv,id=id[,margin=N]``
+    Emulate a Wacom IV UD-1212-R serial tablet on the guest's serial
+    port. ``margin`` (0 to 49, default 0) cuts that percent of the host
+    pointer range from each end of both axes before it is mapped. See
+    :doc:`/system/mips/sgi/hardware/wacom-iv`. (Since 11.2)
 
 ``-chardev vc,id=id[[,width=width][,height=height]][[,cols=cols][,rows=rows]][,encoding=ENCODING]``
     Connect to a QEMU text console. The implementation and supported feature
