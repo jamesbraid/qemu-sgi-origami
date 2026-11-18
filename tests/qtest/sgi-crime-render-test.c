@@ -12207,6 +12207,7 @@ static void test_sz_empty_nonempty(gconstpointer selection)
             for (unsigned k = 0; k < ARRAY_SIZE(invalid); k++) {
                 Shape c;
                 SZCase v = sz_case();
+                v.start = 0;
 
                 if (discard && (word != discard % 3 || k != discard % 4)) {
                     continue;
