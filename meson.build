@@ -4326,7 +4326,7 @@ if have_rust
   # is 0.60.x (Debian 12 has 0.60.1) which introduces --allowlist-file.
   bindgen_args_common = [
     '--disable-header-comment',
-    '--raw-line', '// @generated',
+    '--raw-line', '/* @generated */',
     '--ctypes-prefix', 'std::os::raw',
     '--generate-block',
     '--impl-debug',
