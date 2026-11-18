@@ -120,7 +120,8 @@ jobs:
             git base-devel autoconf-archive curl zip unzip tar
             mingw-w64-x86_64-toolchain mingw-w64-x86_64-ninja
             mingw-w64-x86_64-pkgconf mingw-w64-x86_64-python
-            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-cmake mingw-w64-x86_64-rust
+            mingw-w64-x86_64-rust-bindgen mingw-w64-x86_64-clang
       - name: cache vcpkg binaries
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
@@ -149,6 +150,8 @@ jobs:
           if ($LASTEXITCODE) { throw "-M help: $LASTEXITCODE" }
           $machines
           if (-not ($machines -match '\boctane2\b')) { throw 'octane2 is not listed' }
+          # The O2 needs the Rust devices; a build without them lacks it.
+          if (-not ($machines -match '\bo2\b')) { throw 'o2 is not listed' }
           & "$bin\qemu-system-mips64.exe" -L help
           # A bad option makes QEMU exit at once, so a process still running
           # after a few seconds has accepted them.
