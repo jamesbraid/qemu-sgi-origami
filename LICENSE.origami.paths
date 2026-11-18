@@ -132,6 +132,7 @@ hw/i2c/pcf8584.c
 hw/ia64/Kconfig
 hw/ia64/meson.build
 hw/ia64/sgi-shub-test.c
+hw/ia64/sgi-shub-uart.c
 hw/ia64/sgi-shub.c
 hw/input/psitech-rad4-km.c
 hw/input/sgi-ioc3-kbc.c
@@ -414,6 +415,7 @@ include/hw/i2c/pcf8584.h
 include/hw/ia64/sapic.h
 include/hw/ia64/sgi-shub-ii-regs.h
 include/hw/ia64/sgi-shub-regs.h
+include/hw/ia64/sgi-shub-uart.h
 include/hw/ia64/sgi-shub.h
 include/hw/input/psitech-rad4-km.h
 include/hw/input/sgi-ioc3-kbc.h

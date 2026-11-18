@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: BSD-3-Clause
 config SGI_SHUB
     bool
-    select SERIAL_MM
+    select SERIAL
     select PFLASH_CFI02
     select SGI_PIC
     select SGI_XIO_LINK

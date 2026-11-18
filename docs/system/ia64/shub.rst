@@ -12,10 +12,15 @@ the registers that reviewed public sources define and that the stock PROM's
 reset path touches. It is not a model of the chip. Everything else is
 undocumented and is refused when touched.
 
+Lowercase register names on this page, such as ``lb_lock_status`` or
+``md_reg_0003_0400``, are this tree's own labels. Each is the register's public
+name in lower case or a name built from its address and role. None is a symbol
+from a firmware image. Uppercase ``SH_`` names are SGI's public Linux names.
+
 Facts are rated *established*, *observed*, *software expectation*,
 *inferred*, *approximation* or *unknown*, as in the SGI pages of the manual.
-The chips repository grades the Linux platform headers and the PROM readings
-*established*. Here they are *software expectation* for hardware behavior: a
+``devices/shub/registers.md`` in the chips repository grades the Linux platform
+headers and the PROM readings *established*. Here they are *software expectation* for hardware behavior: a
 definition or a PROM requirement says what software computes or needs, not
 what the chip does. No SHub reference manual is held, so no register has an
 established reset value.
@@ -23,28 +28,22 @@ established reset value.
 Sources
 -------
 
-- The reviewed `SHub description
-  <https://github.com/jamesbraid/chips/blob/94c62dd/devices/shub/README.md>`_.
-- The `PROM's I/O interface setup
-  <https://github.com/jamesbraid/chips/blob/b4fe973/devices/shub_ii/README.md>`_
-  (independently reviewed).
-- The `interrupt delivery page
-  <https://github.com/jamesbraid/chips/blob/e915ce1/devices/shub/interrupts.md>`_
-  (independently reviewed).
-- The `memory bring-up and memory-test engine page
-  <https://github.com/jamesbraid/chips/blob/f1e8461/devices/shub/memory-init.md>`_
-  (independently reviewed) and the I/O interface header for the
-  block transfer engines.
-- The reviewed `PROM reset-path register list
-  <https://github.com/jamesbraid/chips/blob/b5eb2f2/devices/shub/prom-reset.md>`_
-  for SAL 5.04: each access, the value the code needs back, and its grade.
+- The reviewed SHub description (chips ``devices/shub/README.md``).
+- The PROM's I/O interface setup (chips ``devices/shub_ii/README.md``,
+  independently reviewed).
+- The interrupt delivery page (chips ``devices/shub/interrupts.md``,
+  independently reviewed).
+- The memory bring-up and memory-test engine page (chips
+  ``devices/shub/memory-init.md``, independently reviewed) and the I/O
+  interface header for the block transfer engines.
+- The reviewed PROM reset-path register list (chips
+  ``devices/shub/prom-reset.md``) for SAL 5.04: each access, the value the code needs back, and its grade.
   It cites the stock ``shub1snprom.bin`` image by address.
 - Its generated register header, ``generated/c/shub.h``, copied to
   ``include/hw/ia64/sgi-shub-regs.h`` with a source notice. The header
   records Linux v5.3 ``arch/ia64/include/asm/sn/shub_mmr.h`` and the SN2
   code that uses it, plus the PROM readings.
-- The reviewed `SN2 address map
-  <https://github.com/jamesbraid/chips/blob/94c62dd/platforms/sn2/address-map.md>`_.
+- The reviewed SN2 address map (chips ``platforms/sn2/address-map.md``).
 - SGI 007-4660-001 pp. 100--105 for the Altix 350 node that carries one
   SHub.
 
@@ -84,7 +83,7 @@ core as a bus error. Access is little endian.
      - Reads and writes the stored word. Reset is the ``shub-id`` property,
        default NASID 0, revision 3. A write may change only bits 42:32
        (NASID), 45:44 and 52:48; a write that changes other bits is refused.
-   * - ``chip_id``
+   * - Identification word
      - ``0x1_0000_0000``
      - Read-only: part number ``0x4363`` in bits 27:12 and the ``shub_id``
        revision in bits 31:28. Other bits read 0.
@@ -97,20 +96,21 @@ core as a bus error. Access is little endian.
      - ``0x1_101c_0000``
      - 55-bit counter running at the ``rtc_ctl`` period while its enable bit
        is set, frozen otherwise. Writes set the counter.
-   * - ``rtc0_int_config`` and ``rtc_int_config`` (4, stride 0x100)
+   * - ``SH_RTC0_INT_CONFIG`` and ``rtc_int_config`` (4, stride 0x100)
      - ``0x1_1000_1380``
      - Stores the value, reset 0. Bits outside the defined fields are refused.
-   * - ``rtc0_int_enable`` and ``rtc_int_enable`` (4, stride 0x100)
+   * - ``SH_RTC0_INT_ENABLE`` and ``rtc_int_enable`` (4, stride 0x100)
      - ``0x1_1000_1400``
      - Stores the enable bit, reset 0. Enabling arms the comparator. Other
        bits are refused.
-   * - ``int_cmpa`` and ``int_cmp`` (4, stride 0x80)
+   * - ``SH_INT_CMPA`` and ``int_cmp`` (4, stride 0x80)
      - ``0x1_101b_0000``
      - Stores a 55-bit value, reset 0. Wider values are refused.
-   * - ``lb_elect`` / ``lb_elect_set``
+   * - ``SH_SCRATCH1`` / ``SH_SCRATCH1_ALIAS``
      - ``0x1_101d_0080`` / ``0x1_101d_0088``
-     - One stored word, reset 0. A write to either sets it. Only ``lb_elect``
-       reads; a read of ``lb_elect_set`` stops.
+     - One stored word, reset 0. A write to ``SH_SCRATCH1`` sets it. A write to
+       the alias sets it only while it reads 0. Only ``SH_SCRATCH1`` reads; a
+       read of ``SH_SCRATCH1_ALIAS`` is refused.
    * - ``lb_lock_status`` / ``lb_lock``
      - ``0x1_101d_0208`` / ``0x1_101d_0200``
      - A read of the status returns the lock bit and sets it, so a second read
@@ -123,21 +123,21 @@ core as a bus error. Access is little endian.
    * - ``md_reg_0003_0400``, ``md_reg_0005_0400``
      - ``0x1_0003_0400``, ``0x1_0005_0400``
      - Write-only: any write is accepted and ignored. Reads are refused.
-   * - ``md_reg_0001_0068``
+   * - ``SH_PIO_RQ_CRD_CTL``
      - ``0x1_0001_0068``
      - Stored word, reset 0. The PROM compares it with a credit count.
-   * - ``md_bank_cfg0``, ``md_bank_cfg1``, ``md_bank_cfg2``
+   * - ``SH_X_DIMM_CFG``, ``SH_Y_DIMM_CFG``, ``SH_JNR_DIMM_CFG``
      - ``0x1_0001_0000``, ``0008``, ``0010``
      - Stored words, reset 0. They must read back what the PROM wrote: the
        memory test reads them to find the banks and their sizes.
-   * - ``md_timing_2``, ``md_timing_3``, ``md_refresh_1``
+   * - ``SH_Y_CFG``, ``SH_Y_DQCT_CFG``, ``SH_Y_REFRESH_CONTROL``
      - ``0x1_0001_0040``, ``0048``, ``0050``
      - Stored words, reset 0. The PROM reads them first and merges.
-   * - ``md_timing_0``, ``md_timing_1``, ``md_refresh_0``, ``md_const_58``,
-       ``md_ctl_60``, ``md_const_78``
+   * - ``SH_X_CFG``, ``SH_X_DQCT_CFG``, ``SH_X_REFRESH_CONTROL``, ``SH_MEM_RED_BLACK``,
+       ``SH_MISC_MEM_CFG``, ``SH_PI_MD_RP_CRD_CTL``
      - ``0x1_0001_0020``, ``0028``, ``0030``, ``0058``, ``0060``, ``0078``
      - Write-only: writes are accepted and ignored. Reads are refused.
-   * - ``md_reg_0003_0000``, ``md_reg_0005_0000``
+   * - ``md_reg_0003_0000``, ``SH_MD_DQRP_MMR_DIR_CONFIG``
      - ``0x1_0003_0000``, ``0x1_0005_0000``
      - Stored words, reset 0 (read-modify-write).
    * - ``md_reg_0003_0200`` and ``0005_0200`` (8 each, stride 0x10), the
@@ -146,10 +146,10 @@ core as a bus error. Access is little endian.
      - ``0x1_0003_0200``, ``0x1_0005_0200``, ``0x1_0003_8000``,
        ``0x1_0003_1000``, ``0x1_0005_1000``
      - Write-only, accepted and ignored.
-   * - ``md_mbist_cmd``, ``md_mbist_status``, ``md_mbist_mask``
+   * - ``SH_MMRBIST_BASE``, ``SH_MMRBIST_ERR``, ``SH_MEM_ERROR_SUMMARY_ALIAS``
      - ``0x1_0002_0080``, ``0x1_0000_0080``, ``0x1_0000_00c0``
      - Stored words, reset 0. Nothing sets the failure bit (36) of the status.
-   * - ``md_mbist_ctl``
+   * - ``SH_MMRBIST_CTL``
      - ``0x1_0002_0088``
      - A write with go (bit 40) set and an operation in bits 38:32 of 0, 1, 2,
        7, 16, 48, 64 or 80 completes at once: the value is stored with go and fail
@@ -161,7 +161,7 @@ core as a bus error. Access is little endian.
      - ``0x1_0003_2000``, ``0x1_0003_2800``, ``0x1_0005_2000``,
        ``0x1_0005_2800``
      - Read 0. Writes are refused. They have no public name.
-   * - ``md_clk_sel``
+   * - ``SH_JTAG_CONFIG``
      - ``0x1_1006_0500``
      - Reads 0 (200 MHz). Writes are refused.
    * - the I/O interface registers (``iio_*``, 49 rows of the header: widget
@@ -183,23 +183,26 @@ core as a bus error. Access is little endian.
        0x1_0000)
      - ``0x1c1_0000`` + ``0``, ``8``, ``0x10``, ``0x18``, ``0x20``, ``0x28``
      - Stored words except as follows. A length write sets busy. A control
-       write of zero-fill (bit 0), with or without notify (bit 4), finishes
-       the transfer at once: busy and length clear. A control write of
+       write of zero-fill (bit 0), with or without notify (bit 4), writes
+       zeros over length * 128 bytes at the destination when one has been
+       set, then finishes the transfer at once: busy and length clear. A control write of
        ``0x10`` (notify, a plain copy) copies length * 128 bytes from the
        source to the destination, both node-physical addresses in this
        node's RAM, and then clears busy and length. With the notify bit set
        either transfer then writes 0 to the notification address. Any other control value
        is refused. A control read returns the stored value.
-   * - ``int_node_id_config``, ``ipi_int_enable``, ``local_int_config`` and
-       ``local_int_enable`` (6 each, stride 0x100), ``ptc_parms``,
-       ``event_overflow``
-     - ``0x1_1000_0300``, ``0400``, ``0480``, ``0500``, ``0x1_101a_0100``,
-       ``0x1_1001_0080``
+   * - ``SH_INT_NODE_ID_CONFIG``, ``ipi_int_enable``, ``local_int_config`` and
+       ``SH_LOCAL_INT0_ENABLE`` (6 each, stride 0x100), ``event_overflow``
+     - ``0x1_1000_0300``, ``0400``, ``0480``, ``0500``, ``0x1_1001_0080``
      - Stored words, reset 0. They deliver nothing by themselves.
-   * - ``event_overflow_alias``
+   * - ``ptc_parms``
+     - ``0x1_101a_0100``
+     - Stored word, reset ``0x7_ffff_ffff`` (*inferred* from the chips
+       notes). It delivers nothing by itself.
+   * - ``SH_EVENT_OVERFLOW_ALIAS``
      - ``0x1_1001_0088``
      - A write of ones clears bits in ``event_overflow``. Reads are refused.
-   * - ``crb_message_control``
+   * - ``SH_CRB_MESSAGE_CONTROL``
      - ``0x1_2000_0000``
      - Stored whole, reset 6. At boot the PROM reads it and ORs in
        ``0x3b03f7`` (shub_id revision above 2) or ``0x3f1``, inside a set and
@@ -213,21 +216,25 @@ core as a bus error. Access is little endian.
      - Stored words. They reset to 0, 0 and 7 (*inferred* from the 2.4
        header: the PROM reads them first, so a read cannot be refused). The PROM sets
        bits of the skid word outside the header's mask, so every bit is kept.
-   * - ``ii_int`` (2, stride 0x100)
+   * - ``SH_II_INT0`` / ``SH_II_INT1`` (2, stride 0x100)
      - ``0x1_1000_0000``
      - Write-only. The PIC writes its interrupt packet here: ``0x100`` plus the
        vector, at the first target for slice 0 and the second for others. The
-       model raises the vector on the one processor. Any other layout is refused.
+       model raises the vector on the processor the pid in bits 19:4 of the
+       matching ``ii_int_config`` names, or on processor id 0 (the first
+       processor) until the PROM has written that register, which resets to 0
+       (an *approximation*: the packet names no processor). Any other layout is refused.
    * - ``ii_int_config``, ``ii_int_enable`` (2 each)
      - ``0x1_1000_0080`` and ``0180``; ``0200`` and ``0280``
      - Stored words, reset 0.
-   * - ``lb_l1_state``
+   * - ``SH_SCRATCH2``
      - ``0x1_101d_0100``
-     - Stored word, reset 0.
-   * - ``lb_slice_rec`` (4, stride 0x80)
+     - Stored word. It resets to the board's ``scratch2-reset`` property, the node's
+       identity word, and to 0 (unwritten) when the board gives none.
+   * - ``SH_JUNK_BUS_LED0`` (4, stride 0x80)
      - ``0x1_1003_0000``
      - Reads 0. Writes are refused.
-   * - ``lb_reg_1002_0000``
+   * - ``SH_JUNK_BUS_TIME``
      - ``0x1_1002_0000``
      - Write-only: any 64-bit write is accepted and ignored. Reads are refused.
    * - ``pi_reg_2001_0100``
@@ -239,9 +246,13 @@ core as a bus error. Access is little endian.
        notes). The PROM
        reads it, deposits bits 60:49 and writes it back; nothing reads it
        after, so the header's mask is not applied.
-   * - ``pi_slice_present``
+   * - ``SH_FSB_SYMMETRIC_AGENT_STATUS``
      - ``0x1_2002_0080``
-     - Reads 1: the one processor, in slice 0. Writes are refused.
+     - Reads one bit per front-side bus that has a processor: bit 0 for
+       slice 0, bit 1 for slice 2 (CPU id ``0x0100``), so ``0x3`` with two
+       processors. Writes are refused. The PROM counts a processor only if its
+       bit is set; what the register means in hardware is *inferred* from
+       that use.
    * - ``cpu_hist`` (4, stride 0x10)
      - ``0x1_5003_1500``
      - Stored word, reset 0.
@@ -251,7 +262,7 @@ core as a bus error. Access is little endian.
    * - the XN compare words the PROM zeroes
      - ``0x1_5003_1220``, ``1230``, ``13c0``, ``13e0``, ``15b0``, ``15c0``, ``15a0``, ``1360``, ``1370`` and 39 more listed in the reviewed page (``1270``, ``1110`` to ``1210``, ``1240``, ``1260``, ``1300`` to ``1340``, ``1570`` to ``1600``, ``1610`` to ``1670``, ``13d0``, ``13f0``)
      - Stored words, reset 0.
-   * - ``xnni_vcswitch_flow`` and ``xnni_inject_age`` (2 ports, stride 0x200)
+   * - ``SH_XNNI0_VCSWITCH_FLOW`` / ``SH_XNNI1_VCSWITCH_FLOW`` and ``SH_XNNI0_INJECT_AGE`` / ``SH_XNNI1_INJECT_AGE`` (2 ports, stride 0x200)
      - ``0x1_5003_03a0``, ``0x1_5003_0400``
      - Stored words, reset 0 (*inferred*, the header's INIT). The PROM's
        route set-up reads each and writes it back with a bit XORed or ORed in.
@@ -272,14 +283,14 @@ core as a bus error. Access is little endian.
      - Reads ``0x3f00_0000_0000_0000`` (the idle count the kernel waits for)
        plus the error bits: bit 2 write error, bit 0 more than one, and the
        first error's address in bits 49:3.
-   * - ``pio_write_status_alias`` (2, stride 0x80)
+   * - ``SH_PIO_WRITE_STATUS_0_ALIAS`` / ``SH_PIO_WRITE_STATUS_1_ALIAS`` (2, stride 0x80)
      - ``0x1_2007_0208``
      - Accepts 7 and ``0x3_ffff_ffff_fffd`` and clears those bits of the
        status, the address included for the second. Other values are refused.
    * - local block hole
      - ``0x1_1005_0608``
      - Write-only, any value. No register is named here; the write raises a
-       write error in slice 0's status (the model has one processor) and
+       write error in the status of the issuing processor's slice pair and
        latches the error in ``lb_error_detail_1`` (valid, command ``0xea``),
        ``lb_error_detail_2`` (the address >> 3) and ``pi_error_detail_1``
        (address bits 32:3), as the header's fields say.
@@ -287,10 +298,10 @@ core as a bus error. Access is little endian.
      - ``0x1_2005_0300``
      - Accepts only ``0x8000_0000_0000_0010`` and ignores it.
    * - ``md_dqlp_dir_privilege_vector``, ``md_dqrp_dir_privilege_vector``,
-       ``ipi_access``
+       ``SH_IPI_ACCESS``
      - ``0x1_0003_0300``, ``0x1_0005_0300``, ``0x1_1006_0480``
      - Stored words. A read before the first write is refused.
-   * - ``junk_bus_led`` (4, stride 0x1_0000)
+   * - ``SH_JUNK_BUS_LED0``..``SH_JUNK_BUS_LED3`` (4, stride 0x1_0000)
      - ``0x7_fed0_0000``
      - 16-bit writes are stored. Reads are refused.
    * - ``ipi_int``
@@ -302,7 +313,12 @@ core as a bus error. Access is little endian.
      - ``0x1_1001_0000`` / ``0x1_1001_0008``
      - The register reads the pending bits, reset 0. A write to it ORs the
        bits in, as the PROM does to raise an event. A write of ones to the
-       alias clears them. The alias is write-only.
+       alias clears them. The alias is write-only. Bit 20 latches the
+       rising edge of the junk-bus 16550's interrupt line. The alias clears it even while the line is high, an *approximation*: the chips notes' re-latch rule (the Linux 3.2 console section of ``software/firmware/snprom/l1-requests.md`` in the chips repository, revision 0ad2069 or later) was tried and hangs a RHEL 5.11 guest before ``SGI Altix RTC Timer``, so the model does not re-latch. A message is sent only when the bit goes from clear to set, as
+       its first rule says. When the line rises with the bit clear and ``SH_LOCAL_INT5_ENABLE``
+       has bit 13 set, the message in ``SH_LOCAL_INT5_CONFIG`` is delivered, which
+       is vector ``0xe9`` for the PROM's value. That enable bit names the
+       UART's event is only a guess: the PROM writes it, and nothing names it.
    * - ``ptc``
      - ``0x1_101a_0000``
      - Refused. See Model limits.
@@ -316,10 +332,12 @@ Ratings
 - The offsets, the PIO idle value, the PI CAM value, the alias clear value and
   the register widths are *software expectation*: the kernel's definitions,
   or what the PROM's code uses, read in the stock image.
-- The election pair is stored as one word, so a write to ``lb_elect_set`` is
-  visible at ``lb_elect``. How the two registers relate in hardware (alias,
-  latch or separate stores) is *unknown*; the single word is an
-  *approximation* that satisfies the PROM's write-then-read test.
+- The election pair is stored as one word. A write to ``SH_SCRATCH1_ALIAS`` is
+  visible at ``SH_SCRATCH1`` only if that reads 0, so the first writer wins.
+  How the two registers relate in hardware is *unknown*; the first-writer
+  latch is an *approximation* that lets exactly one processor win the PROM's
+  election. It would be settled by a read of both registers after two
+  processors have written the alias.
 - The locks, the part number ``0x4363`` and the single
   slice-present bit are *software expectation*: the PROM requires them to
   proceed. A part number outside the four its method tables know leaves a null
@@ -337,7 +355,7 @@ Ratings
   A failed transfer reaches the kernel through the CRB interrupt, which then
   writes bit 16 itself; that is not modelled. Without the notify bit nothing is
   written. The zero fill
-  moves no data (RAM starts zeroed), and the second window form of the
+  writes zeros to the destination, and the second window form of the
   engines at ``0x141_0000`` is not decoded (*unknown* whether it is the same
   block).
 - The credit count of 8 at ``0x1_2006_0980`` is *inferred*: the PROM needs
@@ -354,7 +372,7 @@ Ratings
   because no source maps this error to their bits (*unknown*). Bit 0 on a
   second error follows the header's field text. The alias clear is
   write-one-to-clear (*inferred*).
-- The second ``pio_write_status_alias`` instance, ``rtc_ctl`` bits other than
+- The second ``SH_PIO_WRITE_STATUS_0_ALIAS`` / ``SH_PIO_WRITE_STATUS_1_ALIAS`` instance, ``rtc_ctl`` bits other than
   the period field, and the meaning of bits in ``cpu_bits`` are *inferred*.
 - The tick period formula is *software expectation* (the PROM and its runtime
   compute it) and the 50 ns rate it gives is *inferred*: no document says the
@@ -391,11 +409,12 @@ Ratings
 - The PROM's node set-up writes 100 error, mask and alias words outside the XN
   block: the event, error summary, overflow, first-error, time-stamp, detail
   and mask words of the processor, memory, network, crossbar and local-block
-  chips. Each is a stored 64-bit cell that reads back what was written
+  units, listed in ``devices/shub/registers.md`` in the chips repository. Each is a stored 64-bit cell that reads back what was written
   (*approximation*) and resets to 0, except the three processor interface
   error masks (``pi_afi_error_mask``, ``pi_crbp_error_mask`` and
   ``pi_error_mask``), whose valid bits all reset set as the header's initial
-  value says (*established*; the other masks' initial values are *unknown*).
+  value says (*inferred*, ``devices/shub/registers.md`` in the chips repository; the other masks' initial
+  values are *unknown*).
   The PROM only writes them, with 0, masks or
   all valid bits. Write-one-to-clear and mask effects are *unknown* and not
   modelled, and the offsets come from the ``devices/shub/prom-reset.md`` in the chips repository. The event alias words keep their own rows. Other widths are
@@ -434,22 +453,21 @@ Ratings
   keep every bit, including the direction bits above the header's 6-bit
   mask. They reset to 0, except the five override words, which reset to the
   header's values (``0x8000_0000_0000_0000``, and ``0x8000_0000_0000_2000``
-  for the memory and processor tables; *inferred*, as chips grades header
+  for the memory and processor tables; *inferred*, as ``devices/shub/registers.md`` grades header
   initial values). No route is used because both ports are down, so the
   contents do nothing. The offsets and the access order are a *software
   expectation* from ``devices/shub/prom-reset.md`` in the chips repository (the topology walk). The values
   the PROM writes for a lone node (local entry 0 with the valid bit, then
   ``0xf`` in the network words and ``0xf0f`` in the others) are not checked
   (*approximation*).
-- ``ipi_access``, the privilege vectors, ``lb_l1_state``, ``pi_reg_2001_0100``,
-  ``fsb_vga_remap``,
+- ``SH_IPI_ACCESS``, the privilege vectors, ``SH_SCRATCH2``, ``pi_reg_2001_0100``,
   the PROM's firmware words and the memory controller words are stored and
   read back as plain registers.
   Their layouts, write behavior and reset values are *unknown*.
 - Every register the PROM reads before it writes and tolerates any value from
-  (``pi_reg_2001_0100``, ``cpu_hist``, ``cpu_bits``, ``lb_l1_state``, the
+  (``pi_reg_2001_0100``, ``cpu_hist``, ``cpu_bits``, ``SH_SCRATCH2``, the
   election word, ``fw_word_1540``, ``fw_debug_word``, the bank, timing and
-  refresh words, ``md_reg_0001_0068``) resets to 0. That is an
+  refresh words, ``SH_PIO_RQ_CRD_CTL``) resets to 0. That is an
   *approximation*: the hardware's reset value is *unknown*, and the PROM
   accepts any. Registers it never reads before writing are refused on a read before
   the first write instead.
@@ -475,8 +493,7 @@ Ratings
   words: reset ``0xf0``, autoselect, CFI query, program, sector erase, 128
   sectors of 64 KiB. That the PROM drives such a flash there, with those
   command sequences and a CFI query it checks (``QRY``, command set 2, size
-  at least 8 MiB), is a *software expectation* from the reviewed chips
-  page, as is the PROM-log header layout. The firmware image at flash offset
+  at least 8 MiB), is a *software expectation* from the ``software/firmware/snprom/images.md`` in the chips repository, as is the PROM-log header layout. The firmware image at flash offset
   ``0x200000`` is *inferred*: the image's pointer to itself and the 8 MiB
   extent agree, and nothing reads it through the flash window. The
   manufacturer and device ID words (``0x0001``, ``0x227e``) are *inferred*:
@@ -500,8 +517,8 @@ Ratings
   adapter hands narrow accesses to big-endian models at the mirrored offset
   with the value unchanged. That ``+0`` is bits 31:0 is a *software expectation* (the
   PROM's part and status tests depend on it) and that PIO data is not swapped
-  is *established* as the software contract (reviewed chips widget-access
-  page). The ``+4`` half is *inferred*: no code reads an ``8n+4`` widget word.
+  is a *software expectation* from what the PROM's tests depend on
+  (``devices/shub_ii/README.md`` in the chips repository). The ``+4`` half is *inferred*: no code reads an ``8n+4`` widget word.
   The PIC's PCI configuration windows (offsets ``0x2_0000`` to ``0x2_9000``
   of each 8 MiB head), its device windows (``0x20_0000`` and up) and its PCI
   memory aliases (``0x4000_0000`` and up) are the exception: they are byte
@@ -529,13 +546,13 @@ Ratings
   35:0 reaches its RAM as the cacheable view, so a read returns the bytes and
   a write stores them, one to eight bytes at a time (*inferred*: no SHub
   specification gives the II's address decode). A request from a widget whose
-  bit in ``inbound_widget_access`` is clear stops the VM, because what the
-  requester sees from a refused request is *unknown*. ``inbound_device_error_mask``,
+  bit in ``IIO_IIWA`` is clear is refused, because what the
+  requester sees from a refused request is *unknown*. ``IIO_IIDEM``,
   the request buffers and the completion order are not modelled; every
   inbound write is treated as coherent and completes before the next packet.
-- The device implements the XIO port interface, so a PIC can link to it. Only
-  8-byte interrupt packets to the node's own ``ii_int`` registers are
-  accepted. The packet address carries the target node in bits 46:36, two
+- The device implements the XIO port interface, so a PIC can link to it. Interrupt
+  packets go to the node's own ``SH_II_INT0`` / ``SH_II_INT1`` registers and must be
+  8 bytes wide; other widths are refused. The packet address carries the target node in bits 46:36, two
   bits below the processor's ``nasid << 38`` form, and bit 47 for a register
   write. Both are *inferred* from the Linux code that builds the address,
   not from a hardware description, and the node must match the SHub's NASID
@@ -551,9 +568,9 @@ Ratings
   SHub window does not refuse them (*approximation*).
 - The PIC interrupt packet's layout (``0x100`` plus the vector) is *inferred*
   from the register layout, and that the write sets event bit 29 or 30 is
-  *unknown*, so no event bit is set. Both slice targets reach the one
-  processor: an *approximation*.
-- ``crb_message_control`` resets to 6 (*software expectation*: the 2.4 header's
+  *unknown*, so no event bit is set. Each slice's target reaches the processor the
+  matching ``ii_int_config`` pid names: an *approximation*.
+- ``SH_CRB_MESSAGE_CONTROL`` resets to 6 (*software expectation*: the 2.4 header's
   init value, reviewed). Its fields are five attribute-mismatch checks, the
   coherence and speculation enables, a bogus-write suppression bit and the
   invalidate-acknowledge consolidation, stall count and throttle. The boot OR
@@ -565,16 +582,17 @@ Ratings
   fault behind a silent spin. Only SAL_A's store of it is confirmed to be a
   plain 64-bit store; the SAL_B park path hands it to a write helper that was
   not read.
-- ``lb_slice_rec`` reading 0 is an *approximation*: the PROM accepts any
+- ``SH_JUNK_BUS_LED0`` reading 0 is an *approximation*: the PROM accepts any
   value and turns its low byte into a progress code.
-- ``lb_reg_1002_0000``, ``md_reg_0003_0400`` and ``md_reg_0005_0400`` accept
+- ``SH_JUNK_BUS_TIME``, ``md_reg_0003_0400`` and ``md_reg_0005_0400`` accept
   and ignore any write. That is an *approximation*: their effects and roles
   are *unknown*, and the PROM never reads them.
 - The counter runs while ``rtc_ctl`` bit 0 is set (the header's
   ``ENABLE_COUNTER``) and the mode and source bits change nothing
   (*inferred*: the PROM writes bit 0 only on its second write, and no source
   says what the source select does).
-- ``chip_id`` takes its revision from ``shub_id``. That is an *approximation*:
+- The identification word at ``0x1_0000_0000`` takes its revision from
+  ``shub_id``. That is an *approximation*:
   no source ties the two, and the PROM stores both separately.
 - After a NASID write the global window sits only at the new NASID. The PROM
   writes the ID through the old window, which works, but any later access
@@ -590,16 +608,19 @@ Model limits
   with its offset, direction, width and value (``-d unimp``) and fails:
   ``MEMTX_DECODE_ERROR`` where no register is modelled and ``MEMTX_ERROR``
   where the register is but the value or effect is not. Nothing is stored and
-  a read returns no made-up value. The VM keeps running and the processor
-  model decides what the failed access does. This is instrumentation, not a
+  a read returns no made-up value. A processor access that fails is a
+  checkstop of the CPU, and ``-action panic`` decides what the VM does (see
+  the machine page). This is instrumentation, not a
   claim about the chip's error response.
-- **Interrupts.** The comparator at ``rtc0_int_config`` is the firmware's: it
+- **Interrupts.** The comparator at ``SH_RTC0_INT_CONFIG`` is the firmware's: it
   sets event bit 23, the others 24 to 26. Delivery follows what the PROM
   and kernel code do, which is *software expectation*: an IPI message or a comparator reaching its
   compare value raises the configured vector and sets its event bit. The
-  rest is an *approximation*. The processor id is not decoded: with one
-  processor every id names it. Event bits other than the written ones are
-  never set, so the error and UART bits stay 0. The IPI enable register and
+  rest is an *approximation*. A message goes to the processor whose id
+  equals its pid, and is refused if none does; with one processor every
+  pid names it. Event bits other than the comparators' (23 to 26),
+  the IPI's (28) and the UART's (20) are set only by a write, so the error
+  bits stay 0. The IPI enable register and
   the local interrupt destinations are stored but not acted on, because
   how an enable bit maps to an event bit is *unknown*. The other-node
   paths are not modelled and are refused. A comparator fires
@@ -622,16 +643,16 @@ Model limits
 - **Real-time clock.** The counter's value at reset is *unknown*, and the
   model starts it at 0. The PROM zeroes it before reading, so the start value
   is not observable by the firmware.
-- **One processor.** The slice-present, lock and election behavior assume a
-  single processor in slice 0.
+- **Processors.** One or two processors are supported, in slices 0 and 2. The
+  slice-present word and the PIO write-error latch follow the CPU ids; the
+  lock and election behavior are modelled for the processors present.
 - **Memory test.** Every engine operation completes at once and passes. No
   DRAM is modelled, so a compare cannot fail, and no operation writes memory.
   RAM starts zeroed, which is what the PROM's zero fills want. The processor
   reaches bank 0 through the cacheable alias at ``0x30_0000_0000`` for NASID 0
   only.
-- **Block transfers.** A zero fill is accepted and moves no data, since RAM
-  starts zeroed, and a plain copy moves its data. Both write 0 to the
-  notification address when the notify bit is set.
+- **Block transfers.** A zero fill writes zeros over the destination and a
+  plain copy moves its data; both write 0 to the notification address when the notify bit is set.
   The accesses come from ``devices/shub_ii/README.md`` in the chips repository. A control
   read returns the stored value and a length write of 0 leaves the engine
   idle. The header gives no reset values, so the reset of 0 is *inferred*.
@@ -644,10 +665,11 @@ Migration
 
 The device state is saved with a ``VMStateDescription``: the stored ID, the
 clock base and the stored register words with their written flags, the
-comparator and LED values. Restore moves the global window to the saved NASID.
+pending event bits, the UART line level, the blind cells, the comparator and
+LED values. Restore moves the global window to the saved NASID.
 Migration is supported between identical builds only.
 
 Tests
 -----
 
-``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine and covers the junk-bus UART windows, the PROM flash and the XN and blind cells. The rest of the register behaviour is tested in a later change, through the Altix 350 machine.
+``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine and covers the junk-bus UART and its event bit, the comparator gate, the PROM flash, the XN and blind cells and two processors. The rest of the register behaviour is tested in a later change, through the Altix 350 machine.

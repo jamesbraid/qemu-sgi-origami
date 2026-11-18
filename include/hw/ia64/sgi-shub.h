@@ -7,7 +7,7 @@
 #include "qom/object.h"
 #include "qemu/timer.h"
 #include "system/block-backend.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 
 #define TYPE_SGI_SHUB "sgi-shub"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
@@ -31,11 +31,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
 #define SGI_SHUB_JUNK_BUS_FIRST_FREE 4
 #define SGI_SHUB_JUNK_BUS_DEVICES 5
 
-/*
- * The PROM flash: 8 MiB at local offset 0x7_0000_0000 + 0xff80_0000, 128
- * sectors of 64 KiB. The firmware image is its top 6 MiB, so the log and the
- * EFI variable store sit in the 2 MiB below it.
- */
+/* The PROM flash: 8 MiB, 128 sectors of 64 KiB; the image is its top 6 MiB. */
 #define SGI_SHUB_PROM_FLASH_OFFSET 0x7ff800000ULL
 #define SGI_SHUB_PROM_FLASH_ALIAS 0x6ff800000ULL
 #define SGI_SHUB_PROM_FLASH_SIZE 0x800000
@@ -55,7 +51,7 @@ typedef struct SGIShubSlot {
 
 /*
  * Plain 64-bit storage slots. Slots before SHUB_SLOT_HIST have no known
- * reset value and stop on a read before the first write; the rest reset to 0.
+ * reset value and are refused on a read before the first write.
  */
 enum {
     SHUB_SLOT_PRIV0,
@@ -126,11 +122,14 @@ struct SGIShubState {
     /* The crosstalk big windows 1 to 7 of the global window. */
     MemoryRegion big_window[8];
     struct SGIShubWidgetArg big_arg[8];
+    /* The junk-bus UART's interrupt line, which event bit 20 follows. */
+    bool uart_line;
     /* Widget-originated packets: a PIC's interrupt writes (SHub 1). */
     MemoryRegion xio_packet;
 
     /* Property: the SHub ID register's reset value. */
     uint64_t shub_id_reset;
+    uint64_t scratch2_reset;
 
     uint64_t shub_id;
     int64_t rtc_base_ns;
@@ -152,6 +151,10 @@ struct SGIShubState {
     MemoryRegion junk_bus_alias[SGI_SHUB_JUNK_BUS_DEVICES];
     bool junk_bus_mapped[SGI_SHUB_JUNK_BUS_DEVICES];
 
+    /* The memory node RAM is reached through, for block transfers and DMA. */
+    MemoryRegion *dma_mr;
+    AddressSpace dma_as;
+
     DeviceState *prom_flash;
     AddressSpace prom_flash_as;
     MemoryRegion prom_flash_view;
@@ -160,28 +163,20 @@ struct SGIShubState {
     MemoryRegion prom_flash_fit_alias_global;
 };
 
-/*
- * Map a board device into junk bus slot @device (4 only, today) of both the
- * local and the global window. Other junk bus offsets keep stopping.
- */
-/*
- * Add the PROM flash to the local window and, as an alias, the global one.
- * Without @blk it starts erased, with the @image bytes (at most 6 MiB) at
- * its top; with @blk the drive holds everything and @image is ignored.
- */
+/* Add the PROM flash. Without @blk it starts erased with @image at its top. */
 MemoryRegion *sgi_shub_prom_flash_array(SGIShubState *s);
 bool sgi_shub_add_prom_flash(SGIShubState *s, BlockBackend *blk,
                              const void *image, size_t image_len,
                              Error **errp);
 
+/*
+ * Map a board device into junk bus slot @device (4 only, today) of both the
+ * local and the global window. Other junk bus offsets are refused.
+ */
 bool sgi_shub_map_junk_bus(SGIShubState *s, unsigned device, MemoryRegion *mr,
                            Error **errp);
 
-/*
- * The crosstalk small window of a link: 16 MiB at link << 24 of the global
- * window, empty until board code maps a widget into it. Link 1 holds the I/O
- * interface registers and has none.
- */
+/* A link's 16 MiB small window; empty until mapped, none for link 1. */
 MemoryRegion *sgi_shub_widget_window(SGIShubState *s, unsigned link);
 
 /* The face a widget's upstream packets (interrupts, later DMA) arrive at. */

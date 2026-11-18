@@ -1,8 +1,8 @@
 /*
  * SPDX-License-Identifier: BSD-3-Clause
  *
- * SGI SHub 1: the registers the reviewed chips pages define or the PROM's
- * reset path needs. Anything else stops the VM rather than answering.
+ * SGI SHub 1: the registers the reviewed register notes define or the PROM's
+ * reset path needs. Anything else is refused and logged, never answered.
  */
 
 #include "qemu/osdep.h"
@@ -20,7 +20,7 @@
 #include "hw/core/cpu.h"
 #include "hw/ia64/sapic.h"
 #include "hw/ia64/sgi-shub.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/ia64/sgi-shub-regs.h"
 #include "hw/ia64/sgi-shub-ii-regs.h"
 
@@ -62,7 +62,7 @@ typedef enum {
     K_II_INT,           /* a PIC interrupt packet's target */
 } ShubKind;
 
-/* The coherent request buffer's message control resets to 6 (chips). */
+/* The coherent request buffer's message control resets to 6 (notes). */
 #define SHUB_CRB_MESSAGE_CONTROL_RESET 6ULL
 /* The PROM's die path stores this to stop coherent traffic, then spins. */
 #define SHUB_CRB_QUIESCE 0x1000100000000ULL
@@ -75,6 +75,7 @@ typedef enum {
 #define SHUB_LB_HOLE_0608 0x110050608ULL
 #define SHUB_PIO_ERR_MULTI 1ULL
 #define SHUB_PIO_ERR_WRITE 4ULL
+#define SHUB_UART_INT_ENABLE (1ULL << 13)
 #define SHUB_PIO_ERR_ADDR_MASK 0x3fffffffffff8ULL
 #define SHUB_LB_ERROR_DETAIL_1 0x110050200ULL
 #define SHUB_LB_ERROR_DETAIL_2 0x110050280ULL
@@ -104,13 +105,7 @@ typedef struct {
     int slot;           /* K_STORE: first slot, one per instance */
 } ShubRegSpec;
 
-/*
- * XN compare words the PROM writes with 0 at node set-up (SN2 2.4 header
- * names, reset 0 inferred). The first nine are in the page's table. The
- * rows after them are the rest of its register lists, plus 15e0, 1590, 13f0,
- * 13d0, 1570, 1580 (a counter) and 1600 that other code reads or writes. The
- * three flag words 15a0, 1360 and 1370 are read back, so all are stored.
- */
+/* XN compare words the PROM zeroes at node set-up: stored cells, reset 0. */
 #define SHUB_XN_ZERO_0                               0x150031220
 #define SHUB_XN_ZERO_1                               0x150031230
 #define SHUB_XN_ZERO_2                               0x1500313c0
@@ -179,10 +174,10 @@ static const ShubRegSpec shub_regs[] = {
     { K_STORE, 0x150031580, 1, 0, SHUB_SLOT_XN_ZERO + 46 },
     { K_STORE, 0x150031600, 1, 0, SHUB_SLOT_XN_ZERO + 47 },
     { K_STORE, SHUB_PI_REG_2001_0100, 1, 0, SHUB_SLOT_PI_2001_0100 },
-    { K_STORE, SHUB_LB_L1_STATE, 1, 0, SHUB_SLOT_L1_STATE },
-    { K_STORE, SHUB_LB_ELECT, 1, 0, SHUB_SLOT_ELECT },
+    { K_STORE, SHUB_SCRATCH2, 1, 0, SHUB_SLOT_L1_STATE },
+    { K_STORE, SHUB_SCRATCH1, 1, 0, SHUB_SLOT_ELECT },
     /* A write here shows up in a read of the election register. */
-    { K_ELECT_SET, SHUB_LB_ELECT_SET, 1, 0, SHUB_SLOT_ELECT },
+    { K_ELECT_SET, SHUB_SCRATCH1_ALIAS, 1, 0, SHUB_SLOT_ELECT },
     { K_RTC_CTL, SHUB_RTC_CTL, 1, 0, SHUB_SLOT_RTC_CTL },
     { K_IPI_INT, SHUB_IPI_INT, 1, 0, 0 },
     /* Comparator 0 is the firmware's; the rest follow at the same stride. */
@@ -194,8 +189,8 @@ static const ShubRegSpec shub_regs[] = {
     { K_STORE, SHUB_IPI_INT_ENABLE, 1, 0, SHUB_SLOT_IPI_ENABLE },
     { K_STORE, SHUB_LOCAL_INT_CONFIG, SHUB_LOCAL_INT_CONFIG_COUNT,
       SHUB_LOCAL_INT_CONFIG_STRIDE, SHUB_SLOT_LOCAL_CFG },
-    { K_STORE, SHUB_LOCAL_INT_ENABLE, SHUB_LOCAL_INT_ENABLE_COUNT,
-      SHUB_LOCAL_INT_ENABLE_STRIDE, SHUB_SLOT_LOCAL_EN },
+    { K_STORE, SHUB_LOCAL_INT0_ENABLE, SHUB_LOCAL_INT0_ENABLE_COUNT,
+      SHUB_LOCAL_INT0_ENABLE_STRIDE, SHUB_SLOT_LOCAL_EN },
     { K_STORE, SHUB_EVENT_OVERFLOW, 1, 0, SHUB_SLOT_EVENT_OVF },
     { K_EVENT_OVERFLOW_ALIAS, SHUB_EVENT_OVERFLOW_ALIAS, 1, 0, 0 },
     { K_STORE, SHUB_PTC_PARMS, 1, 0, SHUB_SLOT_PTC_PARMS },
@@ -220,46 +215,47 @@ static const ShubRegSpec shub_regs[] = {
       0 },
     { K_LED, SHUB_JUNK_BUS_LED, SHUB_JUNK_BUS_LED_COUNT,
       SHUB_JUNK_BUS_LED_STRIDE, 0 },
-    { K_CHIP_ID, SHUB_CHIP_ID, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_LB_REG_1002_0000, 1, 0, 0 },
+    { K_CHIP_ID, SHUB_MD_REG_0000_0000, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_JUNK_BUS_TIME, 1, 0, 0 },
     { K_WRITE_ONLY, SHUB_MD_REG_0003_0400, 1, 0, 0 },
     { K_WRITE_ONLY, SHUB_MD_REG_0005_0400, 1, 0, 0 },
-    { K_STORE, SHUB_MD_REG_0001_0068, 1, 0, SHUB_SLOT_MD_0068 },
+    { K_STORE, SHUB_PIO_RQ_CRD_CTL, 1, 0, SHUB_SLOT_MD_0068 },
     /* Memory bring-up: devices/shub/memory-init.md in the chips repository. */
-    { K_STORE, SHUB_MD_BANK_CFG0, 1, 0, SHUB_SLOT_MD_BANK_CFG },
-    { K_STORE, SHUB_MD_BANK_CFG1, 1, 0, SHUB_SLOT_MD_BANK_CFG + 1 },
-    { K_STORE, SHUB_MD_BANK_CFG2, 1, 0, SHUB_SLOT_MD_BANK_CFG + 2 },
-    { K_STORE, SHUB_MD_TIMING_2, 1, 0, SHUB_SLOT_MD_TIMING_2 },
-    { K_STORE, SHUB_MD_TIMING_3, 1, 0, SHUB_SLOT_MD_TIMING_3 },
-    { K_STORE, SHUB_MD_REFRESH_1, 1, 0, SHUB_SLOT_MD_REFRESH_1 },
+    { K_STORE, SHUB_X_DIMM_CFG, 1, 0, SHUB_SLOT_MD_BANK_CFG },
+    { K_STORE, SHUB_Y_DIMM_CFG, 1, 0, SHUB_SLOT_MD_BANK_CFG + 1 },
+    { K_STORE, SHUB_JNR_DIMM_CFG, 1, 0, SHUB_SLOT_MD_BANK_CFG + 2 },
+    { K_STORE, SHUB_Y_CFG, 1, 0, SHUB_SLOT_MD_TIMING_2 },
+    { K_STORE, SHUB_Y_DQCT_CFG, 1, 0, SHUB_SLOT_MD_TIMING_3 },
+    { K_STORE, SHUB_Y_REFRESH_CONTROL, 1, 0, SHUB_SLOT_MD_REFRESH_1 },
     { K_STORE, SHUB_MD_REG_0003_0000, 1, 0, SHUB_SLOT_MD_0003_0000 },
-    { K_STORE, SHUB_MD_REG_0005_0000, 1, 0, SHUB_SLOT_MD_0005_0000 },
-    { K_STORE, SHUB_MD_MBIST_STATUS, 1, 0, SHUB_SLOT_MBIST_STATUS },
-    { K_STORE, SHUB_MD_MBIST_CMD, 1, 0, SHUB_SLOT_MBIST_CMD },
-    { K_STORE, SHUB_MD_MBIST_MASK, 1, 0, SHUB_SLOT_MBIST_MASK },
-    { K_MBIST_CTL, SHUB_MD_MBIST_CTL, 1, 0, SHUB_SLOT_MBIST_CTL },
-    { K_WRITE_ONLY, SHUB_MD_TIMING_0, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_MD_TIMING_1, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_MD_REFRESH_0, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_MD_CONST_58, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_MD_CTL_60, 1, 0, 0 },
-    { K_WRITE_ONLY, SHUB_MD_CONST_78, 1, 0, 0 },
+    { K_STORE, SHUB_MD_DQRP_MMR_DIR_CONFIG, 1, 0, SHUB_SLOT_MD_0005_0000 },
+    { K_STORE, SHUB_MMRBIST_ERR, 1, 0, SHUB_SLOT_MBIST_STATUS },
+    { K_STORE, SHUB_MMRBIST_BASE, 1, 0, SHUB_SLOT_MBIST_CMD },
+    { K_STORE, SHUB_MEM_ERROR_SUMMARY_ALIAS, 1, 0, SHUB_SLOT_MBIST_MASK },
+    { K_MBIST_CTL, SHUB_MMRBIST_CTL, 1, 0, SHUB_SLOT_MBIST_CTL },
+    { K_WRITE_ONLY, SHUB_X_CFG, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_X_DQCT_CFG, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_X_REFRESH_CONTROL, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_MEM_RED_BLACK, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_MISC_MEM_CFG, 1, 0, 0 },
+    { K_WRITE_ONLY, SHUB_PI_MD_RP_CRD_CTL, 1, 0, 0 },
     { K_WRITE_ONLY, SHUB_MD_REG_0003_0200, SHUB_MD_REG_0003_0200_COUNT,
       SHUB_MD_REG_0003_0200_STRIDE, 0 },
-    { K_WRITE_ONLY, SHUB_MD_REG_0005_0200, SHUB_MD_REG_0005_0200_COUNT,
-      SHUB_MD_REG_0005_0200_STRIDE, 0 },
-    { K_WRITE_ONLY, SHUB_MD_BIST_DATA_A0, SHUB_MD_BIST_DATA_A0_COUNT,
-      SHUB_MD_BIST_DATA_A0_STRIDE, 0 },
-    { K_WRITE_ONLY, SHUB_MD_BIST_DATA_B0, SHUB_MD_BIST_DATA_B0_COUNT,
-      SHUB_MD_BIST_DATA_B0_STRIDE, 0 },
-    { K_WRITE_ONLY, SHUB_MD_BIST_DATA_A1, SHUB_MD_BIST_DATA_A1_COUNT,
-      SHUB_MD_BIST_DATA_A1_STRIDE, 0 },
-    { K_WRITE_ONLY, SHUB_MD_BIST_DATA_B1, SHUB_MD_BIST_DATA_B1_COUNT,
-      SHUB_MD_BIST_DATA_B1_STRIDE, 0 },
+    { K_WRITE_ONLY, SHUB_MD_DQRP_MMR_DIR_LOCVEC0,
+      SHUB_MD_DQRP_MMR_DIR_LOCVEC0_COUNT,
+      SHUB_MD_DQRP_MMR_DIR_LOCVEC0_STRIDE, 0 },
+    { K_WRITE_ONLY, SHUB_MD_DQLP_MMR_XBIST_H, SHUB_MD_DQLP_MMR_XBIST_H_COUNT,
+      SHUB_MD_DQLP_MMR_XBIST_H_STRIDE, 0 },
+    { K_WRITE_ONLY, SHUB_MD_DQLP_MMR_XBIST_L, SHUB_MD_DQLP_MMR_XBIST_L_COUNT,
+      SHUB_MD_DQLP_MMR_XBIST_L_STRIDE, 0 },
+    { K_WRITE_ONLY, SHUB_MD_DQLP_MMR_YBIST_H, SHUB_MD_DQLP_MMR_YBIST_H_COUNT,
+      SHUB_MD_DQLP_MMR_YBIST_H_STRIDE, 0 },
+    { K_WRITE_ONLY, SHUB_MD_DQLP_MMR_YBIST_L, SHUB_MD_DQLP_MMR_YBIST_L_COUNT,
+      SHUB_MD_DQLP_MMR_YBIST_L_STRIDE, 0 },
     { K_WRITE_ONLY, SHUB_MD_DIR_ACCESS_LP, 1, 0, 0 },
     { K_WRITE_ONLY, SHUB_MD_DIR_ACCESS_RP, 1, 0, 0 },
-    { K_CLK_SEL, SHUB_MD_CLK_SEL, 1, 0, 0 },
-    /* The rest of the I/O interface: plain cells (chips shub_ii README). */
+    { K_CLK_SEL, SHUB_JTAG_CONFIG, 1, 0, 0 },
+    /* The rest of the I/O interface: plain cells (PROM I/O interface notes). */
     { K_STORE, II_REG(SHUB_II_WIDGET_ID), 1, 0, SHUB_SLOT_II + 0 },
     { K_STORE, II_REG(SHUB_II_WIDGET_STATUS), 1, 0, SHUB_SLOT_II + 1 },
     { K_STORE, II_REG(SHUB_II_WIDGET_CONTROL), 1, 0, SHUB_SLOT_II + 2 },
@@ -362,9 +358,9 @@ static const ShubRegSpec shub_regs[] = {
       SHUB_II_BTE_NOTIFY_STRIDE, SHUB_SLOT_BTE_NOTIFY },
     { K_STORE, II_REG(SHUB_II_BTE_INTERRUPT), SHUB_II_BTE_INTERRUPT_COUNT,
       SHUB_II_BTE_INTERRUPT_STRIDE, SHUB_SLOT_BTE_INT },
-    { K_SLICE_REC, SHUB_LB_SLICE_REC, SHUB_LB_SLICE_REC_COUNT,
-      SHUB_LB_SLICE_REC_STRIDE, 0 },
-    { K_SLICE_PRESENT, SHUB_PI_SLICE_PRESENT, 1, 0, 0 },
+    { K_SLICE_REC, SHUB_JUNK_BUS_LED0, SHUB_JUNK_BUS_LED0_COUNT,
+      SHUB_JUNK_BUS_LED0_STRIDE, 0 },
+    { K_SLICE_PRESENT, SHUB_FSB_SYMMETRIC_AGENT_STATUS, 1, 0, 0 },
     { K_DIR_RESULT, SHUB_MD_DIR_RESULT, 2, SHUB_MD_DIR_RESULT_STRIDE, 0 },
     { K_DIR_RESULT, SHUB_MD_DIR_RESULT_HIGH, 2, SHUB_MD_DIR_RESULT_STRIDE, 0 },
     { K_LOCK, SHUB_LB_LOCK, 1, 0, 0 },
@@ -378,7 +374,7 @@ static const ShubRegSpec shub_regs[] = {
 #define MBIST_OP(v) (((v) >> 32) & 0x7f)
 
 /* Part number the PROM's method table needs; a wrong one calls NULL. */
-#define SHUB_CHIP_ID_PART 0x4363ULL
+#define SHUB_MD_REG_0000_0000_PART 0x4363ULL
 
 #define SHUB_ID_WRITABLE \
     ((SHUB_SHUB_ID_NASID_MASK << SHUB_SHUB_ID_NASID_SHIFT) | \
@@ -482,14 +478,43 @@ static uint64_t shub_rtc_count(SGIShubState *s)
     return (s->rtc_base_count + ns / shub_rtc_period_ns(s)) & SHUB_RTC_MASK;
 }
 
-/*
- * Raise the message's vector on the node's one processor. The pid is not
- * decoded: with one processor every pid names it (an approximation).
- */
+/* A processor's slice: its id's low bit picks the pair, its eid the member. */
+static unsigned shub_slice_of(CPUState *cs)
+{
+    uint16_t lid = ia64_cpu_sapic_id(cs);
+
+    return ((lid >> 8) & 1) << 1 | (lid & 1);
+}
+
+/* The slice that issued the access in progress; a test access is slice 0. */
+static unsigned shub_issuing_slice(void)
+{
+    return current_cpu ? shub_slice_of(current_cpu) : 0;
+}
+
+/* The processor a pid names; with one processor every pid names it (approx). */
+static CPUState *shub_cpu_for_pid(uint16_t pid)
+{
+    CPUState *cs, *only = NULL;
+    unsigned count = 0;
+
+    CPU_FOREACH(cs) {
+        if (ia64_cpu_sapic_id(cs) == pid) {
+            return cs;
+        }
+        only = cs;
+        count++;
+    }
+    return count == 1 ? only : NULL;
+}
+
+/* Raise the message's vector on the processor its pid names. */
 static MemTxResult shub_deliver(hwaddr offset, uint64_t msg)
 {
     unsigned type = (msg >> SHUB_IPI_INT_TYPE_SHIFT) & SHUB_IPI_INT_TYPE_MASK;
     unsigned vector = (msg >> SHUB_IPI_INT_IDX_SHIFT) & SHUB_IPI_INT_IDX_MASK;
+    CPUState *cs = shub_cpu_for_pid((msg >> SHUB_IPI_INT_PID_SHIFT) &
+                                    SHUB_IPI_INT_PID_MASK);
 
     if (type != 0) {
         return shub_unmodelled(offset, 8, true, msg,
@@ -498,12 +523,18 @@ static MemTxResult shub_deliver(hwaddr offset, uint64_t msg)
     if (vector != 0 && vector != 2 && vector < 16) {
         return shub_unmodelled(offset, 8, true, msg, "reserved vector");
     }
-    ia64_sapic_set_irq(first_cpu, vector);
+    if (!cs) {
+        return shub_unmodelled(offset, 8, true, msg,
+                               "no processor with that id");
+    }
+    ia64_sapic_set_irq(cs, vector);
     return MEMTX_OK;
 }
 
-/* Schedule comparator n for the tick where the counter reaches its value. */
-/* A compare already reached fires at once only when it is (re)programmed. */
+/*
+ * Schedule comparator n for the tick the counter reaches its value; one
+ * already reached fires at once only when it is (re)programmed.
+ */
 static void shub_comparator_arm(SGIShubState *s, unsigned n, bool if_reached)
 {
     uint64_t period = shub_rtc_period_ns(s);
@@ -548,6 +579,31 @@ static void shub_comparator_fire(void *opaque)
                  s->rtc_int_config[n]);
 }
 
+/* Latch event bit 20; only a latching from clear sends a message. */
+static void shub_uart_latch(SGIShubState *s)
+{
+    bool latched = s->event & SHUB_EVENT_OCCURRED_UART_INT_INPLACE;
+
+    s->event |= SHUB_EVENT_OCCURRED_UART_INT_INPLACE;
+    if (!latched && (s->slot[SHUB_SLOT_LOCAL_EN + 5].value &
+                     SHUB_UART_INT_ENABLE)) {
+        shub_deliver(SHUB_LOCAL_INT_CONFIG + 5 * SHUB_LOCAL_INT_CONFIG_STRIDE,
+                     s->slot[SHUB_SLOT_LOCAL_CFG + 5].value);
+    }
+}
+
+/* A rising edge of the line latches event bit 20. */
+static void shub_uart_irq(void *opaque, int n, int level)
+{
+    SGIShubState *s = opaque;
+    bool was = s->uart_line;
+
+    s->uart_line = level;
+    if (level && !was) {
+        shub_uart_latch(s);
+    }
+}
+
 static void shub_global_remap(SGIShubState *s)
 {
     uint64_t nasid = (s->shub_id >> SHUB_SHUB_ID_NASID_SHIFT) &
@@ -557,12 +613,7 @@ static void shub_global_remap(SGIShubState *s)
                               (nasid << SGI_SHUB_NASID_SHIFT));
 }
 
-/*
- * Error, mask and alias words in several blocks that the PROM only writes at
- * node set-up (values 0, masks or all valid bits), found by decoding its
- * write lists. They are stored cells that reset to 0. Write-to-clear and
- * mask effects are not modelled. Each offset is 0x1_ plus the block word.
- */
+/* Error, mask and alias words the PROM writes at set-up: stored, reset 0. */
 static const hwaddr shub_blind_cells[] = {
     /* Link-buffer words the PROM sets by read-modify-write. */
     0x110040000, 0x110040100, 0x110040180, 0x110040300,
@@ -597,8 +648,9 @@ static const hwaddr shub_blind_cells[] = {
     /* Network port link set-up: reset, mode, config, test control, flow. */
     0x150000008, 0x150002008, 0x150000018, 0x150002018, 0x150000020,
     0x150002020, 0x150000028, 0x150002028, 0x1500303c0, 0x1500303d0,
-    0x1500303f0, 0x1500305c0, 0x1500305d0, 0x1500305f0, 0x150040008, 0x150040028,
-    0x150040040, 0x150040060, 0x150040070, 0x150040080, 0x150040090,
+    0x1500303f0, 0x1500305c0, 0x1500305d0, 0x1500305f0, 0x150040008,
+    0x150040028, 0x150040040, 0x150040060, 0x150040070, 0x150040080,
+    0x150040090,
     0x1500400a0, 0x1500400b0, 0x1500400c0, 0x1500400d0, 0x1500400e0,
     0x1500400f0, 0x150040100, 0x150040110, 0x150040120, 0x150040130,
     0x150040140, 0x150040150, 0x150040208, 0x150040228, 0x150040240,
@@ -671,6 +723,7 @@ static MemTxResult shub_read(void *opaque, hwaddr offset, uint64_t *data,
 {
     SGIShubState *s = opaque;
     const ShubRegSpec *spec;
+    CPUState *cs;
     unsigned n;
 
     *data = 0;
@@ -721,11 +774,15 @@ static MemTxResult shub_read(void *opaque, hwaddr offset, uint64_t *data,
         *data = s->shub_id;
         return MEMTX_OK;
     case K_LLP_CSR:
-        /* Bit 13, llp_stat bit 1: the PROM reads it as an I/O brick attached. */
+        /* Bit 13 (llp_stat bit 1): the PROM reads an I/O brick attached. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: link status bit 13 is an approximation\n");
         *data = s->slot[SHUB_SLOT_LLP_CSR].value | (1ULL << 13);
         return MEMTX_OK;
     case K_CLK_SEL:
         /* Bits 1:0 pick the bus clock; 0 is the simplest supported one. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: the bus clock select is an approximation\n");
         *data = 0;
         return MEMTX_OK;
     case K_RTC:
@@ -733,33 +790,50 @@ static MemTxResult shub_read(void *opaque, hwaddr offset, uint64_t *data,
         return MEMTX_OK;
     case K_PIO_WRITE_STATUS:
         /* PIO writes complete synchronously, so the count is always idle. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: PIO write status is always idle\n");
         *data = SHUB_PIO_WRITE_STATUS_IDLE |
                 s->slot[SHUB_SLOT_PIO_ERR + n].value;
         return MEMTX_OK;
     case K_CHIP_ID:
-        *data = (SHUB_CHIP_ID_PART << SHUB_CHIP_ID_PART_NUMBER_SHIFT) |
+        *data = (SHUB_MD_REG_0000_0000_PART <<
+                 SHUB_MD_REG_0000_0000_PART_NUMBER_SHIFT) |
                 (((s->shub_id >> SHUB_SHUB_ID_REVISION_SHIFT) &
-                  SHUB_SHUB_ID_REVISION_MASK) << SHUB_CHIP_ID_REVISION_SHIFT);
+                  SHUB_SHUB_ID_REVISION_MASK) <<
+                 SHUB_MD_REG_0000_0000_REVISION_SHIFT);
         return MEMTX_OK;
     case K_SLICE_REC:
         /* Any value satisfies the PROM; it only becomes a progress code. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: the slice record is an approximation\n");
         *data = 0;
         return MEMTX_OK;
     case K_PI_CREDITS:
         /* Eight credits: the PROM then skips its block-transfer top-up. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: the credit count is an approximation\n");
         *data = 8;
         return MEMTX_OK;
     case K_DIR_RESULT:
         /* Op 80 would load a directory entry here; the PROM never tests it. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: the directory result reads 0\n");
         *data = 0;
         return MEMTX_OK;
     case K_SLICE_PRESENT:
-        /* One processor, in slice 0. */
-        *data = 1;
+        /* One bit per front-side bus that has a processor: slice / 2. */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: slice presence follows the CPU ids\n");
+        *data = 0;
+        CPU_FOREACH(cs) {
+            *data |= 1ULL << (shub_slice_of(cs) / 2);
+        }
         return MEMTX_OK;
     case K_LOCK_STATUS:
     case K_LOCK2_STATUS: {
         /* A read takes the lock: it returns the bit and sets it (inferred). */
+        qemu_log_mask(LOG_UNIMP,
+                      "sgi-shub: a lock read takes the lock (approximation)\n");
         uint64_t *lock = &s->slot[SHUB_SLOT_LOCK +
                                   (spec->kind == K_LOCK2_STATUS)].value;
 
@@ -776,30 +850,81 @@ static MemTxResult shub_read(void *opaque, hwaddr offset, uint64_t *data,
     }
 }
 
-/* A plain copy runs to completion inside the control write. */
+/* Translate a block-transfer address in this node's memory. */
+static MemTxResult shub_bte_phys(SGIShubState *s, hwaddr offset, uint64_t addr,
+                                 uint64_t *phys)
+{
+    uint64_t nasid = (s->shub_id >> SHUB_SHUB_ID_NASID_SHIFT) &
+                     SHUB_SHUB_ID_NASID_MASK;
+
+    if ((addr >> SGI_SHUB_NASID_SHIFT) != nasid || (addr & (3ULL << 36))) {
+        return shub_unmodelled(offset, 8, true, 0,
+                               "copy address outside this node's memory");
+    }
+    *phys = SGI_SHUB_CACHEABLE_BASE | (addr & ((1ULL << 36) - 1));
+    return MEMTX_OK;
+}
+
+/*
+ * A plain copy or zero fill runs to completion inside the control write, in
+ * 4 KiB chunks under the BQL; the length field bounds it to under 8 MiB.
+ */
+static MemTxResult shub_bte_run(SGIShubState *s, hwaddr offset, unsigned n,
+                                bool fill)
+{
+    uint64_t len = (s->slot[SHUB_SLOT_BTE_LEN + n].value &
+                    SHUB_II_BTE_LENGTH_STATUS_LENGTH_MASK) << 7;
+    uint8_t buf[4096] = { 0 };
+    uint64_t src = 0, dst;
+    MemTxResult r;
+
+    if (!s->slot[SHUB_SLOT_BTE_DST + n].valid ||
+        (!fill && !s->slot[SHUB_SLOT_BTE_SRC + n].valid)) {
+        return shub_unmodelled(offset, 8, true, 0,
+                               "transfer before its addresses are written");
+    }
+    r = shub_bte_phys(s, offset, s->slot[SHUB_SLOT_BTE_DST + n].value, &dst);
+    if (r == MEMTX_OK && !fill) {
+        r = shub_bte_phys(s, offset, s->slot[SHUB_SLOT_BTE_SRC + n].value,
+                          &src);
+    }
+    if (r != MEMTX_OK) {
+        return r;
+    }
+    for (uint64_t done = 0; done < len; done += sizeof(buf)) {
+        uint64_t chunk = MIN(len - done, sizeof(buf));
+
+        if ((!fill && address_space_read(&s->dma_as, src + done,
+                                         MEMTXATTRS_UNSPECIFIED, buf, chunk)) ||
+            address_space_write(&s->dma_as, dst + done,
+                                MEMTXATTRS_UNSPECIFIED, buf, chunk)) {
+            return shub_unmodelled(offset, 8, true, 0,
+                                   "transfer reached no memory");
+        }
+    }
+    return MEMTX_OK;
+}
+
 /*
  * With the notify attribute the engine ends by writing the final status word
  * to the notification address: length 0, no busy, no error, so 0.
  */
 static MemTxResult shub_bte_notify(SGIShubState *s, hwaddr offset, unsigned n)
 {
-    uint64_t nasid = (s->shub_id >> SHUB_SHUB_ID_NASID_SHIFT) &
-                     SHUB_SHUB_ID_NASID_MASK;
-    uint64_t addr = s->slot[SHUB_SLOT_BTE_NOTIFY + n].value;
-    uint64_t status = 0;
+    uint64_t phys, status = 0;
+    MemTxResult r;
 
     if (!s->slot[SHUB_SLOT_BTE_NOTIFY + n].valid) {
         return shub_unmodelled(offset, 8, true, 0,
                                "notify before its address is written");
     }
-    if ((addr >> SGI_SHUB_NASID_SHIFT) != nasid || (addr & (3ULL << 36))) {
-        return shub_unmodelled(offset, 8, true, 0,
-                               "copy address outside this node's memory");
+    r = shub_bte_phys(s, offset, s->slot[SHUB_SLOT_BTE_NOTIFY + n].value,
+                      &phys);
+    if (r != MEMTX_OK) {
+        return r;
     }
-    if (address_space_write(&address_space_memory,
-                            SGI_SHUB_CACHEABLE_BASE |
-                            (addr & ((1ULL << 36) - 1)),
-                            MEMTXATTRS_UNSPECIFIED, &status, sizeof(status))) {
+    if (address_space_write(&s->dma_as, phys, MEMTXATTRS_UNSPECIFIED, &status,
+                            sizeof(status))) {
         return shub_unmodelled(offset, 8, true, 0,
                                "notification reached no memory");
     }
@@ -808,43 +933,11 @@ static MemTxResult shub_bte_notify(SGIShubState *s, hwaddr offset, unsigned n)
 
 static MemTxResult shub_bte_copy(SGIShubState *s, hwaddr offset, unsigned n)
 {
-    uint64_t nasid = (s->shub_id >> SHUB_SHUB_ID_NASID_SHIFT) &
-                     SHUB_SHUB_ID_NASID_MASK;
-    uint64_t addr[2] = { s->slot[SHUB_SLOT_BTE_SRC + n].value,
-                         s->slot[SHUB_SLOT_BTE_DST + n].value };
-    uint64_t len = (s->slot[SHUB_SLOT_BTE_LEN + n].value &
-                    SHUB_II_BTE_LENGTH_STATUS_LENGTH_MASK) << 7;
-    uint8_t buf[4096];
-    uint64_t phys[2];
-    MemTxResult r;
+    MemTxResult r = shub_bte_run(s, offset, n, false);
 
-    if (!s->slot[SHUB_SLOT_BTE_SRC + n].valid ||
-        !s->slot[SHUB_SLOT_BTE_DST + n].valid) {
-        return shub_unmodelled(offset, 8, true, 0,
-                               "copy before source and destination are written");
+    if (r == MEMTX_OK) {
+        r = shub_bte_notify(s, offset, n);
     }
-    for (int i = 0; i < 2; i++) {
-        /* Node-physical, address space 0: the node's own RAM, as AS 3. */
-        if ((addr[i] >> SGI_SHUB_NASID_SHIFT) != nasid ||
-            (addr[i] & (3ULL << 36))) {
-            return shub_unmodelled(offset, 8, true, 0,
-                                   "copy address outside this node's memory");
-        }
-        phys[i] = SGI_SHUB_CACHEABLE_BASE |
-                  (addr[i] & ((1ULL << 36) - 1));
-    }
-    for (uint64_t done = 0; done < len; done += sizeof(buf)) {
-        uint64_t chunk = MIN(len - done, sizeof(buf));
-
-        if (address_space_read(&address_space_memory, phys[0] + done,
-                               MEMTXATTRS_UNSPECIFIED, buf, chunk) ||
-            address_space_write(&address_space_memory, phys[1] + done,
-                                MEMTXATTRS_UNSPECIFIED, buf, chunk)) {
-            return shub_unmodelled(offset, 8, true, 0,
-                                   "copy reached no memory");
-        }
-    }
-    r = shub_bte_notify(s, offset, n);
     if (r != MEMTX_OK) {
         return r;
     }
@@ -888,19 +981,25 @@ static MemTxResult shub_write(void *opaque, hwaddr offset, uint64_t value,
         }
         s->slot[SHUB_SLOT_CRB_MSG].value = value;
         return MEMTX_OK;
-    case K_II_INT:
+    case K_II_INT: {
+        CPUState *cs;
+
         /* Data is 0x100 | vector: the send bit and the vector. Inferred. */
         if (!(value & 0x100) || (value & ~0x1ffULL)) {
             return shub_unmodelled(offset, size, true, value,
                                    "interrupt packet layout not known");
         }
-        if (!first_cpu || ((value & 0xff) != 0 && (value & 0xff) != 2 &&
-                           (value & 0xff) < 16)) {
+        cs = shub_cpu_for_pid((s->slot[SHUB_SLOT_II_INT_CFG + n].value >>
+                               SHUB_II_INT_CONFIG_PID_SHIFT) &
+                              SHUB_II_INT_CONFIG_PID_MASK);
+        if (!cs || ((value & 0xff) != 0 && (value & 0xff) != 2 &&
+                    (value & 0xff) < 16)) {
             return shub_unmodelled(offset, size, true, value,
                                    "no processor or reserved vector");
         }
-        ia64_sapic_set_irq(first_cpu, value & 0xff);
+        ia64_sapic_set_irq(cs, value & 0xff);
         return MEMTX_OK;
+    }
     case K_ELECT_SET:
         /* The alias takes a value only while SH_SCRATCH1 reads 0. */
         if (s->slot[spec->slot + n].value) {
@@ -946,21 +1045,24 @@ static MemTxResult shub_write(void *opaque, hwaddr offset, uint64_t value,
         if (value == notify) {
             return shub_bte_copy(s, offset, n);
         }
-        /* Only a zero fill, which RAM that starts zeroed already satisfies. */
         if ((value & ~(zerofill | notify)) || !(value & zerofill)) {
             return shub_unmodelled(offset, size, true, value,
                                    "block transfer mode not modelled");
         }
-        s->slot[spec->slot + n].value = value;
-        s->slot[spec->slot + n].valid = true;
-        if ((value & notify) && s->slot[SHUB_SLOT_BTE_DST + n].valid) {
-            MemTxResult r = shub_bte_notify(s, offset, n);
+        /* The PROM may fill before it has set a destination: store only. */
+        if (s->slot[SHUB_SLOT_BTE_DST + n].valid) {
+            MemTxResult r = shub_bte_run(s, offset, n, true);
 
+            if (r == MEMTX_OK && (value & notify)) {
+                r = shub_bte_notify(s, offset, n);
+            }
             if (r != MEMTX_OK) {
                 return r;
             }
         }
-        /* RAM starts zeroed, so a fill writes nothing and ends at once. */
+        s->slot[spec->slot + n].value = value;
+        s->slot[spec->slot + n].valid = true;
+        /* The transfer finishes at once: a fill has written its zeros. */
         s->slot[SHUB_SLOT_BTE_LEN + n].value = 0;
         return MEMTX_OK;
     }
@@ -1035,7 +1137,8 @@ static MemTxResult shub_write(void *opaque, hwaddr offset, uint64_t value,
         s->slot[SHUB_SLOT_PIO_ERR + n].value &= ~value;
         return MEMTX_OK;
     case K_PIO_ERR_HOLE: {
-        uint64_t *err = &s->slot[SHUB_SLOT_PIO_ERR].value;
+        uint64_t *err = &s->slot[SHUB_SLOT_PIO_ERR +
+                                 (shub_issuing_slice() >> 1)].value;
 
         /* No register here: the PROM's self-test expects the write to fail. */
         qemu_log_mask(LOG_UNIMP, "sgi-shub: store to the unnamed register at "
@@ -1086,7 +1189,7 @@ static MemTxResult shub_write(void *opaque, hwaddr offset, uint64_t value,
         s->event |= value;
         return MEMTX_OK;
     case K_EVENT_ALIAS:
-        /* A one clears a pending bit. */
+        /* A one clears a pending bit, bit 20 included while the line is up. */
         s->event &= ~value;
         return MEMTX_OK;
     case K_EVENT_OVERFLOW_ALIAS:
@@ -1115,8 +1218,12 @@ static void shub_reset_hold(Object *obj, ResetType type)
     shub_global_remap(s);
     s->rtc_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     s->rtc_base_count = 0;
+    s->uart_line = false;
     memset(s->slot, 0, sizeof(s->slot));
     shub_blind_reset(s);
+    /* The board's node identity word, if it gave one. */
+    s->slot[SHUB_SLOT_L1_STATE].value = s->scratch2_reset;
+    s->slot[SHUB_SLOT_L1_STATE].valid = s->scratch2_reset != 0;
     /* The header's initial value: internal source, counter disabled. */
     s->slot[SHUB_SLOT_RTC_CTL].value = SHUB_RTC_CTL_RESET;
     s->slot[SHUB_SLOT_RTC_CTL].valid = true;
@@ -1127,6 +1234,12 @@ static void shub_reset_hold(Object *obj, ResetType type)
     s->slot[SHUB_SLOT_CRB_MSG].value = SHUB_CRB_MESSAGE_CONTROL_RESET;
     for (int i = SHUB_SLOT_HIST; i < SHUB_SLOT_COUNT; i++) {
         s->slot[i].valid = true;
+    }
+    /* A transfer needs its addresses written first, so the guards can refuse. */
+    for (unsigned n = 0; n < 2; n++) {
+        s->slot[SHUB_SLOT_BTE_SRC + n].valid = false;
+        s->slot[SHUB_SLOT_BTE_DST + n].valid = false;
+        s->slot[SHUB_SLOT_BTE_NOTIFY + n].valid = false;
     }
     /* The PROM reads these first: the 2.4 header's reset values (inferred). */
     s->slot[SHUB_SLOT_CRB_NACK].valid = true;
@@ -1155,6 +1268,11 @@ static void shub_realize(DeviceState *dev, Error **errp)
 {
     SGIShubState *s = SGI_SHUB(dev);
 
+    if (!s->dma_mr) {
+        error_setg(errp, "sgi-shub: the dma-memory link is not set");
+        return;
+    }
+    address_space_init(&s->dma_as, s->dma_mr, "sgi-shub.dma");
     if (s->shub_id_reset & ~(SHUB_ID_WRITABLE |
         (SHUB_SHUB_ID_REVISION_MASK << SHUB_SHUB_ID_REVISION_SHIFT))) {
         error_setg(errp, "shub-id sets bits the model cannot qualify");
@@ -1219,6 +1337,7 @@ static void shub_init(Object *obj)
                                         shub_comparator_fire,
                                         &s->comparator_arg[n]);
     }
+    qdev_init_gpio_in_named(DEVICE(obj), shub_uart_irq, "uart-irq", 1);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->local_mmr);
     sysbus_init_mmio(SYS_BUS_DEVICE(obj), &s->global_mmr);
 }
@@ -1238,11 +1357,17 @@ static void shub_finalize(Object *obj)
     if (s->prom_flash_as.root) {
         address_space_destroy(&s->prom_flash_as);
     }
+    if (s->dma_as.root) {
+        address_space_destroy(&s->dma_as);
+    }
 }
 
 static const Property shub_properties[] = {
     DEFINE_PROP_UINT64("shub-id", SGIShubState, shub_id_reset,
                        SGI_SHUB_ID_DEFAULT),
+    DEFINE_PROP_UINT64("scratch2-reset", SGIShubState, scratch2_reset, 0),
+    DEFINE_PROP_LINK("dma-memory", SGIShubState, dma_mr, TYPE_MEMORY_REGION,
+                     MemoryRegion *),
 };
 
 static int shub_post_load(void *opaque, int version_id)
@@ -1275,6 +1400,7 @@ static const VMStateDescription shub_vmstate = {
         VMSTATE_STRUCT_ARRAY(slot, SGIShubState, SHUB_SLOT_COUNT, 1,
                              vmstate_shub_slot, SGIShubSlot),
         VMSTATE_UINT64(event, SGIShubState),
+        VMSTATE_BOOL(uart_line, SGIShubState),
         VMSTATE_UINT64_ARRAY(rtc_int_config, SGIShubState, 4),
         VMSTATE_UINT64_ARRAY(rtc_int_enable, SGIShubState, 4),
         VMSTATE_UINT64_ARRAY(int_cmp, SGIShubState, 4),
@@ -1297,12 +1423,7 @@ static bool shub_inbound_widget_ok(uint64_t access, unsigned widget)
     return widget >= 8 && (access >> widget) & 1;
 }
 
-/*
- * A PIC bus master's request to memory: bit 47 clear, NASID in 46:36 and the
- * node offset in 35:0, reaching the node's RAM as the cacheable view. A
- * request from a widget whose inbound access bit is clear is refused, and
- * what the requester sees then is unknown.
- */
+/* A PIC master's request to node RAM; a refused widget's view is unknown. */
 static MemTxResult shub_inbound(SGIShubState *s, hwaddr addr, uint8_t *buf,
                                 unsigned size, bool write, MemTxAttrs attrs)
 {
@@ -1322,9 +1443,9 @@ static MemTxResult shub_inbound(SGIShubState *s, hwaddr addr, uint8_t *buf,
         return shub_unmodelled(addr, size, write, 0,
                                "inbound widget access is clear for the requester");
     }
-    res = write ? address_space_write(&address_space_memory, dest,
+    res = write ? address_space_write(&s->dma_as, dest,
                                       MEMTXATTRS_UNSPECIFIED, buf, size) :
-                  address_space_read(&address_space_memory, dest,
+                  address_space_read(&s->dma_as, dest,
                                      MEMTXATTRS_UNSPECIFIED, buf, size);
     if (res) {
         return shub_unmodelled(addr, size, write, 0,
@@ -1363,13 +1484,8 @@ static MemTxResult shub_xio_write(void *opaque, hwaddr addr, uint64_t value,
 }
 
 /*
- * A widget register is one little-endian 64-bit value, so a narrow access
- * reaches the big-endian widget model at the mirrored offset, o ^ (8 - N).
- * The PIC's PCI configuration windows and its PCI memory (the device
- * windows and the alias at 0x4000_0000 of each head) are not registers:
- * they are byte addressed, so the ID dword is at +0 and a narrow access
- * reaches the model at o ^ (4 - N) only, and an 8-byte access moves as two
- * little-endian dwords.
+ * Widget registers mirror a narrow access at o ^ (8 - N). PCI config and memory
+ * windows are byte addressed: o ^ (4 - N), and 8 bytes move as two LE dwords.
  */
 static bool shub_widget_pci_space(hwaddr addr)
 {
@@ -1486,12 +1602,7 @@ static MemTxResult shub_widget_write(void *opaque, hwaddr addr, uint64_t value,
                                 attrs);
 }
 
-/*
- * Big window n of the global window (node offset bits 31:29) goes through
- * entry n of the I/O interface's translation table: the widget in bits
- * 11:8, bit 12 the I/O space flag, and bits 4:0 the Crosstalk address
- * above the window's 29 offset bits.
- */
+/* Big window n uses ITTE n: widget 11:8, I/O space 12, address 4:0. */
 static MemTxResult shub_big_target(SGIShubState *s, unsigned n, hwaddr addr,
                                    bool write, unsigned size, unsigned *widget,
                                    hwaddr *xtalk)
@@ -1683,11 +1794,7 @@ bool sgi_shub_map_junk_bus(SGIShubState *s, unsigned device, MemoryRegion *mr,
     return true;
 }
 
-/*
- * The PROM's flash driver stores 16 bits and reads 16 or, in bulk, aligned 64
- * bits. The flash model takes at most 32-bit accesses, so a wide read is
- * handed over as 16-bit beats, lowest address in the low bits.
- */
+/* The flash takes 32-bit accesses at most: a wide read goes as 16-bit beats. */
 static MemTxResult shub_prom_flash_read(void *opaque, hwaddr addr,
                                         uint64_t *data, unsigned size,
                                         MemTxAttrs attrs)
