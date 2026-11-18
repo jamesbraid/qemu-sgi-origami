@@ -1670,6 +1670,219 @@ static void test_gl_queued_words_are_bounded(void)
     gl_defer_draws(false);
 }
 
+/*
+ * x-gpu leaves the words the scalar path stores. Scenes run on the board's
+ * thread (x-test-defer-draws), the only place a GPU draw is submitted from.
+ */
+#define GPU_SEEDS      3
+#define GPU_TRIANGLES  24
+#define GPU_WINDOW     128
+#define GPU_ROW_X      256
+#define GPU_ROW_Y      256
+
+typedef struct GpuRun {
+    uint64_t draws, switches;
+    char *rows[GPU_WINDOW];
+    uint32_t back[GPU_WINDOW];
+    uint32_t format[GPU_WINDOW];
+    uint32_t alpha[GPU_WINDOW];
+} GpuRun;
+
+static bool gpu_qom_get_bool(const char *property)
+{
+    QDict *resp = qtest_qmp(qts,
+        "{'execute': 'qom-get', 'arguments': {'path': %s, "
+        "'property': %s}}", MGRAS_QOM_PATH, property);
+    bool value = qdict_get_bool(resp, "return");
+
+    qobject_unref(resp);
+    return value;
+}
+
+enum { GPU_FLAT, GPU_SMOOTH, GPU_MIXED };
+
+static void gl_depth_layer(QTestState *qts, int j, float r, float g);
+
+/* Flat red over the window, then a depth-tested green the GPU cannot take. */
+static void gpu_mixed_draws(void)
+{
+    gl_color3f(qts, 1, 0, 0);
+    gl_word(qts, GL_BEGIN_TRIANGLES);
+    gl_vertex2f(qts, -1, -1);
+    gl_vertex2f(qts, 3, -1);
+    gl_vertex2f(qts, -1, 3);
+    gl_word(qts, GL_END_TRIANGLES);
+    gl_one(qts, GL_DEPTH_TEST_HDR, 1);
+    gl_one(qts, GL_DEPTH_FUNC_HDR, GL_DEPTH_ALWAYS);
+    gl_depth_layer(qts, 1, 0, 1);
+}
+
+static void gpu_scene(uint32_t seed, unsigned buffer, unsigned scene)
+{
+    GRand *rng = g_rand_new_with_seed(seed);
+    unsigned steps = 0;
+
+    mgras_reset();
+    mgras_enter_gl_window(qts, GPU_ROW_X, 640, GPU_WINDOW, GPU_WINDOW, 0x11);
+    gl_defer_draws(true);
+    gl_viewport(qts, 0, 0, GPU_WINDOW, GPU_WINDOW);
+    gl_draw_buffer(qts, buffer);
+    if (scene != GPU_MIXED) {
+        gl_clear_color(qts, g_rand_double(rng), g_rand_double(rng),
+                       g_rand_double(rng), g_rand_double(rng));
+        gl_word(qts, GL_CLEAR_COLOR_BUFFER);
+    }
+    gl_word(qts, GL_SHADE_MODEL_HDR);
+    gl_word(qts, scene == GPU_SMOOTH ? 0x1d01 : GL_FLAT);
+    for (unsigned t = 0; t < (scene == GPU_MIXED ? 0 : GPU_TRIANGLES); t++) {
+        float c[4] = { g_rand_double(rng), g_rand_double(rng),
+                       g_rand_double(rng), g_rand_double(rng) };
+
+        gl_word(qts, GL_BEGIN_TRIANGLES);
+        for (unsigned v = 0; v < 3; v++) {
+            /* Smooth shading with one colour at every vertex. */
+            gl_color4f(qts, c[0], c[1], c[2], c[3]);
+            gl_vertex2f(qts, g_rand_double_range(rng, -1.3, 1.3),
+                        g_rand_double_range(rng, -1.3, 1.3));
+        }
+        gl_word(qts, GL_END_TRIANGLES);
+    }
+    if (scene == GPU_MIXED) {
+        gpu_mixed_draws();
+    }
+    gl_word(qts, GL_FLUSH);
+    while (gl_work_pending()) {
+        g_assert_cmpuint(++steps, <, 100000);
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    gl_defer_draws(false);
+    g_rand_free(rng);
+}
+
+/* False when the GPU never opened. */
+static bool gpu_run(bool gpu, uint32_t seed, unsigned buffer, unsigned scene,
+                    GpuRun *out)
+{
+    qts = qtest_init(gpu ? MACHINE_ARGS " -global sgi-mgras.x-gpu=on"
+                           " -global sgi-mgras.x-gpu-min-pixels=0" :
+                           MACHINE_ARGS);
+    /* Realize waits for the device to open, so it is ready or never will be. */
+    if (gpu && !gpu_qom_get_bool("x-gpu-ready")) {
+        qtest_quit(qts);
+        qts = NULL;
+        return false;
+    }
+    gpu_scene(seed, buffer, scene);
+    out->draws = gpu ? mgras_qom_get_uint(qts, "x-gpu-draws") : 0;
+    for (unsigned y = 0; y < GPU_WINDOW; y++) {
+        QDict *resp;
+
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-x', 'value': %u}}", MGRAS_QOM_PATH,
+            GPU_ROW_X);
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-y', 'value': %u}}", MGRAS_QOM_PATH,
+            GPU_ROW_Y + y);
+        qtest_qmp_assert_success(qts,
+            "{'execute': 'qom-set', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-count', 'value': %u}}", MGRAS_QOM_PATH,
+            GPU_WINDOW);
+        resp = qtest_qmp(qts,
+            "{'execute': 'qom-get', 'arguments': {'path': %s, "
+            "'property': 'x-test-pixel-row'}}", MGRAS_QOM_PATH);
+        out->rows[y] = g_strdup(qdict_get_str(resp, "return"));
+        qobject_unref(resp);
+        mgras_test_pixel(qts, GPU_ROW_X + y, GPU_ROW_Y + y);
+        out->back[y] = mgras_qom_get_uint(qts, "x-test-back-pixel");
+        out->alpha[y] = mgras_qom_get_uint(qts, "x-test-alpha");
+        out->format[y] = mgras_test_format(qts, GPU_ROW_X + y, GPU_ROW_Y + y);
+    }
+    out->switches = gpu ? mgras_qom_get_uint(qts, "x-gpu-switches") : 0;
+    qtest_quit(qts);
+    qts = NULL;
+    return true;
+}
+
+static void test_gl_gpu_parity(const void *data)
+{
+    unsigned buffer = GPOINTER_TO_UINT(data) & 0xf;
+    unsigned scene = GPOINTER_TO_UINT(data) >> 4;
+
+    qts = qtest_init(MACHINE_ARGS);
+    if (!gpu_qom_get_bool("x-gpu-built")) {
+        qtest_quit(qts);
+        qts = NULL;
+        g_test_skip("QEMU was built without the GPU back end");
+        return;
+    }
+    qtest_quit(qts);
+    qts = NULL;
+    for (uint32_t seed = 1; seed <= (scene == GPU_MIXED ? 1 : GPU_SEEDS);
+         seed++) {
+        GpuRun cpu = { 0 }, gpu = { 0 };
+
+        g_assert_true(gpu_run(false, seed, buffer, scene, &cpu));
+        if (!gpu_run(true, seed, buffer, scene, &gpu)) {
+            g_test_skip("no GPU adapter opened");
+            return;
+        }
+        g_test_message("seed %u: %" PRIu64 " GPU draws, %" PRIu64
+                       " ownership switches", seed, gpu.draws, gpu.switches);
+        /* A batch of triangles, and the clear but for mixed. */
+        g_assert_cmpuint(gpu.draws, >=, scene == GPU_MIXED ? 1 : 2);
+        g_assert_cmpuint(gpu.switches, >, 0);
+        for (unsigned y = 0; y < GPU_WINDOW; y++) {
+            g_assert_cmpstr(cpu.rows[y], ==, gpu.rows[y]);
+            g_assert_cmphex(cpu.back[y], ==, gpu.back[y]);
+            g_assert_cmphex(cpu.format[y], ==, gpu.format[y]);
+            g_assert_cmphex(cpu.alpha[y], ==, gpu.alpha[y]);
+            g_free(cpu.rows[y]);
+            g_free(gpu.rows[y]);
+        }
+    }
+}
+
+/* The status register reads idle only once the GPU's draws have finished. */
+static void test_gl_gpu_status_waits_for_the_gpu(void)
+{
+    unsigned steps = 0;
+
+    qts = qtest_init(MACHINE_ARGS " -global sgi-mgras.x-gpu=on"
+                     " -global sgi-mgras.x-gpu-min-pixels=0"
+                     " -global sgi-mgras.x-test-gpu-busy-cap-ms=600000");
+    if (!gpu_qom_get_bool("x-gpu-built") || !gpu_qom_get_bool("x-gpu-ready")) {
+        qtest_quit(qts);
+        qts = NULL;
+        g_test_skip("no GPU back end or adapter");
+        return;
+    }
+    mgras_enter_gl_window(qts, 0, 0, 1024, 1024, 0x11);
+    gl_defer_draws(true);
+    gl_viewport(qts, 0, 0, 1024, 1024);
+    gl_word(qts, GL_SHADE_MODEL_HDR);
+    gl_word(qts, GL_FLAT);
+    for (unsigned t = 0; t < 256; t++) {
+        gl_color3f(qts, (t & 1) * 1.0f, (t & 2) * 0.5f, (t & 4) * 0.25f);
+        gl_word(qts, GL_BEGIN_TRIANGLES);
+        gl_vertex2f(qts, -1, -1);
+        gl_vertex2f(qts, 1, -1);
+        gl_vertex2f(qts, -1, 1);
+        gl_word(qts, GL_END_TRIANGLES);
+    }
+    gl_word(qts, GL_FLUSH);
+    while (!(qtest_readl(qts, REG_HQ_STATUS) & 2)) {
+        g_assert_cmpuint(++steps, <, 100000);
+        qtest_clock_step(qts, 100 * 1000);
+    }
+    g_assert_cmpuint(mgras_qom_get_uint(qts, "x-gpu-draws"), >, 0);
+    g_assert_false(gpu_qom_get_bool("x-gpu-busy"));
+    gl_defer_draws(false);
+    qtest_quit(qts);
+    qts = NULL;
+}
+
 /* Moving the third vertex to (88, 103) changes exactly the census. */
 static void test_gl_flat_triangle_moved_vertex(void)
 {
@@ -5107,6 +5320,18 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-flat-triangle-matches-the-reference",
         test_gl_flat_triangle_matches_the_reference, true);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-gpu-parity/front",
+                        GUINT_TO_POINTER(1), test_gl_gpu_parity);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-gpu-parity/back",
+                        GUINT_TO_POINTER(2), test_gl_gpu_parity);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-gpu-parity/smooth",
+                        GUINT_TO_POINTER(1 | GPU_SMOOTH << 4),
+                        test_gl_gpu_parity);
+    qtest_add_data_func("sn0/origin2000/mgras/gl-gpu-parity/mixed",
+                        GUINT_TO_POINTER(1 | GPU_MIXED << 4),
+                        test_gl_gpu_parity);
+    qtest_add_func("sn0/origin2000/mgras/gl-gpu-status-waits-for-the-gpu",
+                   test_gl_gpu_status_waits_for_the_gpu);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/gl-queued-draw-matches-the-inline-one",
         test_gl_queued_draw_matches_the_inline_one, true);

@@ -3,6 +3,7 @@
 /* The display subset follows the SI visual-emulator architecture contract. */
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-mgras-display.h"
+#include "hw/misc/sgi-mgras-gpu.h"
 
 
 #define MGRAS_CURSOR_CMAP_INDEX 0x1c
@@ -395,6 +396,7 @@ void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
         return;
     }
     mgras_gamma_sync(s);
+    sgi_mgras_gpu_mem(s, 3, y, false);
     mgras_did_line(s, MGRAS_VC3_MAIN_DID_ENTRY, y, main_did, s->width);
     mgras_did_line(s, MGRAS_VC3_OVERLAY_DID_ENTRY, y, overlay_did, s->width);
     for (unsigned int x = 0, end; x < s->width; x = end) {

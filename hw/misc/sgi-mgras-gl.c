@@ -39,6 +39,7 @@
 #include "hw/misc/sgi-mgras-gl.h"
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-mgras-raster.h"
+#include "hw/misc/sgi-mgras-gpu.h"
 #include "hw/display/sgi/gl-select.h"
 #include "hw/display/sgi/rasterizer.h"
 #include "trace.h"
@@ -3340,6 +3341,11 @@ static bool mgras_gl_owns(SGIMgrasState *s, int x, int y)
            (accept >> s->clip_id[(s->height - 1 - y) * s->width + x]) & 1;
 }
 
+bool sgi_mgras_gl_clip_id_active(SGIMgrasState *s)
+{
+    return (s->context[MGRAS_GL_IMAGE_CLIP_ID] >> 4) & 0xf;
+}
+
 static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
                          uint32_t rgb)
 {
@@ -3348,6 +3354,7 @@ static void mgras_gl_put(SGIMgrasState *s, unsigned int banks, int x, int y,
     if (!mgras_gl_owns(s, x, y)) {
         return;
     }
+    sgi_mgras_gpu_pixel(s, banks, y, true);
     if (banks & 1) {
         s->front[idx] = rgb;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_RGB;
@@ -3401,6 +3408,7 @@ static void mgras_gl_store_rgba(void *opaque, SGIColourTarget target,
         return;
     }
     mgras_gl_put(s, target, x, y, rgb);
+    sgi_mgras_gpu_pixel(s, target, y, true);
     if (target & 1) {
         s->front_alpha[idx] = colour->component[3];
     }
@@ -3427,6 +3435,7 @@ static uint32_t mgras_gl_load_colour(void *opaque, SGIColourTarget target,
     if (target & MGRAS_GL_OVERLAY_TARGET) {
         return s->overlay[idx];
     }
+    sgi_mgras_gpu_pixel(s, target, y, false);
     if (target & 1) {
         return s->front[idx] & 0xffffff;
     }
@@ -3443,6 +3452,7 @@ static bool mgras_gl_load_rgba(void *opaque, SGIColourTarget target,
     unsigned int idx = (s->height - 1 - y) * s->width + x;
     uint32_t rgb;
 
+    sgi_mgras_gpu_pixel(s, target, y, false);
     if (target & 1) {
         rgb = s->front[idx];
         colour->component[3] = s->front_alpha[idx];
@@ -3507,6 +3517,7 @@ static void mgras_gl_store_index(void *opaque, SGIColourTarget target,
         s->overlay[idx] = (s->overlay[idx] & ~mask) | (index & mask);
         return;
     }
+    sgi_mgras_gpu_pixel(s, target, y, true);
     if (target & 1) {
         s->front[idx] = ((s->front[idx] & ~mask) | (index & mask)) & planes;
         s->format[idx] = SGI_MGRAS_PIXEL_FORMAT_CI8;
@@ -4001,6 +4012,7 @@ static SGIGLDrawResult mgras_gl_soft_draw(SGIMgrasState *s,
     begin = sgi_mgras_draw_begin(s);
     if (sgi_head_work_may_unlock(&s->work)) {
         sgi_head_work_unlock(&s->work);
+        sgi_mgras_gpu_target(s, &t);
         result = sgi_soft_draw(&mgras_gl_raster_rules, &t, d);
         sgi_head_work_relock(&s->work);
     } else {
@@ -4187,7 +4199,14 @@ static void mgras_gl_raster(void *opaque, const SGIRasterOp *op)
         return;
     }
     begin = sgi_mgras_draw_begin(s);
-    sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
+    if (op->kind == SGI_RASTER_CLEAR && sgi_head_work_may_unlock(&s->work)) {
+        sgi_head_work_unlock(&s->work);
+        sgi_mgras_gpu_target(s, &t);
+        sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
+        sgi_head_work_relock(&s->work);
+    } else {
+        sgi_soft_raster(&mgras_gl_raster_rules, &t, op);
+    }
     sgi_mgras_draw_end(s, begin);
     s->dirty = true;
 }

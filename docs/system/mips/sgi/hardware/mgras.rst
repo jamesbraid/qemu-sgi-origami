@@ -1174,6 +1174,46 @@ GE port accesses after a GL context has been loaded are logged
 The ``x-mesa-renderer`` property opts in to a host renderer for those
 draws; ordinary drawing is the model's own.
 
+.. _sgi-mgras-gpu:
+
+Host GPU drawing
+----------------
+
+``x-gpu=on`` draws the flat, untextured triangles and the colour clears of
+the two colour banks on the host GPU, when the host has a Vulkan or D3D12
+adapter and QEMU was built with the GPU back end. It changes host drawing
+only: every stored word, format tag and alpha equals the model's own
+rasterizer's, which the ``gl-gpu-parity`` qtest checks on seeded scenes,
+and the migration stream is the same either way. It is off by default,
+excludes ``x-mesa-renderer``, and is rated *model capability, not
+hardware*. Draws under ``x-gpu-min-pixels`` (default 4096), draws that
+need depth, blending, a texture or a clip ID test, the overlay and the
+deep slots stay on the CPU.
+
+Each colour bank keeps a GPU copy of its words, tags and alpha, with an
+owner per row. Triangles queue per surface and are submitted in batches.
+A row the GPU drew is the GPU's only copy until the CPU reads or writes
+it. Every path that does, from any thread (the X server's pixel and span
+writes, a scalar draw's band workers, DMA transfers, scan-out, migration
+and the test getters), first submits the queued batch, waits for the GPU
+and downloads the row. So a pixel the guest or the display can see is
+never older than the draws the processor has issued.
+
+The status register (``0x020000``) also reads busy while the GPU has
+unfinished draws, so the kernel's raster-idle wait and ``glFinish`` do not
+return ahead of them. Like the CPU's work it reads busy for at most
+500 ms of continuous GPU work, because the kernel gives up on the idle bit
+after seconds and a software adapter can be that slow; a pixel access
+after that still waits for its rows. Flags, interrupts and graphics
+credits are raised as the model consumes or queues the commands, with or
+without ``x-gpu``, and none reports a pixel (:ref:`sgi-mgras-interrupts`).
+Whether the board raises them before its pipe has finished a draw is
+*unknown*, and the model does not wait for the GPU before raising them.
+
+The read-only properties ``x-gpu-ready``, ``x-gpu-busy``, ``x-gpu-draws``
+(submissions), ``x-gpu-switches`` and ``x-gpu-readback-bytes`` are host
+diagnostics and are not migrated. A lost GPU device stops the machine.
+
 .. _sgi-mgras-raster:
 
 Raster engine

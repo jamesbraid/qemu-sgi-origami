@@ -12,6 +12,7 @@
 #include "qemu/units.h"
 #include "qemu/timer.h"
 #include "hw/display/sgi/head-work.h"
+#include "hw/misc/sgi-mgras-gpu.h"
 #include "hw/core/cpu.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-display.h"
@@ -507,6 +508,19 @@ bool sgi_mgras_work_queue_flags(SGIMgrasState *s, SGIMgrasFlagsOp op,
 
 #define MGRAS_WORK_QUEUE_MAX    4096
 
+/* With x-gpu a full queue stalls the processor: GPU draws need the thread. */
+static void mgras_work_throttle(SGIMgrasState *s)
+{
+    SGIHeadWork *w = &s->work;
+
+    while (s->work_queue->len > MGRAS_WORK_QUEUE_MAX / 2) {
+        sgi_head_work_wait_slice(w);
+        w->go = true;
+        qemu_cond_signal(&w->kick);
+        qemu_cond_wait_bql(&w->done);
+    }
+}
+
 /* After a draw longer than a slice a processor's words queue for the thread. */
 static bool mgras_work_held(SGIMgrasState *s)
 {
@@ -541,8 +555,11 @@ static bool mgras_work_defer(SGIMgrasState *s, MgrasQueuedKind kind,
     if (!s->list_busy && !s->work_replaying &&
         s->work_queue->len >= MGRAS_WORK_QUEUE_MAX) {
         /* Not further ahead of the thread than it can run. */
-        sgi_mgras_work_drain(s, 0);
-        return false;
+        if (!current_cpu || !s->gpu) {
+            sgi_mgras_work_drain(s, 0);
+            return false;
+        }
+        mgras_work_throttle(s);
     }
     if (s->work_replaying) {
         g_array_insert_val(s->work_queue, s->work_insert++, w);
@@ -1148,6 +1165,7 @@ static void mgras_put_pixel(SGIMgrasState *s, unsigned int idx, uint32_t color,
     if (!(mask & 0x00ffffff) || mgras_clipped(s, idx)) {
         return;
     }
+    sgi_mgras_gpu_mem(s, 1, idx / s->width, true);
     s->front[idx] = mgras_paint_pixel(op, s->front[idx], color, mask);
     s->format[idx] = format;
 }
@@ -1215,6 +1233,7 @@ static void mgras_put_span(SGIMgrasState *s, int y, int x0, int x1,
 {
     uint32_t *front = s->front + y * s->width;
 
+    sgi_mgras_gpu_mem(s, 1, y, true);
     if ((op & 0xf) == 0x3) {
         uint32_t ink = color & 0x00ffffff & mask;
 
@@ -1449,6 +1468,7 @@ static void mgras_draw_glyph_row(SGIMgrasState *s, bool hw_rows)
         y = s->height - 1 - y;
     }
     width = MIN(x1 - x0 + 1, 64);
+    sgi_mgras_gpu_mem(s, 1, y, true);
     /* The row's clip, settled once for its columns. */
     n = mgras_clip_spans(s, y, x0, x0 + width - 1, lo, hi);
     for (int span = 0; span < n; span++) {
@@ -2320,8 +2340,11 @@ bool sgi_mgras_raster_record(SGIMgrasState *s, uint32_t reg, uint32_t value)
  */
 static uint32_t mgras_pio_read_pixel(SGIMgrasState *s, uint32_t x, uint32_t y)
 {
-    uint32_t p = s->front[y * s->width + x];
-    uint32_t z = s->depth[y * s->width + x];
+    uint32_t p, z;
+
+    sgi_mgras_gpu_mem(s, 1, y, false);
+    p = s->front[y * s->width + x];
+    z = s->depth[y * s->width + x];
 
     switch (s->rss[MGRAS_RSS_BYTE_XFER_PACKING] &
             MGRAS_XFRMODE_GL_FORMAT_MASK) {
@@ -2880,6 +2903,7 @@ static void mgras_raster_dma_transfer(SGIMgrasState *s, unsigned int slot,
     g_autofree uint64_t *page_addr = NULL;
     int ret;
 
+    sgi_mgras_gpu_all(s);
     if (!mgras_raster_dma_setup(s, slot, &ctx, &bus, &pl, &page_addr)) {
         return;
     }
@@ -4166,6 +4190,7 @@ static void mgras_work_schedule(SGIMgrasState *s)
 static void mgras_work_step_cb(void *opaque, SGIHeadWorkBudget *b)
 {
     mgras_work_step(opaque, b);
+    sgi_mgras_gpu_flush(opaque);
 }
 
 static bool mgras_work_pending_cb(void *opaque)

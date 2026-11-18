@@ -56,6 +56,7 @@ typedef struct SgiBoardGpu {
     bool lost;
     QemuMutex lock;
     uint32_t *stage;
+    uint64_t fence;     /* of the last fill submitted, for pacing */
     uint64_t switches, readback_bytes, upload_bytes, draws, clears;
 } SgiBoardGpu;
 

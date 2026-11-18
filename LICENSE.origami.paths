@@ -340,6 +340,8 @@ hw/misc/sgi-mgras-display.c
 hw/misc/sgi-mgras-display.h
 hw/misc/sgi-mgras-gl.c
 hw/misc/sgi-mgras-gl.h
+hw/misc/sgi-mgras-gpu.c
+hw/misc/sgi-mgras-gpu.h
 hw/misc/sgi-mgras-raster.c
 hw/misc/sgi-mgras-raster.h
 hw/misc/sgi-mgras-texture.c

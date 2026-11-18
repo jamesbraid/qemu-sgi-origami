@@ -288,9 +288,15 @@ bool sgi_board_gpu_tris(SgiBoardGpu *g, const SgiBoardGpuTris *jobs,
         if (!jobs[j].count) {
             continue;
         }
-        ok = sbg_upload(g, jobs[j].surface, y0, y1) &&
-             sgi_gpu_fill_tris(g->plane[jobs[j].surface], sub_bits,
-                               jobs[j].tris, jobs[j].count);
+        ok = sbg_upload(g, jobs[j].surface, y0, y1);
+        if (ok) {
+            uint64_t fence = sgi_gpu_fill_tris(g->plane[jobs[j].surface],
+                                               sub_bits, jobs[j].tris,
+                                               jobs[j].count);
+
+            qatomic_set(&g->fence, fence);
+            ok = fence != 0;
+        }
         if (!ok) {
             sbg_lost(g);
             break;
@@ -323,8 +329,11 @@ bool sgi_board_gpu_clears(SgiBoardGpu *g, const SgiBoardGpuClears *jobs,
         }
         ok = sbg_upload(g, jobs[j].surface, y0, y1);
         for (unsigned i = 0; ok && i < jobs[j].count; i++) {
-            ok = sgi_gpu_fill_clear(g->plane[jobs[j].surface],
-                                    &jobs[j].clears[i]) != 0;
+            uint64_t fence = sgi_gpu_fill_clear(g->plane[jobs[j].surface],
+                                                &jobs[j].clears[i]);
+
+            qatomic_set(&g->fence, fence);
+            ok = fence != 0;
         }
         if (!ok) {
             sbg_lost(g);

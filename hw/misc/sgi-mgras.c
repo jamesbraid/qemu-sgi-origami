@@ -11,6 +11,7 @@
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-mgras-display.h"
 #include "hw/misc/sgi-mgras-gl.h"
+#include "hw/misc/sgi-mgras-gpu.h"
 #include "hw/misc/sgi-mgras-raster.h"
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-onewire-slot.h"
@@ -772,7 +773,7 @@ static void mgras_xmap_write(SGIMgrasState *s, hwaddr addr, uint32_t value)
  * How long the sync and idle bits may read clear for waiting work: well
  * inside the IRIX kernel's 2 s read-DMA and 3 s raster-idle waits.
  */
-#define MGRAS_STATUS_BUSY_NS    (500 * SCALE_MS)
+#define MGRAS_STATUS_BUSY_MS    500
 
 void sgi_mgras_flags_write(SGIMgrasState *s, SGIMgrasFlagsOp op,
                            uint32_t bits)
@@ -992,21 +993,25 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
      * Inferred: both read clear while a display list and the words
      * behind it are still running (sgi-mgras-raster.c), so those waits
      * wait for them; otherwise every command has finished and both read
-     * set. When the board clears either is unknown.
+     * set. With x-gpu they also read clear while the GPU has draws
+     * unfinished, under the same cap. When the board clears either is
+     * unknown.
      *
      * The model board is far slower than the real one, and a full-size
      * GLperf list runs for many seconds, past the kernel's 2 s and 3 s
      * limits. So the bits read clear only for the first
-     * MGRAS_STATUS_BUSY_NS of continuous work, and set after that. A
+     * MGRAS_STATUS_BUSY_MS of continuous work, and set after that. A
      * pixel read that then goes ahead still waits for the work at its
      * data or DMA-status read. Finishing the work at this read instead
      * would stall the processor: the kernel's retrace routine reads this
      * register about 30 times a second.
      */
     case 0x020000:
-        return sgi_mgras_work_pending(s) &&
-               !sgi_head_work_overdue(&s->work, MGRAS_STATUS_BUSY_NS) ?
-               0x10 : 0x13;
+        return (sgi_mgras_work_pending(s) &&
+                !sgi_head_work_overdue(&s->work,
+                                       (int64_t)s->gpu_busy_cap_ms *
+                                       SCALE_MS)) ||
+               sgi_mgras_gpu_status_busy(s) ? 0x10 : 0x13;
     /*
      * FIFO occupancy reads zero: the model takes every word off the port
      * as it arrives, into the parser or behind waiting work. What the
@@ -1556,6 +1561,10 @@ static bool mgras_access_waits(SGIMgrasState *s, hwaddr addr, bool write)
     case 0x020400:
     case SGI_MGRAS_SCRATCH_COMMAND:
         return !write;
+    /* The kernel polls these; with x-gpu a drain would draw off the thread. */
+    case 0x000000:
+    case 0x000004:
+        return !s->gpu;
     case 0x020000:
     case 0x020008:
     case 0x020100:
@@ -1705,6 +1714,7 @@ static void mgras_reset_enter(Object *obj, ResetType type)
         mc->parent_phases.enter(obj, type);
     }
     sgi_mgras_work_reset(s);
+    sgi_mgras_gpu_forget(s);
     memset(s->front, 0, s->width * s->height * sizeof(*s->front));
     memset(s->back, 0, s->width * s->height * sizeof(*s->back));
     memset(s->front_alpha, 0, s->front_count * sizeof(*s->front_alpha));
@@ -1958,6 +1968,9 @@ static bool mgras_build_widget(SGIXioBoardState *board, Error **errp)
     s->slot_alpha[1] = g_new0(uint8_t, s->slot_count);
     s->format = g_new0(uint8_t, s->width * s->height);
     s->back_format = g_new0(uint8_t, s->width * s->height);
+    if (s->gpu_enabled && !sgi_mgras_gpu_realize(s, errp)) {
+        return false;
+    }
     s->overlay = g_new0(uint8_t, s->width * s->height);
     s->clip_id = g_new0(uint8_t, s->width * s->height);
     s->ge[SGI_MGRAS_GE_SLOT_A] = g_new0(uint32_t, SGI_MGRAS_GE_WORDS);
@@ -2094,6 +2107,7 @@ static void mgras_unrealize(DeviceState *dev)
         s->work_vm_state = NULL;
     }
     sgi_mgras_work_cleanup(s);
+    sgi_mgras_gpu_cleanup(s);
     sgi_mgras_gl_cleanup(s);
     mc->parent_unrealize(dev);
     sgi_scanout_cleanup(&s->scanout);
@@ -2131,6 +2145,7 @@ static int mgras_pre_save(void *opaque)
     sgi_head_work_enter_work();
     sgi_mgras_work_drain(opaque, UINT64_MAX);
     sgi_head_work_leave();
+    sgi_mgras_gpu_read_all(opaque);
     return 0;
 }
 
@@ -2139,6 +2154,7 @@ static int mgras_pre_load(void *opaque)
     SGIMgrasState *s = opaque;
 
     s->gl_restore_in_progress = true;
+    sgi_mgras_gpu_forget(s);
     /* TRAM's subsection comes only when a block was written. */
     sgi_mgras_texture_board_reset(s);
     return 0;
@@ -2684,6 +2700,13 @@ static const Property mgras_properties[] = {
     DEFINE_PROP_BOOL("x-raster-bands", SGIMgrasState, raster_bands, true),
     /* Off queues every DrawPixels fragment; the pixels are the same. */
     DEFINE_PROP_BOOL("x-pixel-rows", SGIMgrasState, pixel_rows, true),
+    /* Flat fills and colour clears draw on the host GPU. */
+    DEFINE_PROP_BOOL("x-gpu", SGIMgrasState, gpu_enabled, false),
+    DEFINE_PROP_UINT32("x-gpu-min-pixels", SGIMgrasState, gpu_min_pixels,
+                       4096),
+    /* Host-only: how long the status register reads busy for work. */
+    DEFINE_PROP_UINT32("x-test-gpu-busy-cap-ms", SGIMgrasState,
+                       gpu_busy_cap_ms, MGRAS_STATUS_BUSY_MS),
     /*
      * Host-only qtest: draws and clears of at least this many pixels run
      * in bands, in place of the rasterizer's threshold; 0 keeps it.
@@ -2746,6 +2769,8 @@ static void mgras_test_get_pixel(Object *obj, Visitor *v, const char *name,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
+    sgi_mgras_gpu_read_all(s);
+
     if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
         s->test_pixel_y < s->height) {
         value = s->front[s->test_pixel_y * s->width + s->test_pixel_x];
@@ -2766,6 +2791,8 @@ static void mgras_test_get_pixel_row(Object *obj, Visitor *v,
     SGIMgrasState *s = SGI_MGRAS(obj);
     g_autoptr(GString) str = g_string_new(NULL);
     char *out;
+
+    sgi_mgras_gpu_read_all(s);
 
     for (uint32_t i = 0; i < s->test_pixel_count; i++) {
         uint32_t x = s->test_pixel_x + i;
@@ -2820,6 +2847,8 @@ static void mgras_test_get_format(Object *obj, Visitor *v, const char *name,
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
+
+    sgi_mgras_gpu_read_all(s);
 
     if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
         s->test_pixel_y < s->height) {
@@ -2944,9 +2973,28 @@ static void mgras_test_get_back_pixel(Object *obj, Visitor *v,
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
 
+    sgi_mgras_gpu_read_all(s);
+
     if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
         s->test_pixel_y < s->height) {
         value = s->back[s->test_pixel_y * s->width + s->test_pixel_x];
+    }
+    visit_type_uint32(v, name, &value, errp);
+}
+
+/* Both banks' alpha at the test pixel: front in bits 7:0, back in 15:8. */
+static void mgras_test_get_alpha(Object *obj, Visitor *v, const char *name,
+                                 void *opaque, Error **errp)
+{
+    SGIMgrasState *s = SGI_MGRAS(obj);
+    uint32_t value = 0;
+
+    sgi_mgras_gpu_read_all(s);
+    if (DEVICE(obj)->realized && s->test_pixel_x < s->width &&
+        s->test_pixel_y < s->height) {
+        uint32_t at = s->test_pixel_y * s->width + s->test_pixel_x;
+
+        value = s->front_alpha[at] | s->back_alpha[at] << 8;
     }
     visit_type_uint32(v, name, &value, errp);
 }
@@ -2957,6 +3005,8 @@ static void mgras_test_get_slot_pixel(Object *obj, Visitor *v,
 {
     SGIMgrasState *s = SGI_MGRAS(obj);
     uint32_t value = 0;
+
+    sgi_mgras_gpu_read_all(s);
 
     if (DEVICE(obj)->realized && s->test_slot < 2 && s->slot[s->test_slot] &&
         s->test_pixel_x < s->width && s->test_pixel_y < s->height) {
@@ -2972,6 +3022,7 @@ static void mgras_instance_init(Object *obj)
 
     qdev_init_gpio_in_named(DEVICE(obj), mgras_link_reset, "link-reset", 1);
     sgi_mgras_gl_init(s);
+    sgi_mgras_gpu_instance_init(obj);
     object_property_add(obj, "x-test-line-phase", "uint32", NULL,
                         mgras_test_get_line_phase, NULL, NULL, NULL);
     object_property_add(obj, "x-test-depth-stencil", "uint32", NULL,
@@ -2980,6 +3031,8 @@ static void mgras_instance_init(Object *obj)
                         mgras_test_get_back_pixel, NULL, NULL, NULL);
     object_property_add(obj, "x-test-slot-pixel", "uint32", NULL,
                         mgras_test_get_slot_pixel, NULL, NULL, NULL);
+    object_property_add(obj, "x-test-alpha", "uint32", NULL,
+                        mgras_test_get_alpha, NULL, NULL, NULL);
     object_property_add_uint32_ptr(obj, "x-test-slot", &s->test_slot,
                                    OBJ_PROP_FLAG_READWRITE);
     object_property_add(obj, "x-test-polygon-contexts", "uint32", NULL,

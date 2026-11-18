@@ -15,6 +15,7 @@
 #include "hw/display/sgi/scanout.h"
 #include "hw/display/sgi/gl-context.h"
 #include "hw/display/sgi/rasterizer.h"
+#include "hw/display/sgi-gpu-board.h"
 
 #define TYPE_SGI_MGRAS "sgi-mgras"
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
@@ -799,6 +800,13 @@ struct SGIMgrasState {
      */
     SGIBoardMemory mem;
     uint32_t bank_plane[2];
+    /* x-gpu: flat fills on the host GPU (hw/misc/sgi-mgras-gpu.c). */
+    bool gpu_enabled;
+    uint32_t gpu_min_pixels;
+    uint32_t gpu_busy_cap_ms;
+    SgiBoardGpu *gpu;
+    struct SmgBatch *gpu_batch;     /* queued triangles */
+    SGIBoardMemory gpu_mem;     /* binds the row hook; holds no pixels */
     /* 24-bit depth plane, one value per pixel of the screen. */
     uint32_t *depth;
     uint32_t depth_count;

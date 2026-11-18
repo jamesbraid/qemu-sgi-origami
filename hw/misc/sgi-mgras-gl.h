@@ -23,6 +23,8 @@ uint32_t sgi_mgras_gl_query_answer(SGIMgrasState *s, const uint32_t *args,
 /* Select the GL state a completed context image names. */
 void sgi_mgras_gl_context_loaded(SGIMgrasState *s);
 bool sgi_mgras_gl_client_read_active(SGIMgrasState *s);
+/* Whether the loaded context tests a pixel's clip ID before it stores. */
+bool sgi_mgras_gl_clip_id_active(SGIMgrasState *s);
 bool sgi_mgras_gl_client_read_window(SGIMgrasState *s, uint32_t *origin_x,
                                      uint32_t *origin_y, uint32_t *x0,
                                      uint32_t *y0, uint32_t *x1,
