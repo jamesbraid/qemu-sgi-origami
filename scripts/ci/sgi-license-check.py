@@ -82,6 +82,7 @@ NO_COMMENT_EXTENSIONS = {'.json', '.sha256'}
 NO_COMMENT_FILES = {
     # Licence text, and a one-line expected output compared byte for byte.
     'hw/mips/sgi/models/LICENSE',
+    'hw/mips/sgi/mace-pci-offsets.LICENSE',
     'scripts/tests/system-model-fixtures/format2/origin2000/refused.txt',
 }
 

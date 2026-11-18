@@ -1138,6 +1138,8 @@ hw/mips/sgi/mace-ps2.c
 include/hw/mips/sgi/mace-ps2.h
 tests/qtest/sgi-mace-ps2-test.c
 hw/mips/sgi/mace.c
+hw/mips/sgi/mace-pci-offsets.LICENSE
+hw/mips/sgi/mace-pci-offsets.h
 hw/mips/sgi/mace-timer.h
 include/hw/mips/sgi/mace.h
 hw/mips/sgi/models/o2.yaml
