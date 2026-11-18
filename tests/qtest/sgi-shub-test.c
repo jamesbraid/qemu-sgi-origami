@@ -198,6 +198,55 @@ static void test_flash_other_widths_are_refused(void)
     }
 }
 
+/* The XN compare words the PROM zeroes read 0 and keep a stored value. */
+static void test_xn_zero_cells(void)
+{
+    static const uint64_t cells[] = {
+        0x150031220ULL, 0x150031230ULL, 0x1500313c0ULL,
+        0x1500313e0ULL, 0x1500315b0ULL, 0x1500315c0ULL,
+        0x1500315a0ULL, 0x150031360ULL, 0x150031370ULL,
+        0x150031270ULL, 0x150031110ULL, 0x150031610ULL, 0x150031580ULL,
+        0x150031600ULL,
+    };
+    QTestState *qts = start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cells); i++) {
+        g_assert_cmphex(qtest_readq(qts, LOCAL + cells[i]), ==, 0);
+        qtest_writeq(qts, LOCAL + cells[i], 0);
+        qtest_writeq(qts, LOCAL + cells[i], 0x5a + i);
+        g_assert_cmphex(qtest_readq(qts, GLOBAL + cells[i]), ==, 0x5a + i);
+    }
+    qtest_quit(qts);
+}
+
+/* The error and mask words the PROM writes are stored; widths are refused. */
+static void test_blind_cells(void)
+{
+    static const uint64_t cells[] = {
+        0x150040508ULL, 0x1000000d8ULL, 0x100033040ULL, 0x110050480ULL,
+        0x120050a80ULL, 0x150040550ULL, 0x110040000ULL, 0x110040300ULL,
+        0x110060380ULL, 0x110060100ULL, 0x100030110ULL, 0x100050370ULL,
+        0x110060780ULL,
+    };
+    QTestState *qts = start();
+
+    for (unsigned i = 0; i < ARRAY_SIZE(cells); i++) {
+        g_assert_cmphex(qtest_readq(qts, LOCAL + cells[i]), ==, 0);
+        qtest_writeq(qts, GLOBAL + cells[i], 0x7f77777ffULL + i);
+        g_assert_cmphex(qtest_readq(qts, LOCAL + cells[i]), ==,
+                        0x7f77777ffULL + i);
+    }
+    /* The credit counts reset to 0x1f and the access words to all ones. */
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110060000ULL), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110060180ULL), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110060400ULL), ==, UINT64_MAX);
+    g_assert_cmphex(qtest_readq(qts, LOCAL + 0x110040100ULL), ==, 0x1f);
+    g_assert_cmphex(qtest_readq(qts, GLOBAL + 0x110040180ULL), ==, 0x1f);
+    qtest_readl(qts, LOCAL + cells[0]);
+    assert_unmodelled(qts);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     int ret;
@@ -214,6 +263,8 @@ int main(int argc, char **argv)
                    test_flash_program_erase);
     qtest_add_func("/sgi-shub/prom-flash/other-widths-are-refused",
                    test_flash_other_widths_are_refused);
+    qtest_add_func("/sgi-shub/xn-zero-cells", test_xn_zero_cells);
+    qtest_add_func("/sgi-shub/blind-cells", test_blind_cells);
     ret = g_test_run();
     for (unsigned i = 0; i < unimp_serial; i++) {
         g_autofree char *log = g_strdup_printf("%s/unimp-%u.log", tmp_dir, i);

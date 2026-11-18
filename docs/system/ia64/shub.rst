@@ -199,8 +199,9 @@ core as a bus error. Access is little endian.
        not modelled.
    * - ``crb_nack_limit``, ``crb_timeout_prescale``, ``crb_timeout_skid``
      - ``0x1_2000_0080``, ``0100``, ``0180``
-     - Stored words. A read before the first write stops: no reset value is
-       known.
+     - Stored words. They reset to 0, 0 and 7 (*inferred* from the 2.4
+       header: the PROM reads them first, so a read cannot be refused). The PROM sets
+       bits of the skid word outside the header's mask, so every bit is kept.
    * - ``ii_int`` (2, stride 0x100)
      - ``0x1_1000_0000``
      - Write-only. The PIC writes its interrupt packet here: ``0x100`` plus the
@@ -229,6 +230,9 @@ core as a bus error. Access is little endian.
      - Stored word, reset 0.
    * - ``fw_word_1540``, ``cpu_bits``, ``fw_debug_word``
      - ``0x1_5003_1540``, ``1550``, ``1560``
+     - Stored words, reset 0.
+   * - the XN compare words the PROM zeroes
+     - ``0x1_5003_1220``, ``1230``, ``13c0``, ``13e0``, ``15b0``, ``15c0``, ``15a0``, ``1360``, ``1370`` and 39 more listed in the reviewed page (``1270``, ``1110`` to ``1210``, ``1240``, ``1260``, ``1300`` to ``1340``, ``1570`` to ``1600``, ``1610`` to ``1670``, ``13d0``, ``13f0``)
      - Stored words, reset 0.
    * - ``pio_write_status`` (2, stride 0x80)
      - ``0x1_2007_0200``
@@ -284,6 +288,59 @@ Ratings
 - The tick period formula is *software expectation* (the PROM and its runtime
   compute it) and the 50 ns rate it gives is *inferred*: no document says the
   chip counts at that rate.
+- The 48 XN compare words in the table are stored words with reset 0
+  (*inferred*: the SN2 2.4 header gives 64-bit masks and an initial value of
+  0 for the words checked, and the page that lists them is reviewed). The
+  PROM writes 0 to them in register lists, mostly through the global
+  window. The three flag words ``15a0``, ``1360`` and ``1370`` it reads back
+  and ORs a mask into, and ``1580`` is a counter it reads and increments,
+  so all keep what is stored. The PROM runs this once, on the node's own
+  chip. No remote-node path was found, and a call through a computed table
+  is not excluded.
+- The memory set-up writes the directory vectors of both memory ports: the
+  four presence words at ``0x1_0003_0100`` and ``0x1_0005_0100`` (``0110``
+  to ``0130``), the local vectors 1 to 7 at ``0200`` and the privilege
+  vectors 1 to 7 at ``0300`` (step 0x10), and the four present-SHub words at
+  ``0x1_1006_0600``, ``0680``, ``0700`` and ``0780``. Each is a stored cell
+  that resets to 0 and reads back what was written (*approximation*: the
+  PROM only writes them, the offsets come from a trace of the node set-up
+  that has no review on record, and the reset values are *unknown*).
+- The PROM also read-modify-writes four link-buffer words, ``lb_liq_ctl``
+  (``0x1_1004_0000``, which it reads, ORs ``0x40000`` into and writes back 63
+  times, never testing the value), the request and reply credit counts at
+  ``0x1_1004_0100`` and ``0x1_1004_0180``, and ``0x1_1004_0300``. Each is a
+  stored cell, in the same table as the words below. The two credit counts
+  reset to ``0x1f`` and the others to 0 (*approximation*: the reset values
+  are *inferred* from the 2.4 header, and the page that lists them is not
+  yet reviewed). The PROM then writes the CPU and I/O permission words
+  (``0x1_1006_0000``, ``0100``, ``0180``, ``0380`` and ``0400``) from a
+  table in memory. They are stored cells. ``0000``, ``0180`` and ``0400``
+  reset to all ones and ``0100`` and ``0380`` to 0, from the 2.4 header
+  (*inferred*). The mask rule and the fields are *unknown*.
+- The PROM's node set-up writes 99 error, mask and alias words outside the XN
+  block: the event, error summary, overflow, first-error, time-stamp, detail
+  and mask words of the processor, memory, network, crossbar and local-block
+  chips. Each is a stored 64-bit cell that resets to 0 and reads back what
+  was written (*approximation*). The PROM only writes them, with 0, masks or
+  all valid bits. Write-one-to-clear and mask effects are *unknown* and not
+  modelled, and the offsets come from the ``devices/shub/prom-reset.md`` in the chips repository. The event alias words keep their own rows. Other widths are
+  refused.
+- The PROM reads the two network interface port status words at ``0x1_5000_0000``
+  and ``0x1_5000_2000`` and counts a port as down unless the low nibble is 9
+  (*software expectation*, ``devices/shub/memory-init.md`` in the chips repository). They are stored cells that
+  reset to 0, so both ports report no link and the PROM skips neighbour
+  discovery (*approximation*: no network interface is modelled and the other
+  bits are *unknown*).
+- Before the memory test the PROM sets up each network port's link: it
+  read-modify-writes the link configuration (``0x1_5000_0020`` plus
+  ``0x2000`` per port, reset ``0x7fc6_ffd00``) and three flow-control words
+  (``0x1_5003_03c0``, ``03d0`` and ``03f0``, ``0x200`` apart per port), reads
+  the channel mode (``0x18``), and writes the link reset (``0x08``) and test
+  control (``0x28``) while the port reads down. All are stored cells. The
+  reset pulse does not change the status word, so the port stays down. The
+  offsets and the reset value come from an interim reading of the PROM and
+  the 2.4 header that is not yet a reviewed page (*inferred*). Link training
+  and the flow-control fields are *unknown* and not modelled.
 - ``ipi_access``, the privilege vectors, ``lb_l1_state``, ``pi_reg_2001_0100``,
   the PROM's firmware words and the memory controller words are stored and
   read back as plain registers.
@@ -303,10 +360,8 @@ Ratings
 - The I/O interface registers the PROM sets up are stored and read back, and
   ``llp_control_status`` always reports the link up. All of that is an
   *approximation*: the PROM tolerates any other value, and no source gives
-  the cells' reset values or side effects. The widget behind small window 0,
-  the crossbow, is not modelled in the device yet, so reads from the widget
-  windows stop the VM. The local-window form of the II block is *inferred* to
-  be the same registers.
+  the cells' reset values or side effects. The local-window form of the II
+  block is *inferred* to be the same registers.
 - The junk bus decodes 64 KiB per device, from the LED stride of 0x1_0000
   (*inferred*). The board may map one device, a 16550, at slot 4
   (``0x7fed4_0000``) in both windows with ``sgi_shub_map_junk_bus``. Every
@@ -336,6 +391,29 @@ Ratings
   *unknown*. Later kernels get the table through a SAL call, so only a
   2.6.5-era kernel reads this. Stores take 16 bits and reads 16 or aligned 64
   bits. Anything else is refused.
+- Small windows other than 1 forward to a widget the board maps into the
+  device (``sgi_shub_widget_window``). A widget register is one 64-bit
+  little-endian value, so a narrow access at ``+0`` is the low bits. The
+  adapter hands narrow accesses to big-endian models at the mirrored offset
+  with the value unchanged. That ``+0`` is bits 31:0 is a *software expectation* (the
+  PROM's part and status tests depend on it) and that PIO data is not swapped
+  is *established* as the software contract (reviewed chips widget-access
+  page). The ``+4`` half is *inferred*: no code reads an ``8n+4`` widget word.
+  An access no widget answers is refused.
+- The device implements the XIO port interface, so a PIC can link to it. Only
+  8-byte interrupt packets to the node's own ``ii_int`` registers are
+  accepted. The packet address carries the target node in bits 46:36, two
+  bits below the processor's ``nasid << 38`` form, and bit 47 for a register
+  write. Both are *inferred* from the Linux code that builds the address,
+  not from a hardware description, and the node must match the SHub's NASID
+  or the packet is refused. A write to the interrupt register with bit 8 clear (a
+  clear packet) is also refused: the layout of that half is *unknown*.
+  A packet that targets memory (widget DMA) stops the VM, since the
+  crosstalk address translation has no reviewed source.
+- The PIC behind window 15 is the shared PIC model. Its head registers that
+  model does not implement (offsets such as ``+0x4000`` and ``+0x100000``)
+  read 0 and accept writes, logging the access under the mirrored offset. The
+  SHub window does not refuse them (*approximation*).
 - The PIC interrupt packet's layout (``0x100`` plus the vector) is *inferred*
   from the register layout, and that the write sets event bit 29 or 30 is
   *unknown*, so no event bit is set. Both slice targets reach the one
@@ -417,6 +495,9 @@ Model limits
   only.
 - **Block transfers.** Only a zero fill is accepted. It moves no data and
   writes no notification word. The PROM never reads the notification word.
+  The accesses come from ``devices/shub_ii/README.md`` in the chips repository. A control
+  read returns the stored value and a length write of 0 leaves the engine
+  idle. The header gives no reset values, so the reset of 0 is *inferred*.
 - **Not modelled.** Directory contents, the network
   interface, the I/O interface, memory sizing through the L1 controller,
   SHub 2.
@@ -432,4 +513,4 @@ Migration is supported between identical builds only.
 Tests
 -----
 
-``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine and covers the junk-bus UART windows and the PROM flash. The rest of the register behaviour is tested in a later change, through the Altix 350 machine.
+``tests/qtest/sgi-shub-test.c`` runs on the ``x-shub1-test`` fixture machine and covers the junk-bus UART windows, the PROM flash and the XN and blind cells. The rest of the register behaviour is tested in a later change, through the Altix 350 machine.

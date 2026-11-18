@@ -7,6 +7,7 @@
 #include "qom/object.h"
 #include "qemu/timer.h"
 #include "system/block-backend.h"
+#include "hw/mips/sgi-xio-port.h"
 
 #define TYPE_SGI_SHUB "sgi-shub"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
@@ -38,6 +39,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIShubState, SGI_SHUB)
 #define SGI_SHUB_PROM_FLASH_SECTOR 0x10000
 #define SGI_SHUB_PROM_FLASH_IMAGE 0x200000
 
+/* Error, mask and alias words the PROM only writes (see sgi-shub.c). */
+#define SGI_SHUB_BLIND_CELLS 164
+
 /* NASID 0, revision 3, as the PROM's reads need; see the manual page. */
 #define SGI_SHUB_ID_DEFAULT 0x30000000ULL
 
@@ -62,7 +66,8 @@ enum {
     SHUB_SLOT_FW_1540 = SHUB_SLOT_HIST + 4,
     SHUB_SLOT_CPU_BITS,
     SHUB_SLOT_FW_DEBUG,
-    SHUB_SLOT_PI_2001_0100,
+    SHUB_SLOT_XN_ZERO,
+    SHUB_SLOT_PI_2001_0100 = SHUB_SLOT_XN_ZERO + 48,
     SHUB_SLOT_L1_STATE,
     SHUB_SLOT_ELECT,
     SHUB_SLOT_MD_BANK_CFG,
@@ -89,7 +94,7 @@ enum {
     SHUB_SLOT_EVENT_OVF = SHUB_SLOT_LOCAL_EN + 6,
     SHUB_SLOT_PTC_PARMS,
     SHUB_SLOT_II,
-    SHUB_SLOT_LLP_CSR = SHUB_SLOT_II + 149,
+    SHUB_SLOT_LLP_CSR = SHUB_SLOT_II + 150,
     SHUB_SLOT_CRB_MSG,
     SHUB_SLOT_II_INT_CFG,
     SHUB_SLOT_II_INT_EN = SHUB_SLOT_II_INT_CFG + 2,
@@ -101,6 +106,16 @@ struct SGIShubState {
 
     MemoryRegion local_mmr;
     MemoryRegion global_mmr;
+    /* The crosstalk small windows of the global window, link 1 excepted. */
+    MemoryRegion widget_window[16];
+    MemoryRegion widget_view[16];
+    AddressSpace widget_as[16];
+    struct SGIShubWidgetArg {
+        SGIShubState *shub;
+        unsigned link;
+    } widget_arg[16];
+    /* Widget-originated packets: a PIC's interrupt writes (SHub 1). */
+    MemoryRegion xio_packet;
 
     /* Property: the SHub ID register's reset value. */
     uint64_t shub_id_reset;
@@ -120,6 +135,7 @@ struct SGIShubState {
     } comparator_arg[4];
 
     uint16_t led[4];
+    uint64_t blind_cell[SGI_SHUB_BLIND_CELLS];
 
     MemoryRegion junk_bus_alias[SGI_SHUB_JUNK_BUS_DEVICES];
     bool junk_bus_mapped[SGI_SHUB_JUNK_BUS_DEVICES];
@@ -148,5 +164,15 @@ bool sgi_shub_add_prom_flash(SGIShubState *s, BlockBackend *blk,
 
 bool sgi_shub_map_junk_bus(SGIShubState *s, unsigned device, MemoryRegion *mr,
                            Error **errp);
+
+/*
+ * The crosstalk small window of a link: 16 MiB at link << 24 of the global
+ * window, empty until board code maps a widget into it. Link 1 holds the I/O
+ * interface registers and has none.
+ */
+MemoryRegion *sgi_shub_widget_window(SGIShubState *s, unsigned link);
+
+/* The face a widget's upstream packets (interrupts, later DMA) arrive at. */
+MemoryRegion *sgi_shub_xio_packet_face(SGIShubState *s);
 
 #endif
