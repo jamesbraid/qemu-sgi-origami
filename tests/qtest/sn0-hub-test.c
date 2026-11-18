@@ -4422,6 +4422,49 @@ static void test_pending_banks_are_masked_per_processor(const void *data)
     qtest_quit(qts);
 }
 
+/*
+ * Bank 0 numbers 7 and 8 carry a 2-processor IRIX guest's cross-processor
+ * calls, one per slice: each rides its slice's mask, and sets and clears
+ * are idempotent.
+ */
+static void test_cross_processor_interrupts_follow_each_slice(const void *data)
+{
+    const uint64_t call_a = 1ULL << 7, call_b = 1ULL << 8;
+    QTestState *qts = qtest_init("-M origin200 -smp 2");
+
+    qtest_irq_intercept_out_named(qts, "/machine/node0/hub",
+                                  HUB_IRQ_BANK0_LINES);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, call_a);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, call_b);
+
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 7);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 8);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+
+    /* A second set merges: one clear drops it, and the other stays up. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, INT_MODIFY_SET | 7);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==,
+                    call_a | call_b);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 7);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 7);
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + PI_INT_PEND0), ==, call_b);
+
+    /* Remasking re-evaluates both lines with no new set. */
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_A, call_a | call_b);
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MASK0_B, 0);
+    g_assert_true(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_B));
+    qtest_writeq(qts, HUB_LOCAL + PI_INT_MODIFY, 8);
+    g_assert_false(qtest_get_irq(qts, HUB_IRQ_SLICE_A));
+
+    qtest_quit(qts);
+}
+
 static void test_the_pending_banks_reject_writes(const void *data)
 {
     hub_reset();
@@ -7176,6 +7219,8 @@ int main(int argc, char **argv)
                         test_a_masked_pending_bit_raises_nothing);
     qtest_add_data_func("sn0/hub/pending-banks-masked-per-processor", NULL,
                         test_pending_banks_are_masked_per_processor);
+    qtest_add_data_func("sn0/hub/cross-processor-interrupts", NULL,
+                        test_cross_processor_interrupts_follow_each_slice);
     qtest_add_data_func("sn0/hub/pi-pending-reaches-cpu-cause", NULL,
                         test_pi_pending_reaches_cpu_cause);
     qtest_add_data_func("sn0/hub/profiling-comparator-raises-cause-ip5", NULL,
