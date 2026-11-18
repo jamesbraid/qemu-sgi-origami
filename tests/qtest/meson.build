@@ -26,8 +26,10 @@ slow_qtests = {
   # The fpga-load case sends the page's whole load sequence for all eight
   # FPGAs: about 4.5 million register accesses, one qtest round trip each,
   # of which the GIF's 1.4 million clock pairs are 2.9 million stores. 32 s
-  # alone.
-  'octane-xt-digvid-test': 180,
+  # alone, but 245 s at load 200 (243 s of it system time in the socket
+  # round trips) and killed at 180 s in merge-queue run 18987. Three times
+  # the loaded figure.
+  'octane-xt-digvid-test': 750,
   # The whole-frame cases compare and checksum 100 frames. The slowest
   # alone took 21 s, and the file overran the 60 s default, at load 140 on
   # a 224-thread workstation, 2026-11-14; three times the default.
