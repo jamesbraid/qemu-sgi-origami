@@ -177,17 +177,6 @@ later protocol step.
 Bit 1 of ``frame_flags`` is reserved for a sync_file fd on ``FRAME`` that
 would replace the producer's wait. Nothing sets it yet.
 
-Specified, not built:
-
-* macOS: display-shm is not built there yet, which comes first. Class 5 is
-  an IOSurface and a shared event; a Mach port cannot ride ``SCM_RIGHTS``.
-  The accept payload of ``macos.iosurface`` names a bootstrap service the
-  producer checked in for this instance, with a token. The viewer looks it
-  up, registers a receive port and the token over Mach, and the producer
-  sends each slot's port and the event's there, naming the ``REGION`` they
-  belong to. The event is signalled with the frame serial after the GPU
-  work, or the producer waits, as above.
-
 GPU frames on Windows (``win32.handle``)
 ========================================
 
@@ -208,6 +197,33 @@ before the slot that names it, with its own handle. Both go away with
 goes out, as on Linux, so a viewer waits for nothing; the fence is lent for
 the mode that replaces the host wait, once ``FRAME`` carries the value to
 wait for. The lease rules are the same as for dma-bufs.
+
+GPU frames on macOS (``macos.iosurface``)
+=========================================
+
+The same lending, with class 5: a slot is an IOSurface (``'BGRA'``, the X
+byte undefined). A viewer offers class 5 and the extension ``macos.iosurface``
+(version 1, eight zero bytes). The accept carries an 80-byte payload:
+``allocator`` 2, zero flags, a u64 ``token`` and a NUL-terminated bootstrap
+service name the producer checked in for this instance. Never map a slot.
+
+A Mach port cannot ride ``SCM_RIGHTS``. The viewer looks the service up and
+sends one complex message, ``msgh_id`` 0x44534d01, with a send-right
+descriptor for a receive port of its own and the token as an eight-byte body.
+It needs a queue limit large enough for every slot of its set. A wrong or
+reused token is ignored. For each slot, the ``REGION`` (class 5, no handle,
+the payload of ``linux.dmabuf``'s with modifier and offset zero) goes on the
+socket, and once it has been sent the producer sends ``msgh_id`` 0x44534d02 to
+the viewer's port: one send-right descriptor, the slot's IOSurface, and a body
+of the u32 ``REGION`` id and a zero u32. The two arrive in either order. A
+producer whose message would block ends the connection with ``LIMIT``.
+
+``FRAME`` and the lease rules are those of ``linux.dmabuf``, and so is the
+host-fence mode: the producer has waited for the GPU before it sends
+``FRAME``. A viewer that cannot import a slot answers ``IMPORT_FAILED`` and
+is moved to shared memory. Sandboxed viewers need a ``mach-lookup`` exception
+for the service name. The ``MTLSharedEvent`` that would replace the wait is
+not built.
 
 Input
 =====
@@ -253,8 +269,8 @@ bytes), then the u32 ``sets`` at 88 and ``max_queued`` at 92.
 Not yet
 =======
 
-macOS (not built or run), the ``vk.external-memory`` and
-``sgi.raw-scanout`` extensions, a GPU slot on macOS, a fence value on ``FRAME`` for Windows, leaving the cursor out
+The ``vk.external-memory`` and ``sgi.raw-scanout`` extensions, a fence value
+on ``FRAME`` for Windows, an ``MTLSharedEvent`` on macOS, leaving the cursor out
 of the picture, horizontal damage extents, a console created after a viewer
 connected (it becomes a head, or an unsupported one, at the next connection), and the held-sample ``CONTROL``
 for a producer that samples elsewhere than its own thread.

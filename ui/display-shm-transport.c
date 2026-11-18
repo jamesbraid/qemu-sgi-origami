@@ -45,6 +45,11 @@ void dshm_out_free(DShmViewer *v, DShmOut *o)
         close(o->h);
     }
 #endif
+#ifdef CONFIG_DARWIN
+    if (o->mach_port) {
+        dshm_mach_port_drop(o->mach_port);
+    }
+#endif
     g_free(o->saved_damage);
     g_free(o->buf);
     g_free(o);
@@ -180,6 +185,13 @@ void dshm_flush(DShmViewer *v)
                 v->handles_started++;
 #endif
             }
+#ifdef CONFIG_DARWIN
+            if (o->mach_port) {
+                /* the viewer knows the REGION now: its Mach message follows */
+                dshm_mach_queue_slot(v, o->region, o->mach_port);
+                o->mach_port = 0;
+            }
+#endif
             if (o->type == DSHM_MSG_FRAME) {
                 dshm_frame_started(v, o);
             }
@@ -350,6 +362,9 @@ static void viewer_unref(DShmViewer *v)
 #ifdef _WIN32
     dshm_win_viewer_free(v);
 #endif
+#ifdef CONFIG_DARWIN
+    dshm_mach_viewer_free(v);
+#endif
     g_free(v->in);
     g_free(v->vh);
     g_free(v);
@@ -431,10 +446,23 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
     uint8_t buf[sizeof(m) + sizeof(DShmGpuRegion) + 8] = { };
     size_t len = sizeof(m) + 8;
     DShmOut *o;
-    DShmHandle h = dshm_region_dup(r, access);
+    DShmHandle h = DSHM_NO_HANDLE;
+    uint32_t mach_port = 0;
 
-    if (!DSHM_HANDLE_OK(h)) {
-        return false;
+#ifdef CONFIG_DARWIN
+    /* An IOSurface rides a Mach message, not the socket: no handle here. */
+    if (r->gpu) {
+        mach_port = dshm_mach_port_dup(r->gpu_slot.handle);
+        if (!mach_port) {
+            return false;
+        }
+    }
+#endif
+    if (!mach_port) {
+        h = dshm_region_dup(r, access);
+        if (!DSHM_HANDLE_OK(h)) {
+            return false;
+        }
     }
     if (r->gpu) {
         const DisplayShmGpuSlot *g = &r->gpu_slot;
@@ -467,8 +495,16 @@ bool dshm_region_announce(DShmViewer *v, DShmRegion *r, uint32_t access)
     memcpy(buf, &m, sizeof(m));
     o = dshm_queue(v, buf, len, h, true);
     if (!o) {
+#ifdef CONFIG_DARWIN
+        if (mach_port) {
+            dshm_mach_port_drop(mach_port);
+        }
+#endif
         return false;
     }
+#ifdef CONFIG_DARWIN
+    o->mach_port = mach_port;
+#endif
     o->region = r->id;
     g_hash_table_add(v->announced, GUINT_TO_POINTER(r->id));
     return true;
@@ -510,6 +546,9 @@ void dshm_region_forget(DShmViewer *v, DShmRegion *r)
         return;
     }
     v->in_forget = true;
+#ifdef CONFIG_DARWIN
+    dshm_mach_forget(v, r->id);
+#endif
     announced = g_hash_table_remove(v->announced, GUINT_TO_POINTER(r->id));
     bitmap_zero(heads, DSHM_FEEDBACK_HEADS);
     QTAILQ_FOREACH_SAFE(o, &v->out, next, next) {
@@ -664,7 +703,11 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     size_t left = hdr->length - sizeof(h);
     bool test_ok, steer_ok, gpu_ok = false, bad = false;
     unsigned idx = 0, n_acc = 0, gpu_idx = 0;
+    size_t gpu_len = sizeof(DShmGpuAccept);
     Error *err = NULL;
+#ifdef CONFIG_DARWIN
+    const char *mach_service = NULL;
+#endif
 
     memcpy(&h, msg, sizeof(h));
     if (h.major != DSHM_MAJOR) {
@@ -696,6 +739,11 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
         gpu_ok = offers_have(offers, left, h.n_ext, DSHM_GPU_EXT, &bad) &&
                  dshm_storage_has(h.storage, DSHM_GPU_CLASS);
     }
+#ifdef CONFIG_DARWIN
+    if (gpu_ok && !dshm_mach_start(d, &mach_service)) {
+        gpu_ok = false;
+    }
+#endif
     if (bad) {
         dshm_viewer_close(v, DSHM_ERR_PROTOCOL, "extension offers overrun");
         return;
@@ -772,8 +820,11 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     if (v->ext_steer) {
         wlen += 8;
     }
+#ifdef CONFIG_DARWIN
+    gpu_len = sizeof(DShmMachAccept);
+#endif
     if (v->ext_gpu) {
-        wlen += sizeof(DShmGpuAccept);
+        wlen += gpu_len;
     }
     wb = g_malloc0(wlen);
     memcpy(wb, &w, sizeof(w));
@@ -798,13 +849,18 @@ static void viewer_hello(DShmViewer *v, const DShmHdr *hdr,
     }
     if (v->ext_gpu) {
         DShmAccept a = { .version = 1, .index = gpu_idx,
-                         .payload_len = sizeof(DShmGpuAccept) };
+                         .payload_len = gpu_len };
 
         strcpy((char *)a.name, DSHM_GPU_EXT);
         memcpy(wb + pos, &a, sizeof(a));
         pos += sizeof(a);
         stl_le_p(wb + pos, DSHM_ALLOC_GPU);
-        pos += sizeof(DShmGpuAccept);
+#ifdef CONFIG_DARWIN
+        stq_le_p(wb + pos + 8, dshm_mach_token(v));
+        g_strlcpy((char *)wb + pos + 16, mach_service,
+                  DSHM_MACH_SERVICE_BYTES);
+#endif
+        pos += gpu_len;
     }
     dshm_queue(v, wb, wlen, DSHM_NO_HANDLE, false);
 #ifdef _WIN32

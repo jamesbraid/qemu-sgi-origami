@@ -44,13 +44,16 @@ typedef int DShmHandle;
 #define DSHM_HANDLE_OK(h) ((h) >= 0)
 #endif
 
-/* The GPU class and its extension: dma-bufs on Linux, NT handles on Windows. */
+/* GPU slots: dma-bufs on Linux, NT handles on Windows, IOSurfaces on macOS. */
 #if defined(CONFIG_LINUX)
 #define DSHM_GPU_CLASS DSHM_STORAGE_DMABUF
 #define DSHM_GPU_EXT DSHM_EXT_DMABUF
 #elif defined(_WIN32)
 #define DSHM_GPU_CLASS DSHM_STORAGE_WIN32
 #define DSHM_GPU_EXT DSHM_EXT_WIN32
+#elif defined(CONFIG_DARWIN)
+#define DSHM_GPU_CLASS DSHM_STORAGE_IOSURFACE
+#define DSHM_GPU_EXT DSHM_EXT_IOSURFACE
 #else
 #define DSHM_GPU_CLASS 0
 #define DSHM_GPU_EXT ""
@@ -63,7 +66,7 @@ typedef struct DShmRegion {
     uint32_t access;            /* DSHM_ACCESS_* for the viewer's handle */
     size_t size;
     uint8_t *ptr;               /* NULL for a GPU slot: never mapped */
-    DShmHandle h;
+    DShmHandle h;               /* none for an IOSurface: a Mach port rides */
     unsigned refs;
     bool gpu;
     uint32_t gpu_id;            /* the head's name for the image */
@@ -146,6 +149,9 @@ struct DShmOut {
 #ifdef _WIN32
     uint64_t staged;            /* the copy already made in the viewer */
 #endif
+#ifdef CONFIG_DARWIN
+    uint32_t mach_port;         /* an IOSurface REGION: a send right of ours */
+#endif
     uint16_t type;
     bool urgent;                /* sent even while writes are held */
     uint32_t region;            /* REGION, FRAME: the region it names */
@@ -196,6 +202,11 @@ struct DShmViewer {
     unsigned n_vh;
     unsigned wholly_queued_max;
     unsigned test_idx, steer_idx;
+#ifdef CONFIG_DARWIN
+    uint64_t mach_token;        /* macos.iosurface: what the viewer registers */
+    uint32_t mach_port;         /* the viewer's receive port, once it has */
+    GQueue mach_q;              /* DShmMachSlot messages not yet sent */
+#endif
     /* input */
     uint8_t keys_down[(0x2ff + 8) / 8];
     uint8_t key_head[0x300];    /* the head each held key went to */
@@ -352,6 +363,9 @@ struct DisplayShm {
     QEMUTimer *steerq_timer;
     void *steer;
     void *test;
+#ifdef CONFIG_DARWIN
+    void *mach;                 /* the bootstrap service, once offered */
+#endif
 };
 
 /* display-shm.c */
@@ -415,6 +429,18 @@ void dshm_region_forget(DShmViewer *v, DShmRegion *r);
 DShmViewer *dshm_viewer_by_id(DisplayShm *d, uint32_t id);
 unsigned dshm_live_viewers(DisplayShm *d);
 void dshm_message(DShmViewer *v, const DShmHdr *hdr, const uint8_t *msg);
+
+#ifdef CONFIG_DARWIN
+/* display-shm-mach.c: IOSurface slots, their ports sent over Mach */
+bool dshm_mach_start(DisplayShm *d, const char **service);
+uint64_t dshm_mach_token(DShmViewer *v);
+uint32_t dshm_mach_port_dup(int64_t port);
+void dshm_mach_port_drop(uint32_t port);
+void dshm_mach_pump(DShmViewer *v);
+void dshm_mach_queue_slot(DShmViewer *v, uint32_t region, uint32_t port);
+void dshm_mach_forget(DShmViewer *v, uint32_t region);
+void dshm_mach_viewer_free(DShmViewer *v);
+#endif
 
 #ifdef _WIN32
 /* display-shm-win32.c */

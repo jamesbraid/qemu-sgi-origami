@@ -77,10 +77,11 @@
 #define DSHM_FEAT_TEST          (1u << 4)
 #define DSHM_FEAT_ALL           0x1fu
 
-/* Storage classes; 3 and 5 are reserved (Vulkan fd, IOSurface). */
+/* Storage classes; 3 is reserved (Vulkan fd). */
 #define DSHM_STORAGE_SHM        1
 #define DSHM_STORAGE_DMABUF     2
 #define DSHM_STORAGE_WIN32      4
+#define DSHM_STORAGE_IOSURFACE  5
 
 /* linux.dmabuf: slots are dma-bufs the producer's GPU draws; never map them. */
 #define DSHM_EXT_DMABUF         "linux.dmabuf"
@@ -88,6 +89,12 @@
 #define DSHM_GPU_WRITTEN        (1u << 0)       /* DShmGpuRegion flags */
 /* win32.handle: slots are shared D3D12 buffers, each with a shared fence. */
 #define DSHM_EXT_WIN32          "win32.handle"
+
+/* macos.iosurface: slot ports go over Mach, to a port the viewer registers. */
+#define DSHM_EXT_IOSURFACE      "macos.iosurface"
+#define DSHM_MACH_SERVICE_BYTES 64
+#define DSHM_MACH_REGISTER      0x44534d01      /* msgh_id, viewer to service */
+#define DSHM_MACH_SLOT          0x44534d02      /* msgh_id, to the viewer */
 
 /* Region kinds. */
 #define DSHM_KIND_STATE         1
@@ -111,6 +118,7 @@
 #define DSHM_FOURCC_XR24        0x34325258u
 #define DSHM_FOURCC_XB24        0x34324258u
 #define DSHM_FOURCC_AR24        0x34325241u
+#define DSHM_FOURCC_BGRA        0x42475241u     /* 'BGRA': an IOSurface */
 
 /* REQUEST kinds and flags. */
 #define DSHM_REQ_FRAME          (1u << 0)
@@ -341,6 +349,24 @@ typedef struct DShmWin32Region {        /* 32 bytes */
     uint32_t width;
     uint32_t height;
 } DShmWin32Region;
+
+/* macos.iosurface: the accept (the offer is a DShmGpuOffer) and Mach bodies. */
+typedef struct DShmMachAccept {         /* 80 bytes */
+    uint32_t allocator;                 /* DSHM_ALLOC_GPU */
+    uint32_t flags;
+    uint64_t token;                     /* proves the Mach registration */
+    char service[DSHM_MACH_SERVICE_BYTES];
+} DShmMachAccept;
+
+/* Complex message, one send-right descriptor, then this body. */
+typedef struct DShmMachRegister {       /* the viewer's receive port is d[0] */
+    uint64_t token;
+} DShmMachRegister;
+
+typedef struct DShmMachSlot {           /* the slot's IOSurface port is d[0] */
+    uint32_t region;                    /* the REGION it belongs to */
+    uint32_t reserved;
+} DShmMachSlot;
 
 typedef struct DShmCursorImage {        /* 40 bytes, then pixels */
     DShmHdr hdr;
@@ -578,6 +604,9 @@ DSHM_CHECK(DShmFrame, lease_seq, 64);
 QEMU_BUILD_BUG_ON(sizeof(DShmGpuOffer) != 8);
 QEMU_BUILD_BUG_ON(sizeof(DShmGpuAccept) != 8);
 QEMU_BUILD_BUG_ON(sizeof(DShmGpuRegion) != 32);
+QEMU_BUILD_BUG_ON(sizeof(DShmMachAccept) != 80);
+QEMU_BUILD_BUG_ON(sizeof(DShmMachRegister) != 8);
+QEMU_BUILD_BUG_ON(sizeof(DShmMachSlot) != 8);
 DSHM_CHECK(DShmGpuRegion, modifier, 8);
 DSHM_CHECK(DShmGpuRegion, offset, 16);
 DSHM_CHECK(DShmGpuRegion, stride, 20);

@@ -156,10 +156,14 @@ DShmRegion *dshm_region_new(DisplayShm *d, uint32_t kind, size_t size,
     return r;
 }
 
-/* Release what a GPU slot owns: a descriptor or NT handles. */
+/* Release what a GPU slot owns: a descriptor, NT handles or a Mach port. */
 static void dshm_gpu_handle_drop(const DisplayShmGpuSlot *g)
 {
-#ifdef _WIN32
+#if defined(CONFIG_DARWIN)
+    if (g->kind == DSHM_GPU_IOSURFACE) {
+        dshm_mach_port_drop(g->handle);
+    }
+#elif defined(_WIN32)
     if (g->handle > 0) {
         CloseHandle((HANDLE)(intptr_t)g->handle);
     }
@@ -173,13 +177,15 @@ static void dshm_gpu_handle_drop(const DisplayShmGpuSlot *g)
 #endif
 }
 
-/* A GPU slot: only the dma-buf's descriptor or NT handles, ours to close. */
+/* A GPU slot: the dma-buf's descriptor, NT handles or Mach port, ours. */
 DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
                                 uint32_t id)
 {
-#if defined(CONFIG_LINUX) || defined(_WIN32)
+#if defined(CONFIG_LINUX) || defined(CONFIG_DARWIN) || defined(_WIN32)
     DShmRegion *r;
-#ifdef _WIN32
+#if defined(CONFIG_DARWIN)
+    bool kind_ok = g->kind == DSHM_GPU_IOSURFACE && g->handle > 0;
+#elif defined(_WIN32)
     bool kind_ok = g->kind == DSHM_GPU_WIN32 && g->handle > 0;
 #else
     bool kind_ok = g->kind == DSHM_GPU_DMABUF && g->handle >= 0;
@@ -196,6 +202,8 @@ DShmRegion *dshm_region_new_gpu(DisplayShm *d, const DisplayShmGpuSlot *g,
         r->fence_h = (HANDLE)(intptr_t)g->fence;
     }
     r->h = (HANDLE)(intptr_t)g->handle;
+#elif defined(CONFIG_DARWIN)
+    r->h = DSHM_NO_HANDLE;      /* the Mach port rides its own message */
 #else
     r->h = g->handle;
 #endif
