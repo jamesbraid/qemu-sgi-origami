@@ -137,8 +137,11 @@ layer:
         l1_controllers:
           c0-l1: &cbrick-l1
             profile: cbrick
+            # The prefix the firmware compares to classify a C-brick; the full
+            # EEPROM name and suffix, part and revision are unknown.
+            node_board: {processors: 4, name: IP35, part: "", revision: ""}
             provenance: derived
-            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst]
+            sources: [qemu:docs/system/mips/sgi/hardware/l1.rst, qemu:docs/system/mips/sgi/hardware/l1-board.rst]
             revision: {major: 1, minor: 44, patch: 0}
             notes: >-
               The C-brick profile of the L1 model. Its firmware revision,

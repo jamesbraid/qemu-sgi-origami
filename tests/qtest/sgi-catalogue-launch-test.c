@@ -548,6 +548,134 @@ static unsigned offering_l2_links(QDict *o)
     return count;
 }
 
+/*
+ * The l1-node-link and l1-signals lines of an offering, applied as a
+ * launcher does with the firmware setting on: every C-brick controller
+ * the lines name is built as a link to a board, and no other.
+ */
+static void test_l1_links(const void *opaque)
+{
+    const Launch *l = opaque;
+    QDict *o = l->offering;
+    g_autoptr(GString) machine = g_string_new(
+        qdict_get_str(o, "machine-options"));
+    g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
+    g_autoptr(GPtrArray) paths = g_ptr_array_new_with_free_func(g_free);
+    g_autofree char *command = NULL;
+    g_autofree char *prom = make_store(qdict_get_str(o, "id"), "prom",
+                                       1476264);
+    const QListEntry *e;
+    QTestState *qts;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "serial-lines"), e) {
+        QDict *line = qobject_to(QDict, qlist_entry_obj(e));
+        const char *kind = qdict_get_str(line, "kind");
+        int64_t controller;
+
+        if (!g_str_equal(kind, "l1-node-link") &&
+            !g_str_equal(kind, "l1-signals")) {
+            continue;
+        }
+        controller = qdict_get_int(line, "controller");
+        g_ptr_array_add(args, g_strdup("-chardev"));
+        g_ptr_array_add(args, g_strdup_printf(
+            "socket,id=%s,path=%s/%s.sock,reconnect-ms=1000",
+            qdict_get_str(line, "chardev"), directory,
+            qdict_get_str(line, "chardev")));
+        if (g_str_equal(kind, "l1-node-link")) {
+            g_string_append_printf(machine, ",%s=%" PRId64 "/%" PRId64 "=%s",
+                                   qdict_get_str(line, "property"),
+                                   controller,
+                                   qdict_get_int(line, "transport"),
+                                   qdict_get_str(line, "chardev"));
+            g_ptr_array_add(paths, g_strdup_printf(
+                "/machine/node%" PRId64 "/l1", qdict_get_int(line, "node")));
+        } else {
+            g_string_append_printf(machine, ",%s=%" PRId64 "=%s",
+                                   qdict_get_str(line, "property"),
+                                   controller, qdict_get_str(line, "chardev"));
+        }
+    }
+    g_assert_cmpuint(paths->len, >, 0);
+    g_ptr_array_add(args, g_strdup("-M"));
+    g_ptr_array_add(args, g_strdup(machine->str));
+    append_cpu_memory(args, o);
+    g_ptr_array_add(args, g_strdup("-bios"));
+    g_ptr_array_add(args, g_strdup(prom));
+    g_ptr_array_add(args, g_strdup("-nodefaults"));
+    g_ptr_array_add(args, g_strdup("-display"));
+    g_ptr_array_add(args, g_strdup("none"));
+    g_ptr_array_add(args, NULL);
+    command = g_strjoinv(" ", (char **)args->pdata);
+    qts = qtest_init(command);
+    for (guint i = 0; i < paths->len; i++) {
+        g_autoptr(QDict) reply = qtest_qmp(
+            qts, "{'execute':'qom-get','arguments':"
+            "{'path':%s,'property':'type'}}",
+            (char *)g_ptr_array_index(paths, i));
+
+        g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "sgi-l1-link");
+    }
+    qtest_quit(qts);
+    unlink(prom);
+}
+
+/*
+ * Without the firmware setting a C-brick's L1 is the model's, and the
+ * node-board entry the firmware lines come from is not given to it.
+ */
+static void test_l1_behavioural_identity(const void *opaque)
+{
+    const Launch *l = opaque;
+    QDict *o = l->offering;
+    g_autoptr(GPtrArray) args = g_ptr_array_new_with_free_func(g_free);
+    g_autofree char *command = NULL;
+    g_autofree char *prom = make_store(qdict_get_str(o, "id"), "prom",
+                                       1476264);
+    QTestState *qts;
+
+    g_ptr_array_add(args, g_strdup("-M"));
+    g_ptr_array_add(args, g_strdup(qdict_get_str(o, "machine-options")));
+    append_cpu_memory(args, o);
+    g_ptr_array_add(args, g_strdup("-bios"));
+    g_ptr_array_add(args, g_strdup(prom));
+    g_ptr_array_add(args, g_strdup("-nodefaults"));
+    g_ptr_array_add(args, g_strdup("-display"));
+    g_ptr_array_add(args, g_strdup("none"));
+    g_ptr_array_add(args, NULL);
+    command = g_strjoinv(" ", (char **)args->pdata);
+    qts = qtest_init(command);
+    for (int node = 0; node < qdict_get_int(o, "nodes"); node++) {
+        static const char *const names[] = {
+            "node-board-name", "node-board-part", "node-board-revision" };
+
+        for (int i = 0; i < 3; i++) {
+            g_autofree char *path = g_strdup_printf("/machine/node%d/l1", node);
+            g_autoptr(QDict) reply = qtest_qmp(
+                qts, "{'execute':'qom-get','arguments':"
+                "{'path':%s,'property':%s}}", path, names[i]);
+
+            g_assert_cmpstr(qdict_get_str(reply, "return"), ==, "");
+        }
+    }
+    qtest_quit(qts);
+    unlink(prom);
+}
+
+/* How many l1-signals lines the offering lists. */
+static unsigned offering_l1_links(QDict *o)
+{
+    const QListEntry *e;
+    unsigned count = 0;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(o, "serial-lines"), e) {
+        QDict *line = qobject_to(QDict, qlist_entry_obj(e));
+
+        count += g_str_equal(qdict_get_str(line, "kind"), "l1-signals");
+    }
+    return count;
+}
+
 /* Whether this binary builds @product, so a configured-out one is skipped. */
 static bool machine_built(QTestState *qts, const char *product)
 {
@@ -633,6 +761,28 @@ int main(int argc, char **argv)
             g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
                          '-');
             qtest_add_data_func(path, l, test_l2_links);
+        }
+        if (offering_l1_links(o)) {
+            Launch *l = g_new0(Launch, 1);
+            g_autofree char *path = g_strdup_printf(
+                "/sgi-catalogue-launch/%s/l1-links", id);
+
+            l->offering = o;
+            g_ptr_array_add(launches, l);
+            g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
+                         '-');
+            qtest_add_data_func(path, l, test_l1_links);
+        }
+        if (offering_l1_links(o)) {
+            Launch *l = g_new0(Launch, 1);
+            g_autofree char *path = g_strdup_printf(
+                "/sgi-catalogue-launch/%s/l1-behavioural", id);
+
+            l->offering = o;
+            g_ptr_array_add(launches, l);
+            g_strdelimit(path + strlen("/sgi-catalogue-launch/"), ",=",
+                         '-');
+            qtest_add_data_func(path, l, test_l1_behavioural_identity);
         }
         if (qlist_size(qdict_get_qlist(o, "networks")) > 1) {
             Launch *l = g_new0(Launch, 1);

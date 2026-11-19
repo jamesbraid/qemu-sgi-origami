@@ -328,7 +328,9 @@ static QDict *setting_definition(QList *definitions, const char *name)
 
 /*
  * Every serial line of the offering that names the setting binds through
- * a property the machine type has, and at least one line names it.
+ * a property the machine type has, and at least one line names it. Before
+ * l1-controller every such line had one; now only the firmware L1's own
+ * console lines (named l1*) and its l1-cable lines have none.
  */
 static void check_serial_line_properties(QTestState *qts, QDict *offering,
                                          const char *setting,
@@ -347,7 +349,15 @@ static void check_serial_line_properties(QTestState *qts, QDict *offering,
             !g_str_equal(qdict_get_str(l, "setting"), setting)) {
             continue;
         }
-        g_assert_true(qdict_haskey(l, "property"));
+        if (!qdict_haskey(l, "property")) {
+            const char *kind = qdict_get_str(l, "kind");
+
+            g_assert_true(g_str_equal(kind, "l1-cable") ||
+                          ((g_str_equal(kind, "console") ||
+                            g_str_equal(kind, "system-controller")) &&
+                           g_str_has_prefix(qdict_get_str(l, "name"), "l1")));
+            continue;
+        }
         property = qdict_get_str(l, "property");
         /* A list slot, "name.N", is a property "name". */
         base = g_strndup(property, strcspn(property, "."));

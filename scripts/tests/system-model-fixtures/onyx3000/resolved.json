@@ -1902,6 +1902,12 @@
       },
       "l1_controllers": {
         "c0-l1": {
+          "node_board": {
+            "name": "IP35",
+            "part": "",
+            "processors": 4,
+            "revision": ""
+          },
           "notes": "The C-brick profile of the L1 model. Its firmware revision, for request 0x0005, is 1.44.0: every brick image in the IRIX 6.5.30 L1 firmware composite carries that version and answers 1, 44, 0. Which image a fitted C-brick runs is inferred, and no capture gives its revision.",
           "profile": "cbrick",
           "provenance": "derived",
@@ -1911,10 +1917,17 @@
             "patch": 0
           },
           "sources": [
-            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+            "qemu:docs/system/mips/sgi/hardware/l1.rst",
+            "qemu:docs/system/mips/sgi/hardware/l1-board.rst"
           ]
         },
         "c1-l1": {
+          "node_board": {
+            "name": "IP35",
+            "part": "",
+            "processors": 4,
+            "revision": ""
+          },
           "notes": "The C-brick profile of the L1 model. Its firmware revision, for request 0x0005, is 1.44.0: every brick image in the IRIX 6.5.30 L1 firmware composite carries that version and answers 1, 44, 0. Which image a fitted C-brick runs is inferred, and no capture gives its revision.",
           "profile": "cbrick",
           "provenance": "derived",
@@ -1924,7 +1937,8 @@
             "patch": 0
           },
           "sources": [
-            "qemu:docs/system/mips/sgi/hardware/l1.rst"
+            "qemu:docs/system/mips/sgi/hardware/l1.rst",
+            "qemu:docs/system/mips/sgi/hardware/l1-board.rst"
           ]
         },
         "ibrick-l1": {

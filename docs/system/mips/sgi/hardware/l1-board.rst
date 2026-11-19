@@ -680,7 +680,10 @@ compares only that prefix is a *software expectation*; that the Origin 3000
 C-brick's node board is an IP35 is *established*, but the full name its
 EEPROM holds, any suffix after the prefix, and the part and revision are
 *unknown* until a read or capture of one, so the part and revision are left
-empty; the I-brick's ``POWER`` and ``LOGIC`` names
+empty. The model's C-brick controller entry carries that prefix, ``IP35``,
+and the catalogue's firmware board takes it from there. The behavioural L1
+of a C-brick still gets an empty node-board identity, so the two
+providers differ on the board name. The I-brick's ``POWER`` and ``LOGIC`` names
 leave the firmware's type unknown, because the type it knows an I-brick by is
 named in the logic board's record and the behavioural L1 does not use that
 name.

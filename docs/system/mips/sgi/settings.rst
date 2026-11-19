@@ -493,6 +493,13 @@ Group ``fuel-node-records``: all-or-none of ``chassis-eeprom``, ``board-eeprom``
      - none
      - -global on each fitted graphics board's ``gpu-property``
      - ``off`` (approximated)
+   * - ``l1-controller``
+     - enum (behavioural, firmware)
+     - none
+     - the serial lines that name it
+     - ``behavioural`` (approximated)
+
+The ``l1-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks`` default ``behavioural`` (approximated). The product's other topologies do not offer it.
 
 The ``l2-controller`` setting is offered by the topologies ``onyx3000``, ``origin3200``, ``origin3200-two-ibricks``, ``origin3400-two-routers``, ``origin3800``, ``origin3800-64p``, ``origin3800-high-bandwidth`` default ``off`` (approximated); ``onyx3400-ir``, ``origin3400``, ``origin3400-two-partitions`` default ``on`` (approximated). The product's other topologies do not offer it.
 
@@ -622,6 +629,9 @@ tool never shows a value with nothing behind it.
    * - ``gpu``
      - approximated
      - The device property's own default, off. The setting is a model capability, not hardware (hardware/odyssey.rst, hardware/kona.rst).
+   * - ``l1-controller``
+     - approximated
+     - A launch choice, so an approximation: the default is today's behaviour, the model's L1, while a real C-brick runs the firmware, which a launch opts into (hardware/l1.rst).
    * - ``l2-controller``
      - approximated
      - A launch choice, so an approximation either way; the default is off unless the model file authors one. That a rack with an R-brick holds an L2 is established, and the L2 is optional on the Origin 3200 and Onyx 3200 (hardware/l1-l2-link.rst), but starting one rests on model runs, not on those pages. The L2 is the shipped firmware under qemu-ppc behind a model L1 that drops the L2's own requests. A default of on is authored only where the PROM has booted with it; the console output differs from a run without it in timing, NIC ids and the interleaving of one boot line. The topologies are listed in hardware/l1-l2-link.rst, which is written by hand and must change with the model files.

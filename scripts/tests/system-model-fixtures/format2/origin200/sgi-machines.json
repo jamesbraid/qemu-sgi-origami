@@ -2277,6 +2277,20 @@
     },
     {
       "allow-empty": false,
+      "description": "Which controller answers a C-brick's L1 link: the model (behavioural) or the L1 firmware on its own board (firmware), which a companion process runs. A launch backs each of the offering's l1-node-link, l1-signals and l1-cable serial lines and the console lines that name this setting only when it asks for firmware.",
+      "identity": false,
+      "kind": "enum",
+      "name": "l1-controller",
+      "target": {
+        "kind": "serial-lines"
+      },
+      "values": [
+        "behavioural",
+        "firmware"
+      ]
+    },
+    {
+      "allow-empty": false,
       "description": "A debug input: fit the Hub's junk-bus UART, a bring-up serial port no shipped machine is known to have.",
       "identity": false,
       "kind": "boolean",

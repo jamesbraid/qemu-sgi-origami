@@ -128,6 +128,14 @@ SETTING_DEFINITIONS: list[dict] = [
                 "rack L2 is an optional part of the Origin 3200 and Onyx "
                 "3200. A launch backs each of the offering's l2-link serial "
                 "lines that names this setting."),
+    _definition("l1-controller", "enum", "serial-lines", None, None,
+                "Which controller answers a C-brick's L1 link: the model "
+                "(behavioural) or the L1 firmware on its own board "
+                "(firmware), which a companion process runs. A launch backs "
+                "each of the offering's l1-node-link, l1-signals and l1-cable "
+                "serial lines and the console lines that name this setting "
+                "only when it asks for firmware.",
+                values=["behavioural", "firmware"]),
     _definition("junk-uart", "boolean", "machine", "junk-uart", "plain",
                 "A debug input: fit the Hub's junk-bus UART, a bring-up "
                 "serial port no shipped machine is known to have."),
@@ -183,6 +191,10 @@ DEFAULT_BASIS = {
     "origin300-l1cmd-compat": (
         "The machine property's own default, off; the commands it "
         "enables are an approximation (hardware/l1.rst)."),
+    "l1-controller": (
+        "A launch choice, so an approximation: the default is today's "
+        "behaviour, the model's L1, while a real C-brick runs the "
+        "firmware, which a launch opts into (hardware/l1.rst)."),
     "l2-controller": (
         "A launch choice, so an approximation either way; the default is "
         "off unless the model file authors one. That a rack with an R-brick "
@@ -217,7 +229,8 @@ def default_provenance(product: str, name: str, value: str) -> str:
     if name in ("prid", "fpu-id"):
         return "inferred"
     if name in ("flash-select", "flash-strap", "debug-switches",
-                "origin300-l1cmd-compat", "l2-controller", "gpu"):
+                "origin300-l1cmd-compat", "l1-controller", "l2-controller",
+                "gpu"):
         return "approximated"
     raise KeyError(f"no basis for the default of {name} on {product}")
 
@@ -384,6 +397,9 @@ def offering_settings(offering: dict, topology: dict,
            for family in slot["families"]):
         # The model's host-GPU drawing, off unless a launch asks for it.
         chosen.append(_entry("gpu", default="off"))
+    if any(line.get("setting") == "l1-controller"
+           for line in offering["serial-lines"]):
+        chosen.append(_entry("l1-controller", default="behavioural"))
     for entry in chosen:
         if "default" in entry and "default-provenance" not in entry:
             entry["default-provenance"] = default_provenance(

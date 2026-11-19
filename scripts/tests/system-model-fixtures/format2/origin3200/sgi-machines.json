@@ -240,10 +240,12 @@
       "serial-lines": [
         {
           "chardev": "l1",
+          "controller": 0,
           "kind": "console",
           "name": "l1",
           "node": 0,
-          "serial": 0
+          "serial": 0,
+          "setting": "l1-controller"
         },
         {
           "chardev": "ioc3_a",
@@ -275,10 +277,12 @@
         },
         {
           "chardev": "l1_node1",
+          "controller": 1,
           "kind": "system-controller",
           "name": "l1-node1",
           "node": 1,
-          "serial": 5
+          "serial": 5,
+          "setting": "l1-controller"
         },
         {
           "chardev": "l2",
@@ -297,6 +301,67 @@
           "node": 1,
           "property": "controller-l2-chardev.1",
           "setting": "l2-controller"
+        },
+        {
+          "chardev": "l1_node_link",
+          "controller": 0,
+          "kind": "l1-node-link",
+          "name": "l1-node-link",
+          "node": 0,
+          "property": "controller-l1-node-chardev.0",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals",
+          "controller": 0,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals",
+          "node": 0,
+          "property": "controller-l1-signal-chardev.0",
+          "setting": "l1-controller"
+        },
+        {
+          "chardev": "l1_node_link_node1",
+          "controller": 1,
+          "kind": "l1-node-link",
+          "name": "l1-node-link-node1",
+          "node": 1,
+          "property": "controller-l1-node-chardev.1",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals_node1",
+          "controller": 1,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals-node1",
+          "node": 1,
+          "property": "controller-l1-signal-chardev.1",
+          "setting": "l1-controller"
+        },
+        {
+          "channel": 0,
+          "chardev": "l1_cable_0_1",
+          "controller": 0,
+          "kind": "l1-cable",
+          "name": "l1-cable-0-1",
+          "node": 0,
+          "peer": 1,
+          "peer-channel": 0,
+          "setting": "l1-controller"
         }
       ],
       "setting-groups": [],
@@ -335,6 +400,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "behavioural",
+          "default-provenance": "approximated",
+          "name": "l1-controller",
           "required": false
         }
       ],
@@ -610,10 +681,12 @@
       "serial-lines": [
         {
           "chardev": "l1",
+          "controller": 0,
           "kind": "console",
           "name": "l1",
           "node": 0,
-          "serial": 0
+          "serial": 0,
+          "setting": "l1-controller"
         },
         {
           "chardev": "ioc3_a",
@@ -645,10 +718,12 @@
         },
         {
           "chardev": "l1_node1",
+          "controller": 1,
           "kind": "system-controller",
           "name": "l1-node1",
           "node": 1,
-          "serial": 5
+          "serial": 5,
+          "setting": "l1-controller"
         },
         {
           "chardev": "l2",
@@ -667,6 +742,67 @@
           "node": 1,
           "property": "controller-l2-chardev.1",
           "setting": "l2-controller"
+        },
+        {
+          "chardev": "l1_node_link",
+          "controller": 0,
+          "kind": "l1-node-link",
+          "name": "l1-node-link",
+          "node": 0,
+          "property": "controller-l1-node-chardev.0",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals",
+          "controller": 0,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals",
+          "node": 0,
+          "property": "controller-l1-signal-chardev.0",
+          "setting": "l1-controller"
+        },
+        {
+          "chardev": "l1_node_link_node1",
+          "controller": 1,
+          "kind": "l1-node-link",
+          "name": "l1-node-link-node1",
+          "node": 1,
+          "property": "controller-l1-node-chardev.1",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals_node1",
+          "controller": 1,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals-node1",
+          "node": 1,
+          "property": "controller-l1-signal-chardev.1",
+          "setting": "l1-controller"
+        },
+        {
+          "channel": 0,
+          "chardev": "l1_cable_0_1",
+          "controller": 0,
+          "kind": "l1-cable",
+          "name": "l1-cable-0-1",
+          "node": 0,
+          "peer": 1,
+          "peer-channel": 0,
+          "setting": "l1-controller"
         }
       ],
       "setting-groups": [],
@@ -699,6 +835,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "behavioural",
+          "default-provenance": "approximated",
+          "name": "l1-controller",
           "required": false
         }
       ],
@@ -974,10 +1116,12 @@
       "serial-lines": [
         {
           "chardev": "l1",
+          "controller": 0,
           "kind": "console",
           "name": "l1",
           "node": 0,
-          "serial": 0
+          "serial": 0,
+          "setting": "l1-controller"
         },
         {
           "chardev": "ioc3_a",
@@ -1009,10 +1153,12 @@
         },
         {
           "chardev": "l1_node1",
+          "controller": 1,
           "kind": "system-controller",
           "name": "l1-node1",
           "node": 1,
-          "serial": 5
+          "serial": 5,
+          "setting": "l1-controller"
         },
         {
           "chardev": "l2",
@@ -1031,6 +1177,67 @@
           "node": 1,
           "property": "controller-l2-chardev.1",
           "setting": "l2-controller"
+        },
+        {
+          "chardev": "l1_node_link",
+          "controller": 0,
+          "kind": "l1-node-link",
+          "name": "l1-node-link",
+          "node": 0,
+          "property": "controller-l1-node-chardev.0",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals",
+          "controller": 0,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals",
+          "node": 0,
+          "property": "controller-l1-signal-chardev.0",
+          "setting": "l1-controller"
+        },
+        {
+          "chardev": "l1_node_link_node1",
+          "controller": 1,
+          "kind": "l1-node-link",
+          "name": "l1-node-link-node1",
+          "node": 1,
+          "property": "controller-l1-node-chardev.1",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals_node1",
+          "controller": 1,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals-node1",
+          "node": 1,
+          "property": "controller-l1-signal-chardev.1",
+          "setting": "l1-controller"
+        },
+        {
+          "channel": 0,
+          "chardev": "l1_cable_0_1",
+          "controller": 0,
+          "kind": "l1-cable",
+          "name": "l1-cable-0-1",
+          "node": 0,
+          "peer": 1,
+          "peer-channel": 0,
+          "setting": "l1-controller"
         }
       ],
       "setting-groups": [],
@@ -1063,6 +1270,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "behavioural",
+          "default-provenance": "approximated",
+          "name": "l1-controller",
           "required": false
         }
       ],
@@ -1338,10 +1551,12 @@
       "serial-lines": [
         {
           "chardev": "l1",
+          "controller": 0,
           "kind": "console",
           "name": "l1",
           "node": 0,
-          "serial": 0
+          "serial": 0,
+          "setting": "l1-controller"
         },
         {
           "chardev": "ioc3_a",
@@ -1373,10 +1588,12 @@
         },
         {
           "chardev": "l1_node1",
+          "controller": 1,
           "kind": "system-controller",
           "name": "l1-node1",
           "node": 1,
-          "serial": 5
+          "serial": 5,
+          "setting": "l1-controller"
         },
         {
           "chardev": "l2",
@@ -1395,6 +1612,67 @@
           "node": 1,
           "property": "controller-l2-chardev.1",
           "setting": "l2-controller"
+        },
+        {
+          "chardev": "l1_node_link",
+          "controller": 0,
+          "kind": "l1-node-link",
+          "name": "l1-node-link",
+          "node": 0,
+          "property": "controller-l1-node-chardev.0",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals",
+          "controller": 0,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals",
+          "node": 0,
+          "property": "controller-l1-signal-chardev.0",
+          "setting": "l1-controller"
+        },
+        {
+          "chardev": "l1_node_link_node1",
+          "controller": 1,
+          "kind": "l1-node-link",
+          "name": "l1-node-link-node1",
+          "node": 1,
+          "property": "controller-l1-node-chardev.1",
+          "setting": "l1-controller",
+          "transport": 0
+        },
+        {
+          "board": {
+            "board-peers": "on",
+            "brick-type": "cbrick",
+            "node-board-name": "IP35"
+          },
+          "chardev": "l1_signals_node1",
+          "controller": 1,
+          "firmware-package": 0,
+          "kind": "l1-signals",
+          "name": "l1-signals-node1",
+          "node": 1,
+          "property": "controller-l1-signal-chardev.1",
+          "setting": "l1-controller"
+        },
+        {
+          "channel": 0,
+          "chardev": "l1_cable_0_1",
+          "controller": 0,
+          "kind": "l1-cable",
+          "name": "l1-cable-0-1",
+          "node": 0,
+          "peer": 1,
+          "peer-channel": 0,
+          "setting": "l1-controller"
         }
       ],
       "setting-groups": [],
@@ -1425,6 +1703,12 @@
           "default": "off",
           "default-provenance": "approximated",
           "name": "l2-controller",
+          "required": false
+        },
+        {
+          "default": "behavioural",
+          "default-provenance": "approximated",
+          "name": "l1-controller",
           "required": false
         }
       ],
@@ -1809,6 +2093,20 @@
     },
     {
       "allow-empty": false,
+      "description": "Which controller answers a C-brick's L1 link: the model (behavioural) or the L1 firmware on its own board (firmware), which a companion process runs. A launch backs each of the offering's l1-node-link, l1-signals and l1-cable serial lines and the console lines that name this setting only when it asks for firmware.",
+      "identity": false,
+      "kind": "enum",
+      "name": "l1-controller",
+      "target": {
+        "kind": "serial-lines"
+      },
+      "values": [
+        "behavioural",
+        "firmware"
+      ]
+    },
+    {
+      "allow-empty": false,
       "description": "A debug input: fit the Hub's junk-bus UART, a bring-up serial port no shipped machine is known to have.",
       "identity": false,
       "kind": "boolean",
@@ -1859,6 +2157,12 @@
           "id": "c0-l1",
           "kind": "l1",
           "l1": {
+            "node-board": {
+              "name": "IP35",
+              "part": "",
+              "processors": 4,
+              "revision": ""
+            },
             "profile": "cbrick",
             "revision": {
               "major": 1,
@@ -1872,6 +2176,12 @@
           "id": "c1-l1",
           "kind": "l1",
           "l1": {
+            "node-board": {
+              "name": "IP35",
+              "part": "",
+              "processors": 4,
+              "revision": ""
+            },
             "profile": "cbrick",
             "revision": {
               "major": 1,

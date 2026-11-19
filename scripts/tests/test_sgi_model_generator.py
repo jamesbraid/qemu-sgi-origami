@@ -23,7 +23,7 @@ L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "390fa5ebb81f331558ddfa64d973b801b1f2a07b80471f13e56f761f903af7ca"
+    "e7227bdc7439a16adbaa204ad661d1c4c513c65393adc1fde6411db24c5c1822"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -839,6 +839,114 @@ class StorageTests(unittest.TestCase):
             "onyx3000", "origin3200", "origin3200-two-ibricks"}
             | L2_DEFAULT_ON | L2_DEFAULT_OFF)
 
+    def test_firmware_l1_lines_and_setting(self):
+        """A topology the machine lets run its C-brick L1s as firmware
+        (no routers, partitions, I/O assemblies or module-owned L1) lists,
+        per C-brick, a node link and a signal link, a cable per pair,
+        and names the l1-controller setting, behavioural by default,
+        on those lines and on each console line; no other offering lists
+        a line of these kinds or the setting."""
+        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+            "hw/mips/sgi/sgi-machines.json"])
+        topologies = {item["name"]: item for item in catalogue["topologies"]}
+        kinds = {"l1-node-link", "l1-signals", "l1-cable"}
+        seen = set()
+        for row in catalogue["offerings"]:
+            lines = row["serial-lines"]
+            links = [line for line in lines if line["kind"] in kinds]
+            found = [item for item in row["settings"]
+                     if item["name"] == "l1-controller"]
+            with self.subTest(offering=row["id"]):
+                if row["topology"] not in ("onyx3000", "origin3200",
+                                           "origin3200-two-ibricks"):
+                    self.assertEqual((links, found), ([], []))
+                    self.assertFalse([line for line in lines
+                                      if line.get("setting") ==
+                                      "l1-controller"])
+                    continue
+                seen.add(row["topology"])
+                self.assertEqual(found, [{
+                    "name": "l1-controller", "required": False,
+                    "default": "behavioural",
+                    "default-provenance": "approximated"}])
+                signals = [line for line in links
+                           if line["kind"] == "l1-signals"]
+                nodes = [line for line in links
+                         if line["kind"] == "l1-node-link"]
+                cables = [line for line in links
+                          if line["kind"] == "l1-cable"]
+                self.assertEqual([line["controller"] for line in signals],
+                                 [0, 1])
+                self.assertEqual(
+                    [line["property"] for line in signals],
+                    [f"controller-l1-signal-chardev.{i}" for i in range(2)])
+                self.assertEqual(
+                    [(line["property"], line["transport"], line["controller"])
+                     for line in nodes],
+                    [(f"controller-l1-node-chardev.{i}", 0, i)
+                     for i in range(2)])
+                for line in signals:
+                    entry = topologies[row["topology"]]["controllers"][
+                        line["controller"]]["l1"]["node-board"]
+                    self.assertEqual(line["firmware-package"], 0)
+                    # One source: the model's node-board entry, whose part
+                    # and revision are unknown and so not listed.
+                    self.assertEqual(entry["name"], "IP35")
+                    self.assertEqual(line["board"], {
+                        "brick-type": "cbrick", "board-peers": "on",
+                        "node-board-name": entry["name"]})
+                self.assertEqual(
+                    [(line["controller"], line["channel"], line["peer"],
+                      line["peer-channel"]) for line in cables],
+                    [(0, 0, 1, 0)])
+                self.assertEqual({line["setting"] for line in links},
+                                 {"l1-controller"})
+                self.assertEqual(len({line["chardev"] for line in lines}),
+                                 len(lines))
+                self.assertEqual(
+                    [(line["name"], line["controller"]) for line in lines
+                     if line.get("setting") == "l1-controller"
+                     and line["kind"] not in kinds],
+                    [("l1", 0), ("l1-node1", 1)])
+        self.assertEqual(len(seen), 3)
+        definition = next(item for item in catalogue["setting-definitions"]
+                          if item["name"] == "l1-controller")
+        self.assertEqual((definition["kind"], definition["target"],
+                          definition["values"]),
+                         ("enum", {"kind": "serial-lines"},
+                          ["behavioural", "firmware"]))
+
+    def test_firmware_l1_lines_need_a_node_board_on_every_cbrick(self):
+        """No model entry for the node board lists no firmware lines, and an
+        entry on only some C-brick L1s is refused."""
+        from sgi_model.model_compile import CompileError
+        from sgi_model.model_emit import _l1_firmware_lines
+
+        def topology(boards):
+            return {"name": "t", "routers": [], "modules": [
+                        {"nodes": [0]}, {"nodes": [1]}],
+                    "controllers": [
+                        {"kind": "L1", "module_index": i, "l1": {
+                            "profile": "cbrick", **(
+                                {"node_board": board} if board else {})}}
+                        for i, board in enumerate(boards)]}
+
+        def line(name, chardev, kind, node=0, serial=None, prop=None):
+            return {"name": name, "chardev": chardev, "kind": kind,
+                    "node": node}
+
+        entry = {"processors": 4, "name": "IP35", "part": "",
+                 "revision": ""}
+        lines = [line("l1", "l1", "console"),
+                 line("l1-node1", "l1_node1", "system-controller", 1)]
+        self.assertEqual(
+            _l1_firmware_lines(topology([None, None]), (0, 1), line, lines),
+            [])
+        with self.assertRaisesRegex(CompileError, "only some C-brick L1s"):
+            _l1_firmware_lines(topology([entry, None]), (0, 1), line, lines)
+        self.assertEqual(len(_l1_firmware_lines(
+            topology([entry, entry]), (0, 1), line, lines)), 4)
+
     def test_l2_controller_defaults(self):
         """The L2 starts by default exactly where the model authors it: on,
         rated approximated, since starting it is a launch choice backed
@@ -1505,6 +1613,9 @@ class FuelTests(unittest.TestCase):
                 want.append("l2-controller")
             if row["topology"] in vpro:
                 want.append("gpu")
+            if row["topology"] in ("onyx3000", "origin3200",
+                                   "origin3200-two-ibricks"):
+                want.append("l1-controller")
             if "controller-brick-serial" in names:
                 # The Origin 300 expansion topologies add their controllers.
                 want += ["controller-brick-serial",

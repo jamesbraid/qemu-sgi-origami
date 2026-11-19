@@ -2028,6 +2028,24 @@ class Origin3000BrickValidationTests(unittest.TestCase):
             "profile"] = "rbrick"
         self.assertFails(model, "names unsupported L1 profile 'rbrick'")
 
+    def test_empty_node_board_part_is_for_a_cbrick_l1_only(self):
+        """A C-brick's L1 may leave its node board's part and revision
+        empty, as unknown; any other L1 must state them."""
+        board = {"processors": 4, "name": "IP35", "part": "", "revision": ""}
+        model = self.model()
+        controllers = model["machine"]["emulation"]["l1_controllers"]
+        controllers["c0-l1"]["node_board"] = dict(board)
+        self.assertEqual(self.problems(model), [])
+        for field in ("part", "revision"):
+            with self.subTest(field=field):
+                model = self.model()
+                controllers = model["machine"]["emulation"]["l1_controllers"]
+                controllers["ibrick-l1"]["node_board"] = dict(
+                    board, part="030-0000-001", revision="-A")
+                self.assertEqual(self.problems(model), [])
+                controllers["ibrick-l1"]["node_board"][field] = ""
+                self.assertFails(model, "schema:")
+
     def test_brick_l1_partition_belongs_to_a_cbrick_controller(self):
         """A C-brick's controller holds the partition ID, 1 to 63; the I/O
         brick follows its C-brick and holds none (the partitioning

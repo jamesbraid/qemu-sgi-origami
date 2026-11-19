@@ -1887,12 +1887,12 @@
           "type": "object",
           "additionalProperties": false,
           "required": ["processors", "name", "part", "revision"],
-          "description": "The node-board identity a Cx-brick's L1 reports for every board it serves.",
+          "description": "The node-board identity a Cx-brick's L1 reports for every board it serves, or the name a C-brick's firmware L1 is classified by. Only a C-brick's may leave the part and revision empty, as unknown.",
           "properties": {
             "processors": { "type": "integer", "minimum": 1 },
             "name": { "type": "string", "minLength": 1 },
-            "part": { "type": "string", "minLength": 1 },
-            "revision": { "type": "string", "minLength": 1 }
+            "part": { "type": "string" },
+            "revision": { "type": "string" }
           }
         },
         "reported_type": {
@@ -1924,6 +1924,20 @@
         "notes": {
           "type": "string",
           "minLength": 1
+        }
+      },
+      "if": {
+        "required": ["profile"],
+        "properties": { "profile": { "const": "cbrick" } }
+      },
+      "else": {
+        "properties": {
+          "node_board": {
+            "properties": {
+              "part": { "minLength": 1 },
+              "revision": { "minLength": 1 }
+            }
+          }
         }
       }
     },

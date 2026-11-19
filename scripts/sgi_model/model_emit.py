@@ -1264,6 +1264,81 @@ def _l2_link_lines(topology: dict, nodes: tuple[int, ...],
     return lines
 
 
+# The C-brick base image of the L1 firmware, and the board properties that
+# are not the model's node-board entry (hardware/l1-board.rst).
+_L1_FIRMWARE_PACKAGE = 0
+_L1_CBRICK_BOARD = {"brick-type": "cbrick", "board-peers": "on"}
+
+
+def _l1_firmware_lines(topology: dict, nodes: tuple[int, ...], line,
+                       lines: list[dict]) -> list[dict]:
+    """A node link, a signal link and a cable per pair for each C-brick L1
+    whose model entry names a node board, where the machine takes one."""
+    if (topology["routers"] or topology.get("l1_management")
+            or topology.get("io_assemblies") or topology.get("ip53_runtime")
+            or any(c["kind"] == "L1" and (
+                c.get("owner") == "module" or
+                "partition" in c.get("l1", {}))
+                for c in topology["controllers"])):
+        return []
+    found = {}
+    for index, controller in enumerate(topology["controllers"]):
+        if (controller["kind"] != "L1"
+                or controller.get("l1", {}).get("profile") != "cbrick"):
+            continue
+        owned = [node for node in
+                 topology["modules"][controller["module_index"]]["nodes"]
+                 if node in nodes]
+        if len(owned) == 1:
+            found[index] = owned[0]
+    stated = [i for i in found
+              if topology["controllers"][i]["l1"].get("node_board")]
+    if stated and len(stated) != len(found):
+        raise CompileError(
+            f"'{topology['name']}': a node board is stated for only some "
+            "C-brick L1s, which a firmware L1 needs for all")
+    if not stated:
+        return []
+    links = []
+    for count, (index, node) in enumerate(found.items()):
+        suffix = "" if node == 0 else f"-node{node}"
+        under = suffix.replace("-", "_")
+        for kind, key in (("l1-node-link", "node"), ("l1-signals", "signal")):
+            link = line(f"{kind}{suffix}", f"{kind.replace('-', '_')}{under}",
+                        kind, node=node,
+                        prop=f"controller-l1-{key}-chardev.{count}")
+            link["controller"] = index
+            link["setting"] = "l1-controller"
+            if kind == "l1-node-link":
+                link["transport"] = 0
+            else:
+                link["firmware-package"] = _L1_FIRMWARE_PACKAGE
+                board = topology["controllers"][index]["l1"]["node_board"]
+                link["board"] = {
+                    **_L1_CBRICK_BOARD,
+                    **{f"node-board-{key}": board[key]
+                       for key in ("name", "part", "revision")
+                       if board[key]}}
+            links.append(link)
+        console = next(item for item in lines
+                       if item["node"] == node and item["name"] in
+                       ("l1", f"l1-node{node}"))
+        console["controller"] = index
+        console["setting"] = "l1-controller"
+    for peer in topology.get("l1_peer_links", []):
+        first, second = (peer["source_controller_index"],
+                         peer["target_controller_index"])
+        if first < second and first in found and second in found:
+            cable = line(f"l1-cable-{first}-{second}",
+                         f"l1_cable_{first}_{second}", "l1-cable",
+                         node=found[first])
+            cable.update({"controller": first, "channel": 0,
+                          "peer": second, "peer-channel": 0,
+                          "setting": "l1-controller"})
+            links.append(cable)
+    return links
+
+
 def _serial_lines_for(topology: dict, machine_name: str,
                       launch_recipe: str | None, consoles: list[dict],
                       tablet: bool, nodes: tuple[int, ...],
@@ -1314,6 +1389,7 @@ def _serial_lines_for(topology: dict, machine_name: str,
                                   serial=c["line"]))
         if machine_name == "origin3000":
             lines += _l2_link_lines(topology, nodes, line, l2_authored)
+            lines += _l1_firmware_lines(topology, nodes, line, lines)
         return lines
     # SN0: node n's block starts at 6n (IOC3 A and B, the system
     # controller's AUX, the bring-up UART, the two records).

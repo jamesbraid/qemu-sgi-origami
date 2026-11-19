@@ -1270,6 +1270,22 @@ controller on the Origin 3000. Its ``nmi`` lines reach the node's NMI split.
 ``power-good`` and ``node-reset-state`` are not driven by the machine
 (*approximation*: nothing reads them yet).
 
+**Catalogue.** The offerings of the topologies that accept the mode
+(``onyx3000``, ``origin3200`` and ``origin3200-two-ibricks``) list, for each
+C-brick controller, an ``l1-node-link`` line (transport 0) and an
+``l1-signals`` line, which bind the two options above, and for each pair of
+such controllers the topology cables together an ``l1-cable`` line, channel 0
+at both ends (*inferred*). The ``l1-signals`` line names the firmware package
+and the board's ``-machine`` properties. The board's node-board name,
+the prefix ``IP35`` the firmware classifies a C-brick by (*software
+expectation*), comes from the topology's C-brick controller entry; the model
+states no part or revision for it (*unknown*), so the properties carry none.
+The behavioural controller is not given that entry and reports what it did.
+These lines and the controller's
+console line name the ``l1-controller`` setting, ``behavioural`` by default
+(today's behaviour) or ``firmware``, which a launcher honours by running the
+board. The machine itself takes only the two options.
+
 .. _sgi-l1-signal-link:
 
 Signal link

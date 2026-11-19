@@ -2695,11 +2695,50 @@
 #     chardev unbacked and the machine runs; a consumer that does not
 #     know this kind ignores it
 #
+# @l1-node-link: the link from the node's UART window to a C-brick's
+#     L1 running as firmware on its own board, bound by the machine's
+#     ``controller-l1-node-chardev`` list property
+#
+# @l1-signals: the link that carries that L1's power, reset and NMI
+#     lines to the machine, bound by ``controller-l1-signal-chardev``;
+#     it also names the firmware package and the board's properties
+#
+# @l1-cable: the cable between two such L1s.  The machine takes no
+#     chardev for it: a launcher joins the two boards' peer-link
+#     channels itself
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelSerialKind',
   'data': ['console', 'system-controller', 'second-port', 'tablet',
-           'record', 'unconnected', 'bring-up', 'media-io', 'l2-link'] }
+           'record', 'unconnected', 'bring-up', 'media-io', 'l2-link',
+           'l1-node-link', 'l1-signals', 'l1-cable'] }
+
+##
+# @SGIModelL1Board:
+#
+# The properties of the ``sgi-l1-board`` machine that runs a C-brick's
+# L1 firmware, each as the board's ``-machine`` option spells it.
+#
+# @brick-type: ``cbrick``
+#
+# @node-board-name: the node board's name, which the firmware reads
+#     to learn the brick type
+#
+# @node-board-part: the node board's part number; absent when unknown
+#
+# @node-board-revision: the node board's revision; absent when unknown
+#
+# @board-peers: ``on``, which the signal link needs
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelL1Board',
+  'data': { 'brick-type': 'str',
+            'node-board-name': 'str',
+            '*node-board-part': 'str',
+            '*node-board-revision': 'str',
+            'board-peers': 'str' } }
 
 ##
 # @SGIModelSerialLine:
@@ -2727,12 +2766,29 @@
 #
 # @controller: position in the owning topology's @controllers list of
 #     the controller whose L1 the line reaches; present on an @l2-link
-#     line
+#     line, on the L1 firmware's lines and on the console line a
+#     firmware L1 backs
 #
 # @setting: the @SGIModelOfferingSetting that fits this line, which a
 #     launch backs only when it turns that setting on; absent when the
 #     line has no setting of its own (an @l2-link line is then listed
 #     for every launch, and left unbacked when there is no L2 peer)
+#
+# @transport: the node UART window of an @l1-node-link line; a
+#     C-brick has one, 0
+#
+# @channel: the peer-link channel of the board on @controller that an
+#     @l1-cable line uses
+#
+# @peer: position in the topology's @controllers list of the
+#     controller at the other end of an @l1-cable line
+#
+# @peer-channel: the channel the controller at the other end uses
+#
+# @firmware-package: the package of the L1 firmware image an
+#     @l1-signals line runs
+#
+# @board: the properties of the board an @l1-signals line runs
 #
 # Since: 11.2
 ##
@@ -2744,7 +2800,13 @@
             '*serial': 'uint32',
             '*property': 'str',
             '*controller': 'uint32',
-            '*setting': 'str' } }
+            '*setting': 'str',
+            '*transport': 'uint32',
+            '*channel': 'uint32',
+            '*peer': 'uint32',
+            '*peer-channel': 'uint32',
+            '*firmware-package': 'uint32',
+            '*board': 'SGIModelL1Board' } }
 
 ##
 # @SGIModelBoardFit:
@@ -2834,9 +2896,10 @@
 # @global: a ``-global DEVICE.PROPERTY=`` setting
 # @cpu: a ``-cpu`` property of the offering's processor part
 #
-# @serial-lines: no property of its own: a boolean that turns on the
+# @serial-lines: no property of its own: a setting that turns on the
 #     offering's @serial-lines whose @setting names it, each of which
-#     carries the property that binds it
+#     carries the property that binds it, except a console line a
+#     companion backs and an @l1-cable line, which bind none
 #
 # @board-property: a property of each fitted graphics board that
 #     declares one: the target's @field names the family member that
