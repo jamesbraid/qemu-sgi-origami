@@ -350,30 +350,58 @@ need be an adjacent pair. When a host stall crosses the target, the
 kernel reports that the CPU "hasn't seen a scheduler clock interrupt"
 and loses the tick.
 
+Earlier IP30 kernels, IRIX 6.5 and 6.5.13f among them, check the second
+routine's bound with Count minus Compare where 6.5.30 uses Compare minus
+Count, so they do not catch a trim larger than the Compare value. The
+subtraction then wraps and the routine writes a target behind the Count
+it read (a software expectation from the shipped kernels). The trim is
+measured from the kernel's last rearm, which subtracts the time the
+interrupt was late. On the processor that lateness is a few
+microseconds. Without instruction counting it is the host's delivery
+latency. On a loaded host, with heavy tracing on, its three parts had
+medians of 61 us (timer callback), 43 us (to interrupt entry) and 26 us
+(handler), about 12,700 ticks summed at 97.5 MHz. A trim to a deadline
+that close to the rearm wraps
+and the tick is lost (*inferred* from guest traces; silicon is not
+measured). After such a write the rearm routine sees Compare ahead of
+Count, takes its not-passed branch and writes an absolute target behind
+the Count it wrote back.
+
 With the window selected, every guest Count read or write records the
 value and the virtual clock. The next Compare write raises IP7 when its
 target is more than zero ticks ahead of that recorded value, fewer than
 2^31 ticks have elapsed since the sample, and Count has already reached
 the target. That the target lies less than 2^31 ticks ahead follows and
-is not a separate test. Otherwise the ordinary rule applies. Exception or
+is not a separate test. It also raises IP7 when the target lies two to
+2^31 - 1 ticks behind the sample and differs from the value Compare
+already holds: a target the guest computed after its deadline had
+passed. Otherwise the ordinary rule applies. Exception or
 interrupt entry and reset close the window, and a later Count access opens
 a new one. No limit applies to the number of instructions between the
 sample and the Compare write.
 
 A window open at migration is dropped (:ref:`sgi-r10000-migration`).
 
-A target behind the sample, or equal to it, keeps the ordinary rule. That
-covers the read-Count-minus-one disarm public drivers use (OpenBSD writes
-Compare to the Count it read minus one), the kernel's Count=1, Compare=0
-disarm, and a stale target behind a later Count read. In the rearm
-routine's not-passed branch the sample is the Count written back, so an
-absolute target behind it is left alone and one ahead is recovered only
-once Count has really passed it.
+A target equal to the sample, one tick behind it, or equal to the value
+Compare already holds keeps the ordinary rule. Those are the idioms
+that mean a full-wrap wait or an acknowledge: the read-Count-minus-one
+disarm public drivers use (OpenBSD and Linux write Compare to the Count
+they read minus one), the kernel's Count=1, Compare=0 disarm, and
+Linux's acknowledge, which writes back the Compare it reads. A target
+further behind is recovered, which covers the wrapped trim and the
+not-passed-branch write above.
 
 The cost of the wider rule: a guest that read Count, waited with
 interrupts masked until Count passed a target ahead of that value, and
-then wrote that target meaning a full-wrap wait would be served early. No
-supported guest is known to do that.
+then wrote that target meaning a full-wrap wait would be served early.
+A guest that wrote a target two or more ticks behind a Count it had just
+read or written, meaning a wait of more than half the counter range
+(22 s at 97.5 MHz, 11.9 s at 180 MHz), would be served at once. Linux
+bounds its clock events at 2^31 - 1 ticks ahead of a fresh read. Its
+halt path writes Compare zero to clear a pending timer interrupt; after an
+unrelated Count read 2 to 2^31 - 1 ticks past zero that write raises IP7
+instead, which can wake the halted CPU. No other such pattern is known in
+a supported guest.
 
 .. _sgi-r10000-perf:
 
@@ -719,8 +747,8 @@ Tests
   Count/Compare IP7.
 - ``tests/qtest/octane-timer-test.c``: the Count-sample window on
   ``octane`` and ``octane2`` under ``-icount shift=10``, with crossed
-  targets after a Count read and a Count write and the six controls the
-  window must leave alone.
+  targets after a Count read and a Count write, targets behind each, and
+  the six controls the window must leave alone.
 - ``tests/qtest/sn0-mttcg-test.c``: the adjacent-write recovery with a
   vCPU held from a debugger between the two writes, across interrupts,
   delay slots, single stepping, resets, migration and holds past half

@@ -258,17 +258,22 @@ void cpu_mips_store_count_guest(CPUMIPSState *env, uint32_t count)
  * With count_sample_window selected, every guest Count read or write
  * records the value and the clock. The next Compare write raises the
  * timer interrupt when its target lies less than half the counter range
- * ahead of the latest such value and the counter has already reached it.
- * A target behind that value is a disarm or a long wait and keeps the
- * ordinary rule: the read-Count-minus-one disarm, and Count=1 followed by
- * Compare=0. Exception or interrupt entry and reset close the window.
+ * ahead of the latest such value and the counter has already reached it,
+ * or lies less than half the range behind that value: a target computed
+ * after its deadline had passed. The idioms that mean a full-wrap wait
+ * keep the ordinary rule: one tick behind the value (Count minus one,
+ * Count=1 then Compare=0) and a rewrite of the value Compare holds.
+ * Exception or interrupt entry and reset close the window.
  */
 static bool cpu_mips_window_crossed(CPUMIPSState *env, uint32_t value,
-                                    uint64_t now_ticks)
+                                    uint32_t held, uint64_t now_ticks)
 {
     uint32_t forward = value - env->timer_window_count;
     uint64_t elapsed = now_ticks - env->timer_window_start_ticks;
 
+    if (forward > 0x80000000u) {
+        return forward != UINT32_MAX && value != held;
+    }
     return forward > 0 && forward < 0x80000000u &&
            elapsed < 0x80000000ULL && elapsed >= forward;
 }
@@ -280,6 +285,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
                     (env->active_tc.PC == env->timer_adjacent_pc);
     bool window = env->timer_window_pending;
     bool window_crossed = false;
+    uint32_t held = env->CP0_Compare;
     uint32_t count = env->CP0_Count;
     uint32_t forward = 0;
     uint64_t elapsed = 0;
@@ -311,7 +317,7 @@ void cpu_mips_store_compare(CPUMIPSState *env, uint32_t value)
             matched = true;
         }
         if (!matched && window &&
-            cpu_mips_window_crossed(env, value, now_ticks)) {
+            cpu_mips_window_crossed(env, value, held, now_ticks)) {
             env->cp0_timer_ip7 = 1;
             matched = true;
             window_crossed = true;

@@ -20,11 +20,14 @@
  * advances the virtual clock by about a microsecond, so 32 instructions
  * put Count well past the target on both Count rates, deterministically.
  *
+ * A target behind the latest Count read or write is also recovered: the
+ * kernel computes one when the deadline has already passed.
+ *
  * The controls are the sequences the window must leave alone: an
- * exception between the sample and the write, a target behind the latest
- * Count read, a target equal to it, the read-Count-minus-one disarm
- * public drivers use, the Count=1/Compare=0 disarm the IP30 kernel
- * issues, and a target that is still ahead.
+ * exception between the sample and the write, a target equal to the
+ * read, the read-Count-minus-one disarm public drivers use, the
+ * Count=1/Compare=0 disarm the IP30 kernel issues, a rewrite of the
+ * Compare value already held, and a target that is still ahead.
  */
 #include "qemu/osdep.h"
 #include "libqtest.h"
@@ -57,6 +60,8 @@ typedef enum TimerSequence {
     SEQ_EXCEPTION,
     SEQ_READ_MINUS_ONE,
     SEQ_DISARM,
+    SEQ_BEHIND_WRITE,
+    SEQ_REWRITE_HELD,
     SEQ_AHEAD,
 } TimerSequence;
 
@@ -69,11 +74,13 @@ typedef struct TimerCase {
 static const TimerCase cases[] = {
     { "crossed-after-write", SEQ_CROSSED, true },
     { "crossed-after-read", SEQ_CROSSED_READ, true },
-    { "behind-latest-read", SEQ_BEHIND_READ, false },
+    { "behind-latest-read", SEQ_BEHIND_READ, true },
     { "target-equals-read", SEQ_EQUAL_READ, false },
     { "exception-between", SEQ_EXCEPTION, false },
     { "read-minus-one", SEQ_READ_MINUS_ONE, false },
     { "count-one-compare-zero", SEQ_DISARM, false },
+    { "behind-latest-write", SEQ_BEHIND_WRITE, true },
+    { "rewrite-held-compare", SEQ_REWRITE_HELD, false },
     { "target-ahead", SEQ_AHEAD, false },
 };
 
@@ -105,6 +112,7 @@ static void build_image(SN0Image *p, TimerSequence seq)
     sn0_emit_li(p, SN0_R_T1, 1);
     sn0_emit_li(p, SN0_R_A0, seq == SEQ_AHEAD ? 0x10000000u : TARGET);
     sn0_emit_li(p, SN0_R_A1, 1);
+    sn0_emit_li(p, SN0_R_A2, 0x4000);
 
     /* Raw CP0 writes: sn0_emit_mtc0() pads each with nops. */
     switch (seq) {
@@ -147,9 +155,24 @@ static void build_image(SN0Image *p, TimerSequence seq)
         sn0_emit(p, mips_mtc0(SN0_R_T8, CP0_COMPARE));
         break;
     case SEQ_DISARM:
+        /* A nonzero held Compare, so only the one-behind clause applies. */
+        sn0_emit(p, mips_mtc0(SN0_R_A0, CP0_COMPARE));
         sn0_emit(p, mips_mtc0(SN0_R_A1, CP0_COUNT));
         sn0_emit(p, mips_mtc0(SN0_R_ZERO, CP0_COMPARE));
         emit_spacing(p);
+        break;
+    case SEQ_BEHIND_WRITE:
+        sn0_emit(p, mips_mtc0(SN0_R_A2, CP0_COUNT));
+        emit_spacing(p);
+        sn0_emit(p, mips_mtc0(SN0_R_A0, CP0_COMPARE));
+        break;
+    case SEQ_REWRITE_HELD:
+        /* Count passes the held target, then the guest acknowledges it. */
+        sn0_emit(p, mips_mtc0(SN0_R_ZERO, CP0_COUNT));
+        sn0_emit(p, mips_mtc0(SN0_R_A0, CP0_COMPARE));
+        emit_spacing(p);
+        sn0_emit(p, mips_mfc0(SN0_R_T8, CP0_COUNT));
+        sn0_emit(p, mips_mtc0(SN0_R_A0, CP0_COMPARE));
         break;
     }
     sn0_emit_mfc0(p, SN0_R_T0, SN0_CP0_CAUSE);
