@@ -10,6 +10,7 @@
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/bitmap.h"
+#include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "qemu/module.h"
 #include "hw/core/cpu.h"
@@ -3690,8 +3691,14 @@ static void md_reset_enter(Object *obj, ResetType type)
     }
     s->ecc_admitted_halfword_low = 0;
     s->ecc_admitted_halfword = 0;
-    memset(s->protection, 0,
-           s->protection_entries * sizeof(*s->protection));
+    /* Skip zero chunks: the calloc'd array stays unfaulted until written. */
+    for (size_t off = 0; off < s->protection_entries; off += 512) {
+        size_t n = MIN(512, s->protection_entries - off);
+
+        if (!buffer_is_zero(&s->protection[off], n * sizeof(uint64_t))) {
+            memset(&s->protection[off], 0, n * sizeof(uint64_t));
+        }
+    }
 }
 
 static int md_post_load(void *opaque, int version_id)
