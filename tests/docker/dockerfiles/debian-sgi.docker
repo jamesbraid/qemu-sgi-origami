@@ -3,6 +3,8 @@
 # rust/sgi-gpu needs rustc 1.94 and trixie ships 1.85, so the toolchain comes
 # from rustup, checked against the SHA-256 of the rustup-init 1.29.2 release
 # (x86-64 only). The version is the one the Origami build image carries.
+# cargo-about 0.9.3, a static binary checked against its release's SHA-256,
+# checks the Rust crates' licences (scripts/ci/sgi-rust-licences.py).
 FROM docker.io/library/debian:trixie-slim AS rust-toolchain
 RUN apt-get update && \
     apt-get install --no-install-recommends -y ca-certificates curl && \
@@ -16,6 +18,12 @@ RUN test "$(dpkg --print-architecture)" = amd64 && \
     chmod +x /tmp/rustup-init && \
     /tmp/rustup-init -y --no-modify-path --profile minimal \
         --default-toolchain 1.99.1 --component rustfmt && \
+    curl -fsSL -o /tmp/cargo-about.tgz \
+        https://github.com/EmbarkStudios/cargo-about/releases/download/0.9.3/cargo-about-0.9.3-x86_64-unknown-linux-musl.tar.gz && \
+    echo "3ad1e94ea1e63d69d1961f4fb15ccbbe9575d906111f96d2cb4dce6df48f71b4  /tmp/cargo-about.tgz" \
+        | sha256sum -c - && \
+    tar -xzf /tmp/cargo-about.tgz -C /usr/local/cargo/bin --strip-components=1 \
+        cargo-about-0.9.3-x86_64-unknown-linux-musl/cargo-about && \
     chmod -R a+rX "$RUSTUP_HOME" "$CARGO_HOME"
 
 FROM docker.io/library/debian:trixie-slim

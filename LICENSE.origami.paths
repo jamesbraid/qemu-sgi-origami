@@ -1316,6 +1316,10 @@ tests/unit/test-sgi-renderer-gl.c
 tests/unit/test-sgi-renderer.c
 scripts/ci/sgi-license-check.py
 scripts/tests/test_sgi_license_check.py
+scripts/ci/sgi-rust-licences.py
+scripts/tests/test_sgi_rust_licences.py
+rust/about.hbs
+rust/about.toml
 scripts/ci/sgi-leak-check.py
 scripts/tests/test_sgi_leak_check.py
 scripts/tests/test_sgi_leak_workflows.py

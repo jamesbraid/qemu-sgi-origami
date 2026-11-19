@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Licence policy and notices for the standalone cargo workspaces under rust/,
+# read by scripts/ci/sgi-rust-licences.py.
+#
+# GPL-compatible licences, plus Apache-2.0 on its own by decision (it does not
+# combine with GPL-2.0-only code). Order is cargo-about's preference.
+accepted = [
+    "MIT",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "0BSD",
+    "BSL-1.0",
+    "CC0-1.0",
+    "MIT-0",
+    "Unlicense",
+    "MPL-2.0",
+    "LGPL-2.1-or-later",
+    "Apache-2.0 WITH LLVM-exception",
+    "Apache-2.0",
+]
+
+# The platforms release archives are built for.
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-gnu",
+    "x86_64-pc-windows-msvc",
+]
+
+# Build scripts and tests are not linked into the program.
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+
+# cargo-about skips publish = false crates. The script allows only ours and
+# iris-wgpu (no licence field; iris's LICENSE ships) and rejects any other.
+private = { ignore = true }

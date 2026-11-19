@@ -107,6 +107,7 @@ SCRIPT_SUITES = MODEL_SUITES + [
     'scripts/ci/test_sgi_check.py',
     'packaging/test_sgi_package.py',
     'scripts/tests/test_sgi_license_check.py',
+    'scripts/tests/test_sgi_rust_licences.py',
     'scripts/tests/test_sgi_leak_check.py',
     'scripts/tests/test_sgi_leak_workflows.py',
     'scripts/tests/test_sgi_docs_publish_workflow.py',
@@ -483,9 +484,15 @@ def docs(args):
              SOURCE / 'docs', os.path.join(out, 'html')])
 
 
+def rust_licences(args):
+    run([args.python or sys.executable, '-B',
+         SOURCE / 'scripts/ci/sgi-rust-licences.py', 'check'])
+
+
 def scripts(args):
     script_suites(SCRIPT_SUITES, args.python)
     docs(args)
+    rust_licences(args)
 
 
 QTEST_MESON = 'tests/qtest/meson.build'
@@ -1162,6 +1169,13 @@ def main(argv=None):
     mode.add_argument('--python', type=Path,
                       help='interpreter to run them with')
     mode.set_defaults(func=scripts)
+
+    mode = modes.add_parser(
+        'rust-licences', help='check the licences of the Rust crates under '
+                              'rust/ and their notices file')
+    mode.add_argument('--python', type=Path,
+                      help='interpreter to run it with')
+    mode.set_defaults(func=rust_licences)
 
     mode = modes.add_parser(
         'smoke', help='the pull-request checks: the script tests that '

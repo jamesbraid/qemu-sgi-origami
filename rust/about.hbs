@@ -1,0 +1,14 @@
+{{!-- SPDX-License-Identifier: BSD-3-Clause --}}
+Third-party notices for the Rust crates linked into the SGI GPU back end.
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+
+Used by:
+{{#each used_by}}
+  {{crate.name}} {{crate.version}}{{#if crate.repository}} {{{crate.repository}}}{{/if}}
+{{/each}}
+
+{{{text}}}
+{{/each}}
