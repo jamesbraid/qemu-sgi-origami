@@ -10,8 +10,28 @@ FROM docker.io/library/python:3.12-slim-bookworm
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
         autoconf autoconf-archive automake bison build-essential ca-certificates \
-        cmake curl flex git libasound2-dev libdecor-0-dev libegl-dev libgl-dev \
+        clang cmake curl flex git libasound2-dev libclang-dev libdecor-0-dev libegl-dev libgl-dev \
         libpulse-dev libtool libudev-dev libwayland-dev libx11-dev libxcursor-dev \
         libxext-dev libxfixes-dev libxi-dev libxkbcommon-dev libxrandr-dev \
         libxss-dev ninja-build pkg-config tar unzip zip \
  && rm -rf /var/lib/apt/lists/*
+
+# QEMU's Rust devices, which the O2's MACE and test machine need, take a
+# newer rustc than Debian 12 ships, and bindgen to read QEMU's headers. The
+# rustup installer is pinned by checksum.
+ENV RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN set -eu; \
+    case "$(uname -m)" in \
+        x86_64)  triple=x86_64-unknown-linux-gnu; \
+                 sum=20a06e644b0d9bd2fbdbfd52d42540bdde820ea7df86e92e533c073da0cdd43c ;; \
+        aarch64) triple=aarch64-unknown-linux-gnu; \
+                 sum=e3853c5a252fca15252d07cb23a1bdd9377a8c6f3efa01531109281ae47f841c ;; \
+    esac; \
+    curl -fsSL -o rustup-init \
+        "https://static.rust-lang.org/rustup/archive/1.28.2/$triple/rustup-init"; \
+    echo "$sum  rustup-init" | sha256sum -c -; \
+    chmod +x rustup-init; \
+    ./rustup-init -y --profile minimal --default-toolchain 1.100.0 --no-modify-path; \
+    rm rustup-init; \
+    cargo install bindgen-cli --version 0.73.2 --locked; \
+    rm -rf /opt/cargo/registry

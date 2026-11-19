@@ -23,7 +23,8 @@ The C libraries QEMU needs (GLib, pixman, SDL 2, GnuTLS) come from vcpkg,
 built statically from the manifest in this directory at the commit named in
 vcpkg-commit. Each platform builds natively:
 
-    linux    inside the image built from debian-bookworm.docker
+    linux    inside the image built from debian-bookworm.docker, which
+             has rustc, cargo and bindgen for QEMU's Rust devices
     macos    on an Arm or Intel Mac with Xcode's tools, Homebrew's ninja,
              pkgconf and python, and rustc, cargo and bindgen for QEMU's
              Rust devices
@@ -103,7 +104,7 @@ LICENSE_FILES = [
 ]
 # Platforms whose archive carries the Rust devices, built with the "rust" list
 # of configure-flags.json.
-RUST_PLATFORMS = ('macos', 'windows')
+RUST_PLATFORMS = ('linux', 'macos', 'windows')
 
 LICENSE_NAME = re.compile(r'^(LICEN[CS]E|COPYING|COPYRIGHT)', re.I)
 
@@ -250,6 +251,8 @@ def build_environment(name, prefix, work):
     if name == 'linux':
         # Linux also needs the host's X11, ALSA, PulseAudio and udev.
         env['PKG_CONFIG_PATH'] = pkgconfig
+        # rustc runs the final link, which --extra-ldflags does not reach.
+        env['RUSTFLAGS'] = f'-C linker={HERE / "static-cxx-link.sh"}'
     else:
         # vcpkg is the only source elsewhere. A plain pkg-config, searching
         # only its prefix, keeps a stray MinGW or Homebrew library out.
@@ -384,6 +387,9 @@ def stage(name, build, prefix, stage_dir, strip):
         origins = copy_windows_dlls(bin_dir, [prefix / 'bin'])
         copy_runtime_licences(toolchain_prefix(), origins, licences)
         copy_rust_licences(toolchain_prefix(), licences)
+    else:
+        sysroot = Path(output(['rustc', '--print', 'sysroot']).strip())
+        copy_rust_licences(sysroot, licences, 'rust')
 
 
 def copy_library_licences(prefix, licences):
@@ -589,13 +595,14 @@ def copy_runtime_licences(prefix, dlls, licences):
             shutil.copy2(text, licences / f'{package}.{text.name}')
 
 
-def copy_rust_licences(prefix, licences):
+def copy_rust_licences(prefix, licences, doc='rustc'):
     """Copy the Rust toolchain's licence texts into `licences`.
 
     The executables link Rust's standard library statically. MSYS2's rust
-    package keeps the texts of everything it bundles in one directory.
+    package (share/doc/rustc) and rustup's (share/doc/rust) each keep the
+    texts of everything they bundle in one directory.
     """
-    directory = prefix / 'share/doc/rustc/licenses'
+    directory = prefix / 'share/doc' / doc / 'licenses'
     texts = (sorted(p for p in directory.iterdir() if p.is_file())
              if directory.is_dir() else [])
     if not texts:

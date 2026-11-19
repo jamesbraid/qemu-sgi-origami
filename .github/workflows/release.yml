@@ -84,6 +84,8 @@ jobs:
             /sgi/bin/qemu-img --version
             /sgi/bin/qemu-system-mips64 -M help | tee /tmp/machines
             grep -qw octane2 /tmp/machines
+            # The O2 needs the Rust devices; a build without them lacks it.
+            grep -qw o2 /tmp/machines
             /sgi/bin/qemu-system-mips64 -L help
             quit() { printf "%s\n" "{\"execute\":\"qmp_capabilities\"}" "{\"execute\":\"quit\"}"; }
             quit | /sgi/bin/qemu-system-mips64 -M none -S -display none -monitor none \
@@ -190,7 +192,8 @@ jobs:
             git base-devel autoconf-archive curl zip unzip tar
             mingw-w64-clang-aarch64-toolchain mingw-w64-clang-aarch64-ninja
             mingw-w64-clang-aarch64-pkgconf mingw-w64-clang-aarch64-python
-            mingw-w64-clang-aarch64-cmake
+            mingw-w64-clang-aarch64-cmake mingw-w64-clang-aarch64-rust
+            mingw-w64-clang-aarch64-rust-bindgen mingw-w64-clang-aarch64-clang
       # vcpkg builds under x86-64 emulation here, so a cold build takes hours.
       # Save the binary cache even when the build fails, so a rerun resumes.
       - name: restore vcpkg binaries
@@ -228,6 +231,8 @@ jobs:
           if ($LASTEXITCODE) { throw "-M help: $LASTEXITCODE" }
           $machines
           if (-not ($machines -match '\boctane2\b')) { throw 'octane2 is not listed' }
+          # The O2 needs the Rust devices; a build without them lacks it.
+          if (-not ($machines -match '\bo2\b')) { throw 'o2 is not listed' }
           & "$bin\qemu-system-mips64.exe" -L help
           # A bad option makes QEMU exit at once, so a process still running
           # after a few seconds has accepted them.
