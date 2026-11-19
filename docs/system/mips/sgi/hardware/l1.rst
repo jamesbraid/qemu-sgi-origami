@@ -1203,9 +1203,9 @@ Signal link
 
 ``sgi-l1-signal-link`` is the machine end of the board's lines to and from
 the node, reached over its ``signals`` chardev, a stand-in for the board's
-wiring, not a hardware wire. The chardev must be a socket: closing the link
-on a gap or a refused hello is a disconnect, which does nothing on a pty
-or stdio. ``epoch`` is a 32-bit number the board tells a restart of this
+wiring, not a hardware wire. The chardev must be a socket and realize refuses
+any other backend: closing the link on a gap or a refused hello is a
+disconnect, which does nothing on a pty or stdio. ``epoch`` is a 32-bit number the board tells a restart of this
 process by. It defaults to a constant 1, so the launcher must pass a
 different value to each machine process it restarts. The read-only
 ``up`` property is 1 while a peer is connected and ``lines`` has bit *n* set
@@ -1221,6 +1221,16 @@ is established. ``node-reset`` is not carried: the machine derives it from
 the release edge of ``reset-hold``. Which pin of the node each line
 reaches, and its polarity, is *unknown*: a line is a logical event, an
 *approximation*. A pulse is a rise and a fall, two changes.
+
+``sgi-l1-signal-link-board`` is the controller board's end of the same
+wire, built from the same code with the roles swapped. It drives lines 1 to
+7 from GPIO inputs of the names above (``nmi`` has four) and sends them as
+changes in order, once per change, with its own counter and ``epoch``; its
+hello carries role 2 and it refuses any peer that is not role 1. It mirrors
+lines 8 and 9 to GPIO outputs ``power-good`` and ``node-reset-state``, and
+takes a change on no other line. After a reconnect its state carries the
+levels of lines 1 to 7, so a pulse made while the link was down is not
+replayed.
 
 Every message is 9 bytes, big endian: a kind (1 hello, 2 change, 3 state),
 a 32-bit sequence number, a line byte, a 16-bit level and a check byte, the

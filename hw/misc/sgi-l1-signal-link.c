@@ -1,21 +1,24 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * The machine end of the L1 signal link: board lines over a chardev as
- * fixed 9-byte messages. The board end is not here.
+ * The two ends of the L1 signal link: board lines over a chardev as fixed
+ * 9-byte messages. Each end owns some lines and mirrors the other's.
  */
 
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/bswap.h"
 #include "chardev/char-fe.h"
+#include "chardev/char.h"
 #include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "migration/blocker.h"
 #include "trace.h"
 
+#define TYPE_SGI_L1_SIGNAL_ENDPOINT "sgi-l1-signal-endpoint"
 #define TYPE_SGI_L1_SIGNAL_LINK "sgi-l1-signal-link"
-OBJECT_DECLARE_SIMPLE_TYPE(SGIL1SignalLinkState, SGI_L1_SIGNAL_LINK)
+#define TYPE_SGI_L1_SIGNAL_LINK_BOARD "sgi-l1-signal-link-board"
+OBJECT_DECLARE_SIMPLE_TYPE(SGIL1SignalLinkState, SGI_L1_SIGNAL_ENDPOINT)
 
 #define MSG_LEN 9
 #define KIND_HELLO 1
@@ -29,13 +32,18 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1SignalLinkState, SGI_L1_SIGNAL_LINK)
 #define LINE_POWER_GOOD 8
 #define LINE_NODE_RESET_STATE 9
 #define LINE_COUNT 9
-#define BOARD_LINES 7
+#define BOARD_MASK 0x07f
 #define MACHINE_MASK 0x180
 
 struct SGIL1SignalLinkState {
     DeviceState parent_obj;
     CharFrontend chr;
     uint32_t epoch;
+    /* Which lines this end drives and which it mirrors, and the roles. */
+    uint16_t own_mask;
+    uint16_t peer_mask;
+    uint8_t own_role;
+    uint8_t peer_role;
     /* Level of every line as this end last saw it, kept across reconnects. */
     uint16_t lines;
     /* This end's own change counter, for the life of the process. */
@@ -48,8 +56,8 @@ struct SGIL1SignalLinkState {
     uint8_t up;
     uint8_t rx[MSG_LEN];
     unsigned rx_len;
-    /* Board lines 1 to 7, in id order: the "nmi" list is four entries. */
-    qemu_irq out[BOARD_LINES];
+    /* Lines the peer drives, in id order: "nmi" is four entries. */
+    qemu_irq out[LINE_COUNT];
     Error *blocker;
 };
 
@@ -67,14 +75,15 @@ static uint8_t msg_check(const uint8_t *m)
     return crc;
 }
 
-static bool msg_valid(const uint8_t *m)
+static bool msg_valid(const SGIL1SignalLinkState *s, const uint8_t *m)
 {
     if (m[MSG_LEN - 1] != msg_check(m) || m[0] < KIND_HELLO ||
         m[0] > KIND_STATE) {
         return false;
     }
     return m[0] != KIND_CHANGE ||
-           (m[5] >= 1 && m[5] <= BOARD_LINES && !m[6] && m[7] <= 1);
+           (m[5] >= 1 && m[5] <= LINE_COUNT &&
+            extract32(s->peer_mask, m[5] - 1, 1) && !m[6] && m[7] <= 1);
 }
 
 static void send_msg(SGIL1SignalLinkState *s, uint8_t kind, uint32_t seq,
@@ -109,7 +118,7 @@ static void handle_msg(SGIL1SignalLinkState *s, const uint8_t *m)
     trace_sgi_l1_signal_rx(m[0], seq, m[5], level);
     switch (m[0]) {
     case KIND_HELLO:
-        if (level != ROLE_BOARD || m[5] != PROTOCOL_VERSION) {
+        if (level != s->peer_role || m[5] != PROTOCOL_VERSION) {
             trace_sgi_l1_signal_reject("hello", seq);
             qemu_chr_fe_disconnect(&s->chr);
             return;
@@ -135,8 +144,9 @@ static void handle_msg(SGIL1SignalLinkState *s, const uint8_t *m)
         int32_t d = seq - s->peer_seq;
         uint32_t missed = d > 0 ? d : 0;
 
-        for (unsigned id = 1; id <= BOARD_LINES; id++) {
-            if (extract32(level, id - 1, 1) != extract32(s->lines, id - 1, 1)) {
+        for (unsigned id = 1; id <= LINE_COUNT; id++) {
+            if (extract32(s->peer_mask, id - 1, 1) &&
+                extract32(level, id - 1, 1) != extract32(s->lines, id - 1, 1)) {
                 apply_line(s, id, extract32(level, id - 1, 1));
                 changed++;
             }
@@ -164,7 +174,7 @@ static void signal_receive(void *opaque, const uint8_t *buf, int size)
     for (int i = 0; i < size && s->up; i++) {
         s->rx[s->rx_len++] = buf[i];
         while (s->rx_len == MSG_LEN) {
-            if (msg_valid(s->rx)) {
+            if (msg_valid(s, s->rx)) {
                 s->rx_len = 0;
                 handle_msg(s, s->rx);
                 break;
@@ -184,8 +194,8 @@ static void signal_event(void *opaque, QEMUChrEvent event)
         s->up = 1;
         s->rx_len = 0;
         trace_sgi_l1_signal_state(true);
-        send_msg(s, KIND_HELLO, s->epoch, PROTOCOL_VERSION, ROLE_MACHINE);
-        send_msg(s, KIND_STATE, s->seq, LINE_COUNT, s->lines & MACHINE_MASK);
+        send_msg(s, KIND_HELLO, s->epoch, PROTOCOL_VERSION, s->own_role);
+        send_msg(s, KIND_STATE, s->seq, LINE_COUNT, s->lines & s->own_mask);
     } else if (event == CHR_EVENT_CLOSED) {
         s->up = 0;
         trace_sgi_l1_signal_state(false);
@@ -193,7 +203,7 @@ static void signal_event(void *opaque, QEMUChrEvent event)
 }
 
 /* Only a change is a message; a level set to what it already is is not. */
-static void set_machine_line(SGIL1SignalLinkState *s, unsigned id, int level)
+static void set_own_line(SGIL1SignalLinkState *s, unsigned id, int level)
 {
     if (extract32(s->lines, id - 1, 1) == !!level) {
         return;
@@ -207,19 +217,45 @@ static void set_machine_line(SGIL1SignalLinkState *s, unsigned id, int level)
 
 static void power_good_in(void *opaque, int n, int level)
 {
-    set_machine_line(opaque, LINE_POWER_GOOD, level);
+    set_own_line(opaque, LINE_POWER_GOOD, level);
 }
 
 static void node_reset_state_in(void *opaque, int n, int level)
 {
-    set_machine_line(opaque, LINE_NODE_RESET_STATE, level);
+    set_own_line(opaque, LINE_NODE_RESET_STATE, level);
+}
+
+static void node_power_in(void *opaque, int n, int level)
+{
+    set_own_line(opaque, 1, level);
+}
+
+static void reset_hold_in(void *opaque, int n, int level)
+{
+    set_own_line(opaque, 2, level);
+}
+
+static void soft_reset_in(void *opaque, int n, int level)
+{
+    set_own_line(opaque, 3, level);
+}
+
+static void nmi_in(void *opaque, int n, int level)
+{
+    set_own_line(opaque, 4 + n, level);
 }
 
 static void signal_realize(DeviceState *dev, Error **errp)
 {
-    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_LINK(dev);
+    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_ENDPOINT(dev);
 
     if (!qemu_chr_fe_backend_connected(&s->chr)) {
+        return;
+    }
+    if (!object_dynamic_cast(OBJECT(qemu_chr_fe_get_driver(&s->chr)),
+                             TYPE_CHARDEV_SOCKET)) {
+        error_setg(errp, "sgi-l1-signal-link: signals must be a socket "
+                   "chardev: closing the link is a disconnect");
         return;
     }
     /* The peer's state is outside the machine, so it is not saved. */
@@ -234,7 +270,7 @@ static void signal_realize(DeviceState *dev, Error **errp)
 
 static void signal_unrealize(DeviceState *dev)
 {
-    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_LINK(dev);
+    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_ENDPOINT(dev);
 
     qemu_chr_fe_set_handlers(&s->chr, NULL, NULL, NULL, NULL, NULL, NULL,
                              true);
@@ -244,20 +280,53 @@ static void signal_unrealize(DeviceState *dev)
     }
 }
 
+static void signal_init_common(Object *obj)
+{
+    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_ENDPOINT(obj);
+
+    object_property_add_uint8_ptr(obj, "up", &s->up, OBJ_PROP_FLAG_READ);
+    object_property_add_uint16_ptr(obj, "lines", &s->lines,
+                                   OBJ_PROP_FLAG_READ);
+}
+
+/* The machine drives lines 8 and 9 and mirrors the board's 1 to 7. */
 static void signal_init(Object *obj)
 {
-    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_LINK(obj);
+    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_ENDPOINT(obj);
     DeviceState *dev = DEVICE(obj);
 
+    s->own_mask = MACHINE_MASK;
+    s->peer_mask = BOARD_MASK;
+    s->own_role = ROLE_MACHINE;
+    s->peer_role = ROLE_BOARD;
     qdev_init_gpio_out_named(dev, &s->out[0], "node-power", 1);
     qdev_init_gpio_out_named(dev, &s->out[1], "reset-hold", 1);
     qdev_init_gpio_out_named(dev, &s->out[2], "soft-reset", 1);
     qdev_init_gpio_out_named(dev, &s->out[3], "nmi", 4);
     qdev_init_gpio_in_named(dev, power_good_in, "power-good", 1);
     qdev_init_gpio_in_named(dev, node_reset_state_in, "node-reset-state", 1);
-    object_property_add_uint8_ptr(obj, "up", &s->up, OBJ_PROP_FLAG_READ);
-    object_property_add_uint16_ptr(obj, "lines", &s->lines,
-                                   OBJ_PROP_FLAG_READ);
+    signal_init_common(obj);
+}
+
+/* The board drives lines 1 to 7 and mirrors the machine's 8 and 9. */
+static void signal_board_init(Object *obj)
+{
+    SGIL1SignalLinkState *s = SGI_L1_SIGNAL_ENDPOINT(obj);
+    DeviceState *dev = DEVICE(obj);
+
+    s->own_mask = BOARD_MASK;
+    s->peer_mask = MACHINE_MASK;
+    s->own_role = ROLE_BOARD;
+    s->peer_role = ROLE_MACHINE;
+    qdev_init_gpio_in_named(dev, node_power_in, "node-power", 1);
+    qdev_init_gpio_in_named(dev, reset_hold_in, "reset-hold", 1);
+    qdev_init_gpio_in_named(dev, soft_reset_in, "soft-reset", 1);
+    qdev_init_gpio_in_named(dev, nmi_in, "nmi", 4);
+    qdev_init_gpio_out_named(dev, &s->out[LINE_POWER_GOOD - 1], "power-good",
+                             1);
+    qdev_init_gpio_out_named(dev, &s->out[LINE_NODE_RESET_STATE - 1],
+                             "node-reset-state", 1);
+    signal_init_common(obj);
 }
 
 static const Property signal_properties[] = {
@@ -269,7 +338,7 @@ static void signal_class_init(ObjectClass *klass, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(klass);
 
-    dc->desc = "SGI L1 signal link to an external controller";
+    dc->desc = "SGI L1 signal link to the other end of the wire";
     dc->realize = signal_realize;
     dc->unrealize = signal_unrealize;
     dc->user_creatable = true;
@@ -279,11 +348,21 @@ static void signal_class_init(ObjectClass *klass, const void *data)
 
 static const TypeInfo signal_types[] = {
     {
-        .name = TYPE_SGI_L1_SIGNAL_LINK,
+        .name = TYPE_SGI_L1_SIGNAL_ENDPOINT,
         .parent = TYPE_DEVICE,
         .instance_size = sizeof(SGIL1SignalLinkState),
-        .instance_init = signal_init,
         .class_init = signal_class_init,
+        .abstract = true,
+    },
+    {
+        .name = TYPE_SGI_L1_SIGNAL_LINK,
+        .parent = TYPE_SGI_L1_SIGNAL_ENDPOINT,
+        .instance_init = signal_init,
+    },
+    {
+        .name = TYPE_SGI_L1_SIGNAL_LINK_BOARD,
+        .parent = TYPE_SGI_L1_SIGNAL_ENDPOINT,
+        .instance_init = signal_board_init,
     },
 };
 

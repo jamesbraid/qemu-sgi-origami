@@ -427,10 +427,14 @@ config SGI_ODYSSEY
 config SGI_L1_IDENTITY
     bool
 
+config SGI_L1_SIGNAL_LINK
+    bool
+
 config SGI_L1
     bool
     default y if SGI_DEVICES
     select SGI_L1_IDENTITY
+    select SGI_L1_SIGNAL_LINK
 
 config SGI_PBAY
     bool
