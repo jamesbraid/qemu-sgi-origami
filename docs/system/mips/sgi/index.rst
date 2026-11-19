@@ -174,6 +174,7 @@ Graphics
    hardware/vice
    hardware/xt-digvid
    hardware/galileo
+   hardware/divo
    hardware/psitech-rad1
    hardware/psitech-rad4
 
