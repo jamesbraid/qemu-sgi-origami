@@ -163,7 +163,7 @@ static bool tb_lookup_cmp(const void *p, const void *d)
     const TranslationBlock *tb = p;
     const struct tb_desc *desc = d;
 
-    if ((tb_cflags(tb) & CF_PCREL || tb->pc == desc->s.pc) &&
+    if ((desc->s.cflags & CF_PCREL || tb->pc == desc->s.pc) &&
         tb_page_addr0(tb) == desc->page_addr0 &&
         tb->cs_base == desc->s.cs_base &&
         tb->flags == desc->s.flags &&
@@ -261,7 +261,7 @@ hit:
      * As long as tb is not NULL, the contents are consistent.  Therefore,
      * the virtual PC has to match for non-CF_PCREL translations.
      */
-    assert((tb_cflags(tb) & CF_PCREL) || tb->pc == s.pc);
+    assert((s.cflags & CF_PCREL) || tb->pc == s.pc);
     return tb;
 }
 
