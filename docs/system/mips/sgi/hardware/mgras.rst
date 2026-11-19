@@ -229,7 +229,15 @@ this is *software expectation* from the kernel and ``hinv`` binaries:
   is a one-RE board with no texture.
 - ``0x071308``, byte: the attached monitor's ID in bits 7:4.
 - ``0x071708``, byte: CMAP revision in bits 2:0, RA revision in bits 6:4;
-  bit 7 clear means a video option is fitted.
+  bit 7 clear means a video option is fitted (*inferred*: the kernel's
+  board-information path reports a video option from it, and the IRIX
+  ``impact.so`` video library module takes a board only when that report
+  is set). The model clears it when a :doc:`galileo` board is attached
+  to the option window, and reads it set otherwise. Limitation: that
+  mapping from "video option fitted" is inferred, so any other board
+  attached to the window would also clear the bit, and the Octane's other
+  video options are *unknown*. A capture of a fitted board's byte, or a
+  disassembly of the kernel's option probes, would settle it.
 - ``0x071d00`` under XMAP index byte 4: the PP1 revision in bits 2:0.
 - ``0x02c578``: the RE4 revision in bits 7:4.
 - ``0x028004``: after the GE program verifies, the low byte is the GE
@@ -330,11 +338,12 @@ where each board's values come from.
        with texture is an EMXI is *inferred* from IRIX's naming rule.
 
 Every board answers HQ revision 2, RE4 revision 2, VC3 revision 0 and RA
-revision 0, with ``0x071708`` bit 7 set (no video option), as every
-capture prints. Bit 7 of ``0x072488``, never read by IRIX, is 0, and the
-``0x072408`` bytes beyond "path present" or "path absent" are an
-*approximation*: IRIX maps fields 0, 1 and 2 alike to four TRAMs. Writes
-to ``0x072408`` and ``0x072488`` do not change these answers.
+revision 0, with ``0x071708`` bit 7 set (no video option), as every capture
+prints; no capture has a video option fitted. The model clears that bit when
+an Octane Digital Video board is attached. Bit 7 of ``0x072488``, never read
+by IRIX, is 0, and the ``0x072408`` bytes beyond "path present" or "path
+absent" are an *approximation*: IRIX maps fields 0, 1 and 2 alike to four
+TRAMs. Writes to ``0x072408`` and ``0x072488`` do not change these answers.
 
 ``0x071308`` answers monitor ID ``0xf`` in bits 7:4 on every board, what
 every decoded Origin capture prints and what selects the kernel's stock

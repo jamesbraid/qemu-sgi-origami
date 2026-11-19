@@ -236,11 +236,16 @@ bool sgi_mgras_board_known(const char *name)
     return mgras_find_board(name) != NULL;
 }
 
-/* 0x071708: RA revision 6:4, CMAP revision 2:0, bit 7 set: no video option. */
-static uint8_t mgras_cmap_ra_byte(const SGIMgrasBoard *b)
+/*
+ * 0x071708: RA revision 6:4, CMAP revision 2:0, bit 7 clear when a video
+ * option is fitted, which is the board's own or one on the control bus.
+ */
+static uint8_t mgras_cmap_ra_byte(const SGIMgrasState *s)
 {
-    return (b->video_option ? 0 : 0x80) | (b->ra_revision & 7) << 4 |
-           (b->cmap_revision & 7);
+    const SGIMgrasBoard *b = s->board;
+
+    return (b->video_option || s->option_window_ops ? 0 : 0x80) |
+           (b->ra_revision & 7) << 4 | (b->cmap_revision & 7);
 }
 
 /*
@@ -902,7 +907,7 @@ static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
         return size == 1 ? s->board->version1 :
                (uint32_t)s->board->version1 << 24;
     case 0x071708: {
-        uint8_t v = mgras_cmap_ra_byte(s->board);
+        uint8_t v = mgras_cmap_ra_byte(s);
 
         return size == 1 ? v : (uint32_t)v << 24;
     }

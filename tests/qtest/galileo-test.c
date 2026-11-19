@@ -21,6 +21,7 @@
 /* "Probe" and "Register blocks". */
 #define OPTION_CTRL 0x61000
 #define OPTION_ID   0x70008
+#define CMAP_RA     0x71708
 #define BLEND       0x72800
 #define CC1         0x73000
 #define CONTROL     0x73400
@@ -110,21 +111,26 @@ static void blend_addr(uint16_t addr)
     wb(DIRECT(BLEND, 4), addr >> 8);
 }
 
-/* "Probe": the driver's store, then the byte that must read 0x11. */
+/*
+ * "Probe": the driver's store, then the byte that must read 0x11. The
+ * graphics board's option bit reads clear.
+ */
 static void test_probe(void)
 {
     start_video();
     g_assert_cmpuint(memtx_writel(qts, GFX + OPTION_CTRL, 0x4210), ==, 0);
     g_assert_cmphex(rb(OPTION_ID), ==, 0x11);
+    g_assert_cmphex(rb(CMAP_RA) & 0x80, ==, 0);
     qtest_quit(qts);
 }
 
-/* The option is off unless fitted: the probe byte reads all ones. */
+/* Not fitted: the probe byte reads all ones and the option bit reads set. */
 static void test_absent(void)
 {
     start("");
     g_assert_cmpuint(memtx_writel(qts, GFX + OPTION_CTRL, 0x4210), ==, 0);
     g_assert_cmphex(rb(OPTION_ID), ==, 0xff);
+    g_assert_cmphex(rb(CMAP_RA) & 0x80, ==, 0x80);
     qtest_quit(qts);
 }
 

@@ -244,12 +244,12 @@ carries a Bridge with the board's name line. Its registers need a graphics
 board: the ``graphics`` link names one, and without it the model takes the
 machine's only ``sgi-mgras``, which must already exist, so a second MGRAS or
 a video board listed first needs the link. Without the option, the graphics
-board's probe byte reads ``0xff`` (*software expectation*). The ``field-period-ns`` property
-sets the field period. The guest needs the 2 x 50 MiB of low memory the
-driver reserves when the machine has more than 1.5 GiB (*software
-expectation*); the model does nothing about it. The Octane's graphics
-board does not report the video option bit in its revision byte
-(*unknown*).
+board's probe byte reads ``0xff`` (*software expectation*). With it, bit 7
+of the graphics board's ``0x071708`` byte reads clear (*inferred*, see
+:doc:`mgras`); Smoke's board search needs that. The ``field-period-ns``
+property sets the field period. The guest needs the 2 x 50 MiB of low
+memory the driver reserves when the machine has more than 1.5 GiB (*software
+expectation*); the model does nothing about it.
 
 .. _sgi-galileo-limits:
 
