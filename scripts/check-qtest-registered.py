@@ -161,9 +161,14 @@ def main() -> int:
     problems.extend(f"{n} is registered more than once"
                     for n, count in registration_occurrences(meson).items()
                     if count > 1)
+    qos_sources = re.search(r"(?s)qos_test_ss\.add\(\s*(.*?)\n\)", meson)
+    qos_names = set(re.findall(r"'([^']+)'", qos_sources.group(1))) \
+        if qos_sources else set()
     for prefix in FAMILIES:
         sources = {p.stem for p in QTEST.glob(f"{prefix}*-test.c") if p.is_file()}
-        registered = {n for n in names if n.startswith(prefix)}
+        # qos-test links these sources in, so they run without a name of their own.
+        registered = {n for n in names if n.startswith(prefix)} | \
+            {Path(n).stem for n in qos_names if n.startswith(prefix)}
         problems.extend(f"{n}.c is not registered" for n in sources - registered)
         problems.extend(f"{n} has no source" for n in registered - sources)
         if prefix in FAMILY_GUARDS:
@@ -175,9 +180,6 @@ def main() -> int:
             problems.append(f"{name}.c is not registered")
         if name in names and not (QTEST / f"{name}.c").is_file():
             problems.append(f"{name} has no source")
-    qos_sources = re.search(r"(?s)qos_test_ss\.add\(\s*(.*?)\n\)", meson)
-    qos_names = set(re.findall(r"'([^']+)'", qos_sources.group(1))) \
-        if qos_sources else set()
     for name in QOS_CARD_SOURCES:
         if (QTEST / name).is_file() and name not in qos_names:
             problems.append(f"{name} is not in the qos-test sources")
