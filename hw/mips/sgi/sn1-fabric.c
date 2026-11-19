@@ -559,6 +559,11 @@ struct SN1MemoryMappings {
 
 void sn1_memory_mappings_refresh(SN1MemoryMappings *maps, SN1NodeState *origin)
 {
+    SN1NodeState *last_origin = NULL, *last_target = NULL;
+    unsigned number = 0;
+    uint64_t size = 0;
+    bool enabled = false;
+
     if (!maps || maps->stopped) {
         return;
     }
@@ -566,22 +571,24 @@ void sn1_memory_mappings_refresh(SN1MemoryMappings *maps, SN1NodeState *origin)
     memory_region_transaction_begin();
     for (unsigned i = 0; i < maps->aliases->len; i++) {
         SN1MemoryAlias *alias = g_ptr_array_index(maps->aliases, i);
-        unsigned number;
-        uint64_t size;
-        bool enabled;
 
         if (origin && alias->origin != origin) {
             continue;
         }
-        number = sgi_bedrock_node_number(
-            SGI_BEDROCK(alias->target->bedrock));
-        size = MIN(memory_region_size(&alias->target->ni_target[0]),
-                   SN1_FABRIC_WINDOW_SIZE);
-        enabled = size && alias->origin->endpoint.ready &&
-            alias->target->endpoint.ready &&
-            sn1_fabric_routed(&alias->origin->endpoint) &&
-            sn1_fabric_resolve_named(&alias->origin->endpoint, number) ==
-                &alias->target->endpoint;
+        /* The aliases of one origin and target are adjacent and agree. */
+        if (alias->origin != last_origin || alias->target != last_target) {
+            last_origin = alias->origin;
+            last_target = alias->target;
+            number = sgi_bedrock_node_number(
+                SGI_BEDROCK(alias->target->bedrock));
+            size = MIN(memory_region_size(&alias->target->ni_target[0]),
+                       SN1_FABRIC_WINDOW_SIZE);
+            enabled = size && alias->origin->endpoint.ready &&
+                alias->target->endpoint.ready &&
+                sn1_fabric_routed(&alias->origin->endpoint) &&
+                sn1_fabric_resolve_named(&alias->origin->endpoint, number) ==
+                    &alias->target->endpoint;
+        }
         memory_region_set_size(&alias->region, size);
         memory_region_set_address(&alias->region,
                                   (uint64_t)number << SN1_FABRIC_ADDRESS_SHIFT);
