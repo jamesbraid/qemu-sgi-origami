@@ -8172,6 +8172,9 @@ static bool sgi_machine_build_sn1_routers(SGIMachineState *s,
         }
         object_property_add_child(module, "router", OBJECT(router));
         qdev_prop_set_uint8(router, "chip-revision", record->revision);
+        if (record->has_role) {
+            qdev_prop_set_uint8(router, "role", record->role);
+        }
         object_property_set_link(OBJECT(router), "l1-uart", OBJECT(uart),
                                  &error_abort);
         object_unref(OBJECT(uart));

@@ -567,6 +567,35 @@ class LaunchPolicyFieldTests(unittest.TestCase):
         with self.assertRaisesRegex(CompileError, "SN1 Routers"):
             compile_model(model)
 
+    def _with_roles(self, entries, name="origin3400-two-routers"):
+        model = _resolved(name)
+        model["machine"]["emulation"]["router_roles"] = [
+            {"component": c, "role": r, "reason": "test"} for c, r in entries]
+        return model
+
+    def test_router_roles_reach_only_the_routers_that_name_one(self):
+        model = self._with_roles([("rbrick0-router", 14),
+                                  ("rbrick1-router", 12)])
+        roles = {r["id"]: r.get("role") for r in
+                 json.loads(render_catalogue_json([model]))["topologies"][0]
+                 ["routers"]}
+        self.assertEqual(roles, {"rbrick0-router": 14, "rbrick1-router": 12})
+        ordinary = json.loads(render_catalogue_json(
+            [_resolved("origin3400-two-routers")]))["topologies"][0]
+        for router in ordinary["routers"]:
+            self.assertNotIn("role", router)
+
+    def test_a_router_role_must_name_a_router_once(self):
+        for entries in ([("c0-bedrock", 14)],
+                        [("rbrick0-router", 14), ("rbrick0-router", 12)]):
+            with self.assertRaises(CompileError):
+                compile_model(self._with_roles(entries))
+
+    def test_router_roles_need_sn1_routers(self):
+        model = self._with_roles([("router", 14)], "origin2000-rack")
+        with self.assertRaisesRegex(CompileError, "SN1 Routers"):
+            compile_model(model)
+
     def test_ip53_runtime_is_emitted_as_authored(self):
         model = _resolved("tezro/one-processor")
         topology = json.loads(render_catalogue_json([model]))["topologies"][0]

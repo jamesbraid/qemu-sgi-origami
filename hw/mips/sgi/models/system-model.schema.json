@@ -384,6 +384,20 @@
               "type": "boolean",
               "description": "Whether this topology's SN1 Routers answer the model's synthetic diagnostics."
             },
+            "router_roles": {
+              "type": "array",
+              "description": "The role nibble an L1 drives onto an SN1 Router's role pins, keyed by router component: 14 (0xe) a MetaRouter, 12 (0xc) a repeat router. A router not listed is ordinary (0xf).",
+              "items": {
+                "type": "object",
+                "required": ["component", "role", "reason"],
+                "additionalProperties": false,
+                "properties": {
+                  "component": { "$ref": "#/$defs/identifier" },
+                  "role": { "enum": [12, 14] },
+                  "reason": { "type": "string", "minLength": 1 }
+                }
+              }
+            },
             "option_intx_maps": {
               "type": "object",
               "additionalProperties": {

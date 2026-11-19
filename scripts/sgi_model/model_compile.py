@@ -3306,7 +3306,8 @@ def _compile_module(model: dict, module_id: str, module_index: int,
     return record
 
 
-def _compile_router(model: dict, entry: dict, router_index: int) -> dict:
+def _compile_router(model: dict, entry: dict, router_index: int,
+                    roles: dict[str, int]) -> dict:
     router = entry["component"]
     router_asic = router.get("router_asic")
     if not isinstance(router_asic, dict):
@@ -3339,7 +3340,25 @@ def _compile_router(model: dict, entry: dict, router_index: int) -> dict:
         # handed to it again.
         **({"node_ports": sorted(router_asic["node_ports"])}
            if "node_ports" in router_asic else {}),
+        **({"role": roles[router["id"]]} if router["id"] in roles else {}),
     }
+
+
+def _router_roles(model: dict, routers: list[dict]) -> dict[str, int]:
+    """The authored router roles by component, each naming a router."""
+    entries = model["machine"].get("emulation", {}).get("router_roles", [])
+    roles: dict[str, int] = {}
+    for entry in entries:
+        if entry["component"] in roles:
+            raise CompileError(
+                f"router role repeats component '{entry['component']}'")
+        roles[entry["component"]] = entry["role"]
+    if roles and model["machine"]["generation"] != "SN1":
+        raise CompileError("router roles require SN1 Routers")
+    unknown = set(roles) - {entry["component"]["id"] for entry in routers}
+    if unknown:
+        raise CompileError(f"router role names no router: {min(unknown)}")
+    return roles
 
 
 def _crossbar_module_index(components: dict[str, dict], modules: dict[str, int],
@@ -3772,7 +3791,8 @@ def compile_model(model: dict) -> dict:
             raise CompileError("I/O-only Bedrock peers require generation SN1")
         io_peers = [_compile_io_peer(model, components, entry, node_count + position)
                     for position, entry in enumerate(graph["io_peers"])]
-        routers = [_compile_router(model, entry, index)
+        roles = _router_roles(model, graph["routers"])
+        routers = [_compile_router(model, entry, index, roles)
                    for index, entry in enumerate(graph["routers"])]
         if machine.get("emulation", {}).get("synthetic_router_diagnostics"):
             if generation != "SN1" or not routers:

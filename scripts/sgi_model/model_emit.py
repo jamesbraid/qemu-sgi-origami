@@ -180,6 +180,7 @@ def _router(raw: dict) -> dict:
         **({"synthetic-diagnostics": True}
            if raw.get("synthetic_diagnostics") else {}),
         **({"node-ports": raw["node_ports"]} if "node_ports" in raw else {}),
+        **({"role": raw["role"]} if "role" in raw else {}),
     }
 
 

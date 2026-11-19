@@ -593,6 +593,10 @@
 #     cabled to, as the enclosure's management wiring requires (an
 #     Origin 3000 R-brick's ports 2 to 5); absent means any port
 #
+# @role: the role nibble the module's L1 drives onto the router's role
+#     pins: 0xe a MetaRouter, 0xc a repeat router; absent means
+#     ordinary (0xf)
+#
 # Since: 11.2
 ##
 { 'struct': 'SGIModelRouter',
@@ -604,7 +608,8 @@
             'chip-inputs': 'uint8',
             'serial': 'uint64',
             '*synthetic-diagnostics': 'bool',
-            '*node-ports': ['uint8'] } }
+            '*node-ports': ['uint8'],
+            '*role': 'uint8' } }
 
 ##
 # @SGIModelIoPeer:
