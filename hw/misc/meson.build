@@ -67,6 +67,7 @@ system_ss.add(when: 'CONFIG_SGI_MGRAS',
                              'sgi-mgras-texture.c', 'sgi-mgras-gpu.c'))
 system_ss.add(when: 'CONFIG_SGI_GALILEO',
               if_true: files('sgi-galileo.c'))
+system_ss.add(when: 'CONFIG_SGI_DIVO', if_true: files('sgi-divo.c'))
 system_ss.add(when: 'CONFIG_SGI_XT_DIGVID', if_true: files('sgi-xt-digvid.c'))
 system_ss.add(when: 'CONFIG_SGI_KONA',
               if_true: files('sgi-kona.c', 'sgi-kona-flash-image.c'))

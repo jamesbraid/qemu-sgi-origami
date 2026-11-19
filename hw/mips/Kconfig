@@ -245,6 +245,7 @@ config SGI_XIO_BASEIO
 config SGI_PCI_EXPANSION
     bool
     select AIC1160_PCI
+    select SGI_DIVO
     select SGI_XIO_BOARD
     select SGI_BRIDGE
 

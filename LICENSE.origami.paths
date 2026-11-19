@@ -336,6 +336,7 @@ hw/misc/sgi-bedrock.c
 hw/misc/sgi-bic-board-interface.c
 hw/misc/sgi-board-record.c
 hw/misc/sgi-command-port.c
+hw/misc/sgi-divo.c
 hw/misc/sgi-elsc.c
 hw/misc/sgi-heart.c
 hw/misc/sgi-hub.c
@@ -970,6 +971,7 @@ tests/qtest/sgi-crime-render-test-groups.txt
 tests/qtest/sgi-crime-render-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
+tests/qtest/sgi-divo-test.c
 tests/qtest/sgi-fc-board-test.c
 tests/qtest/sgi-gbe-test.c
 tests/qtest/sgi-gpu-test.c

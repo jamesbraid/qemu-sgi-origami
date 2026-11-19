@@ -408,6 +408,10 @@ config SGI_GALILEO
     select SGI_MGRAS
     select SGI_XIO_BOARD
 
+config SGI_DIVO
+    bool
+    depends on PCI
+
 config SGI_XT_DIGVID
     bool
     select ONEWIRE

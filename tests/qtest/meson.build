@@ -980,6 +980,7 @@ qos_test_ss.add(
   'pci-test.c',
   'pcnet-test.c',
   'adaptec-aic1160-test.c',
+  'sgi-divo-test.c',
   'qlogic-isp-test.c',
   'qlogic-isp2200-test.c',
   'rs5c372-test.c',
