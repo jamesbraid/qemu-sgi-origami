@@ -35,6 +35,7 @@
  */
 #define TABLE_FIELD_MASK UINT64_C(0xf)
 #define TABLE_TURN_MASK 7
+#define ROLE_FIELD (UINT64_C(3) << 20)
 #define LOCAL_ENTRIES 128
 #define META_ENTRIES 16
 
@@ -53,6 +54,8 @@ struct SGISN1RouterState {
     bool unpowered;
     bool reset_held;
     uint8_t revision;
+    /* The role nibble an L1 would drive onto the router's role pins. */
+    uint8_t role;
     uint8_t synthetic_diagnostics;
     /* Not migrated: only keeps the refused-destination log to one line. */
     bool meta_destination_logged;
@@ -260,8 +263,9 @@ SGINetPacketResult sgi_sn1_router_access(SGISN1RouterState *s,
         break;
     case 0x50:
         if (!write) {
-            /* Ordinary-router position inputs are a reviewed approximation. */
-            packet->value = s->jbus_control | (UINT64_C(3) << 20);
+            /* Bits 21:20 are the role nibble's low bits (inferred). */
+            packet->value = (s->jbus_control & ~ROLE_FIELD) |
+                ((uint64_t)(s->role & 3) << 20);
             return SGI_NET_PACKET_OK;
         }
         storage = &s->jbus_control;
@@ -664,6 +668,10 @@ static void router_realize(DeviceState *dev, Error **errp)
         error_setg(errp, "SN1 router supports only inferred chip revision one");
         return;
     }
+    if (s->role != 0xf && s->role != 0xe && s->role != 0xc) {
+        error_setg(errp, "SN1 router role must be 0xf, 0xe or 0xc");
+        return;
+    }
     if (s->uart) {
         if (!s->uart->realized) {
             error_setg(errp, "SN1 router L1 UART must be realized first");
@@ -739,6 +747,7 @@ static void router_init(Object *obj)
 
 static const Property router_properties[] = {
     DEFINE_PROP_UINT8("chip-revision", SGISN1RouterState, revision, 1),
+    DEFINE_PROP_UINT8("role", SGISN1RouterState, role, 0xf),
 };
 
 static void router_class_init(ObjectClass *oc, const void *data)

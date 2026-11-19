@@ -115,6 +115,12 @@ following properties.
   always reports revision 1. The inventory label is a software-reported
   one, not a silicon revision, so the value is an *approximation*.
 
+``role``
+  The router role nibble an L1 would drive, ``0xf`` (ordinary, the default),
+  ``0xe`` (MetaRouter) or ``0xc`` (repeat router). Realize fails for any
+  other value. See :ref:`sgi-sn1-router-role`. It is configuration, not
+  migrated state: source and destination must match.
+
 ``port1-cable`` to ``port8-cable``
   Links to ``sgi-net-cable`` objects. The machine builder fixes them after
   construction.
@@ -212,7 +218,9 @@ the same rule.
    * - ``0x050``
      - Bus control
      - read, write
-     - Full word. A read ORs in ``3 << 20``.
+     - Full word, except that bits 21-20 read the role, see
+       :ref:`sgi-sn1-router-role`. A write to those bits is kept in the word
+       and never shows.
    * - ``0x100`` to ``0x110``
      - Scratch 0-2
      - read, write
@@ -410,6 +418,33 @@ use of a table word, the omission of the global table or the physical
 applicability of any of these to the Origin 300 module. Those choices are
 *unknown* for the hardware and are model policy.
 
+.. _sgi-sn1-router-role:
+
+Role
+====
+
+The stock :term:`PROM` reads this register by vector read at discovery,
+inverts bits 21:20 and stores them as the router's role flags: flag bit 0
+is a MetaRouter and flag bit 1 a repeat router (*software expectation*,
+:src:`ip35-prom-6.210 router role`; replayed over cabling tables, never run
+on a real router). It accepts a MetaRouter graph only when each MetaRouter
+reads ``10`` and each repeat router ``00``, so the flags are ``01`` and
+``11``.
+
+The L1 can drive the role nibble ``0xf`` (ordinary), ``0xe`` (MetaRouter)
+or ``0xc`` (repeat router), and no other value reaches the pins
+(*software expectation*, :src:`l1-firmware-1.44.0`). The ``role`` property
+presents the nibble's low two bits at bits 21:20, so ``0xf`` reads ``11``,
+``0xe`` reads ``10`` and ``0xc`` reads ``00``. That nibble bit *n* reaches
+register bit 20 + *n* fits all three values and the inversion, but no
+document or capture states it: *inferred*, and the pin wiring is *unknown*,
+so the model is an *approximation*. A read of the register on a real
+MetaRouter and repeat router would settle it.
+
+The role changes nothing else. The route calculation's use of the flags,
+the global route table and the repeat router's port pairing are not
+modelled.
+
 .. _sgi-sn1-router-reset:
 
 Reset
@@ -557,7 +592,8 @@ Model limits
   Reset values, readback masks and the diagnostic profile's extra registers
   are model choices.
 - Routing follows the rule above, not a known hardware rule. The global
-  route table, the protection bits and active barriers have no effect.
+  route table, the protection bits and active barriers have no effect. A
+  MetaRouter or repeat router routes like an ordinary router.
 - In a machine, a Bedrock's port reset delivers a warm reset to the router
   and the router only passes it on; see :ref:`sgi-sn1-router-warm-reset`.
   The router is reset only when the board resets the whole machine.

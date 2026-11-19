@@ -1626,6 +1626,53 @@ static void test_position(void)
     qtest_quit(s);
 }
 
+/*
+ * The role nibble's low two bits are bits 21:20 of the bus control word. The
+ * stock firmware inverts them: bit 0 is MetaRouter and bit 1 repeat router.
+ */
+static void test_role(void)
+{
+    static const struct {
+        const char *role;
+        unsigned int bits, flags;
+    } cases[] = {
+        { "0xf", 3, 0 }, { "0xe", 2, 1 }, { "0xc", 0, 3 },
+    };
+
+    for (unsigned i = 0; i < G_N_ELEMENTS(cases); i++) {
+        QTestState *s = qtest_initf("-M none -cpu R10000 "
+            "-device sgi-sn1-router,id=r,role=%s "
+            "-device sgi-sn1-router-test,id=test,router=r", cases[i].role);
+        uint64_t word = qtest_readq(s, BASE + 0x50);
+
+        g_assert_cmphex((word >> 20) & 3, ==, cases[i].bits);
+        g_assert_cmphex(~(word >> 20) & 3, ==, cases[i].flags);
+        /* A write changes the other bits, never the role. */
+        qtest_writeq(s, BASE + 0x50, UINT64_MAX);
+        g_assert_cmphex(qtest_readq(s, BASE + 0x50), ==,
+                        (UINT64_MAX & ~(UINT64_C(3) << 20)) |
+                        ((uint64_t)cases[i].bits << 20));
+        /* The role is configuration: a reset leaves it as it was. */
+        qtest_qmp_assert_success(s, "{'execute':'system_reset'}");
+        g_assert_cmphex((qtest_readq(s, BASE + 0x50) >> 20) & 3, ==,
+                        cases[i].bits);
+        qtest_quit(s);
+    }
+}
+
+static void test_role_refused(void)
+{
+    if (!g_test_subprocess()) {
+        g_test_trap_subprocess(NULL, 5 * G_USEC_PER_SEC, 0);
+        g_test_trap_assert_failed();
+        g_test_trap_assert_stderr("*role must be 0xf, 0xe or 0xc*");
+        return;
+    }
+    /* 0x6 would read like 0xe at bits 21:20, but no L1 package drives it. */
+    qtest_quit(qtest_init("-M none -cpu R10000 "
+                          "-device sgi-sn1-router,role=0x6"));
+}
+
 static void test_routing(void)
 {
     QTestState *s = qtest_init(ARGS);
@@ -2732,6 +2779,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi/sn1-router/inactive-barrier-no-effects",
                    test_inactive_barrier_no_effects);
     qtest_add_func("/sgi/sn1-router/position", test_position);
+    qtest_add_func("/sgi/sn1-router/role", test_role);
+    qtest_add_func("/sgi/sn1-router/role-refused", test_role_refused);
     qtest_add_func("/sgi/sn1-router/partition-fence-state",
                    test_partition_fence_state);
     qtest_add_func("/sgi/sn1-router/routing", test_routing);
