@@ -21,6 +21,36 @@ static uint8_t sum_complement(const uint8_t *p, size_t len)
     return -sum;
 }
 
+bool sgi_l1_system_serial_check(const char *serial, Error **errp)
+{
+    unsigned i;
+
+    /* The firmware's format test; the letter the board needs is inferred. */
+    if (strlen(serial) != 8 || serial[0] < 'L' || serial[0] > 'R' ||
+        serial[1] < '0' ||
+        serial[1] > '3') {
+        error_setg(errp, "system serial '%s' is not L, a digit 0 to 3 and "
+                   "six digits", serial);
+        return false;
+    }
+    for (i = 2; i < 8; i++) {
+        if (!g_ascii_isdigit(serial[i])) {
+            error_setg(errp, "system serial '%s' is not L, a digit 0 to 3 "
+                       "and six digits", serial);
+            return false;
+        }
+    }
+    if (!strcmp(serial + 1, "0000000")) {
+        error_setg(errp, "system serial '%s' is the unassigned value", serial);
+        return false;
+    }
+    if (!strcmp(serial + 1, "3999999")) {
+        error_setg(errp, "system serial '%s' is the disabled marker", serial);
+        return false;
+    }
+    return true;
+}
+
 bool sgi_l1_settings_image(uint8_t *image, const SGIL1Settings *s,
                            Error **errp)
 {
@@ -46,6 +76,11 @@ bool sgi_l1_settings_image(uint8_t *image, const SGIL1Settings *s,
         return false;
     }
 
+    if (s->system_serial && !sgi_l1_system_serial_check(s->system_serial,
+                                                        errp)) {
+        return false;
+    }
+
     memset(image, 0, SGI_L1_SETTINGS_WINDOW_BYTES);
     /* Version 1; byte 1 is where record 1 starts, in units of 8 bytes. */
     image[0] = 1;
@@ -55,6 +90,9 @@ bool sgi_l1_settings_image(uint8_t *image, const SGIL1Settings *s,
     id = 0x0a000000 | s->rack << 14 | s->bay << 8;
     stl_be_p(r, id);
     r[0x04] = 0x70 | (s->auto_power_up ? 0x80 : 0);
+    if (s->system_serial) {
+        memcpy(r + 0x08, s->system_serial, 8);  /* the ninth byte stays NUL */
+    }
     r[0x11] = 0x02;
     /* The router role and series defaults of a rebuilt record, and bit 3. */
     r[0x17] = 0xf4 | (s->skip_serial_check ? 0x08 : 0);

@@ -2802,6 +2802,65 @@ static void test_settings_loaded(void)
     g_rmdir(dir);
 }
 
+/* system-serial starts the clock RAM with a window that carries it. */
+static void test_system_serial(void)
+{
+    uint8_t got[SETTINGS_BYTES], sum = 0;
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
+    cs_setup(&a, 1, 0x2000, 0, 0x1143);
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    qts = start_machine(&f, "sgi-l1-board,system-serial=L1234567", "");
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    qtest_memread(qts, 0x20000000, got, sizeof(got));
+    g_assert_cmpmem(got + 0x010, 9, "L1234567", 9);
+    for (unsigned i = 0x008; i < 0x078; i++) {
+        sum += got[i];
+    }
+    g_assert_cmphex(sum, ==, 0);
+    g_assert_cmpmem(got + 0x008, 0x70, got + 0x078, 0x70);
+    quit_all(qts, &f);
+}
+
+/* A serial the firmware repairs or reports unassigned is refused. */
+static void test_system_serial_refused(void)
+{
+    static const char *const bad[] = {
+        "L0000000", "L3999999", "S1234567", "L12345", "L4567890",
+    };
+    g_autofree char *machine = NULL;
+
+    for (size_t i = 0; i < ARRAY_SIZE(bad); i++) {
+        g_free(machine);
+        machine = g_strdup_printf("sgi-l1-board,system-serial=%s", bad[i]);
+        expect_refused(machine, NULL, "system serial");
+    }
+    expect_refused("sgi-l1-board,system-serial=L1234567,settings=/nonexistent",
+                   NULL, "system-serial and settings are exclusive");
+}
+
+/* The property's own check: a bad value is refused when it is set. */
+static void test_system_serial_setter(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board", "");
+    QDict *rsp = qtest_qmp(qts, "{'execute': 'qom-set', 'arguments': "
+                           "{'path': '/machine', 'property': 'system-serial', "
+                           "'value': 'L0000000'}}");
+
+    g_assert_true(qdict_haskey(rsp, "error"));
+    qobject_unref(rsp);
+    quit_all(qts, &f);
+}
+
 /* A file that is not the window's size is refused, and so is a missing one. */
 static void test_settings_refused(void)
 {
@@ -2964,6 +3023,11 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/signals-refused", test_signals_refused);
     qtest_add_func("sgi-l1-board/settings-loaded", test_settings_loaded);
     qtest_add_func("sgi-l1-board/settings-refused", test_settings_refused);
+    qtest_add_func("sgi-l1-board/system-serial", test_system_serial);
+    qtest_add_func("sgi-l1-board/system-serial-refused",
+                   test_system_serial_refused);
+    qtest_add_func("sgi-l1-board/system-serial-setter",
+                   test_system_serial_setter);
 
     return g_test_run();
 }

@@ -17,7 +17,11 @@ typedef struct SGIL1Settings {
     char brick_type;            /* 0, or 'C': the identity fall-back */
     bool auto_power_up;
     bool skip_serial_check;
+    const char *system_serial;  /* NULL, or a letter L to R and 7 digits */
 } SGIL1Settings;
+
+/* Refuse a serial the firmware's format test or power-up check rejects. */
+bool sgi_l1_system_serial_check(const char *serial, Error **errp);
 
 /* Write @image: a header and a first record the firmware takes as it stands. */
 bool sgi_l1_settings_image(uint8_t *image, const SGIL1Settings *settings,

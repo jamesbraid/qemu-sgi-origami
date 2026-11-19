@@ -1055,17 +1055,45 @@ and that a record of version 1 to 9 starts an upgrade nobody decoded, are in the
 same reading; the model writes the defaults and version ``0xa``. A third record
 left zero clears the brick serial number, which the writer does not set.
 
+**System serial.** The firmware keeps the system serial as ASCII at
+``+0x08`` of the first record, window offset ``0x010``: eight characters and a
+NUL, covered by the record's sum and its mirror, with no checksum of its own
+(*software expectation*). It is a letter ``L`` to ``R``, a digit 0 to 3 and six
+digits. At every start the firmware rewrites a value that fails the format to
+``L0000000`` and keeps a well-formed one (*software expectation*). It also
+replaces a first letter that differs from the family's required letter; that
+the letter is ``L`` for a C-brick is *inferred* from the firmware's profile
+byte, so the model takes the letter from the value and a letter other than
+``L`` may be rewritten (*unknown*). Its ``power up`` check refuses a
+serial whose seven characters after the letter are all zero, or are the
+disabled markers ``9999999`` and ``3999999``, with "No assigned System Serial
+Number", and so a window with none never powers a node (*software
+expectation*, run on the model). Which value a real machine carries, and
+whether any list of issued serials exists, are *unknown*. The first
+record's skip bit (record ``+0x17`` bit 3) is not relied on: the firmware's
+reading of it conflicts with a model run, so what the bit does is *unknown*.
+
 ``sgi_l1_settings_image()`` writes such a window: the header, the first record
 and its mirror from those fields, everything else zero. It refuses a rack above
 1023, a bay above 63, partition 255 and any brick type but ``C`` or none, the
 only one the reading shows being taken. The R-brick's router role and series are
-not written. ``tests/unit/test-sgi-l1-settings.c`` checks the sums, the mirror,
-the fields and the refusals.
+not written. Given a system serial it writes it as above and refuses a value
+the firmware would repair or refuse: the wrong length or format, all zeros after
+the letter and the two markers; without one the bytes are those of a window
+that never had the field.
+``tests/unit/test-sgi-l1-settings.c`` checks the sums, the mirror, the fields, the serial and the refusals.
 
 ``settings=FILE`` starts the clock RAM with the first 2048 bytes below the clock
 registers of FILE, which must be exactly 2048 bytes. The clock registers keep the
 host's time. The firmware's writes are not saved back, so settings survive no
 restart of the process: an *approximation* of a part that is battery-backed.
+``system-serial=L1234567`` starts it with the window ``sgi_l1_settings_image()``
+writes for that serial and the other fields at their defaults, and refuses a
+value the image writer refuses; it excludes ``settings``, so a host that wants
+a serial and other fields writes the serial into its own file. For a C-brick
+use a serial starting with ``L``: the format rule accepts any letter ``L`` to
+``R``, but the firmware may rewrite one that is not the family's letter
+(*unknown*).
 
 .. _sgi-l1-board-unimplemented:
 
@@ -1154,6 +1182,9 @@ The power-bay link is checked by test-owned code that writes three bytes to
 on-chip UART 1 and reads one the peer sent, through a socket chardev as the
 fifth serial backend. ``settings`` is checked by loading a file of known bytes
 and reading the window back through chip select 1, and by the two refusals.
+``system-serial`` is checked by reading the serial, the record sum and the
+mirror back through chip select 1, and by the refused values and the
+exclusion with ``settings``.
 
 With ``signals`` a test-owned peer plays the machine from a socket. It checks
 the board's hello and power-on state, each decoded bit and the bits that move

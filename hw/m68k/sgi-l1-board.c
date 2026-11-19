@@ -79,6 +79,8 @@ struct L1BoardMachine {
     uint32_t signal_epoch;
     /* A settings window image to start the clock RAM with; none if unset. */
     char *settings;
+    /* The system serial to write a default settings window with. */
+    char *system_serial;
 
     struct L1Board *board;
     /* Fit the C-brick's polled devices; needs brick-type=cbrick. */
@@ -206,6 +208,22 @@ L1_BOARD_STRING_PROPERTY(mac)
 L1_BOARD_STRING_PROPERTY(signals)
 L1_BOARD_STRING_PROPERTY(settings)
 
+static char *l1_board_get_system_serial(Object *obj, Error **errp)
+{
+    return g_strdup(L1_BOARD_MACHINE(obj)->system_serial);
+}
+
+static void l1_board_set_system_serial(Object *obj, const char *value,
+                                       Error **errp)
+{
+    L1BoardMachine *m = L1_BOARD_MACHINE(obj);
+
+    if (sgi_l1_system_serial_check(value, errp)) {
+        g_free(m->system_serial);
+        m->system_serial = g_strdup(value);
+    }
+}
+
 static void l1_board_add_identity_eeprom(I2CBus *bus, uint8_t addr7,
                                          GByteArray *chassis,
                                          GByteArray *board)
@@ -302,14 +320,23 @@ static void l1_board_set_board_peers(Object *obj, bool value, Error **errp)
 }
 
 /* Seed the settings window; the clock registers at its top keep the host's. */
+static void l1_board_write_settings(DeviceState *rtc, const uint8_t *data)
+{
+    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc), 0);
+    unsigned i;
+
+    for (i = 0; i < SGI_L1_SETTINGS_CLOCK_OFFSET; i++) {
+        memory_region_dispatch_write(mr, i, data[i], MO_8,
+                                     MEMTXATTRS_UNSPECIFIED);
+    }
+}
+
 static void l1_board_load_settings(DeviceState *rtc, const char *path,
                                    Error **errp)
 {
-    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc), 0);
     g_autofree char *data = NULL;
     g_autoptr(GError) err = NULL;
     gsize len;
-    unsigned i;
 
     if (!g_file_get_contents(path, &data, &len, &err)) {
         error_setg(errp, "could not read settings image '%s': %s", path,
@@ -321,10 +348,7 @@ static void l1_board_load_settings(DeviceState *rtc, const char *path,
                    (size_t)len, SGI_L1_SETTINGS_WINDOW_BYTES);
         return;
     }
-    for (i = 0; i < SGI_L1_SETTINGS_CLOCK_OFFSET; i++) {
-        memory_region_dispatch_write(mr, i, (uint8_t)data[i], MO_8,
-                                     MEMTXATTRS_UNSPECIFIED);
-    }
+    l1_board_write_settings(rtc, (uint8_t *)data);
 }
 
 /* The board end of the signal link, or NULL when no chardev is named. */
@@ -406,8 +430,18 @@ static void l1_board_init(MachineState *machine)
         DeviceState *rtc = qdev_new("sysbus-m48t02");
 
         sysbus_realize_and_unref(SYS_BUS_DEVICE(rtc), &error_fatal);
+        if (lm->settings && lm->system_serial) {
+            error_setg(&error_fatal, "system-serial and settings are "
+                       "exclusive: write the serial into the settings file");
+        }
         if (lm->settings) {
             l1_board_load_settings(rtc, lm->settings, &error_fatal);
+        } else if (lm->system_serial) {
+            uint8_t image[SGI_L1_SETTINGS_WINDOW_BYTES];
+            SGIL1Settings s = { .system_serial = lm->system_serial };
+
+            sgi_l1_settings_image(image, &s, &error_fatal);
+            l1_board_write_settings(rtc, image);
         }
         memory_region_add_subregion(mcf5206e_sim_cs_window(b->sim, CS_NVRAM), 0,
                                     sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc),
@@ -520,6 +554,12 @@ static void l1_board_class_init(ObjectClass *oc, const void *data)
     object_class_property_set_description(oc, "settings",
         "File of 2048 bytes to start the clock RAM with, as "
         "sgi_l1_settings_image() writes it; the clock registers are not set");
+    object_class_property_add_str(oc, "system-serial",
+                                  l1_board_get_system_serial,
+                                  l1_board_set_system_serial);
+    object_class_property_set_description(oc, "system-serial",
+        "System serial, a letter and seven digits, to start the clock RAM with a "
+        "default settings window that carries it; excludes settings");
     object_class_property_add_str(oc, "signals", l1_board_get_signals,
                                   l1_board_set_signals);
     object_class_property_set_description(oc, "signals",
