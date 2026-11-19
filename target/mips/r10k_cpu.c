@@ -4,6 +4,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/units.h"
+#include "qemu/cutils.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "cpu.h"
@@ -488,6 +489,21 @@ void mips_r10k_cpu_realize(MIPSCPU *cpu)
     }
 }
 
+/*
+ * Zero only chunks that are not already zero, so fresh calloc'd arrays stay
+ * unfaulted.
+ */
+static void r10k_clear(void *buf, size_t len)
+{
+    for (size_t off = 0; off < len; off += 4096) {
+        size_t n = MIN(4096, len - off);
+
+        if (!buffer_is_zero(buf + off, n)) {
+            memset(buf + off, 0, n);
+        }
+    }
+}
+
 void mips_r10k_cpu_reset(MIPSCPU *cpu)
 {
     CPUMIPSState *env = &cpu->env;
@@ -500,15 +516,13 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
         if (r10k->scache_size) {
             uint32_t alloc_size = MAX(r10k->scache_size, R10K_SCACHE_SIZE);
 
-            memset(r10k->scache_taglo, 0,
-                   (alloc_size / 64) * sizeof(uint32_t));
-            memset(r10k->scache_taghi, 0,
-                   (alloc_size / 64) * sizeof(uint8_t));
-            memset(r10k->scache_mru, 0,
-                   (alloc_size / 128) * sizeof(uint8_t));
-            memset(r10k->scache_data, 0, alloc_size);
-            memset(r10k->scache_ecc, 0,
-                   (alloc_size / 16) * sizeof(uint16_t));
+            r10k_clear(r10k->scache_taglo,
+                       (alloc_size / 64) * sizeof(uint32_t));
+            r10k_clear(r10k->scache_taghi,
+                       (alloc_size / 64) * sizeof(uint8_t));
+            r10k_clear(r10k->scache_mru, (alloc_size / 128) * sizeof(uint8_t));
+            r10k_clear(r10k->scache_data, alloc_size);
+            r10k_clear(r10k->scache_ecc, (alloc_size / 16) * sizeof(uint16_t));
 #if defined(CONFIG_TCG) && !defined(CONFIG_USER_ONLY)
             /* No line survives a reset, so no page stays staged. */
             r10k_staged_rebuild(env);
