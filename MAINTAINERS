@@ -1546,6 +1546,7 @@ F: hw/net/sgi-ioc3-eth.c
 F: hw/net/sgi-mace-eth.c
 F: hw/net/net-rx-latency.c
 F: hw/nvram/sgi-elsc-nvram*.c
+F: hw/nvram/sgi-l1-settings-image.c
 F: hw/pci-host/sgi-bridge.c
 F: hw/pci-host/sgi-dma-placement.c
 F: hw/pci-host/sgi-pic.c
@@ -1570,6 +1571,7 @@ F: include/hw/net/sgi-ioc3-eth.h
 F: include/hw/net/sgi-mace-eth.h
 F: include/hw/net/net-rx-latency.h
 F: include/hw/nvram/sgi-elsc-nvram.h
+F: include/hw/nvram/sgi-l1-settings-image.h
 F: include/hw/pci-host/sgi-bridge.h
 F: include/hw/pci-host/sgi-dma-placement.h
 F: include/hw/pci-host/sgi-pic.h
@@ -1671,6 +1673,7 @@ F: tests/unit/crime-texture-82-*
 F: tests/unit/test-sgi-dma.c
 F: tests/bench/sgi-raster-bench.c
 F: tests/unit/test-sgi-kona-*.c
+F: tests/unit/test-sgi-l1-settings.c
 F: tests/unit/test-sgi-gl.c
 F: tests/unit/test-sgi-graphics-host.c
 F: tests/unit/sgi-gl-texture-test.h

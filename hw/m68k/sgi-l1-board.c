@@ -30,6 +30,7 @@
 #include "hw/m68k/sgi-l1-board-peers.h"
 #include "hw/misc/sgi-l1-identity.h"
 #include "hw/nvram/eeprom_at24c.h"
+#include "hw/nvram/sgi-l1-settings-image.h"
 #include "net/util.h"
 #include "hw/core/loader.h"
 #include "migration/blocker.h"
@@ -76,6 +77,8 @@ struct L1BoardMachine {
     /* The chardev id of the signal link to the machine, and its epoch. */
     char *signals;
     uint32_t signal_epoch;
+    /* A settings window image to start the clock RAM with; none if unset. */
+    char *settings;
 
     struct L1Board *board;
     /* Fit the C-brick's polled devices; needs brick-type=cbrick. */
@@ -201,6 +204,7 @@ L1_BOARD_STRING_PROPERTY(node_board_part)
 L1_BOARD_STRING_PROPERTY(node_board_revision)
 L1_BOARD_STRING_PROPERTY(mac)
 L1_BOARD_STRING_PROPERTY(signals)
+L1_BOARD_STRING_PROPERTY(settings)
 
 static void l1_board_add_identity_eeprom(I2CBus *bus, uint8_t addr7,
                                          GByteArray *chassis,
@@ -297,6 +301,32 @@ static void l1_board_set_board_peers(Object *obj, bool value, Error **errp)
     L1_BOARD_MACHINE(obj)->board_peers = value;
 }
 
+/* Seed the settings window; the clock registers at its top keep the host's. */
+static void l1_board_load_settings(DeviceState *rtc, const char *path,
+                                   Error **errp)
+{
+    MemoryRegion *mr = sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc), 0);
+    g_autofree char *data = NULL;
+    g_autoptr(GError) err = NULL;
+    gsize len;
+    unsigned i;
+
+    if (!g_file_get_contents(path, &data, &len, &err)) {
+        error_setg(errp, "could not read settings image '%s': %s", path,
+                   err->message);
+        return;
+    }
+    if (len != SGI_L1_SETTINGS_WINDOW_BYTES) {
+        error_setg(errp, "settings image '%s' is %zu bytes, not %d", path,
+                   (size_t)len, SGI_L1_SETTINGS_WINDOW_BYTES);
+        return;
+    }
+    for (i = 0; i < SGI_L1_SETTINGS_CLOCK_OFFSET; i++) {
+        memory_region_dispatch_write(mr, i, (uint8_t)data[i], MO_8,
+                                     MEMTXATTRS_UNSPECIFIED);
+    }
+}
+
 /* The board end of the signal link, or NULL when no chardev is named. */
 static DeviceState *l1_board_signal_link(L1BoardMachine *m)
 {
@@ -376,6 +406,9 @@ static void l1_board_init(MachineState *machine)
         DeviceState *rtc = qdev_new("sysbus-m48t02");
 
         sysbus_realize_and_unref(SYS_BUS_DEVICE(rtc), &error_fatal);
+        if (lm->settings) {
+            l1_board_load_settings(rtc, lm->settings, &error_fatal);
+        }
         memory_region_add_subregion(mcf5206e_sim_cs_window(b->sim, CS_NVRAM), 0,
                                     sysbus_mmio_get_region(SYS_BUS_DEVICE(rtc),
                                                            0));
@@ -482,6 +515,11 @@ static void l1_board_class_init(ObjectClass *oc, const void *data)
         "Fit the C-brick's bus select, expanders and monitors on the "
         "two-wire bus and the management USB controller's registers; "
         "needs brick-type=cbrick");
+    object_class_property_add_str(oc, "settings", l1_board_get_settings,
+                                  l1_board_set_settings);
+    object_class_property_set_description(oc, "settings",
+        "File of 2048 bytes to start the clock RAM with, as "
+        "sgi_l1_settings_image() writes it; the clock registers are not set");
     object_class_property_add_str(oc, "signals", l1_board_get_signals,
                                   l1_board_set_signals);
     object_class_property_set_description(oc, "signals",

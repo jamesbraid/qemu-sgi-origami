@@ -43,6 +43,10 @@
 
 #define RUN_TIMEOUT_US  (20 * G_USEC_PER_SEC)
 
+/* The clock RAM window, and the part of it below the clock registers. */
+#define SETTINGS_BYTES  0x800
+#define SETTINGS_CLOCK  0x7f8
+
 /* MBAR-relative registers. */
 #define SIMR            0x03
 #define ICR(n)          (0x13 + (n))
@@ -2691,6 +2695,68 @@ static void test_signals_refused(void)
 }
 
 
+/* The settings file seeds the clock RAM below the clock registers. */
+static void test_settings_loaded(void)
+{
+    uint8_t want[SETTINGS_BYTES], got[SETTINGS_BYTES];
+    g_autofree char *dir = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *machine = NULL;
+    GError *error = NULL;
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+
+    dir = g_dir_make_tmp("sgi-l1-board-settings-XXXXXX", &error);
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "settings.bin", NULL);
+    for (unsigned i = 0; i < SETTINGS_BYTES; i++) {
+        want[i] = i < SETTINGS_CLOCK ? i * 7 + 3 : 0xee;
+    }
+    g_assert_true(g_file_set_contents(path, (char *)want, sizeof(want),
+                                      &error));
+    prologue(&a);
+    mbar_on(&a);
+    cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
+    cs_setup(&a, 1, 0x2000, 0, 0x1143);
+    finish(&a);
+    f = flash_build(&a, NULL, NULL);
+    machine = g_strdup_printf("sgi-l1-board,settings=%s", path);
+    qts = start_machine(&f, machine, "");
+    go(qts);
+    wait_for(qts, DONE, 1);
+
+    qtest_memread(qts, 0x20000000, got, sizeof(got));
+    g_assert_cmpmem(got, SETTINGS_CLOCK, want, SETTINGS_CLOCK);
+    /* The clock registers keep the host's time, not the file's bytes. */
+    g_assert_cmpint(memcmp(got + SETTINGS_CLOCK, want + SETTINGS_CLOCK,
+                           SETTINGS_BYTES - SETTINGS_CLOCK), !=, 0);
+    quit_all(qts, &f);
+    g_unlink(path);
+    g_rmdir(dir);
+}
+
+/* A file that is not the window's size is refused, and so is a missing one. */
+static void test_settings_refused(void)
+{
+    g_autofree char *dir = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *machine = NULL;
+    GError *error = NULL;
+
+    dir = g_dir_make_tmp("sgi-l1-board-settings-XXXXXX", &error);
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "short.bin", NULL);
+    g_assert_true(g_file_set_contents(path, "short", 5, &error));
+    machine = g_strdup_printf("sgi-l1-board,settings=%s", path);
+    expect_refused(machine, NULL, "is 5 bytes, not 2048");
+    g_unlink(path);
+    g_rmdir(dir);
+    g_free(machine);
+    machine = g_strdup_printf("sgi-l1-board,settings=%s/missing", dir);
+    expect_refused(machine, NULL, "missing");
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2763,6 +2829,8 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/signals-machine-lines",
                    test_signals_machine_lines);
     qtest_add_func("sgi-l1-board/signals-refused", test_signals_refused);
+    qtest_add_func("sgi-l1-board/settings-loaded", test_settings_loaded);
+    qtest_add_func("sgi-l1-board/settings-refused", test_settings_refused);
 
     return g_test_run();
 }

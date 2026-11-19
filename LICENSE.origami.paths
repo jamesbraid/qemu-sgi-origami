@@ -1129,6 +1129,7 @@ tests/unit/test-sgi-dma.c
 tests/unit/test-sgi-gl-vmstate.c
 tests/unit/test-sgi-gl.c
 tests/unit/test-sgi-initial-flash.c
+tests/unit/test-sgi-l1-settings.c
 tests/unit/test-sgi-kona-gl-decode.c
 tests/unit/test-sgi-kona-mesa-provider.c
 tests/unit/test-sgi-kona-ports.c
@@ -1279,6 +1280,7 @@ hw/misc/sgi-vice-msp.c
 hw/misc/sgi-vice.c
 hw/nvram/sgi-elsc-nvram-image.c
 hw/nvram/sgi-elsc-nvram.c
+hw/nvram/sgi-l1-settings-image.c
 hw/scsi/sgi-dbrick.c
 include/hw/display/sgi/gl-select.h
 include/hw/display/sgi/head-guard.h
@@ -1293,6 +1295,7 @@ include/hw/misc/sgi-sn0-module-management.h
 include/hw/misc/sgi-sn1-router.h
 include/hw/misc/sgi-vice-msp.h
 include/hw/nvram/sgi-elsc-nvram.h
+include/hw/nvram/sgi-l1-settings-image.h
 scripts/sgi-machines-embed.py
 scripts/tests/system-model-fixtures/onyx3000/resolved.json
 scripts/tests/system-model-fixtures/onyx3000/resolved.sha256

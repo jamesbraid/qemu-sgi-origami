@@ -1001,6 +1001,42 @@ time, an *approximation*. The RAM starts zero and is not kept between runs, an
 *approximation* of a battery-backed part. The firmware rebuilds an invalid
 header and settings records, a *software expectation*.
 
+.. _sgi-l1-board-settings:
+
+Settings window
+---------------
+
+The window below the clock registers holds, as a *software expectation* read from
+the stock image, an eight-byte header, a settings record of 0x70 bytes at
+``0x008`` and its mirror at ``0x078``, a descriptor record and a third record
+with their own mirrors, and a text ring of the event log. There is no magic
+number or CRC. A region is valid when its bytes, its last byte included, add to
+zero modulo 256, and a header, record or mirror that fails is rebuilt from
+defaults, silently, with the boot carrying on, so a blank window works. A
+settings record whose first byte has the version nibble ``0xa`` and a good sum is
+taken as it stands. The fields the host chooses are, as offsets in that record:
+the rack in bits 23:14 and the bay in bits 13:8 of the big-endian word at 0, the
+partition at ``0x1f`` (255 is replaced by 0), the brick type letter at ``0x22``
+(an identity fall-back; ``C`` is taken, a stored ``4`` is not), the automatic
+power-up flag in bit 7 of the byte at 4, and bit 3 of the byte at ``0x17``,
+which makes the power-up code skip the brick serial-number check. The other bytes
+a rebuilt record gets, and that the high nibble of ``0x17`` is the router role
+and that a record of version 1 to 9 starts an upgrade nobody decoded, are in the
+same reading; the model writes the defaults and version ``0xa``. A third record
+left zero clears the brick serial number, which the writer does not set.
+
+``sgi_l1_settings_image()`` writes such a window: the header, the first record
+and its mirror from those fields, everything else zero. It refuses a rack above
+1023, a bay above 63, partition 255 and any brick type but ``C`` or none, the
+only one the reading shows being taken. The R-brick's router role and series are
+not written. ``tests/unit/test-sgi-l1-settings.c`` checks the sums, the mirror,
+the fields and the refusals.
+
+``settings=FILE`` starts the clock RAM with the first 2048 bytes below the clock
+registers of FILE, which must be exactly 2048 bytes. The clock registers keep the
+host's time. The firmware's writes are not saved back, so settings survive no
+restart of the process: an *approximation* of a part that is battery-backed.
+
 .. _sgi-l1-board-unimplemented:
 
 Unimplemented parts
@@ -1080,8 +1116,9 @@ revision refusing a write, bit 0 of ``0x1c`` reading back and clearing on
 reset, and any other offset logging and reading zero. The processor module 0
 monitors are checked on segment 4 for their independence from the node
 monitor at the same wire address, and the display for its write forms, its
-read and its answering under any select byte. With ``signals`` a test-owned
-peer plays the machine from a socket: the board's hello and its cold-start
+read and its answering under any select byte. ``settings`` is checked by loading a file of known bytes and reading
+the window back through chip select 1, and by the two refusals. With ``signals`` a
+test-owned peer plays the machine from a socket: the board's hello and its cold-start
 state, each decoded bit and the bits that move nothing, the hold needing all
 three bits and releasing on the last, a board reset restoring the cold values as
 changes, a reconnect restating the levels without replaying a pulse made
