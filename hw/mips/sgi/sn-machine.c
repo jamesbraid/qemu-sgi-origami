@@ -333,6 +333,8 @@ struct SGIMachineState {
     SGIXioLink *slot_links;
     bool *slot_claimed;
     Notifier machine_done;
+    Notifier machine_done_begin;
+    Notifier machine_done_commit;
 
     /*
      * Graphics pipes (docs/system/mips/sgi/sn.rst, Graphics pipes). Every pipe
@@ -11622,6 +11624,20 @@ static SGIBoardFamily sgi_machine_family(SGIMachineState *s)
            SGI_BOARD_FAMILY_MODULE : SGI_BOARD_FAMILY_TEXT;
 }
 
+/*
+ * Notifiers run newest first, so a begin added last and a commit added
+ * first merge every PCI bus's own map commit into one.
+ */
+static void sgi_machine_done_begin(Notifier *notifier, void *data)
+{
+    memory_region_transaction_begin();
+}
+
+static void sgi_machine_done_commit(Notifier *notifier, void *data)
+{
+    memory_region_transaction_commit();
+}
+
 void sgi_machine_init(MachineState *machine)
 {
     SGIMachineState *s = SGI_MACHINE(machine);
@@ -11639,10 +11655,14 @@ void sgi_machine_init(MachineState *machine)
      * transaction; nothing the builder runs makes one, and the board's
      * first accesses come after machine init has returned.
      */
+    s->machine_done_commit.notify = sgi_machine_done_commit;
+    qemu_add_machine_init_done_notifier(&s->machine_done_commit);
     memory_region_transaction_begin();
     sgi_machine_realize(machine, &error_fatal);
     memory_region_transaction_commit();
     sgi_machine_init_graphics(s, &error_fatal);
+    s->machine_done_begin.notify = sgi_machine_done_begin;
+    qemu_add_machine_init_done_notifier(&s->machine_done_begin);
     s->machine_done.notify = sgi_machine_done;
     qemu_add_machine_init_done_notifier(&s->machine_done);
 }
