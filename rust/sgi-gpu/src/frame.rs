@@ -3,9 +3,9 @@
 //! ordinary buffer of kind NONE. Platform `Export`s: Linux here, frame_win.rs, frame_macos.rs.
 
 use std::ffi::c_int;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
-use iris_wgpu::wgpu::{Gpu, Staging};
+use sgi_gpu_core::Gpu;
 
 use crate::device::{from_c, SgiGpu};
 
@@ -51,7 +51,6 @@ pub struct SgiGpuFrame {
     height: u32,
     stride_words: u32,
     buffer: wgpu::Buffer,
-    staging: Mutex<Staging>,
     export: Option<Export>,
 }
 
@@ -72,7 +71,7 @@ impl SgiGpuFrame {
                 (gpu.buffer("sgi frame", size, usage), None)
             }
         };
-        Ok(SgiGpuFrame { gpu: Arc::clone(gpu), width, height, stride_words, buffer, staging: Mutex::new(Staging::default()), export })
+        Ok(SgiGpuFrame { gpu: Arc::clone(gpu), width, height, stride_words, buffer, export })
     }
 
     pub fn buffer(&self) -> &wgpu::Buffer {
@@ -107,9 +106,8 @@ impl SgiGpuFrame {
             return Err("frame: destination too small".into());
         }
         let bytes = self.stride_words as u64 * self.height as u64 * 4;
-        self.gpu.check()?;
-        let raw = self.staging.lock().map_err(|_| "frame: staging poisoned")?.read(&self.gpu, &self.buffer, &[(0, bytes)])?;
-        self.gpu.check()?;
+        let mut raw = vec![0u8; bytes as usize];
+        self.gpu.read(&self.buffer, &[(0, bytes)], &mut raw)?;
         let words: &[u32] = bytemuck::cast_slice(&raw);
         for y in 0..h {
             out[y * out_stride..y * out_stride + w].copy_from_slice(&words[y * self.stride_words as usize..][..w]);
@@ -384,11 +382,11 @@ pub unsafe extern "C" fn sgi_gpu_frame_read(frame: *mut SgiGpuFrame, xrgb: *mut 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iris_wgpu::wgpu::GpuOptions;
+    use sgi_gpu_core::GpuOptions;
 
     #[test]
     fn exports_a_frame_or_says_none() {
-        let gpu = match Gpu::new(&GpuOptions::default()) {
+        let gpu = match Gpu::new(&GpuOptions::default(), Box::new(|_| {})) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("SKIPPED: no GPU for the frame test: {e}");

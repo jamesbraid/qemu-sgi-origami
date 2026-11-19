@@ -10,7 +10,7 @@ use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
 use frame::frame_win::Export;
-use iris_wgpu::wgpu::{Gpu, GpuOptions};
+use sgi_gpu_core::{Gpu, GpuOptions};
 use wgpu::hal::api::Dx12;
 use windows::Win32::Foundation::{DuplicateHandle, DUPLICATE_SAME_ACCESS, HANDLE};
 use windows::Win32::Graphics::Direct3D12::{ID3D12Fence, ID3D12Resource};
@@ -22,7 +22,7 @@ const WARM: u32 = 30;
 /// WARP unless WIN_CHECK_ADAPTER=auto (the runners have no other adapter).
 fn open_gpu() -> Result<Arc<Gpu>, String> {
     let software = std::env::var("WIN_CHECK_ADAPTER").map_or(true, |v| v != "auto");
-    Gpu::new(&GpuOptions { backend: "dx12".into(), software, ..GpuOptions::default() })
+    Gpu::new(&GpuOptions { backend: "dx12".into(), software, ..GpuOptions::default() }, Box::new(|_| {}))
 }
 
 /// The pixel the producer paints, as (r, g, b).

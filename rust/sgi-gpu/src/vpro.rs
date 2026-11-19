@@ -4,9 +4,9 @@
 
 use std::sync::OnceLock;
 
-use iris_wgpu::wgpu::library::I64;
-use iris_wgpu::wgpu::shader::Source;
-use iris_wgpu::wgpu::{Fragment, Gpu};
+use sgi_gpu_core::library::I64;
+use sgi_gpu_core::shader::Source;
+use sgi_gpu_core::{Fragment, Gpu};
 
 use crate::plane::SgiGpuPlane;
 

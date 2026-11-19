@@ -160,7 +160,7 @@ impl Export {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iris_wgpu::wgpu::GpuOptions;
+    use sgi_gpu_core::GpuOptions;
     use objc2_io_surface::IOSurfaceRef;
     use objc2_metal::{MTLPixelFormat, MTLStorageMode, MTLTextureDescriptor, MTLTextureType, MTLTextureUsage};
 
@@ -177,7 +177,7 @@ mod tests {
     /// surface, copy it out on the GPU and compare with what the compose wrote.
     #[test]
     fn a_viewer_samples_what_the_buffer_wrote() {
-        let gpu = match Gpu::new(&GpuOptions::default()) {
+        let gpu = match Gpu::new(&GpuOptions::default(), Box::new(|_| {})) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("SKIPPED: no GPU for the frame test: {e}");

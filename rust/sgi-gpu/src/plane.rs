@@ -4,7 +4,7 @@
 
 use std::sync::Arc;
 
-use iris_wgpu::wgpu::{Gpu, GpuMemory};
+use sgi_gpu_core::{Gpu, GpuMemory};
 use parking_lot::Mutex;
 
 use crate::device::{from_c, SgiGpu};

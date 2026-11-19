@@ -9,7 +9,7 @@ use std::ptr;
 use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Once, OnceLock};
 
-use iris_wgpu::wgpu::{Gpu, GpuOptions};
+use sgi_gpu_core::{Gpu, GpuOptions};
 use parking_lot::Mutex;
 
 const OPENING: u8 = 0;
@@ -54,7 +54,8 @@ impl SgiGpu {
         if cfg!(windows) {
             opts.backend = "dx12".into();
         }
-        let opened = catch_unwind(AssertUnwindSafe(|| Gpu::new(&opts)))
+        // A loss is found by `lost` polling `Gpu::check`, so the callback has nothing to add.
+        let opened = catch_unwind(AssertUnwindSafe(|| Gpu::new(&opts, Box::new(|_| {}))))
             .unwrap_or_else(|_| Err("panic while opening the GPU".into()));
         match opened {
             Ok(gpu) => {

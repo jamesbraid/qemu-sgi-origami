@@ -7,7 +7,7 @@ use std::sync::mpsc::{channel, Sender};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use iris_wgpu::wgpu::Gpu;
+use sgi_gpu_core::Gpu;
 
 use crate::device::{from_c, SgiGpu};
 use crate::frame::SgiGpuFrame;
@@ -298,7 +298,7 @@ pub unsafe extern "C" fn sgi_gpu_vpro_scanout_compose(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use iris_wgpu::wgpu::GpuOptions;
+    use sgi_gpu_core::GpuOptions;
 
     const W: u32 = 160;
     const H: u32 = 96;
@@ -400,7 +400,7 @@ mod tests {
     }
 
     fn open() -> Option<(Arc<Gpu>, wgpu::Buffer, wgpu::Buffer)> {
-        let gpu = match Gpu::new(&GpuOptions::default()) {
+        let gpu = match Gpu::new(&GpuOptions::default(), Box::new(|_| {})) {
             Ok(g) => g,
             Err(e) => {
                 eprintln!("SKIPPED: no GPU for the scanout parity test: {e}");

@@ -7,7 +7,7 @@
 name = "sgi-gpu"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.90"
+rust-version = "1.94"
 license = "BSD-3-Clause"
 publish = false
 
@@ -16,7 +16,7 @@ name = "sgi_gpu"
 crate-type = ["staticlib"]
 
 [dependencies]
-iris-wgpu = { git = "https://github.com/jamesbraid/iris", rev = "dc46b3c6a8a8bc569a4438b70ede2b32deadfadf" }
+sgi-gpu-core = { path = "../sgi-gpu-core" }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12"] }
 bytemuck = { version = "1", features = ["derive"] }
 parking_lot = "0.12"

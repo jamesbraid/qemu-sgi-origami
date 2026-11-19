@@ -11,7 +11,7 @@ license = "BSD-3-Clause"
 publish = false
 
 [dependencies]
-iris-wgpu = { git = "https://github.com/jamesbraid/iris", rev = "dc46b3c6a8a8bc569a4438b70ede2b32deadfadf" }
+sgi-gpu-core = { path = "../sgi-gpu-core" }
 wgpu = { version = "30", default-features = false, features = ["wgsl", "dx12"] }
 windows = { version = "0.62", features = [
   "Win32_Foundation",

@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-use iris_wgpu::wgpu::Gpu;
+use sgi_gpu_core::Gpu;
 use wgpu::hal::api::Dx12;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::{CloseHandle, GENERIC_ALL, HANDLE};

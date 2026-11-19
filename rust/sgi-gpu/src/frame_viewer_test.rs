@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use ash::vk;
-use iris_wgpu::wgpu::{Gpu, GpuOptions};
+use sgi_gpu_core::{Gpu, GpuOptions};
 
 use crate::frame::{SgiGpuFrame, EXPORT_DMABUF};
 use crate::scanout::{IdRows, SgiGpuVproTables, VproCompose};
@@ -142,7 +142,7 @@ fn percentile(v: &mut [f64], p: f64) -> f64 {
 
 #[test]
 fn a_viewer_imports_the_lent_frame_and_the_routes_are_timed() {
-    let gpu: Arc<Gpu> = match Gpu::new(&GpuOptions::default()) {
+    let gpu: Arc<Gpu> = match Gpu::new(&GpuOptions::default(), Box::new(|_| {})) {
         Ok(g) => g,
         Err(e) => {
             eprintln!("SKIPPED: no GPU: {e}");
