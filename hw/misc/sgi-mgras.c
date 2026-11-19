@@ -16,8 +16,8 @@
 #include "hw/misc/sgi-mgras-texture.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/mips/sgi/pi-gfx.h"
-#include "hw/mips/sgi/xio-link.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-link.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "migration/vmstate.h"
 #include "migration/register.h"
 #include "qapi/error.h"
@@ -245,7 +245,7 @@ static uint8_t mgras_cmap_ra_byte(const SGIMgrasBoard *b)
 
 /*
  * An interrupt packet into the widget-addressed fabric, through the XIO
- * widget layer (hw/mips/sgi/xio-widget.h).
+ * widget layer (hw/misc/sgi-xio-widget.h).
  */
 static void mgras_send_packet(SGIMgrasState *s, hwaddr where, uint8_t vector,
                            bool set)

@@ -18,8 +18,8 @@
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
-#include "hw/mips/sgi-xio-port.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
@@ -1844,7 +1844,7 @@ static int sgi_bridge_map_irq(PCIDevice *dev, int pin)
 
 /*
  * The widget-level destination pair, in the layout every XIO widget
- * shares (hw/mips/sgi/xio-widget.h). The Bridge's packets do not carry
+ * shares (hw/misc/sgi-xio-widget.h). The Bridge's packets do not carry
  * its vector field: a pin's number comes from that pin's host register,
  * and the chip's own from the host-error field.
  */

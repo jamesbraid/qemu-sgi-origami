@@ -14,7 +14,7 @@
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
 #include "hw/mips/sgi/sgi-machines.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "hw/misc/sgi-bedrock-io.h"
 #include "cpu.h"
 #include "sn-promdata.h"

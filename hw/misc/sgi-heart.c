@@ -9,7 +9,7 @@
 #include "qemu/osdep.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-onewire-slot.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/core/irq.h"
 #include "hw/core/cpu.h"
 #include "hw/core/qdev-properties.h"

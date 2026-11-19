@@ -54,7 +54,7 @@
 #include "hw/mips/sgi/baseio.h"
 #include "hw/mips/sgi/baseio-flash.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-ioc3.h"

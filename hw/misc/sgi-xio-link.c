@@ -2,7 +2,7 @@
 /* The XIO link; see the header for the contract. */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "qapi/error.h"
 
 void sgi_xio_link_init(SGIXioLink *link, Object *owner, const char *name,

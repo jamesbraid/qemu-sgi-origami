@@ -5,7 +5,7 @@
 
 #include "hw/1wire/onewire.h"
 #include "hw/pci/pci_host.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "system/memory.h"
 #include "hw/pci-host/sgi-dma-placement.h"
@@ -68,7 +68,7 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIXBridgeState, SGI_XBRIDGE)
  * walks before it addresses a port at all.
  *
  * cpu_face and packet_face are the widget's own two faces
- * (hw/mips/sgi-xio-port.h); a leaf widget passes the same region
+ * (hw/misc/sgi-xio-port.h); a leaf widget passes the same region
  * twice. Callable before or after the chip realizes: what the two faces
  * are installed in exists from instance init, so a board that only
  * arrives once the machine is built attaches the same way an onboard

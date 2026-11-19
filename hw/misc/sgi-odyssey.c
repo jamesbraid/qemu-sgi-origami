@@ -147,7 +147,7 @@
 #include "system/runstate.h"
 #include "ui/sgi-renderer.h"
 #include "hw/mips/sgi/pi-gfx.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "migration/vmstate.h"
 #include "qemu/host-utils.h"
@@ -2548,7 +2548,7 @@ static int64_t odyssey_reg(hwaddr addr, unsigned size)
 
 /*
  * An interrupt packet into the widget-addressed fabric, through the XIO
- * widget layer (hw/mips/sgi/xio-widget.h).
+ * widget layer (hw/misc/sgi-xio-widget.h).
  */
 static void odyssey_send_packet(SGIOdysseyState *s, hwaddr where,
                                 uint8_t vector, bool set)

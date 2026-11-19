@@ -9,7 +9,7 @@
  * Bedrock, and L1. The IP45 path also creates the node board's XBridge. The
  * Bedrock's XIO port and
  * the XBridge's port 0xa connect through the XBridge link
- * (hw/mips/sgi/xio-link.c) before either realizes. The IO-8's fixed devices
+ * (hw/misc/sgi-xio-link.c) before either realizes. The IO-8's fixed devices
  * are a separate sgi-baseio (the "io8" preset, hw/mips/sgi/baseio.c) the
  * machine places on the chip's head F, through sn1_node_xbridge_pci_bus()
  * below. An IP35 board has no XBridge: the machine may hand its node one
@@ -46,8 +46,8 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/split-irq.h"
 #include "hw/mips/sgi/sn-machine.h"
-#include "hw/mips/sgi/xio-link.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-link.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/pci-host/sgi-pic.h"
 #include "hw/misc/sgi-bedrock.h"
@@ -2872,7 +2872,7 @@ static bool sn1_node_create_ip45_xbridge(SN1NodeState *node, Error **errp)
      * boot flash. This file creates it directly, the family builder's
      * own device like every other product's onboard base I/O. An XIO
      * link joins it to the Bedrock's own XIO port before either
-     * realizes: the link (hw/mips/sgi/xio-link.c) hands the XBridge the
+     * realizes: the link (hw/misc/sgi-xio-link.c) hands the XBridge the
      * Bedrock's packet face as the chip's "fabric" -- what its own
      * widget-0 conditions and both heads' interrupts reach the host
      * through. The IO-8's fixed devices

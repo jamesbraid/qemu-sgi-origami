@@ -17,7 +17,7 @@
 #include "hw/misc/sgi-hub.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-machines.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "sn-promdata.h"
 
 /*

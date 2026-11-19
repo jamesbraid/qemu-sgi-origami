@@ -8,7 +8,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qapi/qapi-builtin-visit.h"

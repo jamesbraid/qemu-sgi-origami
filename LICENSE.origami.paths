@@ -303,8 +303,8 @@ hw/mips/sgi/sn1-topology.c
 hw/mips/sgi/sn1-topology.h
 hw/mips/sgi/trace.h
 hw/mips/sgi/xio-baseio.c
-hw/mips/sgi/xio-port.c
-hw/mips/sgi/xio-widget.c
+hw/misc/sgi-xio-port.c
+hw/misc/sgi-xio-widget.c
 hw/misc/memory-transaction-test.c
 hw/misc/sgi-bedrock-flash.c
 hw/misc/sgi-bedrock-io.c
@@ -428,7 +428,7 @@ include/hw/mips/sgi/sgi-machines.h
 include/hw/mips/sgi/sgi-storage.h
 include/hw/mips/sgi/sgi-synthetic-serial.h
 include/hw/mips/sgi/sn-machine.h
-include/hw/mips/sgi/xio-widget.h
+include/hw/misc/sgi-xio-widget.h
 include/hw/misc/sgi-bedrock-flash.h
 include/hw/misc/sgi-bedrock-io.h
 include/hw/misc/sgi-bedrock-lb.h
@@ -1243,7 +1243,7 @@ hw/mips/sgi/sn0.h
 hw/mips/sgi/sn1.c
 hw/mips/sgi/trace-events
 hw/mips/sgi/xio-board.c
-hw/mips/sgi/xio-link.c
+hw/misc/sgi-xio-link.c
 hw/misc/sgi-kona-flash-image.c
 hw/misc/sgi-l1-env.c
 hw/misc/sgi-sn0-module-management.c
@@ -1258,9 +1258,9 @@ include/hw/display/sgi/gl-select.h
 include/hw/display/sgi/head-guard.h
 include/hw/display/sgi/head-work.h
 include/hw/display/sgi/render-shadow.h
-include/hw/mips/sgi-xio-port.h
+include/hw/misc/sgi-xio-port.h
 include/hw/mips/sgi/xio-board.h
-include/hw/mips/sgi/xio-link.h
+include/hw/misc/sgi-xio-link.h
 include/hw/misc/sgi-kona-flash.h
 include/hw/misc/sgi-l1-env.h
 include/hw/misc/sgi-sn0-module-management.h

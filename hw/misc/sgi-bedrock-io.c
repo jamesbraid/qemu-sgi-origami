@@ -5,7 +5,7 @@
 #include "hw/misc/sgi-bedrock-io.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/core/qdev-properties.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
@@ -14,12 +14,12 @@
 #include "system/dma.h"
 #include "system/replay.h"
 #include "hw/core/cpu.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "trace.h"
 
 /*
  * The identification, status and control slots of the block every XIO
- * widget begins with (hw/mips/sgi/xio-widget.h); the rest are the I/O
+ * widget begins with (hw/misc/sgi-xio-widget.h); the rest are the I/O
  * interface's own.
  */
 #define II_WIDGET_ID       SGI_XIO_WIDGET_ID

@@ -3,7 +3,7 @@
 #include "qemu/osdep.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-bedrock-io.h"
 #include "qapi/error.h"

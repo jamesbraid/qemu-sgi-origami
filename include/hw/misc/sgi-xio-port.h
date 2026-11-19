@@ -24,12 +24,12 @@
  * from a peer) answers NULL for it.
  *
  * connect() hands a port its link peer's faces, as the targets of this
- * port's own outbound traffic. The link (hw/mips/sgi/xio-link.c) calls
+ * port's own outbound traffic. The link (hw/misc/sgi-xio-link.c) calls
  * it once each way and owns nothing else.
  */
 
-#ifndef HW_MIPS_SGI_XIO_PORT_H
-#define HW_MIPS_SGI_XIO_PORT_H
+#ifndef HW_MISC_SGI_XIO_PORT_H
+#define HW_MISC_SGI_XIO_PORT_H
 
 #include "qom/object.h"
 #include "system/memory.h"
@@ -200,4 +200,4 @@ bool sgi_xio_port_reset_output(Object *port, unsigned int index,
 void sgi_xio_port_request_dropped(Object *port, unsigned int index,
                                   hwaddr addr, bool write);
 
-#endif /* HW_MIPS_SGI_XIO_PORT_H */
+#endif /* HW_MISC_SGI_XIO_PORT_H */

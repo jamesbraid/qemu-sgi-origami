@@ -155,13 +155,6 @@ config SGI_SN1
     select SPLIT_IRQ
     select USB_OHCI_PCI
 
-config SGI_XIO_PORT
-    bool
-
-config SGI_XIO_LINK
-    bool
-    select SGI_XIO_PORT
-
 config SGI_NET_PORT
     bool
 

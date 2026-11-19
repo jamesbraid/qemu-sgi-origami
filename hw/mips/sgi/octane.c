@@ -25,7 +25,7 @@
 #include "hw/core/irq.h"
 #include "hw/audio/sgi-rad1-audio.h"
 #include "hw/mips/mips.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/misc/sgi-board-record.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-ioc3.h"

@@ -5,7 +5,7 @@
 #include "hw/1wire/onewire.h"
 #include "hw/core/resettable.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "system/memory.h"
 #include "qom/object.h"
 #include "qemu/units.h"
@@ -52,7 +52,7 @@ OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 /*
  * The widget interrupt destination pair of the block every XIO widget
- * begins with (hw/mips/sgi/xio-widget.h), at its data halves. Direct-XIO
+ * begins with (hw/misc/sgi-xio-widget.h), at its data halves. Direct-XIO
  * interrupt routing is an approximation.
  */
 #define SGI_MGRAS_INT_DEST_UPPER (SGI_XIO_WIDGET_INT_DEST_UPPER + \
@@ -596,7 +596,7 @@ void sgi_mgras_raise_pending(SGIMgrasState *s, uint32_t sources);
 /*
  * Composes a guest-visible widget/address pair into the fabric address a
  * widget-addressed link carries, the widget in bits 51:48 (the XIO widget
- * layer, hw/mips/sgi/xio-widget.h). Shared with hw/misc/sgi-mgras-raster.c
+ * layer, hw/misc/sgi-xio-widget.h). Shared with hw/misc/sgi-mgras-raster.c
  * so host-memory DMA reads use the same routing as interrupt packets.
  */
 bool sgi_mgras_xio_compose(SGIMgrasState *s, unsigned int widget,

@@ -27,7 +27,7 @@
 #include "hw/display/sgi/video-io.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "hw/misc/sgi-onewire-slot.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"

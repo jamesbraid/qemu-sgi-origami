@@ -52,6 +52,9 @@ system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER', if_true: files('sgi-sn1-router.c'))
 system_ss.add(when: 'CONFIG_SGI_SN1_ROUTER_TEST', if_true: files('sgi-sn1-router-test.c'))
 system_ss.add(when: 'CONFIG_SGI_XBOW', if_true: files('sgi-xbow.c'))
 system_ss.add(when: 'CONFIG_SGI_XBRIDGE_XBOW', if_true: files('sgi-xbridge-xbow.c'))
+system_ss.add(when: 'CONFIG_SGI_XIO_PORT',
+              if_true: files('sgi-xio-port.c', 'sgi-xio-widget.c'))
+system_ss.add(when: 'CONFIG_SGI_XIO_LINK', if_true: files('sgi-xio-link.c'))
 system_ss.add(when: 'CONFIG_SGI_ODYSSEY',
               if_true: files('sgi-odyssey.c', 'sgi-odyssey-planes.c',
                              'sgi-odyssey-gpu.c', 'sgi-odyssey-native-mesa.c',

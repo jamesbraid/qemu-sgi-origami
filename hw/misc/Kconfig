@@ -379,6 +379,13 @@ config SGI_ROUTER
     # missing is a link failure, not a disabled feature.
     select SGI_NET_CABLE
 
+config SGI_XIO_PORT
+    bool
+
+config SGI_XIO_LINK
+    bool
+    select SGI_XIO_PORT
+
 config SGI_XBOW
     bool
     select SGI_XIO_PORT

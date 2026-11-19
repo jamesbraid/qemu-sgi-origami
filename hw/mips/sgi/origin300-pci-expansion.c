@@ -14,7 +14,7 @@
 #include "hw/core/irq.h"
 #include "hw/char/serial-mm.h"
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "hw/misc/sgi-bedrock.h"
 #include "hw/misc/sgi-l1.h"
 #include "hw/pci-host/sgi-xbridge.h"

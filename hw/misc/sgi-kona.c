@@ -39,8 +39,8 @@
 #include "hw/mips/sgi/pi-gfx.h"
 #include "qemu/timer.h"
 #include "hw/mips/sgi/xio-board.h"
-#include "hw/mips/sgi/xio-link.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-link.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/misc/sgi-kona-gl-decode.h"
@@ -2341,7 +2341,7 @@ static void sgi_kona_context_activate(SGIKonaState *s, uint32_t token,
 
 /*
  * The fabric address of a packet to `widget`, the widget in bits 51:48,
- * as every XIO board composes it (hw/mips/sgi/xio-widget.h).
+ * as every XIO board composes it (hw/misc/sgi-xio-widget.h).
  */
 static bool sgi_kona_fabric_compose(SGIKonaState *s, unsigned int widget,
                                     uint64_t address, hwaddr *fabric)

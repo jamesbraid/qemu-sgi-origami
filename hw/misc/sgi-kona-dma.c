@@ -14,7 +14,7 @@
 #include "exec/hwaddr.h"
 #include "hw/core/cpu.h"
 #include "hw/display/sgi/pixel-dma.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "hw/misc/sgi-kona.h"
 #include "hw/misc/sgi-kona-dma.h"
 #include "hw/misc/sgi-kona-ports.h"

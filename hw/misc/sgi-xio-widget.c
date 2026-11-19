@@ -1,13 +1,13 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
  * The XIO widget layer: what every widget on an XIO link shares
- * (include/hw/mips/sgi/xio-widget.h).
+ * (include/hw/misc/sgi-xio-widget.h).
  */
 
 #include "qemu/osdep.h"
 #include "qemu/log.h"
-#include "hw/mips/sgi-xio-port.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-widget.h"
 
 SGIXioIntDest sgi_xio_int_dest(uint32_t upper, uint32_t lower)
 {

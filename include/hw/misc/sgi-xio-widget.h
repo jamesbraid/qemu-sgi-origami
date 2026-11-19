@@ -20,8 +20,8 @@
  * specification, so the block's storage is the chip's, not this layer's.
  */
 
-#ifndef HW_MIPS_SGI_XIO_WIDGET_H
-#define HW_MIPS_SGI_XIO_WIDGET_H
+#ifndef HW_MISC_SGI_XIO_WIDGET_H
+#define HW_MISC_SGI_XIO_WIDGET_H
 
 #include "exec/hwaddr.h"
 #include "exec/memattrs.h"
@@ -80,4 +80,4 @@ bool sgi_xio_compose(const char *who, unsigned int widget, uint64_t address,
 MemTxResult sgi_xio_send_interrupt(AddressSpace *fabric, hwaddr packet,
                                    uint8_t number, bool set);
 
-#endif /* HW_MIPS_SGI_XIO_WIDGET_H */
+#endif /* HW_MISC_SGI_XIO_WIDGET_H */

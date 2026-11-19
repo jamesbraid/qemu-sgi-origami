@@ -40,7 +40,7 @@
 #include "hw/misc/sgi-xbow.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "qapi/qapi-builtin-types.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "qemu/queue.h"
 #include "qom/object.h"
 #include "migration/vmstate.h"

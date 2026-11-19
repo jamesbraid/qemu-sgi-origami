@@ -2,7 +2,7 @@
 /* The XIO port interface; see the header for the contract. */
 
 #include "qemu/osdep.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "qapi/error.h"
 #include "qemu/module.h"
 #include "qemu/log.h"

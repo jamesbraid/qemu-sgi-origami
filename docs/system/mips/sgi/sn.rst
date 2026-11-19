@@ -671,8 +671,8 @@ codes are on :ref:`sgi-onyx2-node-slot-codes`.
 An XIO port is a QOM interface every chip at one end of an XIO link
 implements: a Hub's or Bedrock's I/O interface, each Crossbow or XBridge
 crossbar port, a Bridge, and a board's own widget
-(``include/hw/mips/sgi-xio-port.h``). One link type
-(``hw/mips/sgi/xio-link.c``) joins two ports and does nothing but hand
+(``include/hw/misc/sgi-xio-port.h``). One link type
+(``hw/misc/sgi-xio-link.c``) joins two ports and does nothing but hand
 each end the other's faces: the processor face for programmed I/O and
 the packet face for widget-originated requests, the latter presented at
 every widget number when the peer is a leaf. What the far end does with

@@ -6,7 +6,7 @@
 #include "hw/core/qdev-properties.h"
 #include "hw/misc/sgi-heart.h"
 #include "hw/misc/sgi-xbow.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "migration/vmstate.h"
 #include "qemu/module.h"
 #include "qemu/units.h"

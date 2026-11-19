@@ -14,7 +14,7 @@
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/misc/sgi-router.h"
 #include "hw/misc/sgi-elsc.h"
@@ -32,7 +32,7 @@
 #include "exec/cpu-interrupt.h"
 #include "hw/core/cpu.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
-#include "hw/mips/sgi/xio-widget.h"
+#include "hw/misc/sgi-xio-widget.h"
 #include "system/address-spaces.h"
 #include "system/qtest.h"
 #include "system/cpus.h"
@@ -63,7 +63,7 @@
 /*
  * I/O interface: the Hub's own widget block on the crossbar. It shares
  * the identification, status and control slots of the block every widget
- * begins with (hw/mips/sgi/xio-widget.h); the rest of its registers,
+ * begins with (hw/misc/sgi-xio-widget.h); the rest of its registers,
  * the interrupt destination at 0x400138 among them, are its own.
  */
 #define HUB_IO_BASE             0x400000

@@ -4,7 +4,7 @@
 #define HW_MISC_SGI_BEDROCK_IO_H
 
 #include "hw/core/sysbus.h"
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "hw/misc/sgi-pio-forward.h"
 
 #define TYPE_SGI_BEDROCK_IO "sgi-bedrock-io"

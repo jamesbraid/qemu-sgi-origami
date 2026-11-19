@@ -7,7 +7,7 @@
  * between a Hub cabled to a Bridge and a Hub cabled to a Crossbow is
  * what the far end does with the destination widget: a Crossbow routes
  * by it, a Bridge or a Hub accepts any. That decision belongs to the
- * ports (hw/mips/sgi-xio-port.h), so the link carries no chip behaviour:
+ * ports (hw/misc/sgi-xio-port.h), so the link carries no chip behaviour:
  * it hands each end the other's faces, and for a leaf peer it presents
  * that peer's packet face at every widget number, the one piece of
  * address shaping every sender would otherwise repeat. It also carries
@@ -19,10 +19,10 @@
  * region the link builds is parented to the owner the caller names.
  */
 
-#ifndef HW_MIPS_SGI_XIO_LINK_H
-#define HW_MIPS_SGI_XIO_LINK_H
+#ifndef HW_MISC_SGI_XIO_LINK_H
+#define HW_MISC_SGI_XIO_LINK_H
 
-#include "hw/mips/sgi-xio-port.h"
+#include "hw/misc/sgi-xio-port.h"
 #include "qom/object.h"
 #include "system/memory.h"
 
@@ -71,4 +71,4 @@ bool sgi_xio_link_connect(SGIXioLink *link,
 /* Whether both ends have taken each other's faces. */
 bool sgi_xio_link_complete(const SGIXioLink *link);
 
-#endif /* HW_MIPS_SGI_XIO_LINK_H */
+#endif /* HW_MISC_SGI_XIO_LINK_H */

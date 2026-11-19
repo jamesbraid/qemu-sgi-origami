@@ -108,7 +108,7 @@ struct SGIOdysseyState {
      * host's own inbound window, reached through whichever machine glue
      * points this link at it (hw/misc/sgi-mgras.c's own "fabric" carries
      * the same contract). A packet carries its destination widget in
-     * address bits 51:48 (hw/mips/sgi/xio-widget.h).
+     * address bits 51:48 (hw/misc/sgi-xio-widget.h).
      */
     MemoryRegion *fabric;
     AddressSpace fabric_as;

@@ -31,7 +31,7 @@
 #include "hw/core/sysbus.h"
 #include "hw/misc/sgi-hub.h"
 #include "hw/mips/sgi/baseio.h"
-#include "hw/mips/sgi/xio-link.h"
+#include "hw/misc/sgi-xio-link.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "hw/pci/pci.h"
 #include "hw/mips/mips.h"
