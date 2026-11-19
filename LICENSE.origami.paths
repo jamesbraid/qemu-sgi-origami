@@ -368,6 +368,7 @@ hw/misc/sgi-mgras-raster.h
 hw/misc/sgi-mgras-texture.c
 hw/misc/sgi-mgras-texture.h
 hw/misc/sgi-mgras.c
+hw/misc/sgi-galileo.c
 hw/misc/sgi-odyssey-gpu.c
 hw/misc/sgi-odyssey-native-mesa.c
 hw/misc/sgi-odyssey-planes.c
@@ -938,6 +939,7 @@ tests/qtest/libqos/pci-sgi-bridge.c
 tests/qtest/libqos/pci-sgi-bridge.h
 tests/qtest/libqos/sgi-bridge-machine.c
 tests/qtest/memtx.h
+tests/qtest/galileo-test.c
 tests/qtest/octane-mgras-test.c
 tests/qtest/octane-pci-boards-test.c
 tests/qtest/octane-test.c

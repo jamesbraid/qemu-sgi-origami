@@ -402,6 +402,12 @@ config SGI_MGRAS
     select SGI_DISPLAY
     select SGI_PI_GFX
 
+config SGI_GALILEO
+    bool
+    select SGI_BRIDGE
+    select SGI_MGRAS
+    select SGI_XIO_BOARD
+
 config SGI_XT_DIGVID
     bool
     select ONEWIRE

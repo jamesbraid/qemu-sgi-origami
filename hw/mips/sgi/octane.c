@@ -70,6 +70,7 @@
 #define TYPE_SGI_OCTANE_PCI_CAGE "sgi-octane-pci-cage"
 #define TYPE_SGI_FC_BOARD "sgi-fc-board"
 #define TYPE_SGI_XT_DIGVID "sgi-xt-digvid"
+#define TYPE_SGI_GALILEO "sgi-galileo"
 #define OCTANE_LONG_SPAN (1ULL << 36)
 #define OCTANE_LONG_BRIDGE (15ULL << 36)
 /*
@@ -1373,6 +1374,7 @@ static void octane_class_init(ObjectClass *oc, const void *data)
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_OCTANE_PCI_CAGE);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_FC_BOARD);
     machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_XT_DIGVID);
+    machine_class_allow_dynamic_sysbus_dev(mc, TYPE_SGI_GALILEO);
 }
 
 static const TypeInfo octane_machine_types[] = {

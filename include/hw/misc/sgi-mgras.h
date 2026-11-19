@@ -21,6 +21,28 @@
 OBJECT_DECLARE_TYPE(SGIMgrasState, SGIMgrasClass, SGI_MGRAS)
 
 #define SGI_MGRAS_MMIO_SIZE (2 * MiB)
+
+/*
+ * The option window of registers a video option board answers in. The board's
+ * identification byte sits at 0x070008; four blocks of 0x400 bytes follow at
+ * 0x072800, 0x073000, 0x073400 and 0x073800. Every access is a byte.
+ */
+#define SGI_MGRAS_OPTION_ID 0x070008
+#define SGI_MGRAS_OPTION_BLOCK_SIZE 0x400
+
+static inline bool sgi_mgras_option_window_claims(hwaddr addr)
+{
+    return addr == SGI_MGRAS_OPTION_ID ||
+           (addr >= 0x072800 &&
+            addr < 0x072800 + SGI_MGRAS_OPTION_BLOCK_SIZE) ||
+           (addr >= 0x073000 &&
+            addr < 0x073000 + 3 * SGI_MGRAS_OPTION_BLOCK_SIZE);
+}
+
+typedef struct SGIMgrasOptionWindowOps {
+    uint8_t (*read)(void *opaque, hwaddr addr);
+    void (*write)(void *opaque, hwaddr addr, uint8_t value);
+} SGIMgrasOptionWindowOps;
 /*
  * The widest screen a board descriptor may name. Scanout's per-row buffers
  * are sized by it and realize refuses a wider descriptor; everything else
@@ -624,6 +646,9 @@ struct SGIMgrasState {
     Object *pi;
     /* Host-only: the missing link has been logged once. */
     bool pi_unlinked_logged;
+    /* The option board on the option window, if any; set by its realize. */
+    const SGIMgrasOptionWindowOps *option_window_ops;
+    void *option_window_opaque;
     /*
      * Host-only, fixed once the board is placed: the link's credit hook
      * and the widget it is told, so that a store does not look up the
@@ -1044,5 +1069,11 @@ struct SGIMgrasState {
      */
     bool dirty;
 };
+
+/* False if another board already holds the window. */
+bool sgi_mgras_attach_option_window(SGIMgrasState *s,
+                                    const SGIMgrasOptionWindowOps *ops,
+                                    void *opaque);
+void sgi_mgras_detach_option_window(SGIMgrasState *s, void *opaque);
 
 #endif

@@ -2193,6 +2193,9 @@ static void sgi_bridge_reset_core(SGIBridgeState *s)
     if (s->flash_select) {
         s->reg[SGI_BRIDGE_SLOT(BRIDGE_STATUS)] |= STATUS_FLASH_SELECT;
     }
+    if (s->gio_mode) {
+        s->reg[SGI_BRIDGE_SLOT(BRIDGE_STATUS)] &= ~STATUS_PCI_MODE;
+    }
 
     s->int_error = 0;
 
@@ -2473,6 +2476,12 @@ static void sgi_bridge_realize(DeviceState *dev, Error **errp)
                                     &s->device_window_io[slot]);
     }
 
+    if (s->gio_window) {
+        memory_region_add_subregion_overlap(&s->widget,
+                                            SGI_BRIDGE_GIO_WINDOW_BASE,
+                                            s->gio_window, 1);
+    }
+
     phb->bus = pci_register_root_bus(dev,
                                      s->pci_bus_name ? s->pci_bus_name : "pci",
                                      sgi_bridge_set_irq,
@@ -2636,6 +2645,10 @@ static const Property sgi_bridge_properties[] = {
      * this is the board's fact, set by the machine.
      */
     DEFINE_PROP_UINT8("req64-slots", SGIBridgeState, req64_slots, 0),
+    /* A GIO-mode board: status bit 5 clear, "gio-window" over the windows. */
+    DEFINE_PROP_BOOL("gio-mode", SGIBridgeState, gio_mode, false),
+    DEFINE_PROP_LINK("gio-window", SGIBridgeState, gio_window,
+                     TYPE_MEMORY_REGION, MemoryRegion *),
 };
 
 /*

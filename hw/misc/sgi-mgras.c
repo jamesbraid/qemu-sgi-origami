@@ -796,9 +796,38 @@ void sgi_mgras_flags_write(SGIMgrasState *s, SGIMgrasFlagsOp op,
     mgras_update_irq(s);
 }
 
+bool sgi_mgras_attach_option_window(SGIMgrasState *s,
+                                    const SGIMgrasOptionWindowOps *ops,
+                                    void *opaque)
+{
+    if (s->option_window_ops) {
+        return false;
+    }
+    s->option_window_ops = ops;
+    s->option_window_opaque = opaque;
+    return true;
+}
+
+void sgi_mgras_detach_option_window(SGIMgrasState *s, void *opaque)
+{
+    if (s->option_window_opaque == opaque) {
+        s->option_window_ops = NULL;
+        s->option_window_opaque = NULL;
+    }
+}
+
 static uint64_t mgras_read_internal(SGIMgrasState *s, hwaddr addr,
                                      unsigned size)
 {
+    if (size == 1 && sgi_mgras_option_window_claims(addr)) {
+        if (s->option_window_ops) {
+            return s->option_window_ops->read(s->option_window_opaque, addr);
+        }
+        if (addr == SGI_MGRAS_OPTION_ID) {
+            /* No option board: the option probe reads all ones. */
+            return 0xff;
+        }
+    }
     if (size != 1 && size != 2 && size != 4 && size != 8) {
         mgras_error(s, addr, size, "unsupported read width");
         return 0;
@@ -1167,6 +1196,11 @@ static void mgras_write(void *opaque, hwaddr addr, uint64_t value,
             sgi_mgras_raster_command(s, value);
             return;
         }
+    }
+    if (s->option_window_ops && size == 1 &&
+        sgi_mgras_option_window_claims(addr)) {
+        s->option_window_ops->write(s->option_window_opaque, addr, value);
+        return;
     }
     if (addr != MGRAS_CONTEXT_COMMAND && addr != SGI_MGRAS_SCRATCH_COMMAND) {
         trace_sgi_mgras_control_mmio(sequence, addr, value, size, true);

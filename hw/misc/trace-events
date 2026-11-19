@@ -14,6 +14,10 @@ sgi_mgras_work(const char *what, uint64_t offset, uint64_t value) "%s offset 0x%
 # Control accesses omit the high-volume context and scratch command ports.
 sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsigned size, bool write) "seq %" PRIu64 " offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 
+# sgi-galileo.c
+sgi_galileo_option(uint64_t offset, uint64_t value, bool write) "offset 0x%" PRIx64 " value 0x%" PRIx64 " write=%d"
+sgi_galileo_gio(uint64_t offset, uint64_t value, unsigned size, bool write) "offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
+
 # sgi-kona.c
 sgi_kona_pio_read(uint64_t sequence, int cpu, uint64_t offset, uint64_t value, unsigned int size) "seq %" PRIu64 " cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"
 sgi_kona_pio_write(uint64_t sequence, int cpu, uint64_t offset, uint64_t value, unsigned int size) "seq %" PRIu64 " cpu %d offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u"

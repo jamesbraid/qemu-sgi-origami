@@ -135,6 +135,10 @@ bool sgi_bridge_add_onewire_board_part(DeviceState *bridge,
  * word values, which leaves the memory swap bit clear.
  */
 #define SGI_BRIDGE_PIO_XLATE_BASE 0x40000000
+
+/* The span of the device windows, which a GIO-mode board's window covers. */
+#define SGI_BRIDGE_GIO_WINDOW_BASE 0x200000
+#define SGI_BRIDGE_GIO_WINDOW_SIZE (10 * MiB)
 #define SGI_BRIDGE_PIO_XLATE_SIZE 0x40000000
 
 /* Switched packets use four widget bits above their full 48-bit address. */
@@ -369,6 +373,14 @@ struct SGIBridgeState {
      */
     hwaddr dma_pci_address;
     unsigned int dma_device;
+
+    /*
+     * GIO mode: the status register's PCI-mode strap reads clear and the
+     * board's "gio-window" covers the device windows' span. Nothing is
+     * modelled behind it beyond what that region answers.
+     */
+    bool gio_mode;
+    MemoryRegion *gio_window;
 
     /* What the identification register answers with. */
     uint32_t revision;
