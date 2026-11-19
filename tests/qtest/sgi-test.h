@@ -66,4 +66,14 @@
     "-object memory-backend-ram,id=sgi-ram,size=" size ",reserve=off " \
     "-machine memory-backend=sgi-ram"
 
+/*
+ * Whether a launch of @smp processors is left to the thorough speed. From
+ * 256 processors a launch peaks near 34 GiB under meson's malloc
+ * perturbation, more than a CI shard has.
+ */
+static inline bool sgi_launch_is_thorough_only(int64_t smp)
+{
+    return smp >= 256 && !g_test_slow();
+}
+
 #endif /* SGI_TEST_H */

@@ -69,8 +69,8 @@ qtest-mips64/sgi-o2-test 3
 qtest-mips64/sgi-pci-expansion-ni-test 122
 qtest-mips64/sgi-pic-test 18
 qtest-mips64/sgi-replay-test 44
-qtest-mips64/sgi-synthetic-serial-test 120
-qtest-mips64/sn-builder-test 167
+qtest-mips64/sgi-synthetic-serial-test 137
+qtest-mips64/sn-builder-test 508
 qtest-mips64/sn-node-population-test 8
 qtest-mips64/sn-promdata-window-test 6
 qtest-mips64/sn0-address-map-test 11

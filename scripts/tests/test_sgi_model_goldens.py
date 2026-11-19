@@ -50,6 +50,7 @@ CONFIGURATIONS = {
     "origin3800-high-bandwidth": "origin3800-high-bandwidth.yaml",
     "origin3800-64p": "origin3800-64p.yaml",
     "origin3800-128p": "origin3800-128p.yaml",
+    "origin3800-256p": "origin3800-256p.yaml",
     "origin3400-two-partitions": "origin3400-two-partitions.yaml",
     "onyx2-rack": "onyx2-rack.yaml",
     "onyx2-deskside": "onyx2-deskside.yaml",

@@ -728,7 +728,8 @@ int main(int argc, char **argv)
         g_assert_false(g_hash_table_contains(seen, id));
         g_hash_table_add(seen, (gpointer)id);
         g_assert_nonnull(topology_record(topology));
-        if (!machine_built(qts, qdict_get_str(o, "product"))) {
+        if (!machine_built(qts, qdict_get_str(o, "product")) ||
+            sgi_launch_is_thorough_only(qdict_get_int(o, "smp"))) {
             continue;
         }
         graphics = qdict_get_qdict(topology_record(topology), "graphics");

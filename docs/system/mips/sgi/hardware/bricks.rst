@@ -1289,6 +1289,53 @@ rejects its wiring (*software expectation*, a replay, not a boot). Memory is
 the 1024 MB fit, 32 GiB in all. A build of the machine is checked and no
 guest has run on it, so the PROM's behaviour on this graph is *unknown*.
 
+.. _sgi-sn-origin3800-256p:
+
+``topology=origin3800-256p`` is the first topology with MetaRouters: eight
+compute racks, 001 to 004 and 011 to 014, 256 processors, 64 C-bricks on 16
+rack R-bricks, and four MetaRouters at unit 38 of racks 002, 003, 012 and
+013, which makes 20 routers and, with the 64 C-brick cables, 104 cables.
+Each rack is wired as above and neighbouring racks (001 and 002, 003 and
+004, 011 and 012, 013 and 014) join on port 7 between R-bricks at the same
+unit. Each rack router's port 8 goes to a MetaRouter: from a unit-19
+R-brick to port 3 or 4, from a unit-27 R-brick to port 7 or 8, so each
+MetaRouter takes four uplinks and none is cabled to another. A
+MetaRouter's ports 1, 2, 5 and 6 are empty. That is the cabling draft's
+256-processor table (Table 2-23, printed p. 2-79), and it agrees at port
+level with the shipped drawing (:src:`007-4311-002 p. 58`), the 104 cables
+and 20 R-bricks included (*established*, with the drawing's long crossing
+lines the weakest reading). Which rack-router port carries the
+neighbouring-rack cable and which the uplink is the draft's statement
+(*inferred* for shipped systems: a replay of the stock PROM's number walk
+accepts the two swapped).
+
+The four MetaRouters have the MetaRouter role, ``0xe`` (see
+:ref:`sgi-sn1-router-role`). The draft labels no router's role, so naming
+these four is *inferred* from their wiring: they are the routers that take
+rack-router uplinks. In a replay of the number walk over this wiring the
+stock PROM accepts the graph only with exactly this role and refuses it
+with the four ordinary or as repeat routers (*software expectation*). The
+rules the replay shows the PROM enforcing, that a MetaRouter has no hub on
+any port, hold here, and the topology plan refuses a role on a router that
+has a C-brick. Memory is the 1024 MB fit, 64 GiB in all. Only the build is
+checked: the PROM's route calculation, table distribution and global
+barrier on this graph have not run, so whether it boots is *unknown*.
+Construction took about 9 s and 6.8 GiB peak resident in three runs on an
+optimised build with the qtest accelerator, on a host with a load average
+near 60; the 128-processor topology took about 2.9 s and 3.0 GiB under the
+same load.
+
+Sizes not built, and why. 48 processors is rejected by the stock PROM, and
+so is the 128-processor table with MetaRouters (``origin3800-128p`` is the
+other 128-processor table). 80, 96 and 112 processors have no shipped
+drawing, and 112 has two draft layouts with no rule for choosing. 160 to
+224 processors differ between the draft and the drawing in router or
+cable counts. From 288 processors MetaRouters are cabled to each other,
+the PROM switches to a coarse region size, and from 416 repeat routers
+appear; the tables label no router's role, so the repeat routers are
+*inferred* and the draft is the only source. The Origin 3900 above four
+Cx-bricks has no port-level cabling source at all.
+
 .. _sgi-sn-rack-numbers:
 
 A topology may number its racks with ``machine.emulation.rack_numbers``, a
@@ -1320,8 +1367,8 @@ model checks these rules only when racks are numbered:
 
 Topologies that number no rack keep the module number rules above
 unchanged: unique across the whole system, 1 to 255. Only
-``origin3800-64p`` and ``origin3800-128p`` number their racks, and the compiled catalogue carries
-no rack field for any other topology. A numbered topology's module records
+``origin3800-64p``, ``origin3800-128p`` and ``origin3800-256p`` number
+their racks, and the compiled catalogue carries no rack field for any other topology. A numbered topology's module records
 carry ``rack``, an optional member of the catalogue's QAPI module record.
 The machine builder gives every SN1 L1
 its module's rack beside its bay: the C-brick, I-brick, R-brick, V-brick,

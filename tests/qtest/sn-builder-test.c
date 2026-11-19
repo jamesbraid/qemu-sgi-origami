@@ -11519,18 +11519,39 @@ static void test_origin3800_64p_racks(void)
     g_unlink(prom);
 }
 
-/*
- * A multi-rack Origin 3800 built and not run: every C-brick is a node
- * numbered in rack order (the PROM renumbers them from the router graph, so
- * this is only the build's starting number), its L1 answers the drawn rack
- * and bay, every router has exactly the ports the cabling table cables, and
- * the I-brick is in rack 101. Nothing runs guest code, so the RAM is mapped
- * unreserved and never touched.
- */
+typedef struct RouterLink {
+    uint8_t a, a_port, b, b_port;
+} RouterLink;
+
+/* A rack's two routers join on ports 1 and 6, then the table's links. */
+static void expect_router_links(QTestState *qts, unsigned int nodes,
+                                unsigned int rack_count,
+                                const RouterLink *links, unsigned int count)
+{
+    for (unsigned int i = 0; i < 2 * rack_count + count; i++) {
+        RouterLink link = i < 2 * rack_count ?
+            (RouterLink){ 2 * (i / 2), i % 2 ? 6 : 1, 2 * (i / 2) + 1,
+                          i % 2 ? 6 : 1 } : links[i - 2 * rack_count];
+        g_autofree char *a = g_strdup_printf("/machine/module%u/router",
+                                             nodes + link.a);
+        g_autofree char *b = g_strdup_printf("/machine/module%u/router",
+                                             nodes + link.b);
+        g_autofree char *an = g_strdup_printf("port%u-cable", link.a_port);
+        g_autofree char *bn = g_strdup_printf("port%u-cable", link.b_port);
+        g_autofree char *cable = qom_get_str(qts, a, an);
+        g_autofree char *far = qom_get_str(qts, b, bn);
+
+        g_assert_cmpstr(cable, !=, "");
+        g_assert_cmpstr(cable, ==, far);
+    }
+}
+
+/* Built and not run: no guest code, so the unreserved RAM is never touched. */
 static void origin3800_racks(const char *topology, const unsigned int *racks,
                              unsigned int rack_count,
                              const uint16_t *router_ports,
-                             unsigned int router_count, const char *ram)
+                             unsigned int router_count, const char *ram,
+                             const RouterLink *links, unsigned int link_count)
 {
     static const unsigned int bays[] = { 10, 13, 16, 21, 24, 29, 32, 35 };
     unsigned int nodes = 8 * rack_count;
@@ -11576,6 +11597,9 @@ static void origin3800_racks(const char *topology, const unsigned int *racks,
         expect_l1_location(qts, l1, rack, bay);
         g_assert_true(g_hash_table_add(seen,
                           GUINT_TO_POINTER((rack << 6) | bay)));
+        /* Only the MetaRouters carry a role: 0xe, and the rest are 0xf. */
+        g_assert_cmpuint(qom_get_uint(qts, chip, "role"), ==,
+                         router < 2 * rack_count ? 0xf : 0xe);
         for (unsigned int port = 1; port <= 8; port++) {
             g_autofree char *name = g_strdup_printf("port%u-cable", port);
             g_autofree char *cable = qom_get_str(qts, chip, name);
@@ -11584,6 +11608,7 @@ static void origin3800_racks(const char *topology, const unsigned int *racks,
                             !!(router_ports[router] & (1u << port)));
         }
     }
+    expect_router_links(qts, nodes, rack_count, links, link_count);
     ibrick_l1 = g_strdup_printf("/machine/module%u/l1", nodes + router_count);
     expect_l1_location(qts, ibrick_l1, 101, 20);
     g_assert_true(g_hash_table_add(seen,
@@ -11608,8 +11633,39 @@ static void test_origin3800_128p_racks(void)
         0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe,
     };
 
+    /* Neighbouring racks on port 7, racks two apart on port 8. */
+    static const RouterLink links[] = {
+        { 0, 7, 2, 7 }, { 1, 7, 3, 7 }, { 4, 7, 6, 7 }, { 5, 7, 7, 7 },
+        { 0, 8, 4, 8 }, { 1, 8, 5, 8 }, { 2, 8, 6, 8 }, { 3, 8, 7, 8 },
+    };
+
     origin3800_racks("origin3800-128p", racks, 4, ports, 8,
-                     SGI_UNRESERVED_RAM("32768M"));
+                     SGI_UNRESERVED_RAM("32768M"), links, ARRAY_SIZE(links));
+}
+
+/* Table 2-23: rack routers fully cabled, MetaRouters on ports 3, 4, 7, 8. */
+static void test_origin3800_256p_racks(void)
+{
+    static const unsigned int racks[] = { 1, 2, 3, 4, 11, 12, 13, 14 };
+    /* Port 7 joins neighbouring racks; port 8 goes up to a MetaRouter. */
+    static const RouterLink links[] = {
+        { 0, 7, 2, 7 }, { 1, 7, 3, 7 }, { 4, 7, 6, 7 }, { 5, 7, 7, 7 },
+        { 8, 7, 10, 7 }, { 9, 7, 11, 7 }, { 12, 7, 14, 7 }, { 13, 7, 15, 7 },
+        { 0, 8, 16, 3 }, { 4, 8, 16, 4 }, { 13, 8, 16, 7 }, { 9, 8, 16, 8 },
+        { 2, 8, 17, 3 }, { 6, 8, 17, 4 }, { 15, 8, 17, 7 }, { 11, 8, 17, 8 },
+        { 12, 8, 18, 3 }, { 8, 8, 18, 4 }, { 1, 8, 18, 7 }, { 5, 8, 18, 8 },
+        { 14, 8, 19, 3 }, { 10, 8, 19, 4 }, { 3, 8, 19, 7 }, { 7, 8, 19, 8 },
+    };
+    uint16_t ports[20];
+
+    for (unsigned int i = 0; i < 16; i++) {
+        ports[i] = 0x1fe;
+    }
+    for (unsigned int i = 16; i < 20; i++) {
+        ports[i] = (1 << 3) | (1 << 4) | (1 << 7) | (1 << 8);
+    }
+    origin3800_racks("origin3800-256p", racks, 8, ports, 20,
+                     SGI_UNRESERVED_RAM("65536M"), links, ARRAY_SIZE(links));
 }
 
 /*
@@ -15210,6 +15266,10 @@ int main(int argc, char **argv)
                    test_origin3800_64p_racks);
     qtest_add_func("sn/builder/origin3800-128p/racks",
                    test_origin3800_128p_racks);
+    if (g_test_slow()) {
+        qtest_add_func("sn/builder/origin3800-256p/racks",
+                       test_origin3800_256p_racks);
+    }
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",

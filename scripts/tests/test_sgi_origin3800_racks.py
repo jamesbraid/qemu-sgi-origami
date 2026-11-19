@@ -1,9 +1,8 @@
 # SPDX-License-Identifier: BSD-3-Clause
 
-"""Tests for the multi-rack Origin 3800 topologies above 64 processors.
+"""Tests for the Origin 3800 topologies above 64 processors.
 
-The cable tables are written out here from the cabling draft's tables, not
-read back from the topology plans, so a plan edit cannot move both.
+The cable tables are the draft's, not read from the plans.
 """
 
 import json
@@ -27,6 +26,30 @@ LINKS_128 = (
     {((2 * r, 6), (2 * r + 1, 6)) for r in range(4)} |
     {((0, 7), (2, 7)), ((1, 7), (3, 7)), ((4, 7), (6, 7)), ((5, 7), (7, 7)),
      ((0, 8), (4, 8)), ((1, 8), (5, 8)), ((2, 8), (6, 8)), ((3, 8), (7, 8))})
+
+# Table 2-23: routers 16 to 19 are the MetaRouters of racks 002, 003, 012
+# and 013; each port maps to the (rack, unit) router whose port 8 reaches it.
+RACKS_256 = (1, 2, 3, 4, 11, 12, 13, 14)
+UPLINKS_256 = {
+    16: {3: (1, 19), 4: (3, 19), 7: (13, 27), 8: (11, 27)},
+    17: {3: (2, 19), 4: (4, 19), 7: (14, 27), 8: (12, 27)},
+    18: {3: (13, 19), 4: (11, 19), 7: (1, 27), 8: (3, 27)},
+    19: {3: (14, 19), 4: (12, 19), 7: (2, 27), 8: (4, 27)},
+}
+
+
+def _router(rack, unit):
+    return 2 * RACKS_256.index(rack) + (0 if unit == 19 else 1)
+
+
+LINKS_256 = (
+    {((2 * r, 1), (2 * r + 1, 1)) for r in range(8)} |
+    {((2 * r, 6), (2 * r + 1, 6)) for r in range(8)} |
+    {((2 * a + u, 7), (2 * a + 2 + u, 7)) for a in (0, 2, 4, 6)
+     for u in (0, 1)} |
+    {((_router(*where), 8), (meta, port))
+     for meta, ports in UPLINKS_256.items()
+     for port, where in ports.items()})
 
 
 def _topology(name):
@@ -103,6 +126,36 @@ class Origin3800At128(MultiRackOrigin3800):
         self.assertEqual(len(self.topology["cables"]), 48)
         for router in self.topology["routers"]:
             self.assertNotIn("role", router)
+
+
+class Origin3800At256(MultiRackOrigin3800):
+    NAME = "origin3800-256p"
+    RACKS = RACKS_256
+    LINKS = LINKS_256
+
+    def test_twenty_routers_and_104_cables(self):
+        self.assertEqual(len(self.topology["routers"]), 20)
+        self.assertEqual(len(self.topology["cables"]), 104)
+
+    def test_the_four_metarouters_have_a_role_and_no_c_brick(self):
+        roles = {i: r.get("role")
+                 for i, r in enumerate(self.topology["routers"])}
+        self.assertEqual(roles, {i: 14 if i >= 16 else None
+                                 for i in range(20)})
+        for cable in self.topology["cables"]:
+            for end in cable["ends"]:
+                if end["kind"] == "router" and end["index"] >= 16:
+                    self.assertEqual(
+                        [e["kind"] for e in cable["ends"]],
+                        ["router", "router"])
+
+    def test_metarouters_sit_at_unit_38_of_the_four_racks(self):
+        placed = {m["id"]: (m["rack"], m["initial-module-number"])
+                  for m in self.topology["modules"]}
+        self.assertEqual({k: v for k, v in placed.items() if k >= "rbrick16"
+                          and k.endswith("-brick")}, {
+            "rbrick16-brick": (2, 38), "rbrick17-brick": (3, 38),
+            "rbrick18-brick": (12, 38), "rbrick19-brick": (13, 38)})
 
 
 if __name__ == "__main__":

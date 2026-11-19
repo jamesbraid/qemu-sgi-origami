@@ -1,0 +1,209 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of origin3800-256p.yaml and its layer.
+routers:
+  - {id: rbrick00, label: R-brick 0, parent: rack-001, rack: "001", unit: 19}
+  - {id: rbrick01, label: R-brick 1, parent: rack-001, rack: "001", unit: 27}
+  - {id: rbrick02, label: R-brick 2, parent: rack-002, rack: "002", unit: 19}
+  - {id: rbrick03, label: R-brick 3, parent: rack-002, rack: "002", unit: 27}
+  - {id: rbrick04, label: R-brick 4, parent: rack-003, rack: "003", unit: 19}
+  - {id: rbrick05, label: R-brick 5, parent: rack-003, rack: "003", unit: 27}
+  - {id: rbrick06, label: R-brick 6, parent: rack-004, rack: "004", unit: 19}
+  - {id: rbrick07, label: R-brick 7, parent: rack-004, rack: "004", unit: 27}
+  - {id: rbrick08, label: R-brick 8, parent: rack-011, rack: "011", unit: 19}
+  - {id: rbrick09, label: R-brick 9, parent: rack-011, rack: "011", unit: 27}
+  - {id: rbrick10, label: R-brick 10, parent: rack-012, rack: "012", unit: 19}
+  - {id: rbrick11, label: R-brick 11, parent: rack-012, rack: "012", unit: 27}
+  - {id: rbrick12, label: R-brick 12, parent: rack-013, rack: "013", unit: 19}
+  - {id: rbrick13, label: R-brick 13, parent: rack-013, rack: "013", unit: 27}
+  - {id: rbrick14, label: R-brick 14, parent: rack-014, rack: "014", unit: 19}
+  - {id: rbrick15, label: R-brick 15, parent: rack-014, rack: "014", unit: 27}
+  - {id: rbrick16, label: R-brick 16, parent: rack-002, rack: "002", unit: 38, role: 14, omit_buses: [port-3-cable, port-4-cable, port-7-cable, port-8-cable]}
+  - {id: rbrick17, label: R-brick 17, parent: rack-003, rack: "003", unit: 38, role: 14, omit_buses: [port-3-cable, port-4-cable, port-7-cable, port-8-cable]}
+  - {id: rbrick18, label: R-brick 18, parent: rack-012, rack: "012", unit: 38, role: 14, omit_buses: [port-3-cable, port-4-cable, port-7-cable, port-8-cable]}
+  - {id: rbrick19, label: R-brick 19, parent: rack-013, rack: "013", unit: 38, role: 14, omit_buses: [port-3-cable, port-4-cable, port-7-cable, port-8-cable]}
+cbricks:
+  - {id: c00, label: C-brick 0, router: rbrick00, port: 2, unit: 10, rack: "001", parent: rack-001}
+  - {id: c01, label: C-brick 1, router: rbrick00, port: 3, unit: 13, rack: "001", parent: rack-001}
+  - {id: c02, label: C-brick 2, router: rbrick00, port: 4, unit: 16, rack: "001", parent: rack-001}
+  - {id: c03, label: C-brick 3, router: rbrick00, port: 5, unit: 21, rack: "001", parent: rack-001}
+  - {id: c04, label: C-brick 4, router: rbrick01, port: 2, unit: 24, rack: "001", parent: rack-001}
+  - {id: c05, label: C-brick 5, router: rbrick01, port: 3, unit: 29, rack: "001", parent: rack-001}
+  - {id: c06, label: C-brick 6, router: rbrick01, port: 4, unit: 32, rack: "001", parent: rack-001}
+  - {id: c07, label: C-brick 7, router: rbrick01, port: 5, unit: 35, rack: "001", parent: rack-001}
+  - {id: c08, label: C-brick 8, router: rbrick02, port: 2, unit: 10, rack: "002", parent: rack-002}
+  - {id: c09, label: C-brick 9, router: rbrick02, port: 3, unit: 13, rack: "002", parent: rack-002}
+  - {id: c10, label: C-brick 10, router: rbrick02, port: 4, unit: 16, rack: "002", parent: rack-002}
+  - {id: c11, label: C-brick 11, router: rbrick02, port: 5, unit: 21, rack: "002", parent: rack-002}
+  - {id: c12, label: C-brick 12, router: rbrick03, port: 2, unit: 24, rack: "002", parent: rack-002}
+  - {id: c13, label: C-brick 13, router: rbrick03, port: 3, unit: 29, rack: "002", parent: rack-002}
+  - {id: c14, label: C-brick 14, router: rbrick03, port: 4, unit: 32, rack: "002", parent: rack-002}
+  - {id: c15, label: C-brick 15, router: rbrick03, port: 5, unit: 35, rack: "002", parent: rack-002}
+  - {id: c16, label: C-brick 16, router: rbrick04, port: 2, unit: 10, rack: "003", parent: rack-003}
+  - {id: c17, label: C-brick 17, router: rbrick04, port: 3, unit: 13, rack: "003", parent: rack-003}
+  - {id: c18, label: C-brick 18, router: rbrick04, port: 4, unit: 16, rack: "003", parent: rack-003}
+  - {id: c19, label: C-brick 19, router: rbrick04, port: 5, unit: 21, rack: "003", parent: rack-003}
+  - {id: c20, label: C-brick 20, router: rbrick05, port: 2, unit: 24, rack: "003", parent: rack-003}
+  - {id: c21, label: C-brick 21, router: rbrick05, port: 3, unit: 29, rack: "003", parent: rack-003}
+  - {id: c22, label: C-brick 22, router: rbrick05, port: 4, unit: 32, rack: "003", parent: rack-003}
+  - {id: c23, label: C-brick 23, router: rbrick05, port: 5, unit: 35, rack: "003", parent: rack-003}
+  - {id: c24, label: C-brick 24, router: rbrick06, port: 2, unit: 10, rack: "004", parent: rack-004}
+  - {id: c25, label: C-brick 25, router: rbrick06, port: 3, unit: 13, rack: "004", parent: rack-004}
+  - {id: c26, label: C-brick 26, router: rbrick06, port: 4, unit: 16, rack: "004", parent: rack-004}
+  - {id: c27, label: C-brick 27, router: rbrick06, port: 5, unit: 21, rack: "004", parent: rack-004}
+  - {id: c28, label: C-brick 28, router: rbrick07, port: 2, unit: 24, rack: "004", parent: rack-004}
+  - {id: c29, label: C-brick 29, router: rbrick07, port: 3, unit: 29, rack: "004", parent: rack-004}
+  - {id: c30, label: C-brick 30, router: rbrick07, port: 4, unit: 32, rack: "004", parent: rack-004}
+  - {id: c31, label: C-brick 31, router: rbrick07, port: 5, unit: 35, rack: "004", parent: rack-004}
+  - {id: c32, label: C-brick 32, router: rbrick08, port: 2, unit: 10, rack: "011", parent: rack-011}
+  - {id: c33, label: C-brick 33, router: rbrick08, port: 3, unit: 13, rack: "011", parent: rack-011}
+  - {id: c34, label: C-brick 34, router: rbrick08, port: 4, unit: 16, rack: "011", parent: rack-011}
+  - {id: c35, label: C-brick 35, router: rbrick08, port: 5, unit: 21, rack: "011", parent: rack-011}
+  - {id: c36, label: C-brick 36, router: rbrick09, port: 2, unit: 24, rack: "011", parent: rack-011}
+  - {id: c37, label: C-brick 37, router: rbrick09, port: 3, unit: 29, rack: "011", parent: rack-011}
+  - {id: c38, label: C-brick 38, router: rbrick09, port: 4, unit: 32, rack: "011", parent: rack-011}
+  - {id: c39, label: C-brick 39, router: rbrick09, port: 5, unit: 35, rack: "011", parent: rack-011}
+  - {id: c40, label: C-brick 40, router: rbrick10, port: 2, unit: 10, rack: "012", parent: rack-012}
+  - {id: c41, label: C-brick 41, router: rbrick10, port: 3, unit: 13, rack: "012", parent: rack-012}
+  - {id: c42, label: C-brick 42, router: rbrick10, port: 4, unit: 16, rack: "012", parent: rack-012}
+  - {id: c43, label: C-brick 43, router: rbrick10, port: 5, unit: 21, rack: "012", parent: rack-012}
+  - {id: c44, label: C-brick 44, router: rbrick11, port: 2, unit: 24, rack: "012", parent: rack-012}
+  - {id: c45, label: C-brick 45, router: rbrick11, port: 3, unit: 29, rack: "012", parent: rack-012}
+  - {id: c46, label: C-brick 46, router: rbrick11, port: 4, unit: 32, rack: "012", parent: rack-012}
+  - {id: c47, label: C-brick 47, router: rbrick11, port: 5, unit: 35, rack: "012", parent: rack-012}
+  - {id: c48, label: C-brick 48, router: rbrick12, port: 2, unit: 10, rack: "013", parent: rack-013}
+  - {id: c49, label: C-brick 49, router: rbrick12, port: 3, unit: 13, rack: "013", parent: rack-013}
+  - {id: c50, label: C-brick 50, router: rbrick12, port: 4, unit: 16, rack: "013", parent: rack-013}
+  - {id: c51, label: C-brick 51, router: rbrick12, port: 5, unit: 21, rack: "013", parent: rack-013}
+  - {id: c52, label: C-brick 52, router: rbrick13, port: 2, unit: 24, rack: "013", parent: rack-013}
+  - {id: c53, label: C-brick 53, router: rbrick13, port: 3, unit: 29, rack: "013", parent: rack-013}
+  - {id: c54, label: C-brick 54, router: rbrick13, port: 4, unit: 32, rack: "013", parent: rack-013}
+  - {id: c55, label: C-brick 55, router: rbrick13, port: 5, unit: 35, rack: "013", parent: rack-013}
+  - {id: c56, label: C-brick 56, router: rbrick14, port: 2, unit: 10, rack: "014", parent: rack-014}
+  - {id: c57, label: C-brick 57, router: rbrick14, port: 3, unit: 13, rack: "014", parent: rack-014}
+  - {id: c58, label: C-brick 58, router: rbrick14, port: 4, unit: 16, rack: "014", parent: rack-014}
+  - {id: c59, label: C-brick 59, router: rbrick14, port: 5, unit: 21, rack: "014", parent: rack-014}
+  - {id: c60, label: C-brick 60, router: rbrick15, port: 2, unit: 24, rack: "014", parent: rack-014}
+  - {id: c61, label: C-brick 61, router: rbrick15, port: 3, unit: 29, rack: "014", parent: rack-014}
+  - {id: c62, label: C-brick 62, router: rbrick15, port: 4, unit: 32, rack: "014", parent: rack-014}
+  - {id: c63, label: C-brick 63, router: rbrick15, port: 5, unit: 35, rack: "014", parent: rack-014}
+links:
+  - {id: router-link-0-1-1, a: rbrick00, b: rbrick01, port: 1}
+  - {id: router-link-0-1-6, a: rbrick00, b: rbrick01, port: 6}
+  - {id: router-link-2-3-1, a: rbrick02, b: rbrick03, port: 1}
+  - {id: router-link-2-3-6, a: rbrick02, b: rbrick03, port: 6}
+  - {id: router-link-4-5-1, a: rbrick04, b: rbrick05, port: 1}
+  - {id: router-link-4-5-6, a: rbrick04, b: rbrick05, port: 6}
+  - {id: router-link-6-7-1, a: rbrick06, b: rbrick07, port: 1}
+  - {id: router-link-6-7-6, a: rbrick06, b: rbrick07, port: 6}
+  - {id: router-link-8-9-1, a: rbrick08, b: rbrick09, port: 1}
+  - {id: router-link-8-9-6, a: rbrick08, b: rbrick09, port: 6}
+  - {id: router-link-10-11-1, a: rbrick10, b: rbrick11, port: 1}
+  - {id: router-link-10-11-6, a: rbrick10, b: rbrick11, port: 6}
+  - {id: router-link-12-13-1, a: rbrick12, b: rbrick13, port: 1}
+  - {id: router-link-12-13-6, a: rbrick12, b: rbrick13, port: 6}
+  - {id: router-link-14-15-1, a: rbrick14, b: rbrick15, port: 1}
+  - {id: router-link-14-15-6, a: rbrick14, b: rbrick15, port: 6}
+  - {id: router-link-0-2-7, a: rbrick00, b: rbrick02, port: 7}
+  - {id: router-link-1-3-7, a: rbrick01, b: rbrick03, port: 7}
+  - {id: router-link-4-6-7, a: rbrick04, b: rbrick06, port: 7}
+  - {id: router-link-5-7-7, a: rbrick05, b: rbrick07, port: 7}
+  - {id: router-link-8-10-7, a: rbrick08, b: rbrick10, port: 7}
+  - {id: router-link-9-11-7, a: rbrick09, b: rbrick11, port: 7}
+  - {id: router-link-12-14-7, a: rbrick12, b: rbrick14, port: 7}
+  - {id: router-link-13-15-7, a: rbrick13, b: rbrick15, port: 7}
+  - {id: router-link-0-16-8-3, a: rbrick00, b: rbrick16, a_port: 8, b_port: 3}
+  - {id: router-link-4-16-8-4, a: rbrick04, b: rbrick16, a_port: 8, b_port: 4}
+  - {id: router-link-13-16-8-7, a: rbrick13, b: rbrick16, a_port: 8, b_port: 7}
+  - {id: router-link-9-16-8, a: rbrick09, b: rbrick16, port: 8}
+  - {id: router-link-2-17-8-3, a: rbrick02, b: rbrick17, a_port: 8, b_port: 3}
+  - {id: router-link-6-17-8-4, a: rbrick06, b: rbrick17, a_port: 8, b_port: 4}
+  - {id: router-link-15-17-8-7, a: rbrick15, b: rbrick17, a_port: 8, b_port: 7}
+  - {id: router-link-11-17-8, a: rbrick11, b: rbrick17, port: 8}
+  - {id: router-link-12-18-8-3, a: rbrick12, b: rbrick18, a_port: 8, b_port: 3}
+  - {id: router-link-8-18-8-4, a: rbrick08, b: rbrick18, a_port: 8, b_port: 4}
+  - {id: router-link-1-18-8-7, a: rbrick01, b: rbrick18, a_port: 8, b_port: 7}
+  - {id: router-link-5-18-8, a: rbrick05, b: rbrick18, port: 8}
+  - {id: router-link-14-19-8-3, a: rbrick14, b: rbrick19, a_port: 8, b_port: 3}
+  - {id: router-link-10-19-8-4, a: rbrick10, b: rbrick19, a_port: 8, b_port: 4}
+  - {id: router-link-3-19-8-7, a: rbrick03, b: rbrick19, a_port: 8, b_port: 7}
+  - {id: router-link-7-19-8, a: rbrick07, b: rbrick19, port: 8}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}."
+    sources: ["007-4311-002 printed pages 36 and 37: a C-brick is cabled only to router port 2, 3, 4 or 5"]
+  model-link-ports:
+    kind: link-ports
+    reason: "{own} port {port} cabled to {other} port {other_port}, as the cabling draft's table has it (inferred)."
+    sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "108-xxxx-PR2 Table 2-23: the R-brick cables (a preliminary draft, inferred)"]
+  model-empty-ports:
+    kind: empty-ports
+    order: port
+    routers: [rbrick16, rbrick17, rbrick18, rbrick19]
+    groups:
+      - ports: [1, 2, 5, 6]
+        reason: A MetaRouter's ports 3, 4, 7 and 8 carry the rack-router uplinks; the others join MetaRouters in larger systems only.
+        sources: ["007-4311-002 printed page 58: the 256-processor interconnect drawing numbers 3, 4, 7 and 8 beside each MetaRouter", "108-xxxx-PR2 printed page 2-79, Table 2-23: no two MetaRouters are cabled together at 256 processors"]
+  model-xio-empty:
+    kind: empty-components
+    cbricks_from: 1
+    suffix: -xio-ii-connector
+    reason: This composition fits one I/O brick, on C-brick 0.
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  model-router-instances:
+    kind: instances
+    model: layers/modules/r-brick.yaml
+    prefixes: [rbrick00, rbrick01, rbrick02, rbrick03, rbrick04, rbrick05, rbrick06, rbrick07, rbrick08, rbrick09, rbrick10, rbrick11, rbrick12, rbrick13, rbrick14, rbrick15, rbrick16, rbrick17, rbrick18, rbrick19]
+    parent: rack
+    comment: The router-to-router cables are product buses.
+    omit_buses: [port-1-cable, port-6-cable, port-7-cable, port-8-cable]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock
+  layer-l1-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -l1
+    anchor: cbrick-l1
+  layer-chassis-numbers:
+    kind: chassis-numbers
+    reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit {unit} of rack {rack}."
+  layer-node-identities:
+    kind: identities
+    of: cbricks
+    suffix: -bedrock
+    serial_base: 0x51454d554e00
+    reason: Synthetic node identity N{i}, carrying the "QEMU" marker; not hardware evidence.
+  layer-router-identities:
+    kind: identities
+    of: routers
+    suffix: -router
+    serial_base: 0x51454d555200
+    reason: Synthetic router descriptor identity; no physical barcode is claimed.
+  layer-link-buses:
+    kind: link-buses
+    sources: [007-4311-002-256p, 007-4311-002-router-ports, 108-xxxx-PR2-256p]
+    notes: The port numbers are the cabling draft's table (inferred, not established).
+  layer-cbrick-cables:
+    kind: cbrick-cables
+    sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]
+  layer-link-connections:
+    kind: link-connections
+    sources: [007-4311-002-256p, 007-4311-002-router-ports, 108-xxxx-PR2-256p]
+  layer-router-numbers:
+    kind: chassis-numbers
+    of: routers
+    suffix: -brick
+    reason: "The cabling draft's 256-processor table, Table 2-23: this R-brick at unit {unit} of rack {rack}."
+  layer-router-roles:
+    kind: router-roles
+    reasons:
+      14: "{r} at unit {unit} of rack {rack} takes rack-router uplinks on ports 3, 4, 7 and 8, so it is a MetaRouter. The cabling draft labels no role: inferred from the wiring."

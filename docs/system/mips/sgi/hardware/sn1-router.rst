@@ -134,8 +134,9 @@ selects the diagnostic profile, through the topology record's
 expansion topology and of the Origin 3400, Origin 3800 and Origin 3900
 topologies (the ``origin3400*``, ``origin3800*`` and ``origin3900*``
 entries, both routers of ``origin3400-two-routers`` and ``origin3800``
-and the four of ``origin3800-64p`` and eight of ``origin3800-128p`` included). The Origin 2000, Onyx 2 and
-Onyx 3400 topologies do not set the flag. A router created with
+the four of ``origin3800-64p``, the eight of ``origin3800-128p`` and the
+20 of ``origin3800-256p`` included). The Origin 2000, Onyx 2 and Onyx 3400
+topologies do not set the flag. A router created with
 ``-device``, and the R-brick router of the ``onyx3400-ir`` topology, get the
 ordinary profile, so the 4-bit route table rule below applies to them and to
 no other catalogue router: the diagnostic profile keeps whole 64-bit table
@@ -593,7 +594,8 @@ Model limits
   are model choices.
 - Routing follows the rule above, not a known hardware rule. The global
   route table, the protection bits and active barriers have no effect. A
-  MetaRouter or repeat router routes like an ordinary router.
+  MetaRouter or repeat router routes like an ordinary router;
+  ``origin3800-256p`` sets the MetaRouter role on its four.
 - In a machine, a Bedrock's port reset delivers a warm reset to the router
   and the router only passes it on; see :ref:`sgi-sn1-router-warm-reset`.
   The router is reset only when the board resets the whole machine.

@@ -39,6 +39,7 @@
 #include "qemu/osdep.h"
 #include "libqtest.h"
 #include "sgi-o2-product-fixture.h"
+#include "sgi-test.h"
 #include "qobject/qdict.h"
 #include "qobject/qnum.h"
 #include "qobject/qlist.h"
@@ -103,6 +104,7 @@ static const TopologyExtra topology_extras[] = {
     { "origin3800-high-bandwidth", "", .unmarked = true },
     { "origin3800-64p", "", .unmarked = true },
     { "origin3800-128p", "", .unmarked = true },
+    { "origin3800-256p", "", .unmarked = true },
     { "origin3400-two-partitions", "", .unmarked = true },
     { "origin3900-ip53", "", .unmarked = true },
     { "origin3900-ip59", "", .unmarked = true },
@@ -939,9 +941,13 @@ static GPtrArray *catalogue_cases(void)
         const TopologyExtra *extra =
             topology_extra(qdict_get_str(offering, "topology"));
         QDict *memory = qdict_get_qdict(offering, "memory-per-node-mib");
-        MachineCase *c = g_new0(MachineCase, 1);
+        MachineCase *c;
         const QListEntry *net;
 
+        if (sgi_launch_is_thorough_only(qdict_get_int(offering, "smp"))) {
+            continue;
+        }
+        c = g_new0(MachineCase, 1);
         c->name = g_strdup(t->data);
         c->ip35 = boot_flash_is_ip35(offering);
         c->ip32 = g_str_equal(qdict_get_str(offering, "product"), "o2");

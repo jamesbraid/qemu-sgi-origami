@@ -22,9 +22,9 @@ L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 # The router topologies never booted with it: off, authored in the model.
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p",
-                  "origin3800-128p"}
+                  "origin3800-128p", "origin3800-256p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "1529dda649881b64250ba942d7b1964a2c19d8df6e08a29193a07d759c04719e"
+    "4a1338b71ae950ad50bdb58e2c51a2676f9fd537e924683b235b4049b5fe4a56"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -226,9 +226,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 178)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 51)
-        self.assertEqual(len(layers), 116)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 181)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 52)
+        self.assertEqual(len(layers), 117)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -1351,7 +1351,8 @@ class FuelTests(unittest.TestCase):
                                     "origin3800",
                                     "origin3800-high-bandwidth",
                                     "origin3800-64p",
-                                    "origin3800-128p"):
+                                    "origin3800-128p",
+                                    "origin3800-256p"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {

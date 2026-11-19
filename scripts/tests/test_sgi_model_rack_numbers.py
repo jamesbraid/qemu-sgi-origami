@@ -441,7 +441,8 @@ class RackFieldIsInTheQapiRecord(unittest.TestCase):
 
 
 # The topologies that number their racks; every other keeps rack 1.
-RACKED_TOPOLOGIES = frozenset({"origin3800-64p", "origin3800-128p"})
+RACKED_TOPOLOGIES = frozenset({"origin3800-64p", "origin3800-128p",
+                           "origin3800-256p"})
 
 
 class ShippedTopologiesAreUnracked(unittest.TestCase):
