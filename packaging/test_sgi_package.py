@@ -141,6 +141,19 @@ class Licences(unittest.TestCase):
                              .read_bytes())
             self.assertFalse((licences / 'vcpkg-cmake.copyright').exists())
 
+    def test_gpu_notices_ship_only_with_the_gpu_back_end(self):
+        for config, shipped in (('#define CONFIG_HAVE_SGI_GPU\n', True),
+                                ('#define CONFIG_HAVE_RUST\n', False)):
+            with tempfile.TemporaryDirectory() as tmp:
+                build, licences = Path(tmp) / 'build', Path(tmp) / 'licences'
+                build.mkdir()
+                licences.mkdir()
+                (build / 'config-host.h').write_text(config)
+                pkg.copy_gpu_notices(build, licences)
+                self.assertEqual(
+                    (licences / 'sgi-gpu.THIRD-PARTY-NOTICES.txt').exists(),
+                    shipped)
+
     def test_override_needs_its_library(self):
         with tempfile.TemporaryDirectory() as tmp:
             licences = Path(tmp) / 'licences'

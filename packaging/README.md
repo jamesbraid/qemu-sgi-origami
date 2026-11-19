@@ -53,6 +53,14 @@ in `licenses/`:
   and `licenses/winpthreads.COPYING`. A runtime DLL the programs import is
   also copied into `bin/`.
 
+When the build links the GPU back end (`rust/sgi-gpu`), the licence texts of
+its Rust crates are in `licenses/sgi-gpu.THIRD-PARTY-NOTICES.txt`, copied from
+`rust/sgi-gpu/THIRD-PARTY-NOTICES.txt`. `scripts/ci/sgi-rust-licences.py`
+generates that file with cargo-about, and CI fails on a crate whose licence
+`rust/about.toml` does not accept or on a stale file. The crates of QEMU's own
+Rust devices come from the meson wraps instead, which the subproject licence
+step covers.
+
 Sources for each are the upstream tarballs the vcpkg ports download, with
 URLs and SHA-512 checksums in each port's `portfile.cmake` (see
 `https://github.com/microsoft/vcpkg/tree/<vcpkg-commit>/ports/<port>`). GCC's

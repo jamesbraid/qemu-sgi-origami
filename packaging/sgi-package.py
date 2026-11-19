@@ -87,6 +87,9 @@ LICENSE_FILES = [
     ('hw/mips/sgi/models/LICENSE', 'qemu.sgi-models.LICENSE'),
 ]
 LICENSE_NAME = re.compile(r'^(LICEN[CS]E|COPYING|COPYRIGHT)', re.I)
+# The licence texts of the Rust crates the GPU back end links, kept current by
+# scripts/ci/sgi-rust-licences.py.
+GPU_NOTICES = 'rust/sgi-gpu/THIRD-PARTY-NOTICES.txt'
 
 
 class PackageError(Exception):
@@ -348,6 +351,7 @@ def stage(name, build, prefix, stage_dir, strip):
     for source, target in used_subproject_licences(build):
         shutil.copy2(source, licences / target)
     copy_library_licences(prefix, licences)
+    copy_gpu_notices(build, licences)
 
     if name == 'linux':
         for source, target in LINUX_RUNTIME_LICENCES:
@@ -355,6 +359,14 @@ def stage(name, build, prefix, stage_dir, strip):
     if name == 'windows':
         origins = copy_windows_dlls(bin_dir, [prefix / 'bin'])
         copy_runtime_licences(toolchain_prefix(), origins, licences)
+
+
+def copy_gpu_notices(build, licences):
+    """Copy the GPU back end's crate notices, if this build linked it."""
+    config = (build / 'config-host.h').read_text(encoding='utf-8')
+    if re.search(r'^#define CONFIG_HAVE_SGI_GPU\b', config, re.M):
+        shutil.copy2(SOURCE / GPU_NOTICES,
+                     licences / 'sgi-gpu.THIRD-PARTY-NOTICES.txt')
 
 
 def copy_library_licences(prefix, licences):
