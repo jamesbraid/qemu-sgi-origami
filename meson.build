@@ -147,11 +147,11 @@ endif
 have_sgi_gpu = false
 if have_rust and not get_option('sgi_gpu').disabled()
   sgi_gpu_cargo = find_program('cargo', required: get_option('sgi_gpu'))
-  if sgi_gpu_cargo.found() and rustc.version().version_compare('<1.90.0')
+  if sgi_gpu_cargo.found() and rustc.version().version_compare('<1.94.0')
     if get_option('sgi_gpu').enabled()
-      error('sgi_gpu needs rustc 1.90 or newer, found ' + rustc.version())
+      error('sgi_gpu needs rustc 1.94 or newer, found ' + rustc.version())
     endif
-    message('rustc ' + rustc.version() + ' is older than 1.90, not building the SGI GPU back end')
+    message('rustc ' + rustc.version() + ' is older than 1.94, not building the SGI GPU back end')
   else
     have_sgi_gpu = sgi_gpu_cargo.found()
   endif

@@ -855,7 +855,7 @@ Host GPU drawing and scan-out
 ``x-gpu=on`` lets the model draw the filled triangles and colour clears it
 can on the host GPU, and compose the scan-out there, when the host has a
 Vulkan, D3D12 or Metal adapter and QEMU was built with the GPU back end
-(``rust/sgi-gpu``, which needs rustc 1.90 or newer). The option changes host
+(``rust/sgi-gpu``, which needs rustc 1.94 or newer). The option changes host
 drawing only: every stored word equals what the model's own rasterizer
 would store, which the ``command-fifo-gl-gpu-parity`` qtest checks on
 random scenes, and the migration stream is the same either way. It is off

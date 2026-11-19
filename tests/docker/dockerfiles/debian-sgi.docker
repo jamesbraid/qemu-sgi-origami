@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: BSD-3-Clause
 # Minimal public build environment for the maintained SGI machine tests.
-# rust/sgi-gpu needs rustc 1.90 and trixie ships 1.85, so the toolchain comes
+# rust/sgi-gpu needs rustc 1.94 and trixie ships 1.85, so the toolchain comes
 # from rustup, checked against the SHA-256 of the rustup-init 1.29.2 release
 # (x86-64 only). The version is the one the Origami build image carries.
 FROM docker.io/library/debian:trixie-slim AS rust-toolchain
