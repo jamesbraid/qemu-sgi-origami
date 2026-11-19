@@ -1,0 +1,33 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of origin3400-two-partitions.yaml and its layer.
+routers:
+  - {id: rbrick, label: R-brick}
+cbricks:
+  - {id: c0, label: C-brick 0, router: rbrick, port: 2}
+  - {id: c1, label: C-brick 1, router: rbrick, port: 3}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}, one of the four ports a C-brick may use."
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  model-empty-ports:
+    kind: empty-ports
+    routers: [rbrick]
+    groups:
+      - ports: [4, 5]
+        reason: Port {port} carries no cable in this two-C-brick composition.
+        sources: ["007-4311-002 printed pages 36 and 55: a C-brick uses router port 2, 3, 4 or 5"]
+      - ports: [1, 6, 7, 8]
+        reason: Port {port} carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+        sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock

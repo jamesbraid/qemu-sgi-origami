@@ -122,9 +122,11 @@ layer:
               2, the configuration row of the selected fit; which nibble a
               physical C-brick presents is unknown, and a register read on a
               matching board would settle it.
+          # @generated layer-bedrock-aliases
           c1-bedrock: *cbrick-bedrock
           c2-bedrock: *cbrick-bedrock
           c3-bedrock: *cbrick-bedrock
+          # @end
         l1_controllers:
           c0-l1: &cbrick-l1
             profile: cbrick
@@ -137,9 +139,11 @@ layer:
               6.5.30 L1 firmware composite carries that version and answers
               1, 44, 0. Which image a fitted C-brick runs is inferred, and no
               capture gives its revision.
+          # @generated layer-l1-aliases
           c1-l1: *cbrick-l1
           c2-l1: *cbrick-l1
           c3-l1: *cbrick-l1
+          # @end
           ibrick-l1:
             profile: ibrick
             revision: {major: 1, minor: 44, patch: 0}
@@ -230,6 +234,7 @@ layer:
           - {component: ibrick-brick, number: 16, reason: "Model choice: a distinct slot for the I-brick."}
           - {component: rbrick-brick, number: 20, reason: "Model choice: a distinct slot for the R-brick."}
         synthetic_identities:
+          # @generated layer-node-identities
           - component: c0-bedrock
             serial: "0x51454d554e00"
             reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
@@ -242,15 +247,18 @@ layer:
           - component: c3-bedrock
             serial: "0x51454d554e03"
             reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
+          # @end
           - component: ibrick-xbridge
             serial: "0x51454d555800"
             reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
           - component: ibrick-ioc3
             serial: "0x5e7454d55000"
             reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          # @generated layer-router-identities
           - component: rbrick-router
             serial: "0x51454d555200"
             reason: Synthetic router descriptor identity; no physical barcode is claimed.
+          # @end
     evidence_policy: strict
     components:
       - id: rack
@@ -261,6 +269,7 @@ layer:
         sources: [007-4311-002-3400]
     # Each C-brick cable is the R-brick port bus it is fitted to.
     connections:
+      # @generated layer-cbrick-cables
       - {component: c0-bedrock, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
       - {component: c0-link-connector, bus: rbrick-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
       - {component: c1-bedrock, bus: rbrick-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
@@ -269,6 +278,7 @@ layer:
       - {component: c2-link-connector, bus: rbrick-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
       - {component: c3-bedrock, bus: rbrick-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
       - {component: c3-link-connector, bus: rbrick-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]}
+      # @end
     xio_cables:
       - id: c0-to-ibrick
         ends: [c0-xio-ii-connector, ibrick-port-a]

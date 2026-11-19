@@ -1,0 +1,58 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of origin3400.yaml and its layer.
+routers:
+  - {id: rbrick, label: R-brick}
+cbricks:
+  - {id: c0, label: C-brick 0, router: rbrick, port: 2}
+  - {id: c1, label: C-brick 1, router: rbrick, port: 3}
+  - {id: c2, label: C-brick 2, router: rbrick, port: 4}
+  - {id: c3, label: C-brick 3, router: rbrick, port: 5}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}, one of the four ports a C-brick may use."
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  model-empty-ports:
+    kind: empty-ports
+    routers: [rbrick]
+    groups:
+      - ports: [1, 6, 7, 8]
+        reason: Port {port} carries no cable in a single-router system; it joins another R-brick, and this composition has one.
+        sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  model-xio-empty:
+    kind: empty-components
+    cbricks_from: 1
+    suffix: -xio-ii-connector
+    reason: This composition fits one I/O brick, on C-brick 0.
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock
+  layer-l1-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -l1
+    anchor: cbrick-l1
+  layer-node-identities:
+    kind: identities
+    of: cbricks
+    suffix: -bedrock
+    serial_base: 0x51454d554e00
+    reason: Synthetic node identity N{i}, carrying the "QEMU" marker; not hardware evidence.
+  layer-router-identities:
+    kind: identities
+    of: routers
+    suffix: -router
+    serial_base: 0x51454d555200
+    reason: Synthetic router descriptor identity; no physical barcode is claimed.
+  layer-cbrick-cables:
+    kind: cbrick-cables
+    sources: [007-4311-002-one-router, 007-4240-002-cbrick-ports]

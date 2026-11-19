@@ -342,8 +342,11 @@ def check(models: pathlib.Path = MODELS, tree: pathlib.Path = ROOT) -> Report:
     registry = load_registry(models)
     report = Report()
     for path in sorted(models.rglob("*.yaml")):
-        if path.name != REGISTRY:
-            check_file(path, models, registry, tree, report)
+        # Plan blocks name layer-local sources; the generated files carry
+        # the citations.
+        if path.name == REGISTRY or "plans" in path.relative_to(models).parts:
+            continue
+        check_file(path, models, registry, tree, report)
     return report
 
 

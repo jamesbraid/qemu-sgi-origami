@@ -1,0 +1,83 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of origin3400-two-routers.yaml and its layer.
+routers:
+  - {id: rbrick0, label: R-brick 0}
+  - {id: rbrick1, label: R-brick 1}
+cbricks:
+  - {id: c0, label: C-brick 0, router: rbrick0, port: 2}
+  - {id: c1, label: C-brick 1, router: rbrick0, port: 3}
+  - {id: c2, label: C-brick 2, router: rbrick1, port: 2}
+  - {id: c3, label: C-brick 3, router: rbrick1, port: 3}
+links:
+  - {id: router-link-1, a: rbrick0, b: rbrick1, port: 1}
+  - {id: router-link-6, a: rbrick0, b: rbrick1, port: 6}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}."
+    sources: ["007-4311-002 printed pages 36 and 37: a C-brick is cabled only to router port 2, 3, 4 or 5"]
+  model-link-ports:
+    kind: link-ports
+    reason: "{a} port {port} cabled to {b} port {port}; same port to same port is a model choice."
+    sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "007-4311-002 printed page 56: the 32-processor interconnect draws two cables between its two R-bricks"]
+  model-empty-ports:
+    kind: empty-ports
+    routers: [rbrick0, rbrick1]
+    groups:
+      - ports: [4, 5]
+        reason: This composition puts two C-bricks on each R-brick, on ports 2 and 3.
+        sources: ["007-4311-002 printed pages 36 and 37: a C-brick is cabled only to router port 2, 3, 4 or 5"]
+      - ports: [7, 8]
+        reason: Two R-bricks are joined on ports 1 and 6 only.
+        sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "007-4311-002 printed page 56: the 32-processor interconnect draws two cables between its two R-bricks"]
+  model-xio-empty:
+    kind: empty-components
+    cbricks_from: 1
+    suffix: -xio-ii-connector
+    reason: This composition fits one I/O brick, on C-brick 0.
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  model-router-instances:
+    kind: instances
+    model: layers/modules/r-brick.yaml
+    prefixes: [rbrick0, rbrick1]
+    parent: rack
+    comment: The two router-to-router cables are product buses.
+    omit_buses: [port-1-cable, port-6-cable]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock
+  layer-l1-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -l1
+    anchor: cbrick-l1
+  layer-node-identities:
+    kind: identities
+    of: cbricks
+    suffix: -bedrock
+    serial_base: 0x51454d554e00
+    reason: Synthetic node identity N{i}, carrying the "QEMU" marker; not hardware evidence.
+  layer-router-identities:
+    kind: identities
+    of: routers
+    suffix: -router
+    serial_base: 0x51454d555200
+    reason: Synthetic router descriptor identity; no physical barcode is claimed.
+  layer-link-buses:
+    kind: link-buses
+    sources: [007-4311-002-two-routers, 007-4311-002-router-ports]
+    notes: Equal port numbers at both ends are a model choice.
+  layer-cbrick-cables:
+    kind: cbrick-cables
+    sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]
+  layer-link-connections:
+    kind: link-connections
+    sources: [007-4311-002-two-routers, 007-4311-002-router-ports]

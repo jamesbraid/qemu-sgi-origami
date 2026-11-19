@@ -119,6 +119,7 @@ layer:
               2, the configuration row of the selected fit; which nibble a
               physical C-brick presents is unknown, and a register read on a
               matching board would settle it.
+          # @generated layer-bedrock-aliases
           c01-bedrock: *cbrick-bedrock
           c02-bedrock: *cbrick-bedrock
           c03-bedrock: *cbrick-bedrock
@@ -134,6 +135,7 @@ layer:
           c13-bedrock: *cbrick-bedrock
           c14-bedrock: *cbrick-bedrock
           c15-bedrock: *cbrick-bedrock
+          # @end
         l1_controllers:
           c00-l1: &cbrick-l1
             profile: cbrick
@@ -146,6 +148,7 @@ layer:
               6.5.30 L1 firmware composite carries that version and answers
               1, 44, 0. Which image a fitted C-brick runs is inferred, and no
               capture gives its revision.
+          # @generated layer-l1-aliases
           c01-l1: *cbrick-l1
           c02-l1: *cbrick-l1
           c03-l1: *cbrick-l1
@@ -161,6 +164,7 @@ layer:
           c13-l1: *cbrick-l1
           c14-l1: *cbrick-l1
           c15-l1: *cbrick-l1
+          # @end
           ibrick-l1:
             profile: ibrick
             revision: {major: 1, minor: 44, patch: 0}
@@ -251,6 +255,7 @@ layer:
           - {component: rack-002, number: 2, reason: "The cabling draft's 64-processor table, Table 2-14: the second compute rack is 002."}
           - {component: rack-101, number: 101, reason: "Inferred: the base I/O rack of a system with two compute racks takes the first I/O rack number, 101; no source prints it."}
         initial_module_numbers:
+          # @generated layer-chassis-numbers
           - {component: c00-chassis, number: 10, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 10 of rack 001."}
           - {component: c01-chassis, number: 13, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 13 of rack 001."}
           - {component: c02-chassis, number: 16, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 16 of rack 001."}
@@ -267,12 +272,14 @@ layer:
           - {component: c13-chassis, number: 29, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 29 of rack 002."}
           - {component: c14-chassis, number: 32, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 32 of rack 002."}
           - {component: c15-chassis, number: 35, reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit 35 of rack 002."}
+          # @end
           - {component: ibrick-brick, number: 20, reason: "The I-brick position of the shipped I/O rack layouts, units 20 to 23, in rack 101 (rack name inferred). Which C-brick it cables to is a model choice."}
           - {component: rbrick0-brick, number: 19, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 19 of rack 001."}
           - {component: rbrick1-brick, number: 27, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 27 of rack 001."}
           - {component: rbrick2-brick, number: 19, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 19 of rack 002."}
           - {component: rbrick3-brick, number: 27, reason: "The cabling draft's 64-processor table, Table 2-14: this R-brick at unit 27 of rack 002."}
         synthetic_identities:
+          # @generated layer-node-identities
           - component: c00-bedrock
             serial: "0x51454d554e00"
             reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
@@ -321,12 +328,14 @@ layer:
           - component: c15-bedrock
             serial: "0x51454d554e0f"
             reason: Synthetic node identity N15, carrying the "QEMU" marker; not hardware evidence.
+          # @end
           - component: ibrick-xbridge
             serial: "0x51454d555800"
             reason: Synthetic I-brick XBridge identity; no physical barcode is claimed.
           - component: ibrick-ioc3
             serial: "0x5e7454d55000"
             reason: Synthetic I-brick IOC3 identity; no physical barcode is claimed.
+          # @generated layer-router-identities
           - component: rbrick0-router
             serial: "0x51454d555200"
             reason: Synthetic router descriptor identity; no physical barcode is claimed.
@@ -339,6 +348,7 @@ layer:
           - component: rbrick3-router
             serial: "0x51454d555203"
             reason: Synthetic router descriptor identity; no physical barcode is claimed.
+          # @end
     evidence_policy: strict
     components:
       - id: rack-001
@@ -362,6 +372,7 @@ layer:
     # The two router-to-router cables replace each R-brick's own port 1 and
     # port 6 buses, which the composition omits.
     buses:
+      # @generated layer-link-buses
       - id: router-link-0-1-1
         name: NUMAlink 3 cable, R-brick 0 port 1 to R-brick 1 port 1
         kind: fabric
@@ -426,8 +437,10 @@ layer:
         provenance: vendor-document
         sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
         notes: The port numbers are the cabling draft's table (inferred, not established).
+      # @end
     # Each C-brick cable is the R-brick port bus it is fitted to.
     connections:
+      # @generated layer-cbrick-cables
       - {component: c00-bedrock, bus: rbrick0-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
       - {component: c00-link-connector, bus: rbrick0-port-2-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
       - {component: c01-bedrock, bus: rbrick0-port-3-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
@@ -460,6 +473,8 @@ layer:
       - {component: c14-link-connector, bus: rbrick3-port-4-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
       - {component: c15-bedrock, bus: rbrick3-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
       - {component: c15-link-connector, bus: rbrick3-port-5-cable, role: endpoint, provenance: vendor-document, sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]}
+      # @end
+      # @generated layer-link-connections
       - {component: rbrick0-router, bus: router-link-0-1-1, role: master, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
       - {component: rbrick1-router, bus: router-link-0-1-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
       - {component: rbrick0-port-1, bus: router-link-0-1-1, role: endpoint, fabric_port: 1, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
@@ -492,6 +507,7 @@ layer:
       - {component: rbrick2-router, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
       - {component: rbrick1-port-8, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
       - {component: rbrick2-port-8, bus: router-link-1-2-8, role: endpoint, fabric_port: 8, provenance: vendor-document, sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]}
+      # @end
     xio_cables:
       - id: c00-to-ibrick
         ends: [c00-xio-ii-connector, ibrick-port-a]

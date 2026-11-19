@@ -1,0 +1,96 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of origin3800-64p.yaml and its layer.
+routers:
+  - {id: rbrick0, label: R-brick 0, parent: rack-001}
+  - {id: rbrick1, label: R-brick 1, parent: rack-001}
+  - {id: rbrick2, label: R-brick 2, parent: rack-002}
+  - {id: rbrick3, label: R-brick 3, parent: rack-002}
+cbricks:
+  - {id: c00, label: C-brick 0, router: rbrick0, port: 2, unit: 10, rack: "001", parent: rack-001}
+  - {id: c01, label: C-brick 1, router: rbrick0, port: 3, unit: 13, rack: "001", parent: rack-001}
+  - {id: c02, label: C-brick 2, router: rbrick0, port: 4, unit: 16, rack: "001", parent: rack-001}
+  - {id: c03, label: C-brick 3, router: rbrick0, port: 5, unit: 21, rack: "001", parent: rack-001}
+  - {id: c04, label: C-brick 4, router: rbrick1, port: 2, unit: 24, rack: "001", parent: rack-001}
+  - {id: c05, label: C-brick 5, router: rbrick1, port: 3, unit: 29, rack: "001", parent: rack-001}
+  - {id: c06, label: C-brick 6, router: rbrick1, port: 4, unit: 32, rack: "001", parent: rack-001}
+  - {id: c07, label: C-brick 7, router: rbrick1, port: 5, unit: 35, rack: "001", parent: rack-001}
+  - {id: c08, label: C-brick 8, router: rbrick2, port: 2, unit: 10, rack: "002", parent: rack-002}
+  - {id: c09, label: C-brick 9, router: rbrick2, port: 3, unit: 13, rack: "002", parent: rack-002}
+  - {id: c10, label: C-brick 10, router: rbrick2, port: 4, unit: 16, rack: "002", parent: rack-002}
+  - {id: c11, label: C-brick 11, router: rbrick2, port: 5, unit: 21, rack: "002", parent: rack-002}
+  - {id: c12, label: C-brick 12, router: rbrick3, port: 2, unit: 24, rack: "002", parent: rack-002}
+  - {id: c13, label: C-brick 13, router: rbrick3, port: 3, unit: 29, rack: "002", parent: rack-002}
+  - {id: c14, label: C-brick 14, router: rbrick3, port: 4, unit: 32, rack: "002", parent: rack-002}
+  - {id: c15, label: C-brick 15, router: rbrick3, port: 5, unit: 35, rack: "002", parent: rack-002}
+links:
+  - {id: router-link-0-1-1, a: rbrick0, b: rbrick1, port: 1}
+  - {id: router-link-0-1-6, a: rbrick0, b: rbrick1, port: 6}
+  - {id: router-link-2-3-1, a: rbrick2, b: rbrick3, port: 1}
+  - {id: router-link-2-3-6, a: rbrick2, b: rbrick3, port: 6}
+  - {id: router-link-0-2-7, a: rbrick0, b: rbrick2, port: 7}
+  - {id: router-link-0-3-8, a: rbrick0, b: rbrick3, port: 8}
+  - {id: router-link-1-3-7, a: rbrick1, b: rbrick3, port: 7}
+  - {id: router-link-1-2-8, a: rbrick1, b: rbrick2, port: 8}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}."
+    sources: ["007-4311-002 printed pages 36 and 37: a C-brick is cabled only to router port 2, 3, 4 or 5"]
+  model-link-ports:
+    kind: link-ports
+    reason: "{own} port {port} cabled to {other} port {port}, as the cabling draft's table has it (inferred)."
+    sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "108-xxxx-PR2 printed page 2-39, Table 2-14: the R-brick cables (a preliminary draft, inferred)"]
+  model-xio-empty:
+    kind: empty-components
+    cbricks_from: 1
+    suffix: -xio-ii-connector
+    reason: This composition fits one I/O brick, on C-brick 0.
+    sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  model-router-instances:
+    kind: instances
+    model: layers/modules/r-brick.yaml
+    prefixes: [rbrick0, rbrick1, rbrick2, rbrick3]
+    parent: rack
+    comment: The router-to-router cables are product buses.
+    omit_buses: [port-1-cable, port-6-cable, port-7-cable, port-8-cable]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock
+  layer-l1-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -l1
+    anchor: cbrick-l1
+  layer-chassis-numbers:
+    kind: chassis-numbers
+    reason: "The cabling draft's 64-processor table, Table 2-14: this C-brick at unit {unit} of rack {rack}."
+  layer-node-identities:
+    kind: identities
+    of: cbricks
+    suffix: -bedrock
+    serial_base: 0x51454d554e00
+    reason: Synthetic node identity N{i}, carrying the "QEMU" marker; not hardware evidence.
+  layer-router-identities:
+    kind: identities
+    of: routers
+    suffix: -router
+    serial_base: 0x51454d555200
+    reason: Synthetic router descriptor identity; no physical barcode is claimed.
+  layer-link-buses:
+    kind: link-buses
+    sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]
+    notes: The port numbers are the cabling draft's table (inferred, not established).
+  layer-cbrick-cables:
+    kind: cbrick-cables
+    sources: [007-4311-002-router-ports, 007-4240-002-cbrick-ports]
+  layer-link-connections:
+    kind: link-connections
+    sources: [007-4311-002-64p, 007-4311-002-router-ports, 108-xxxx-PR2-64p]

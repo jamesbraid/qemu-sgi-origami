@@ -7,6 +7,7 @@ layers:
   - layers/assemblies/ip35.yaml
   - layers/products/origin3400-two-partitions.yaml
 connector_population:
+  # @generated model-cbrick-links
   - component: c0-link-connector
     occupancy: cabled
     peer: rbrick-port-2
@@ -31,6 +32,8 @@ connector_population:
     reason: C-brick 1 on R-brick port 3, one of the four ports a C-brick may use.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  # @end
+  # @generated model-empty-ports
   - component: rbrick-port-4
     occupancy: empty
     reason: Port 4 carries no cable in this two-C-brick composition.
@@ -61,6 +64,7 @@ connector_population:
     reason: Port 8 carries no cable in a single-router system; it joins another R-brick, and this composition has one.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 55: the 8- to 16-processor interconnect uses router ports 2 to 5 only"]
+  # @end
   - component: ibrick0-port-b
     occupancy: empty
     reason: The I-brick's port B is left uncabled; one cable to C-brick 0 is fitted.
@@ -85,10 +89,12 @@ module_instances:
         The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
         every published Origin 3000 inventory reports; it is not a capture of
         this C-brick.
+  # @generated model-cbrick-instances
   - model: layers/modules/c-brick.yaml
     prefix: c1-
     parent: rack
     observed_hardware: *cbrick-basis
+  # @end
   - model: layers/modules/i-brick.yaml
     prefix: ibrick0-
     parent: rack

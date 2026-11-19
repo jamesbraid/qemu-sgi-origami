@@ -18,6 +18,7 @@ module_instances:
         The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
         every published Origin 3000 inventory reports; it is not a capture of
         this C-brick.
+  # @generated model-cbrick-instances
   - model: layers/modules/c-brick.yaml
     prefix: c1-
     parent: rack
@@ -30,6 +31,7 @@ module_instances:
     prefix: c3-
     parent: rack
     observed_hardware: *cbrick-basis
+  # @end
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
     parent: rack

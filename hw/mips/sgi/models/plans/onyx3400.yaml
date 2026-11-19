@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of onyx3400.yaml and its layer.
+routers: []
+cbricks:
+  - {id: c0}
+  - {id: c1}
+  - {id: c2}
+  - {id: c3}
+blocks:
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis

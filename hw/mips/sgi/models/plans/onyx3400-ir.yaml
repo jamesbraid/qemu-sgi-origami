@@ -1,0 +1,36 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Plan for the repeated per-brick text of onyx3400-ir.yaml and its layer.
+routers:
+  - {id: rbrick, label: R-brick}
+cbricks:
+  - {id: c0, label: C-brick 0, router: rbrick, port: 2}
+  - {id: c1, label: C-brick 1, router: rbrick, port: 3}
+  - {id: c2, label: C-brick 2, router: rbrick, port: 4}
+  - {id: c3, label: C-brick 3, router: rbrick, port: 5}
+blocks:
+  model-cbrick-links:
+    kind: cbrick-links
+    reason: "{c} on {r} port {port}, one of the four ports a C-brick may use."
+    sources: ["007-4311-002 printed pages 36 and 55: four C-bricks on one R-brick, each on port 2, 3, 4 or 5"]
+  model-cbrick-instances:
+    kind: instances
+    model: layers/modules/c-brick.yaml
+    cbricks_from: 1
+    parent: rack
+    alias: cbrick-basis
+  layer-bedrock-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -bedrock
+    anchor: cbrick-bedrock
+  layer-l1-aliases:
+    kind: aliases
+    cbricks_from: 1
+    suffix: -l1
+    anchor: cbrick-l1
+  layer-node-identities:
+    kind: identities
+    of: cbricks
+    suffix: -bedrock
+    serial_base: 0x51454d554e00
+    reason: Synthetic node identity N{i}, carrying the "QEMU" marker; not hardware evidence.

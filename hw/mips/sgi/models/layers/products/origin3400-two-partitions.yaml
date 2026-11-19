@@ -104,7 +104,9 @@ layer:
               2, the configuration row of the selected fit; which nibble a
               physical C-brick presents is unknown, and a register read on a
               matching board would settle it.
+          # @generated layer-bedrock-aliases
           c1-bedrock: *cbrick-bedrock
+          # @end
         l1_controllers:
           c0-l1:
             profile: cbrick

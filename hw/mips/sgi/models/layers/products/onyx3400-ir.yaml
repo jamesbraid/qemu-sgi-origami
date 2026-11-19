@@ -249,9 +249,11 @@ layer:
               2, the configuration row of the selected fit; which nibble a
               physical C-brick presents is unknown, and a register read on a
               matching board would settle it.
+          # @generated layer-bedrock-aliases
           c1-bedrock: *cbrick-bedrock
           c2-bedrock: *cbrick-bedrock
           c3-bedrock: *cbrick-bedrock
+          # @end
         l1_controllers:
           c0-l1: &cbrick-l1
             profile: cbrick
@@ -264,9 +266,11 @@ layer:
               6.5.30 L1 firmware composite carries that version and answers
               1, 44, 0. Which image a fitted C-brick runs is inferred, and no
               capture gives its revision.
+          # @generated layer-l1-aliases
           c1-l1: *cbrick-l1
           c2-l1: *cbrick-l1
           c3-l1: *cbrick-l1
+          # @end
           nbrick-l1:
             profile: nbrick
             revision: {major: 1, minor: 44, patch: 0}
@@ -392,6 +396,7 @@ layer:
             number: 28
             reason: "A model choice, because no source places this brick of the Onyx 3400 in the rack."
         synthetic_identities:
+          # @generated layer-node-identities
           - component: c0-bedrock
             serial: "0x51454d554e00"
             reason: Synthetic node identity N0, carrying the "QEMU" marker; not hardware evidence.
@@ -404,6 +409,7 @@ layer:
           - component: c3-bedrock
             serial: "0x51454d554e03"
             reason: Synthetic node identity N3, carrying the "QEMU" marker; not hardware evidence.
+          # @end
           - component: gbrick0-pipe0-xg
             serial: "0x51454d554700"
             reason: Synthetic geometry board identity G0, pipe slot 0's first graphics instance (sixteen per slot), carrying the "QEMU" marker; not hardware evidence.

@@ -8,6 +8,7 @@ layers:
   - layers/assemblies/ip35.yaml
   - layers/products/origin3400-two-routers.yaml
 connector_population:
+  # @generated model-cbrick-links
   - component: c0-link-connector
     occupancy: cabled
     peer: rbrick0-port-2
@@ -56,6 +57,8 @@ connector_population:
     reason: C-brick 3 on R-brick 1 port 3.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 37: a C-brick is cabled only to router port 2, 3, 4 or 5"]
+  # @end
+  # @generated model-link-ports
   - component: rbrick0-port-1
     occupancy: cabled
     peer: rbrick1-port-1
@@ -80,6 +83,8 @@ connector_population:
     reason: R-brick 0 port 6 cabled to R-brick 1 port 6; same port to same port is a model choice.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "007-4311-002 printed page 56: the 32-processor interconnect draws two cables between its two R-bricks"]
+  # @end
+  # @generated model-empty-ports
   - component: rbrick0-port-4
     occupancy: empty
     reason: This composition puts two C-bricks on each R-brick, on ports 2 and 3.
@@ -120,6 +125,8 @@ connector_population:
     reason: Two R-bricks are joined on ports 1 and 6 only.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 36 and 37: ports 1, 6, 7 and 8 join R-bricks", "007-4311-002 printed page 56: the 32-processor interconnect draws two cables between its two R-bricks"]
+  # @end
+  # @generated model-xio-empty
   - component: c1-xio-ii-connector
     occupancy: empty
     reason: This composition fits one I/O brick, on C-brick 0.
@@ -135,12 +142,14 @@ connector_population:
     reason: This composition fits one I/O brick, on C-brick 0.
     provenance: vendor-document
     sources: ["007-4311-002 printed pages 55 and 89: one I-brick on the first C-brick's XIO (II) connector"]
+  # @end
   - component: ibrick-port-b
     occupancy: empty
     reason: The I-brick's port B is left uncabled; one cable to C-brick 0 is fitted.
     provenance: vendor-document
     sources: ["108-0240-002 printed pages 2-28 and 2-29: I-brick ports A and B go to compute nodes"]
 module_instances:
+  # @generated model-router-instances
   - model: layers/modules/r-brick.yaml
     prefix: rbrick0-
     parent: rack
@@ -151,6 +160,7 @@ module_instances:
     parent: rack
     # The two router-to-router cables are product buses.
     omit_buses: [port-1-cable, port-6-cable]
+  # @end
   - model: layers/modules/c-brick.yaml
     prefix: c0-
     parent: rack
@@ -161,6 +171,7 @@ module_instances:
         The C-brick layer's Bedrock identity, revision 2 at 200 MHz, is what
         every published Origin 3000 inventory reports; it is not a capture of
         this C-brick.
+  # @generated model-cbrick-instances
   - model: layers/modules/c-brick.yaml
     prefix: c1-
     parent: rack
@@ -173,6 +184,7 @@ module_instances:
     prefix: c3-
     parent: rack
     observed_hardware: *cbrick-basis
+  # @end
   - model: layers/modules/i-brick.yaml
     prefix: ibrick-
     parent: rack
