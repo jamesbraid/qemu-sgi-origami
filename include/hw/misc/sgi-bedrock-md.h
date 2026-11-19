@@ -37,6 +37,7 @@ typedef struct SGIBedrockMDTable SGIBedrockMDTable;
 
 typedef struct SGIBedrockMDECCInjection {
     MemoryRegion mr;
+    bool mr_ready;
     SGIBedrockMDState *md;
     uint64_t address;
     uint64_t raw;
@@ -57,6 +58,7 @@ typedef struct SGIBedrockMDECCInjection {
 
 typedef struct SGIBedrockMDDirectoryInjection {
     MemoryRegion mr;
+    bool mr_ready;
     SGIBedrockMDState *md;
     uint64_t address;
     uint64_t offset;

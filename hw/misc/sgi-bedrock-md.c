@@ -1003,9 +1003,22 @@ static void md_directory_injection_retire(
     }
 }
 
+static const MemoryRegionOps md_directory_overlay_ops;
+
 static void md_directory_injection_place(
     SGIBedrockMDState *s, SGIBedrockMDDirectoryInjection *injection)
 {
+    /* The region is made on first use: a node has 1024 slots, few ever used. */
+    if (!injection->mr_ready) {
+        g_autofree char *name = g_strdup_printf(
+            TYPE_SGI_BEDROCK_MD "-directory-injection%u",
+            (unsigned)(injection - s->directory_injection));
+
+        memory_region_init_io(&injection->mr, OBJECT(s),
+                              &md_directory_overlay_ops, injection, name,
+                              MD_DIRECTORY_LINE);
+        injection->mr_ready = true;
+    }
     md_overlay_place(s, &injection->mr,
                      (uint64_t)injection->index * MD_DIRECTORY_LINE,
                      &injection->address, &injection->placed, 0);
@@ -1444,6 +1457,8 @@ static void md_ecc_injection_retire(SGIBedrockMDState *s,
     }
 }
 
+static const MemoryRegionOps md_ecc_overlay_ops;
+
 /*
  * A raw doubleword shows through whichever software bank's alias covers it;
  * the overlay goes at that software-bank
@@ -1453,6 +1468,16 @@ static void md_ecc_injection_retire(SGIBedrockMDState *s,
 static void md_ecc_injection_place(SGIBedrockMDState *s,
                                    SGIBedrockMDECCInjection *injection)
 {
+    /* The region is made on first use: a node has 4096 slots, few ever used. */
+    if (!injection->mr_ready) {
+        g_autofree char *name = g_strdup_printf(
+            TYPE_SGI_BEDROCK_MD "-ecc-injection%u",
+            (unsigned)(injection - s->ecc_injection));
+
+        memory_region_init_io(&injection->mr, OBJECT(s),
+                              &md_ecc_overlay_ops, injection, name, 8);
+        injection->mr_ready = true;
+    }
     md_overlay_place(s, &injection->mr, injection->raw * 8,
                      &injection->address, &injection->placed, 1);
 }
@@ -4144,23 +4169,10 @@ static void md_init(Object *obj)
                        SGI_BEDROCK_MD_MEMORY_SIZE);
     memory_region_add_subregion_overlap(&s->memory_live, 0, &s->ecc_overlay, 2);
     for (unsigned i = 0; i < SGI_BEDROCK_MD_ECC_INJECTIONS; i++) {
-        g_autofree char *name =
-            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-ecc-injection%u", i);
-
         s->ecc_injection[i].md = s;
-        memory_region_init_io(&s->ecc_injection[i].mr, obj,
-                              &md_ecc_overlay_ops, &s->ecc_injection[i],
-                              name, 8);
     }
     for (unsigned i = 0; i < SGI_BEDROCK_MD_DIRECTORY_INJECTIONS; i++) {
-        g_autofree char *name =
-            g_strdup_printf(TYPE_SGI_BEDROCK_MD "-directory-injection%u", i);
-
         s->directory_injection[i].md = s;
-        memory_region_init_io(&s->directory_injection[i].mr, obj,
-                              &md_directory_overlay_ops,
-                              &s->directory_injection[i], name,
-                              MD_DIRECTORY_LINE);
     }
     for (unsigned i = 0; i < SGI_BEDROCK_MD_WATCHED_PAGES; i++) {
         g_autofree char *name =

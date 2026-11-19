@@ -1606,6 +1606,41 @@ static void test_parent_exports_directory(void)
     qtest_quit(s);
 }
 
+/* The 4096 ECC and 1024 directory slots of a node make regions on use. */
+static bool md_has_child(QTestState *s, const char *prefix)
+{
+    g_autoptr(QDict) response = qtest_qmp(s,
+        "{'execute':'qom-list','arguments':{'path':'/machine/peripheral/md'}}");
+    const QListEntry *e;
+
+    QLIST_FOREACH_ENTRY(qdict_get_qlist(response, "return"), e) {
+        QDict *item = qobject_to(QDict, qlist_entry_obj(e));
+
+        if (g_str_has_prefix(qdict_get_str(item, "name"), prefix)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+static void test_injection_regions_made_on_use(void)
+{
+    QTestState *s = start("");
+
+    g_assert_false(md_has_child(s, "sgi-bedrock-md-ecc-injection"));
+    g_assert_false(md_has_child(s, "sgi-bedrock-md-directory-injection"));
+    qtest_writeq(s, MD(0x8), memory_bank_config(0, 1));
+    qtest_writeb(s, ECC(7), 0x35);
+    g_assert_cmphex(qtest_readb(s, ECC(7)), ==, 0x35);
+    g_assert_true(md_has_child(s, "sgi-bedrock-md-ecc-injection"));
+    g_assert_false(md_has_child(s, "sgi-bedrock-md-directory-injection"));
+    /* With directory ECC ignored, a non-codeword starts checking its line. */
+    qtest_writeq(s, MD(0x40000), 2);
+    qtest_writeq(s, DIRECTORY(0), 0x13579bdf);
+    g_assert_true(md_has_child(s, "sgi-bedrock-md-directory-injection"));
+    qtest_quit(s);
+}
+
 static void test_without_node_memory(void)
 {
     QTestState *s = qtest_init("-M none -cpu R10000 "
@@ -3140,6 +3175,8 @@ int main(int argc, char **argv)
                    test_directory_compatibility_capacity);
     qtest_add_func("sn1/bedrock-md/directory-installed-absent-bank-compat",
                    test_directory_installed_absent_bank_compat);
+    qtest_add_func("sn1/bedrock-md/injection-regions-made-on-use",
+                   test_injection_regions_made_on_use);
     qtest_add_func("sn1/bedrock-md/protection-storage",
                    test_protection_storage);
     qtest_add_func("sn1/bedrock-md/protection-capacity-probe",
