@@ -173,6 +173,7 @@ Graphics
    hardware/gbe
    hardware/vice
    hardware/xt-digvid
+   hardware/galileo
    hardware/psitech-rad1
    hardware/psitech-rad4
 
