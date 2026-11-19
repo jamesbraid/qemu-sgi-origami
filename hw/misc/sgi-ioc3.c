@@ -262,21 +262,17 @@ static void sgi_ioc3_eth_irq(void *opaque, int n, int level)
 }
 
 /*
- * The PS/2 controller's data-available line latches interrupt-status bit 22.
- * The controller asserts it for every character it takes off a port, and
- * drops it once a guest read leaves both its receive holdings empty; the
- * latch holds across that drain, and only a write-one-to-clear of the status
- * register acknowledges it, which is what both Linux's edge handler and
- * IRIX's acknowledge writes expect. Nothing here remembers the line: a byte
- * the controller is still holding when the guest acknowledges is signalled
- * again by the controller, not re-latched here. It paces its characters one
- * character time apart (see hw/input/sgi-ioc3-kbc.c), which is what keeps
- * that signal from landing before the acknowledge and being swallowed.
+ * The PS/2 line latches bit 22. A rise while the bit is set sets it again on
+ * the acknowledge if a character is still held, or that character waits.
  */
 static void sgi_ioc3_kbc_irq(void *opaque, int n, int level)
 {
     SGIIOC3State *s = opaque;
 
+    if (level && !s->kbc_line && (s->int_status & SGI_IOC3_INT_KEYBOARD)) {
+        s->kbc_rise_held = true;
+    }
+    s->kbc_line = level;
     if (level) {
         s->int_status |= SGI_IOC3_INT_KEYBOARD;
         sgi_ioc3_update_irq(s);
@@ -621,6 +617,12 @@ static void sgi_ioc3_main_write(void *opaque, hwaddr addr, uint64_t val,
                                    SGI_IOC3_INT_RX_HIGH_WATER_LEVEL |
                                    SGI_IOC3_INT_TX_EMPTY_LEVEL |
                                    SGI_IOC3_INT_RX_FULL_LEVEL));
+        if ((val & SGI_IOC3_INT_KEYBOARD) && s->kbc_rise_held) {
+            s->kbc_rise_held = false;
+            if (s->kbc_line) {
+                s->int_status |= SGI_IOC3_INT_KEYBOARD;
+            }
+        }
         sgi_ioc3_update_irq(s);
         break;
     case SGI_IOC3_INT_ENABLE_SET:
@@ -1661,6 +1663,8 @@ static void sgi_ioc3_reset_hold(Object *obj, ResetType type)
     unsigned int i;
 
     s->int_status = 0;
+    s->kbc_line = false;
+    s->kbc_rise_held = false;
     s->int_enable = 0;
     sgi_ioc3_update_irq(s);
 
@@ -1812,8 +1816,8 @@ static int sgi_ioc3_post_load(void *opaque, int version_id)
  */
 static const VMStateDescription vmstate_sgi_ioc3 = {
     .name = "sgi-ioc3",
-    .version_id = 22,
-    .minimum_version_id = 22,
+    .version_id = 23,
+    .minimum_version_id = 23,
     .post_load = sgi_ioc3_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_UINT32_EQUAL(pin_input_mask, SGIIOC3State),
@@ -1821,6 +1825,8 @@ static const VMStateDescription vmstate_sgi_ioc3 = {
         VMSTATE_PCI_DEVICE(parent_obj, SGIIOC3State),
         VMSTATE_UINT32(int_status, SGIIOC3State),
         VMSTATE_UINT32(int_enable, SGIIOC3State),
+        VMSTATE_BOOL(kbc_line, SGIIOC3State),
+        VMSTATE_BOOL(kbc_rise_held, SGIIOC3State),
         VMSTATE_STRUCT_TEST(serial[0], SGIIOC3State,
                             sgi_ioc3_serial_a_needed, 0,
                             vmstate_serial, SerialState),
