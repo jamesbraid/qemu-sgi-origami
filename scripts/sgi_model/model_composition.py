@@ -1311,15 +1311,14 @@ MAX_RACK_BAY = 39
 
 # An Origin 3800 compute rack holds only C- and R-bricks, up to eight C and
 # three R, and an I/O rack (number 100 and up) only I-, P-, X- and D-bricks,
-# eight at most. The third R-brick is the MetaRouter slot, which the model
-# leaves out, so the rule here allows two. The compute and I/O rack rows
+# eight at most. The compute and I/O rack rows
 # come from the datasheet's R-brick and I-brick pages and its "Beyond one
 # rack" section; the I-brick page's I/O-rack cabling facts and the
 # "Beyond one rack" section have not yet had an independent review.
 COMPUTE_RACK_BRICKS = frozenset("CR")
 IO_RACK_BRICKS = frozenset("IPXD")
 MAX_COMPUTE_RACK_C_BRICKS = 8
-MAX_COMPUTE_RACK_R_BRICKS = 2
+MAX_COMPUTE_RACK_R_BRICKS = 3
 MAX_IO_RACK_BRICKS = 8
 
 # A Cx-brick's router port takes the brick's bay plus this many, so the

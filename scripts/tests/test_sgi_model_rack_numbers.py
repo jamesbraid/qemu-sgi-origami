@@ -264,14 +264,14 @@ class RackNumberValidationTests(unittest.TestCase):
         # Rack 1 would hold nine, so rack 2 keeps only the R-brick.
         self.reject(model, "compute rack 1 holds 9 C-bricks")
 
-    def test_compute_rack_holds_at_most_two_r_bricks(self):
+    def test_compute_rack_holds_at_most_three_r_bricks(self):
         model = _racked_origin3800()
         _add_brick(model, "rbrick2-brick", "rbrick0-brick", "rack", 38)
-        # Rack 1 holds R-bricks 0 and 2: two is allowed.
-        _resolver._validate_resolved_system_model(copy.deepcopy(model))
         _component(model, "rbrick1-brick")["parent"] = "rack"
-        _add_brick(model, "c8-chassis", "c0-chassis", "rack-002", 39)
-        self.reject(model, "compute rack 1 holds 3 R-bricks")
+        # Rack 1 holds R-bricks 0, 1 and 2: three is allowed.
+        _resolver._validate_resolved_system_model(copy.deepcopy(model))
+        _add_brick(model, "rbrick3-brick", "rbrick0-brick", "rack", 37)
+        self.reject(model, "compute rack 1 holds 4 R-bricks")
 
     def test_cx_brick_claims_its_router_bay(self):
         # A Cx-brick at bay 10 also holds bay 14, so a module at 14 in the

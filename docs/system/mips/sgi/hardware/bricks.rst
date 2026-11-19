@@ -1297,12 +1297,10 @@ model checks these rules only when racks are numbered:
 * Every numbered rack holds a module and every module sits in a numbered
   rack. This is a rule of the model's schema (*approximation*).
 * For the Origin 3800, a compute rack (number below 100) holds only C- and
-  R-bricks, at most eight C-bricks and two R-bricks, and an I/O rack
+  R-bricks, at most eight C-bricks and three R-bricks, and an I/O rack
   (number 100 and up) holds only I-, P-, X- and D-bricks, at most eight.
-  The rack contents and the I/O-rack limit of eight are *established* by
-  the cabling guide's rack tables. A shipped compute rack takes up to three
-  R-bricks; the two-R-brick cap is a model cap, because the third is the
-  MetaRouter slot, whose wiring the PROM accepts is *unknown*.
+  These limits are *established* by the cabling guide's rack tables and
+  :src:`007-4311-002 p. 93`. The third R-brick is the MetaRouter slot.
 
 Topologies that number no rack keep the module number rules above
 unchanged: unique across the whole system, 1 to 255. Only
