@@ -1090,10 +1090,13 @@ restart of the process: an *approximation* of a part that is battery-backed.
 ``system-serial=L1234567`` starts it with the window ``sgi_l1_settings_image()``
 writes for that serial and the other fields at their defaults, and refuses a
 value the image writer refuses; it excludes ``settings``, so a host that wants
-a serial and other fields writes the serial into its own file. For a C-brick
-use a serial starting with ``L``: the format rule accepts any letter ``L`` to
-``R``, but the firmware may rewrite one that is not the family's letter
-(*unknown*).
+a serial and other fields writes the serial into its own file. The behavioural
+L1 takes the machine's system serial text, and the same text given to
+``system-serial`` is meant to give both one serial; the two were not run side
+by side. The launcher's ``--serial`` resolves that text for the machine; the
+launcher does not yet pass it to this property. For a C-brick use a
+serial starting with ``L``: the format rule accepts any letter ``L`` to ``R``,
+but the firmware may rewrite one that is not the family's letter (*unknown*).
 
 .. _sgi-l1-board-unimplemented:
 
@@ -1138,6 +1141,10 @@ Model limits
   :ref:`sgi-l1-board-mbus-peers` lists, and with ``board-peers`` the devices
   :ref:`sgi-l1-board-cbrick-peers` lists, which answer the firmware's calls but
   report nothing about a brick.
+- The I-brick's L1 is not a firmware board here: the I-brick identity parts
+  are served for the stock firmware, but no I-brick board runs it, so there is
+  no C-brick to I-brick cable line. The C-to-C pairing on channel 0 at both
+  ends is *inferred*.
 - The processor is QEMU's ``m5206`` core, with the instruction cache not
   modelled and the control-register ``MOVEC`` writes limited to the
   registers the core accepts.
