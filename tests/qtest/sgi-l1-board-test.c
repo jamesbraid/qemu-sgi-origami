@@ -1607,6 +1607,23 @@ static bool has_text_field(const uint8_t *area, size_t len, const char *text)
     return false;
 }
 
+/* The part and revision text of a board area: after SYNTHETIC, name, serial. */
+static void part_and_revision(const uint8_t *area, char *part, char *rev)
+{
+    size_t i = 6, n;
+
+    for (int k = 0; k < 3; k++) {
+        i += 1 + (area[i] & 0x3f);
+    }
+    n = area[i] & 0x3f;
+    memcpy(part, area + i + 1, n);
+    part[n] = 0;
+    i += 1 + n + 1;                      /* the part, then the FRU byte */
+    n = area[i] & 0x3f;
+    memcpy(rev, area + i + 1, n);
+    rev[n] = 0;
+}
+
 /* Check one board image and return its board area for name checks. */
 static const uint8_t *check_image(const uint8_t *img, size_t *board_len)
 {
@@ -1661,6 +1678,35 @@ static void test_identity_cbrick(void)
     /* The processor modules' records sit behind a bus segment: not fitted. */
     g_assert_false(eeprom_read(qts, 0xa8, img, 8));
     g_assert_false(eeprom_read(qts, 0xa0, img, 8));
+    quit_all(qts, &f);
+}
+
+/* A name alone gives empty part and revision; with none, the defaults. */
+static void test_identity_cbrick_name_only(void)
+{
+    char part[64], rev[64];
+    uint8_t img[EEPROM_READ_MAX];
+    const uint8_t *board;
+    size_t board_len;
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board,brick-type=cbrick,"
+                                  "node-board-name=IP35", "");
+
+    g_assert_true(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    board = check_image(img, &board_len);
+    g_assert_true(has_text_field(board, board_len, "IP35"));
+    part_and_revision(board, part, rev);
+    g_assert_cmpstr(part, ==, "");
+    g_assert_cmpstr(rev, ==, "");
+    quit_all(qts, &f);
+
+    qts = board_start(&f, "sgi-l1-board,brick-type=cbrick", "");
+    g_assert_true(eeprom_read(qts, 0xa4, img, sizeof(img)));
+    board = check_image(img, &board_len);
+    g_assert_true(has_text_field(board, board_len, "NODE"));
+    part_and_revision(board, part, rev);
+    g_assert_cmpstr(part, ==, "NOTOBSERVED0");
+    g_assert_cmpstr(rev, ==, "00");
     quit_all(qts, &f);
 }
 
@@ -1863,6 +1909,17 @@ static void expect_refused(const char *machine, const char *chardev,
     g_assert_true(WIFEXITED(status));
     g_assert_cmpint(WEXITSTATUS(status), !=, 0);
     g_assert_nonnull(strstr(err->str, message));
+}
+
+/* A part or revision without the rest of the identity is refused. */
+static void test_identity_cbrick_partial(void)
+{
+    expect_refused("sgi-l1-board,brick-type=cbrick,node-board-name=IP35,"
+                   "node-board-part=P", NULL, "needs a name, part and");
+    expect_refused("sgi-l1-board,brick-type=cbrick,node-board-revision=1",
+                   NULL, "needs a name, part and");
+    expect_refused("sgi-l1-board,brick-type=cbrick,node-board-name=IP35,"
+                   "node-board-revision=1", NULL, "needs a name, part and");
 }
 
 /* board-peers is for the C-brick: the machine refuses to start without. */
@@ -2991,6 +3048,10 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/mbus-divider", test_mbus_divider);
     qtest_add_func("sgi-l1-board/mbus-wide-access", test_mbus_wide_access);
     qtest_add_func("sgi-l1-board/identity-cbrick", test_identity_cbrick);
+    qtest_add_func("sgi-l1-board/identity-cbrick-name-only",
+                   test_identity_cbrick_name_only);
+    qtest_add_func("sgi-l1-board/identity-cbrick-partial",
+                   test_identity_cbrick_partial);
     qtest_add_func("sgi-l1-board/identity-ibrick", test_identity_ibrick);
     qtest_add_func("sgi-l1-board/identity-none", test_identity_none);
     qtest_add_func("sgi-l1-board/identity-write", test_identity_write);

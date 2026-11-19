@@ -651,10 +651,12 @@ The identity parts exist only when the machine option ``brick-type`` is
 above describe. The model builds each part's record with the behavioural L1's
 own builder (``hw/misc/sgi-l1-identity.c``), from the properties that L1
 takes: ``node-board-name``, ``node-board-part`` and ``node-board-revision``
-for a C-brick, and ``mac`` for an I-brick's logic board. The behavioural
-defaults apply (name ``NODE``, part ``NOTOBSERVED0``, revision ``00``; an
-I-brick's boards ``POWER`` and ``LOGIC``), so both models serve the same
-record for the same inputs. The record is an eight-byte common header, a
+for a C-brick, and ``mac`` for an I-brick's logic board. With none of the
+three the behavioural defaults apply (name ``NODE``, part ``NOTOBSERVED0``,
+revision ``00``; an I-brick's boards ``POWER`` and ``LOGIC``). A name alone
+gives an empty part and revision, which is enough for the firmware's
+classification (below); a part or revision without the other two is
+refused. The record is an eight-byte common header, a
 chassis area and a board area, each summing to zero, as the L1 page's whole
 image records are; the contents are placeholders and a marked synthetic
 serial, an *approximation*.
@@ -673,7 +675,12 @@ write-protect pin is wired. The firmware decides the brick
 type from the board name in the record: ``IP35`` at ``0xa4`` makes it a
 C-brick (:ref:`sgi-l1-board-identity-run`). The behavioural defaults do
 not make that name for a C-brick, so a C-brick run with the stock firmware
-needs ``node-board-name=IP35``; the I-brick's ``POWER`` and ``LOGIC`` names
+needs a ``node-board-name`` that begins ``IP35``. That the firmware
+compares only that prefix is a *software expectation*; that the Origin 3000
+C-brick's node board is an IP35 is *established*, but the full name its
+EEPROM holds, any suffix after the prefix, and the part and revision are
+*unknown* until a read or capture of one, so the part and revision are left
+empty; the I-brick's ``POWER`` and ``LOGIC`` names
 leave the firmware's type unknown, because the type it knows an I-brick by is
 named in the logic board's record and the behavioural L1 does not use that
 name.

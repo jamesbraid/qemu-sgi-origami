@@ -262,18 +262,19 @@ static void l1_board_identity(L1BoardMachine *m, I2CBus *bus, Error **errp)
             error_setg(errp, "mac is for the I-brick only");
             return;
         }
-        if ((m->node_board_name || m->node_board_part ||
-             m->node_board_revision) &&
-            (!m->node_board_name || !m->node_board_part ||
-             !m->node_board_revision)) {
+        /* A name alone is a record with an empty part and revision. */
+        if ((m->node_board_part || m->node_board_revision) &&
+            !(m->node_board_name && m->node_board_part &&
+              m->node_board_revision)) {
             error_setg(errp, "a node board identity needs a name, part and "
-                       "revision");
+                       "revision, or a name alone");
             return;
         }
         if (m->node_board_name &&
             (strlen(m->node_board_name) > 0x3f ||
-             strlen(m->node_board_part) > 0x3f ||
-             strlen(m->node_board_revision) > 0x3f)) {
+             (m->node_board_part && strlen(m->node_board_part) > 0x3f) ||
+             (m->node_board_revision &&
+              strlen(m->node_board_revision) > 0x3f))) {
             error_setg(errp, "a node board identity field is too long");
             return;
         }
@@ -281,8 +282,10 @@ static void l1_board_identity(L1BoardMachine *m, I2CBus *bus, Error **errp)
             sgi_l1_identity_chassis_area(),
             sgi_l1_identity_board_area(
                 m->node_board_name ? m->node_board_name : "NODE",
-                m->node_board_part ? m->node_board_part : "NOTOBSERVED0",
-                m->node_board_revision ? m->node_board_revision : "00",
+                m->node_board_part ? m->node_board_part :
+                    (m->node_board_name ? "" : "NOTOBSERVED0"),
+                m->node_board_revision ? m->node_board_revision :
+                    (m->node_board_name ? "" : "00"),
                 NULL, 'N', 0, NULL, NULL));
     } else if (!strcmp(m->brick_type, "ibrick")) {
         if (m->node_board_name || m->node_board_part ||
