@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Ported from crates/sgi-gpu-core/Cargo.toml in jamesbraid/iris, commit 7d772b436
+# (tag qemu-pin-20261118-core). src/lib.rs is iris's src/wgpu/mod.rs.
+# Standalone workspace, like rust/sgi-gpu: the wgpu dependency tree does not fit
+# QEMU's root workspace.
+[workspace]
+
+[package]
+name = "sgi-gpu-core"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.94"
+description = "Iris's src/wgpu layer (device, board memory, batch recorder, tiles, scan-out driver, soft-float shaders) as a library of its own"
+license = "BSD-3-Clause"
+publish = false
+
+[lib]
+doctest = false
+
+[features]
+# Window presentation (present.rs, the display handle); QEMU leaves it off.
+present = ["dep:winit"]
+
+[dependencies]
+wgpu = { version = "30", default-features = false, features = ["wgsl", "vulkan", "metal", "dx12"] }
+ash = "0.38"
+bytemuck = { version = "1", features = ["derive"] }
+pollster = "0.4"
+parking_lot = "0.12"
+log = "0.4"
+
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+winit = { version = "0.30", optional = true, default-features = false, features = ["rwh_06"] }
+
+# winit does not build for Linux without a window-system backend.
+[target.'cfg(target_os = "linux")'.dependencies]
+winit = { version = "0.30", optional = true, default-features = false, features = ["rwh_06", "x11"] }

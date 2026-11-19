@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: BSD-3-Clause
+# Each test opens its own GPU device; several at once crash or hang NVIDIA's Vulkan driver.
+[env]
+RUST_TEST_THREADS = "1"
