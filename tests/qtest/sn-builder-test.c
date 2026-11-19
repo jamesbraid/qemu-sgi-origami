@@ -11520,6 +11520,99 @@ static void test_origin3800_64p_racks(void)
 }
 
 /*
+ * A multi-rack Origin 3800 built and not run: every C-brick is a node
+ * numbered in rack order (the PROM renumbers them from the router graph, so
+ * this is only the build's starting number), its L1 answers the drawn rack
+ * and bay, every router has exactly the ports the cabling table cables, and
+ * the I-brick is in rack 101. Nothing runs guest code, so the RAM is mapped
+ * unreserved and never touched.
+ */
+static void origin3800_racks(const char *topology, const unsigned int *racks,
+                             unsigned int rack_count,
+                             const uint16_t *router_ports,
+                             unsigned int router_count, const char *ram)
+{
+    static const unsigned int bays[] = { 10, 13, 16, 21, 24, 29, 32, 35 };
+    unsigned int nodes = 8 * rack_count;
+    g_autofree char *prom = zero_prom_file("sn-builder-o3800-racks-XXXXXX");
+    g_autoptr(GHashTable) seen = g_hash_table_new(g_direct_hash,
+                                                  g_direct_equal);
+    g_autofree unsigned int *per_node = g_new0(unsigned int, nodes);
+    g_autofree char *ibrick_l1 = NULL;
+    unsigned int total = 0;
+    QTestState *qts;
+
+    qts = qtest_initf("-M origin3000,topology=%s -cpu R12000 -smp %u "
+                      "%s -bios %s -nodefaults -display none",
+                      topology, 4 * nodes, ram, prom);
+    for (unsigned int node = 0; node < nodes; node++) {
+        g_autofree char *l1 = g_strdup_printf("/machine/node%u/l1", node);
+        g_autofree char *path = g_strdup_printf("/machine/node%u", node);
+        unsigned int rack = racks[node / 8], bay = bays[node % 8];
+
+        g_assert_cmpuint(qom_get_uint(qts, path, "nasid"), ==, node);
+        expect_l1_location(qts, l1, rack, bay);
+        g_assert_true(g_hash_table_add(seen,
+                          GUINT_TO_POINTER((rack << 6) | bay)));
+    }
+    /* The R-bricks follow the C-bricks: rack routers, then MetaRouters. */
+    for (unsigned int router = 0; router < router_count; router++) {
+        g_autofree char *module = g_strdup_printf("/machine/module%u",
+                                                  nodes + router);
+        g_autofree char *l1 = g_strdup_printf("%s/l1", module);
+        g_autofree char *chip = g_strdup_printf("%s/router", module);
+        unsigned int rack, bay;
+
+        if (router < 2 * rack_count) {
+            rack = racks[router / 2];
+            bay = router % 2 ? 27 : 19;
+        } else {
+            /* MetaRouters sit at unit 38 of racks 002, 003, 012 and 013. */
+            static const unsigned int meta_rack[] = { 1, 2, 5, 6 };
+
+            rack = racks[meta_rack[(router - 2 * rack_count) % 4]];
+            bay = 38;
+        }
+        expect_l1_location(qts, l1, rack, bay);
+        g_assert_true(g_hash_table_add(seen,
+                          GUINT_TO_POINTER((rack << 6) | bay)));
+        for (unsigned int port = 1; port <= 8; port++) {
+            g_autofree char *name = g_strdup_printf("port%u-cable", port);
+            g_autofree char *cable = qom_get_str(qts, chip, name);
+
+            g_assert_cmpint(cable[0] != '\0', ==,
+                            !!(router_ports[router] & (1u << port)));
+        }
+    }
+    ibrick_l1 = g_strdup_printf("/machine/module%u/l1", nodes + router_count);
+    expect_l1_location(qts, ibrick_l1, 101, 20);
+    g_assert_true(g_hash_table_add(seen,
+                      GUINT_TO_POINTER((101 << 6) | 20)));
+    g_assert_cmpuint(g_hash_table_size(seen), ==, nodes + router_count + 1);
+
+    count_cpus_per_node(qts, per_node, nodes);
+    for (unsigned int node = 0; node < nodes; node++) {
+        g_assert_cmpuint(per_node[node], ==, 4);
+        total += per_node[node];
+    }
+    g_assert_cmpuint(total, ==, 4 * nodes);
+    qtest_quit(qts);
+    g_unlink(prom);
+}
+
+/* Table 2-18: four racks, eight routers, every router port cabled. */
+static void test_origin3800_128p_racks(void)
+{
+    static const unsigned int racks[] = { 1, 2, 3, 4 };
+    static const uint16_t ports[8] = {
+        0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe, 0x1fe,
+    };
+
+    origin3800_racks("origin3800-128p", racks, 4, ports, 8,
+                     SGI_UNRESERVED_RAM("32768M"));
+}
+
+/*
  * The catalogue's Onyx 3400 with InfiniteReality3: four C-bricks, an I-brick
  * on c0 and an N-brick on c1 to c3. Each I/O brick has a controller that
  * every C-brick cabled to it reaches, and each C-brick whose chip has a
@@ -15115,6 +15208,8 @@ int main(int argc, char **argv)
                    test_origin3800_high_bandwidth_cables);
     qtest_add_func("sn/builder/origin3800-64p/racks",
                    test_origin3800_64p_racks);
+    qtest_add_func("sn/builder/origin3800-128p/racks",
+                   test_origin3800_128p_racks);
     qtest_add_func("sn/builder/onyx3000/vbrick-l1-and-heads",
                    test_onyx3000_vbrick_l1_and_heads);
     qtest_add_func("sn/builder/origin3900/cx-brick",

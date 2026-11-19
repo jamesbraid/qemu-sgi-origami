@@ -102,9 +102,10 @@ without a source. Do not hand-draw a topology that the directive covers.
 parts and each link's endpoints and widget from the catalogue and checks
 that the picture draws exactly those, that a catalogue change changes the
 picture, that every platform page draws every product its running page
-covers, and that each picture is accessible, under 30 KiB, readable on a
-light and a dark page and the same on every build. Every diagram starts
-open, so a printed or static copy shows it.
+covers, and that each picture is accessible, under 30 KiB (or 1.5 KiB a
+brick for a system of more than 20 bricks), readable on a light and a dark
+page and the same on every build. Every diagram starts open, so a printed
+or static copy shows it.
 
 Facts
 -----

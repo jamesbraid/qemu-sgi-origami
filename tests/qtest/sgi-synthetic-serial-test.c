@@ -102,6 +102,7 @@ static const TopologyExtra topology_extras[] = {
     { "origin3800", "", .unmarked = true },
     { "origin3800-high-bandwidth", "", .unmarked = true },
     { "origin3800-64p", "", .unmarked = true },
+    { "origin3800-128p", "", .unmarked = true },
     { "origin3400-two-partitions", "", .unmarked = true },
     { "origin3900-ip53", "", .unmarked = true },
     { "origin3900-ip59", "", .unmarked = true },
@@ -335,6 +336,8 @@ static bool is_leaf_child(const char *type)
            !strcmp(type, "child<irq>");
 }
 
+#define WALK_BATCH 16
+
 /*
  * Check the whole QOM tree, one level per request. Asking for every
  * object's properties and values at once, instead of listing an object
@@ -349,35 +352,40 @@ static void walk(QTestState *qts, Inventory *inv, const char *root)
     g_ptr_array_add(level, g_strdup(root));
     while (level->len) {
         g_autoptr(GPtrArray) next = g_ptr_array_new_with_free_func(g_free);
-        QList *paths = qlist_new();
-        g_autoptr(QDict) response = NULL;
-        QList *results;
-        const QListEntry *entry;
-        guint i = 0;
 
-        for (guint n = 0; n < level->len; n++) {
-            qlist_append_str(paths, g_ptr_array_index(level, n));
-        }
-        response = qtest_qmp(qts, "{'execute': 'qom-list-get', "
-                             "'arguments': {'paths': %p}}", paths);
-        g_assert_true(qdict_haskey(response, "return"));
-        results = qdict_get_qlist(response, "return");
-        g_assert_cmpuint(qlist_size(results), ==, level->len);
-        QLIST_FOREACH_ENTRY(results, entry) {
-            const char *path = g_ptr_array_index(level, i++);
-            QList *properties = qdict_get_qlist(
-                qobject_to(QDict, qlist_entry_obj(entry)), "properties");
-            const QListEntry *p;
+        /* A whole level of a 128-node machine passes the JSON token limit. */
+        for (guint start = 0; start < level->len; start += WALK_BATCH) {
+            guint count = MIN(WALK_BATCH, level->len - start);
+            QList *paths = qlist_new();
+            g_autoptr(QDict) response = NULL;
+            QList *results;
+            const QListEntry *entry;
+            guint i = start;
 
-            check_object(inv, path, properties);
-            QLIST_FOREACH_ENTRY(properties, p) {
-                QDict *prop = qobject_to(QDict, qlist_entry_obj(p));
+            for (guint n = start; n < start + count; n++) {
+                qlist_append_str(paths, g_ptr_array_index(level, n));
+            }
+            response = qtest_qmp(qts, "{'execute': 'qom-list-get', "
+                                 "'arguments': {'paths': %p}}", paths);
+            g_assert_true(qdict_haskey(response, "return"));
+            results = qdict_get_qlist(response, "return");
+            g_assert_cmpuint(qlist_size(results), ==, count);
+            QLIST_FOREACH_ENTRY(results, entry) {
+                const char *path = g_ptr_array_index(level, i++);
+                QList *properties = qdict_get_qlist(
+                    qobject_to(QDict, qlist_entry_obj(entry)), "properties");
+                const QListEntry *p;
 
-                if (g_str_has_prefix(qdict_get_str(prop, "type"),
-                                     "child<") &&
-                    !is_leaf_child(qdict_get_str(prop, "type"))) {
-                    g_ptr_array_add(next, g_strdup_printf(
-                        "%s/%s", path, qdict_get_str(prop, "name")));
+                check_object(inv, path, properties);
+                QLIST_FOREACH_ENTRY(properties, p) {
+                    QDict *prop = qobject_to(QDict, qlist_entry_obj(p));
+
+                    if (g_str_has_prefix(qdict_get_str(prop, "type"),
+                                         "child<") &&
+                        !is_leaf_child(qdict_get_str(prop, "type"))) {
+                        g_ptr_array_add(next, g_strdup_printf(
+                            "%s/%s", path, qdict_get_str(prop, "name")));
+                    }
                 }
             }
         }

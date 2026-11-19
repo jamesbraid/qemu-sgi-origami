@@ -80,7 +80,8 @@ controller in the selected topology, the same numbering as
   ``origin3400``, ``origin3400-two-partitions`` and ``onyx3400-ir``
   topologies), on by default. The two-router Origin 3400 and the Origin
   3800 topologies (``origin3400-two-routers``, ``origin3800``,
-  ``origin3800-high-bandwidth`` and ``origin3800-64p``) name it too, off
+  ``origin3800-high-bandwidth``, ``origin3800-64p`` and
+  ``origin3800-128p``) name it too, off
   by default. ``--set l2-controller=on`` is accepted on them and untested;
   it was refused as an unknown setting before, and they were never booted
   with the L2.

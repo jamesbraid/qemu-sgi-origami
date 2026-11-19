@@ -134,7 +134,7 @@ selects the diagnostic profile, through the topology record's
 expansion topology and of the Origin 3400, Origin 3800 and Origin 3900
 topologies (the ``origin3400*``, ``origin3800*`` and ``origin3900*``
 entries, both routers of ``origin3400-two-routers`` and ``origin3800``
-and the four of ``origin3800-64p`` included). The Origin 2000, Onyx 2 and
+and the four of ``origin3800-64p`` and eight of ``origin3800-128p`` included). The Origin 2000, Onyx 2 and
 Onyx 3400 topologies do not set the flag. A router created with
 ``-device``, and the R-brick router of the ``onyx3400-ir`` topology, get the
 ordinary profile, so the 4-bit route table rule below applies to them and to

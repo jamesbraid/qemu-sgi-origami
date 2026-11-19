@@ -1273,6 +1273,22 @@ about how the PROM treats rack 002. No check boots the stock PROM on this
 topology; a boot is a manual run. The catalogue launch test builds the
 machine and runs no guest code.
 
+.. _sgi-sn-origin3800-128p:
+
+``topology=origin3800-128p`` is the same layout at four compute racks, 001
+to 004, 128 processors and 32 C-bricks on eight R-bricks, with the I-brick in
+rack 101. Each rack is wired as above, and the racks join as the cabling
+draft's 128-processor table has them: port 7 to port 7 between racks 001 and
+002 and between 003 and 004, and port 8 to port 8 between 001 and 003 and
+between 002 and 004, each between R-bricks at the same unit. With the 32
+C-brick cables that is 48 cables. The cable and R-brick counts match the
+shipped drawing (*established*, :src:`007-4311-002 pp. 56-58`); the port
+numbers are the draft's (*inferred*). The draft's other 128-processor table,
+which uses MetaRouters, is not built: the stock PROM's route calculation
+rejects its wiring (*software expectation*, a replay, not a boot). Memory is
+the 1024 MB fit, 32 GiB in all. A build of the machine is checked and no
+guest has run on it, so the PROM's behaviour on this graph is *unknown*.
+
 .. _sgi-sn-rack-numbers:
 
 A topology may number its racks with ``machine.emulation.rack_numbers``, a
@@ -1304,7 +1320,7 @@ model checks these rules only when racks are numbered:
 
 Topologies that number no rack keep the module number rules above
 unchanged: unique across the whole system, 1 to 255. Only
-``origin3800-64p`` numbers its racks, and the compiled catalogue carries
+``origin3800-64p`` and ``origin3800-128p`` number their racks, and the compiled catalogue carries
 no rack field for any other topology. A numbered topology's module records
 carry ``rack``, an optional member of the catalogue's QAPI module record.
 The machine builder gives every SN1 L1

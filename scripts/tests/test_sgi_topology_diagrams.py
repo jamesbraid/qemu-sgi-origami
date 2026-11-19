@@ -31,8 +31,10 @@ from sgi_model import topology_diagram as td
 CATALOGUE = ROOT / "hw/mips/sgi/sgi-machines.json"
 PAGES = ROOT / "docs/system/mips/sgi"
 SVG = "{http://www.w3.org/2000/svg}"
-# The most a single diagram may weigh, as the manual's guide promises.
+# The most a single diagram may weigh, as the manual's guide promises: 30 KiB,
+# or 1.5 KiB a brick where that is more, since every brick is drawn.
 MAX_BYTES = 30 * 1024
+BYTES_PER_BRICK = 1536
 
 
 def load():
@@ -534,7 +536,9 @@ class DiagramQuality(unittest.TestCase):
         for name in TOPOLOGIES:
             with self.subTest(topology=name):
                 markup = td.svg(CAT, name)
-                self.assertLess(len(markup.encode()), MAX_BYTES)
+                limit = max(MAX_BYTES,
+                            BYTES_PER_BRICK * len(TOPOLOGIES[name]["modules"]))
+                self.assertLess(len(markup.encode()), limit)
                 parse(markup)
 
     def test_each_diagram_is_accessible_and_self_contained(self):

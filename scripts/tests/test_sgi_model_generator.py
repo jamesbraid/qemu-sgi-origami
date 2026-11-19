@@ -21,9 +21,10 @@ INPUTS = ROOT / "hw/mips/sgi/models"
 L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 # The router topologies never booted with it: off, authored in the model.
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
-                  "origin3800-high-bandwidth", "origin3800-64p"}
+                  "origin3800-high-bandwidth", "origin3800-64p",
+                  "origin3800-128p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "c70ca95aac7a6440c775849d9b75d3a62cef8b11eac9e635ce93a647452e8372"
+    "1529dda649881b64250ba942d7b1964a2c19d8df6e08a29193a07d759c04719e"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -225,9 +226,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 175)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
-        self.assertEqual(len(layers), 115)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 178)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 51)
+        self.assertEqual(len(layers), 116)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -1349,7 +1350,8 @@ class FuelTests(unittest.TestCase):
                                     "origin3400-two-partitions",
                                     "origin3800",
                                     "origin3800-high-bandwidth",
-                                    "origin3800-64p"):
+                                    "origin3800-64p",
+                                    "origin3800-128p"):
                 # The C-brick's machine-type byte and reset-mode word come
                 # from the PROM's CPU-configuration table row.
                 self.assertEqual(topology["ip35-firmware"], {
