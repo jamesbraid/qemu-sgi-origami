@@ -1196,6 +1196,52 @@ models. Whether some counting mode keeps virtual time safely behind the
 peer's is *unknown*, and a run against a real peer would settle it. With no
 chardev set the link accepts ``-icount``.
 
+.. _sgi-l1-machine-attach:
+
+A firmware controller in the Origin 3000 machine
+------------------------------------------------
+
+The ``origin3000`` machine builds ``sgi-l1-link`` in place of ``sgi-l1`` for
+a C-brick's controller when both of these options name it:
+
+``controller-l1-signal-chardev.N=<index>=<chardev-id>``
+    The signal link's chardev.
+
+``controller-l1-node-chardev.N=<index>/0=<chardev-id>``
+    The node link's chardev. A C-brick has one UART window, so the
+    transport is 0.
+
+The machine refuses one option without the other, a controller that is not a
+C-brick whose node builds its L1, a chardev id used twice, and any of
+``controller-l2-chardev``, ``controller-pbay-chardev`` or
+``controller-l2-partition-flag`` for the same controller. It refuses a
+topology that holds a partition number, and one with routers, L1
+management, I/O assemblies, module-owned controllers or the IP53 runtime,
+because those reach the controller by in-process calls a separate process
+cannot answer. ``sgi-l1-link`` refuses ``-icount``
+(:ref:`sgi-l1-link-signals`). With neither option the machine is unchanged.
+
+The brick's identity, serials, console and partition belong to the
+controller's own process, so the machine sets none of them on the link and
+leaves the ``l1`` serial line unused. When no behavioural controller is left
+the host id comes from the machine's identity serial, which may differ from
+the serial the firmware reports (*unknown*).
+
+**Dropped edges.** The behavioural controllers reach each other by pointers:
+``peer`` between the two C-bricks, and ``io-peer`` with ``io-gfx-bay`` from a
+C-brick to its I/O brick. The machine builds none that has a firmware
+controller at either end and lists each one it left out in the read-only
+``l1-dropped-edges`` machine property, for example ``peer 0>1``. Traffic those
+pointers carried (power notices, console relay, ``*`` broadcasts, the
+I/O brick's identity requests, its partition number) crosses only if the
+firmware's own cables carry it, which this machine does not wire. A run in
+this mode is a partial-firmware machine, not a model of the controller network.
+
+The node's ``power`` and ``reset`` inputs are not driven by a firmware
+controller yet: the node is powered as built. The signal link's ``nmi`` lines
+reach the node's NMI split, and ``soft-reset`` is not connected, as for the
+behavioural controller on the Origin 3000.
+
 .. _sgi-l1-signal-link:
 
 Signal link
@@ -1598,6 +1644,10 @@ the chardev and the window's refusals. It also plays the board on the signals
 socket: lines coming out of the link and going in under ``sgi-l1``'s names,
 the aliased properties, a chardev without its pair refused, and ``-icount``
 refused with its reason and accepted when inert.
+
+``tests/qtest/sgi-l1-attach-test.c`` plays a C-brick's board against the
+Origin 3200 from sockets the test listens on: the dropped edges, bytes
+through the node's UART window, and the option refusals.
 
 ``tests/qtest/sgi-l1-signal-link-test.c`` plays the board from a socket the
 test listens on: the hello exchange and the refusal of a wrong role or

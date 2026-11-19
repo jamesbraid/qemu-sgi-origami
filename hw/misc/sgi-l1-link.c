@@ -15,7 +15,6 @@
 #include "hw/misc/sgi-l1.h"
 #include "trace.h"
 
-#define TYPE_SGI_L1_LINK "sgi-l1-link"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1LinkState, SGI_L1_LINK)
 
 typedef struct SGIL1LinkNode {

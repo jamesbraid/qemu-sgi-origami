@@ -971,6 +971,7 @@ tests/qtest/sgi-heart-test.c
 tests/qtest/sgi-ioc3-eth-test.c
 tests/qtest/sgi-ioc4-test.c
 tests/qtest/sgi-kona-read-defense-test.c
+tests/qtest/sgi-l1-attach-test.c
 tests/qtest/sgi-l1-identity-vectors.h
 tests/qtest/sgi-l1-pbay-test.c
 tests/qtest/sgi-l1-link-test.c

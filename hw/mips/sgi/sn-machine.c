@@ -507,6 +507,11 @@ struct SGIMachineState {
     strList *controller_pbay_chardev;
     strList *controller_l2_partition_flag;
     strList *controller_brick_serial;
+    strList *controller_l1_signal_chardev;
+    strList *controller_l1_node_chardev;
+    /* Controllers whose L1 is a separate process, and the edges left out. */
+    unsigned int l1_link_count;
+    GString *l1_dropped_edges;
     strList *expansion_storage;
     const SGIModelIoAssembly *storage_assembly;
     BlockBackend *storage_backend;
@@ -578,6 +583,19 @@ static const SGIMachineIdentityRecords sgi_machine_identity_records[] = {
         "L1 brick serial as controller-index=serial (1 to 32 bytes)",
         true,
     },
+    {
+        "controller-l1-signal-chardev",
+        offsetof(SGIMachineState, controller_l1_signal_chardev),
+        "Signal link to a C-brick's firmware L1 as controller-index=chardev-id",
+        true,
+    },
+    {
+        "controller-l1-node-chardev",
+        offsetof(SGIMachineState, controller_l1_node_chardev),
+        "Node link to a C-brick's firmware L1 as "
+        "controller-index/transport=chardev-id",
+        true,
+    },
 };
 
 static strList **sgi_machine_identity_slot(Object *obj, void *opaque)
@@ -611,6 +629,13 @@ static void sgi_machine_set_identity_records(Object *obj, Visitor *v,
 static bool sgi_machine_has_identity_records(SGIMachineState *s)
 {
     return s->chassis_eeprom || s->board_eeprom || s->spd_eeprom;
+}
+
+/* The behavioural L1 behind @l1, or NULL for a firmware controller. */
+static SGIL1State *sgi_machine_behavioural_l1(DeviceState *l1)
+{
+    return l1 ? (SGIL1State *)object_dynamic_cast(OBJECT(l1), TYPE_SGI_L1) :
+                NULL;
 }
 
 /*
@@ -1767,6 +1792,177 @@ static bool sgi_machine_validate_pbay_links(SGIMachineState *s,
                        "exist", payload);
             return false;
         }
+    }
+    return true;
+}
+
+/* The chardev ids of controller @owner's firmware L1; false for none. */
+static bool sgi_machine_l1_link_for(const SGIMachineState *s, unsigned owner,
+                                    const char **signal, const char **node)
+{
+    *signal = *node = NULL;
+    for (unsigned kind = 0; kind < 2; kind++) {
+        const strList *entry = kind ? s->controller_l1_node_chardev :
+                                      s->controller_l1_signal_chardev;
+
+        for (; entry; entry = entry->next) {
+            unsigned selected, slot;
+            const char *payload;
+
+            /* The machine validated owner=chardev-id before building. */
+            if (sgi_machine_controller_input(entry->value, kind, "",
+                                             &selected, &slot, &payload,
+                                             &error_abort) &&
+                selected == owner) {
+                *(kind ? node : signal) = payload;
+            }
+        }
+    }
+    return *signal && *node;
+}
+
+/* A firmware L1 replaces the L1 of a C-brick whose node builds it. */
+static bool sgi_machine_l1_link_controller(const SGIMachineState *s,
+                                           const SGIModelTopology *t,
+                                           unsigned owner)
+{
+    return s->l1_config[owner].has_profile &&
+           s->l1_config[owner].profile == SGI_MODEL_L1_PROFILE_CBRICK &&
+           !sgi_machine_expansion_controller(t, owner) &&
+           sgi_machine_l2_link_controller(s, t, owner);
+}
+
+static bool sgi_machine_l1_link_conflicts(const SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          unsigned owner, Error **errp)
+{
+    const strList *others[] = { s->controller_l2_chardev,
+                                s->controller_pbay_chardev,
+                                s->controller_l2_partition_flag };
+    const SGIModelControllerList *controller;
+
+    for (unsigned i = 0; i < ARRAY_SIZE(others); i++) {
+        for (const strList *entry = others[i]; entry; entry = entry->next) {
+            unsigned selected, slot;
+            const char *payload;
+
+            if (sgi_machine_controller_input(entry->value, false, "",
+                                             &selected, &slot, &payload,
+                                             &error_abort) &&
+                selected == owner) {
+                error_setg(errp, "controller %u has a firmware L1, which "
+                           "takes no L2, power-bay or partition option",
+                           owner);
+                return false;
+            }
+        }
+    }
+    /* The partition number crosses the links this mode leaves out. */
+    for (unsigned i = 0; i < QAPI_LIST_LENGTH(t->controllers); i++) {
+        if (s->l1_config[i].partition) {
+            error_setg(errp, "a firmware L1 needs an unpartitioned "
+                       "topology: controller %u holds partition %u", i,
+                       s->l1_config[i].partition);
+            return false;
+        }
+    }
+    if (t->routers || t->l1_management || t->io_assemblies ||
+        t->ip53_runtime) {
+        error_setg(errp, "a firmware L1 needs a topology with no routers, "
+                   "L1 management, I/O assemblies or IP53 runtime");
+        return false;
+    }
+    for (controller = t->controllers; controller;
+         controller = controller->next) {
+        if (sgi_machine_controller_module_owned(controller->value)) {
+            error_setg(errp, "a firmware L1 needs a topology with no "
+                       "module-owned controller");
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool sgi_machine_validate_l1_links(SGIMachineState *s,
+                                          const SGIModelTopology *t,
+                                          Error **errp)
+{
+    size_t count = QAPI_LIST_LENGTH(t->controllers);
+    g_autofree const char **chardevs = g_new0(const char *, MAX(count * 2, 1));
+    const strList *others[] = { s->controller_chardev,
+                                s->controller_l2_chardev,
+                                s->controller_pbay_chardev };
+
+    for (unsigned kind = 0; kind < 2; kind++) {
+        const strList *head = kind ? s->controller_l1_node_chardev :
+                                     s->controller_l1_signal_chardev;
+
+        for (const strList *entry = head; entry; entry = entry->next) {
+            unsigned owner, slot = 0;
+            const char *payload;
+
+            if (!sgi_machine_controller_input(
+                    entry->value, kind, kind ? "owner/transport=chardev-id" :
+                    "owner=chardev-id", &owner, &slot, &payload, errp)) {
+                return false;
+            }
+            if (owner >= count ||
+                !sgi_machine_l1_link_controller(s, t, owner)) {
+                error_setg(errp, "controller %u does not take a firmware L1",
+                           owner);
+                return false;
+            }
+            if (slot) {
+                error_setg(errp, "a C-brick's L1 has one node link, "
+                           "transport 0");
+                return false;
+            }
+            if (chardevs[owner * 2 + kind]) {
+                error_setg(errp, "duplicate controller input for owner %u",
+                           owner);
+                return false;
+            }
+            for (unsigned i = 0; i < count * 2; i++) {
+                if (chardevs[i] && !strcmp(chardevs[i], payload)) {
+                    error_setg(errp, "controller inputs reuse '%s'", payload);
+                    return false;
+                }
+            }
+            chardevs[owner * 2 + kind] = payload;
+            if (!qemu_chr_find(payload)) {
+                error_setg(errp, "controller L1 chardev '%s' does not exist",
+                           payload);
+                return false;
+            }
+        }
+    }
+    for (unsigned owner = 0; owner < count; owner++) {
+        const char *signal = chardevs[owner * 2];
+        const char *node = chardevs[owner * 2 + 1];
+
+        if (!signal && !node) {
+            continue;
+        }
+        if (!signal || !node) {
+            error_setg(errp, "controller %u needs both an L1 signal chardev "
+                       "and an L1 node chardev", owner);
+            return false;
+        }
+        for (unsigned i = 0; i < ARRAY_SIZE(others); i++) {
+            for (const strList *prior = others[i]; prior;
+                 prior = prior->next) {
+                const char *id = strchr(prior->value, '=') + 1;
+
+                if (!strcmp(id, signal) || !strcmp(id, node)) {
+                    error_setg(errp, "controller inputs reuse '%s'", id);
+                    return false;
+                }
+            }
+        }
+        if (!sgi_machine_l1_link_conflicts(s, t, owner, errp)) {
+            return false;
+        }
+        s->l1_link_count++;
     }
     return true;
 }
@@ -4420,7 +4616,8 @@ static bool sgi_machine_instantiate_bedrock_io(
     if (config->mac_source == SGI_MODEL_MAC_SOURCE_MODULE_L1) {
         uint8_t mac[6];
 
-        if (sgi_l1_board_mac(node->l1, mac)) {
+        if (sgi_machine_behavioural_l1(node->l1) &&
+            sgi_l1_board_mac(node->l1, mac)) {
             g_autofree char *address = g_strdup_printf(
                 "%02x:%02x:%02x:%02x:%02x:%02x",
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
@@ -6865,6 +7062,25 @@ static bool sgi_machine_build_bedrock_links(SGIMachineState *s,
     return true;
 }
 
+/* An in-process edge to a firmware L1 is not built; list it instead. */
+static void sgi_machine_drop_l1_edge(SGIMachineState *s, const char *format,
+                                     ...) G_GNUC_PRINTF(2, 3);
+static void sgi_machine_drop_l1_edge(SGIMachineState *s, const char *format,
+                                     ...)
+{
+    va_list args;
+
+    if (!s->l1_dropped_edges) {
+        s->l1_dropped_edges = g_string_new(NULL);
+    }
+    if (s->l1_dropped_edges->len) {
+        g_string_append_c(s->l1_dropped_edges, ',');
+    }
+    va_start(args, format);
+    g_string_append_vprintf(s->l1_dropped_edges, format, args);
+    va_end(args);
+}
+
 /* Controller ownership resolves existing objects; links never create owners. */
 static DeviceState *sgi_machine_l1_peer_endpoint(SGIMachineState *s,
     const SGIModelTopology *t, unsigned index, Error **errp)
@@ -6960,6 +7176,11 @@ static bool sgi_machine_build_l1_peer_links(SGIMachineState *s,
         }
     }
     for (i = 0; i < count; i++) {
+        if (peers[i] >= 0 && (!sgi_machine_behavioural_l1(objects[i]) ||
+                              !sgi_machine_behavioural_l1(objects[peers[i]]))) {
+            sgi_machine_drop_l1_edge(s, "peer %zu>%" PRId64, i, peers[i]);
+            continue;
+        }
         if (peers[i] >= 0 &&
             !object_property_set_link(OBJECT(objects[i]), "peer",
                                       OBJECT(objects[peers[i]]), errp)) {
@@ -7101,6 +7322,7 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         g_autofree char *mac = NULL;
         g_autofree DeviceState **hosts = NULL;
         g_autofree unsigned int *gfx_bays = NULL;
+        g_autofree unsigned int *host_nodes = NULL;
         DeviceState *l1;
         unsigned int host_count = 0;
         unsigned int board_index = 0;
@@ -7124,6 +7346,7 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
         module = modules[controller->module_index];
         hosts = g_new0(DeviceState *, s->num_nodes);
         gfx_bays = g_new0(unsigned int, s->num_nodes);
+        host_nodes = g_new0(unsigned int, s->num_nodes);
         for (const SGIModelXioCableList *cable = t->xio_cables; cable;
              cable = cable->next) {
             const SGIModelXioEndList *ends = cable->value->ends;
@@ -7144,6 +7367,7 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
                            "C-brick", controller->id);
                 return false;
             }
+            host_nodes[host_count] = node_end->index;
             hosts[host_count] = DEVICE(SN1_NODE(
                 s->bedrock_nodes[node_end->index])->l1);
             gfx_bays[host_count++] = sgi_machine_pipe_brick_number(
@@ -7215,6 +7439,11 @@ static bool sgi_machine_build_ibrick_l1s(SGIMachineState *s,
             return false;
         }
         for (unsigned int host = 0; host < host_count; host++) {
+            if (!sgi_machine_behavioural_l1(hosts[host])) {
+                sgi_machine_drop_l1_edge(s, "io-peer node%u>controller%u",
+                                         host_nodes[host], index);
+                continue;
+            }
             if (gfx_bays[host] &&
                 !object_property_set_uint(OBJECT(hosts[host]), "io-gfx-bay",
                                           gfx_bays[host], errp)) {
@@ -9475,6 +9704,7 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
     if (!sgi_machine_validate_controller_inputs(s, t, errp) ||
         !sgi_machine_validate_l2_links(s, t, errp) ||
         !sgi_machine_validate_pbay_links(s, t, errp) ||
+        !sgi_machine_validate_l1_links(s, t, errp) ||
         !sgi_machine_validate_expansion_storage(s, t, errp) ||
         !sgi_machine_resolve_processor(s, t, errp)) {
         return false;
@@ -10046,6 +10276,17 @@ static bool sgi_machine_realize(MachineState *machine, Error **errp)
                     }
                     qdev_prop_set_uint8(DEVICE(node), "l1-l2-partition-flag",
                                         l2_flag);
+                }
+                {
+                    const char *signal, *link;
+
+                    if (sgi_machine_l1_link_for(s, config->controller_index,
+                                                &signal, &link)) {
+                        qdev_prop_set_string(DEVICE(node), "l1-signal-chardev",
+                                             signal);
+                        qdev_prop_set_string(DEVICE(node), "l1-node-chardev",
+                                             link);
+                    }
                 }
                 {
                     const char *pbay = sgi_machine_pbay_link_for(s,
@@ -10667,6 +10908,9 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
         DeviceState *split = NULL;
 
         if (!l1) {
+            continue;
+        }
+        if (!sgi_machine_behavioural_l1(l1)) {
             continue;
         }
         for (unsigned int j = 0; j < s->num_nodes; j++) {
@@ -11328,7 +11572,7 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
     unsigned int node, slice;
 
     for (unsigned int i = 0; i < s->controller_count; i++) {
-        SGIL1State *l1 = SGI_L1(s->controllers[i]);
+        SGIL1State *l1 = sgi_machine_behavioural_l1(s->controllers[i]);
 
         /* Without the L1 registry, a controller may have no built L1. */
         if (l1 && l1->power_command_owner) {
@@ -11361,7 +11605,7 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
             for (i = 0; i < s->num_nodes; i++) {
                 DeviceState *l1 = SN1_NODE(s->bedrock_nodes[i])->l1;
 
-                if (l1) {
+                if (sgi_machine_behavioural_l1(l1)) {
                     sgi_l1_apply_start_power(l1);
                 }
             }
@@ -11824,6 +12068,13 @@ static void sgi_machine_set_bedrock_revision(Object *obj, Visitor *v,
     }
 }
 
+static char *sgi_machine_get_l1_dropped_edges(Object *obj, Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+
+    return g_strdup(s->l1_dropped_edges ? s->l1_dropped_edges->str : "");
+}
+
 /*
  * Asks each Hub for its own currently derived reachability, replacing
  * the fabric's central "routes" property: the same string, from each
@@ -12057,6 +12308,9 @@ static void sgi_machine_instance_finalize(Object *obj)
     g_free(s->processor_name);
     g_free(s->baseio_preset);
     g_free(s->io_prom);
+    if (s->l1_dropped_edges) {
+        g_string_free(s->l1_dropped_edges, true);
+    }
     if (s->storage) {
         g_hash_table_destroy(s->storage);
     }
@@ -12120,7 +12374,8 @@ static bool sgi_machine_hostids(Object *obj, GArray *ids, Error **errp)
     }
     for (uint32_t i = 0; s->bedrock_nodes && i < s->num_nodes; i++) {
         DeviceState *l1 = SN1_NODE(s->bedrock_nodes[i])->l1;
-        const char *text = l1 ? SGI_L1(l1)->system_serial : NULL;
+        SGIL1State *behavioural = sgi_machine_behavioural_l1(l1);
+        const char *text = behavioural ? behavioural->system_serial : NULL;
 
         if (!text || !text[0]) {
             continue;
@@ -12134,6 +12389,14 @@ static bool sgi_machine_hostids(Object *obj, GArray *ids, Error **errp)
         } else {
             id = sgi_board_hostid_from_text(text);
         }
+        g_array_append_val(ids, id);
+    }
+    if (!ids->len && s->l1_link_count) {
+        /* The firmware's serial is not visible here. */
+        g_autofree char *serial = sgi_board_default_system_serial(
+            &s->identity.id);
+
+        id = sgi_board_hostid_from_text(serial);
         g_array_append_val(ids, id);
     }
     if (!ids->len) {
@@ -12339,6 +12602,13 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "and, on the Origin 200 and Fuel, the system id");
     sgi_board_identity_class_add_properties(oc,
         offsetof(SGIMachineState, identity), sgi_machine_hostids);
+
+    object_class_property_add_str(oc, "l1-dropped-edges",
+                                  sgi_machine_get_l1_dropped_edges, NULL);
+    object_class_property_set_description(oc, "l1-dropped-edges",
+        "The in-process L1 links not built because a firmware L1 sits at one "
+        "end, as comma-separated peer or io-peer edges; the firmware carries "
+        "that traffic on its own cables, if they are wired");
 
     object_class_property_add_str(oc, "routes", sgi_machine_get_routes, NULL);
     object_class_property_set_description(oc, "routes",

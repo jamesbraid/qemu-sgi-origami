@@ -3174,6 +3174,24 @@ static bool sn1_node_set_l1_l2_link(SN1NodeState *node, Error **errp)
     return true;
 }
 
+/* The controller is a process of its own: the node holds only its links. */
+static bool sn1_node_create_link_l1(SN1NodeState *node, Error **errp)
+{
+    node->l1 = qdev_new(TYPE_SGI_L1_LINK);
+    object_property_add_child(OBJECT(node), "l1", OBJECT(node->l1));
+    if (node->l1_node_chardev &&
+        !object_property_set_str(OBJECT(node->l1), "node0",
+                                 node->l1_node_chardev, errp)) {
+        return false;
+    }
+    if (node->l1_signal_chardev &&
+        !object_property_set_str(OBJECT(node->l1), "signals",
+                                 node->l1_signal_chardev, errp)) {
+        return false;
+    }
+    return qdev_realize(node->l1, NULL, errp);
+}
+
 static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
                                DeviceState **l1_uart_out,
                                MemoryRegion **l1_uart_region,
@@ -3189,6 +3207,12 @@ static bool sn1_node_create_l1(SN1NodeState *node, MachineState *machine,
      */
     if (node->supplied_l1 && qdev_is_realized(node->supplied_l1)) {
         node->l1 = node->supplied_l1;
+        goto window;
+    }
+    if (node->l1_node_chardev || node->l1_signal_chardev) {
+        if (!sn1_node_create_link_l1(node, errp)) {
+            goto fail_l1;
+        }
         goto window;
     }
     /*
@@ -4105,6 +4129,8 @@ static const Property sn1_node_properties[] = {
     DEFINE_PROP_STRING("l1-pbay-chardev", SN1NodeState, l1_pbay_chardev),
     DEFINE_PROP_UINT8("l1-l2-partition-flag", SN1NodeState,
                       l1_l2_partition_flag, 0),
+    DEFINE_PROP_STRING("l1-node-chardev", SN1NodeState, l1_node_chardev),
+    DEFINE_PROP_STRING("l1-signal-chardev", SN1NodeState, l1_signal_chardev),
     DEFINE_PROP_UINT8("bedrock-revision", SN1NodeState, bedrock_revision, 0),
     DEFINE_PROP_UINT8("local-region", SN1NodeState, local_region, 0),
     DEFINE_PROP_UINT8("initiator-region", SN1NodeState, initiator_region, 0),

@@ -88,6 +88,9 @@ typedef struct SN1NodeState {
     char *l1_l2_chardev;
     char *l1_pbay_chardev;
     uint8_t l1_l2_partition_flag;
+    /* Both set: the node's controller runs outside this process. */
+    char *l1_node_chardev;
+    char *l1_signal_chardev;
     uint8_t bedrock_revision;
     uint8_t local_region;
     uint8_t initiator_region;

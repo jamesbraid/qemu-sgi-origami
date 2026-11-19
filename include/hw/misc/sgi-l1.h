@@ -12,6 +12,7 @@
 #include "chardev/char-fe.h"
 
 #define TYPE_SGI_L1 "sgi-l1"
+#define TYPE_SGI_L1_LINK "sgi-l1-link"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1State, SGI_L1)
 #define TYPE_SGI_L1_UART "sgi-l1-uart"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
