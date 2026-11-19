@@ -971,6 +971,7 @@ tests/qtest/sgi-crime-render-test-groups.txt
 tests/qtest/sgi-crime-render-test.c
 tests/qtest/sgi-crime-test.c
 tests/qtest/sgi-debug-tools-test.c
+tests/qtest/sgi-divo-board-test.c
 tests/qtest/sgi-divo-test.c
 tests/qtest/sgi-fc-board-test.c
 tests/qtest/sgi-gbe-test.c

@@ -88,6 +88,8 @@ struct SGIPciExpansionState {
     uint32_t bridge_revision;
     /* The Fibre Channel boards' product, resolved when the board is built. */
     char *fc_product;
+    /* The DIVO board's product, resolved when the board is built. */
+    char *divo_product;
 
     SGIBridgeState *bridge;
     Notifier machine_done;
@@ -452,6 +454,109 @@ static void fc_board_class_init(ObjectClass *oc, const void *data)
     bc->build_widget = fc_board_build_widget;
 }
 
+/*
+ * The DIVO video XIO board: two sgi-divo-linc functions, LINC 1 on device 2
+ * for part 030-1305 and 1 for 030-1046. DIVO-DVC is not modelled.
+ */
+#define TYPE_SGI_DIVO_BOARD "sgi-divo"
+#define DIVO_BOARD_PIPES 2
+
+typedef struct DivoProduct {
+    const char *name;
+    const char *part;
+    const char *revision;
+    unsigned linc1_device;
+} DivoProduct;
+
+static const DivoProduct divo_products[] = {
+    { "divo", "030-1305-001", "E", 2 },
+    { "divo-1046", "030-1046-002", "F", 1 },
+};
+
+static const DivoProduct *divo_find_product(const char *name)
+{
+    for (int i = 0; i < ARRAY_SIZE(divo_products); i++) {
+        if (g_str_equal(divo_products[i].name, name)) {
+            return &divo_products[i];
+        }
+    }
+    return NULL;
+}
+
+static char *divo_get_product(Object *obj, Error **errp)
+{
+    return g_strdup(SGI_PCI_EXPANSION(obj)->divo_product);
+}
+
+static void divo_set_product(Object *obj, const char *value, Error **errp)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(obj);
+
+    if (!divo_find_product(value)) {
+        error_setg(errp, "unknown DIVO board product '%s'; the products "
+                   "are divo and divo-1046", value);
+        return;
+    }
+    g_free(s->divo_product);
+    s->divo_product = g_strdup(value);
+}
+
+static bool (*divo_board_parent_build_widget)(SGIXioBoardState *board,
+                                              Error **errp);
+
+static bool divo_board_build_widget(SGIXioBoardState *board, Error **errp)
+{
+    SGIPciExpansionState *s = SGI_PCI_EXPANSION(board);
+    const DivoProduct *product;
+    PCIBus *bus;
+
+    if (!s->divo_product) {
+        s->divo_product = g_strdup(divo_products[0].name);
+    }
+    product = divo_find_product(s->divo_product);
+    s->slots = product->linc1_device + 1;
+    g_free(s->board_part);
+    s->board_part = g_strdup(product->part);
+    g_free(s->board_revision);
+    s->board_revision = g_strdup(product->revision);
+    g_free(s->board_name);
+    s->board_name = g_strdup("DIVO");
+    if (!divo_board_parent_build_widget(board, errp)) {
+        return false;
+    }
+    bus = PCI_HOST_BRIDGE(s->bridge)->bus;
+    for (unsigned pipe = 0; pipe < DIVO_BOARD_PIPES; pipe++) {
+        g_autofree char *name = g_strdup_printf("linc%u", pipe);
+        PCIDevice *linc = pci_new(PCI_DEVFN(pipe ? product->linc1_device : 0,
+                                            0), "sgi-divo-linc");
+
+        object_property_add_child(OBJECT(board), name, OBJECT(linc));
+        if (!pci_realize_and_unref(linc, bus, errp)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+static void divo_board_instance_finalize(Object *obj)
+{
+    g_free(SGI_PCI_EXPANSION(obj)->divo_product);
+}
+
+static void divo_board_class_init(ObjectClass *oc, const void *data)
+{
+    DeviceClass *dc = DEVICE_CLASS(oc);
+    SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
+
+    dc->desc = "DIVO video XIO board (two LINC functions)";
+    object_class_property_add_str(oc, "product", divo_get_product,
+                                  divo_set_product);
+    object_class_property_set_description(oc, "product",
+        "divo (030-1305-001, the default) or divo-1046 (030-1046-002)");
+    divo_board_parent_build_widget = bc->build_widget;
+    bc->build_widget = divo_board_build_widget;
+}
+
 static const TypeInfo pci_expansion_types[] = {
     {
         .name = TYPE_SGI_PCI_EXPANSION,
@@ -477,6 +582,12 @@ static const TypeInfo pci_expansion_types[] = {
         .parent = TYPE_SGI_PCI_EXPANSION,
         .instance_finalize = fc_board_instance_finalize,
         .class_init = fc_board_class_init,
+    },
+    {
+        .name = TYPE_SGI_DIVO_BOARD,
+        .parent = TYPE_SGI_PCI_EXPANSION,
+        .instance_finalize = divo_board_instance_finalize,
+        .class_init = divo_board_class_init,
     },
 };
 
