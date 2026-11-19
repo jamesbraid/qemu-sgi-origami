@@ -33,6 +33,7 @@
 #define REG_LOADER_328      KONA_REG(0x800328)
 #define REG_MAPRAM(i)       KONA_REG(0x100000 + 4 * (uint64_t)(i))
 #define REG_ACTIVITY        KONA_REG(0x8003a8)
+#define REG_INTR_ACK        KONA_REG(0x800228)
 #define REG_RESET_STROBE    KONA_REG(0x800300)
 #define REG_DMA_FIFO_PUSH   KONA_REG(0x80007c)
 #define REG_INT_CAUSE       KONA_REG(0x800238)
@@ -943,9 +944,9 @@ static void test_reset_clears_cause_and_reason_page(void)
 /*
  * The activity latch: the driver's periodic timeout check's
  * read-then-write-4 round sees bit 0x4 only when a command-port, DMA FIFO
- * or load word arrived since the previous round. The fatal-error path's
- * write of 8 neither sets nor clears it and stays on the
- * unimplemented-write log.
+ * or load word arrived since the previous round. The writes of 1 and 8
+ * the retrace and fatal-error paths make are accepted and leave it alone;
+ * a bit above the four status bits stays on the unimplemented-write log.
  */
 static void test_activity_latch(void)
 {
@@ -956,6 +957,8 @@ static void test_activity_latch(void)
 
     g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, 0);
     kona_command(s, 0x1e9, (uint32_t[]){ 0 }, 1);
+    /* Sticky: a read does not clear it. */
+    g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
     g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
     qtest_writel(s, REG_ACTIVITY, ACTIVITY_BUS);
     g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, 0);
@@ -966,6 +969,9 @@ static void test_activity_latch(void)
     port_load(s, ARM_HIGH_BASE, (uint32_t[]){ 1 }, 1);
     g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
     qtest_writel(s, REG_ACTIVITY, 8);
+    qtest_writel(s, REG_ACTIVITY, 1);
+    g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
+    qtest_writel(s, REG_ACTIVITY, 0x10);
     g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
     qtest_writel(s, REG_ACTIVITY, ACTIVITY_BUS);
 
@@ -981,10 +987,40 @@ static void test_activity_latch(void)
 
     found = kona_log_read(log);
     g_assert_null(strstr(found, "unimplemented read of offset 0x8003a8"));
+    g_assert_null(strstr(found, "unimplemented write of offset 0x8003a8 "
+                                "(value 0x8)"));
+    g_assert_null(strstr(found, "unimplemented write of offset 0x8003a8 "
+                                "(value 0x1)"));
     g_assert_nonnull(strstr(found, "unimplemented write of offset 0x8003a8 "
-                                   "(value 0x8)"));
+                                   "(value 0x10)"));
     g_assert_null(strstr(found, "unimplemented write of offset 0x8003a8 "
                                 "(value 0x4)"));
+}
+
+/*
+ * The interrupt handler's acknowledge write is accepted with no side
+ * effect and no log line; a read of it still logs.
+ */
+static void test_intr_ack_accepted(void)
+{
+    g_autofree char *log = NULL;
+    g_autofree char *found = NULL;
+    QTestState *s = kona_init_logged(MACHINE_ARGS, "sgi_kona_kernel_command",
+                                     "unimp,guest_errors", &log);
+
+    kona_command(s, 0x1e9, (uint32_t[]){ 0 }, 1);
+    qtest_writel(s, REG_INTR_ACK, 0xbadc0ffe);
+    qtest_writel(s, REG_INTR_ACK, 0);
+    g_assert_cmphex(qtest_readl(s, REG_ACTIVITY), ==, ACTIVITY_BUS);
+    g_assert_cmphex(qtest_readl(s, REG_INT_CAUSE), ==, 0);
+    kona_command(s, 0x1e9, (uint32_t[]){ 0 }, 1);
+    /* Only the write is accepted; a read stays observable. */
+    qtest_readl(s, REG_INTR_ACK);
+    qtest_quit(s);
+
+    found = kona_log_read(log);
+    g_assert_nonnull(strstr(found, "unimplemented read of offset 0x800228"));
+    g_assert_null(strstr(found, "unimplemented write of offset 0x800228"));
 }
 
 /*
@@ -1674,6 +1710,8 @@ int main(int argc, char **argv)
                    test_reset_clears_cause_and_reason_page);
     qtest_add_func("sn0/origin2000/kona-bringup/activity-latch",
                    test_activity_latch);
+    qtest_add_func("sn0/origin2000/kona-bringup/intr-ack",
+                   test_intr_ack_accepted);
     qtest_add_func("sn0/origin2000/kona-bringup/named-registers-observable",
                    test_named_registers_observable);
     qtest_add_func("sn0/origin2000/kona-bringup/widget-reset-accesses",

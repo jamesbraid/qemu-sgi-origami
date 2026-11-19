@@ -827,26 +827,13 @@ typedef struct SGIKonaPendingSwap {
  */
 #define SGI_KONA_OUTPUT_DMA_FLUSH 0x800298
 
-/*
- * The watchdog activity register. While a driver timeout is pending, the
- * driver's periodic timeout check reads it every 500 ms, treats bit 0x4
- * as transaction-bus or ARM activity, and writes 4 back (established).
- * The model sets bit 0x4 whenever it consumes a command-port or load
- * word, and a write with bit 0x4 set clears it: both inferred from the
- * driver's no-activity message, not from a hardware description. The
- * value does not affect bring-up while the driver's full-timeouts tunable
- * keeps its default of 1. Other written bits (the fatal-error path writes
- * 8, the video interrupt handler 1) have no modeled meaning and stay on
- * the unimplemented-write log. A stock diagnostic tool's table names bit
- * 0 draw, bit 1 load, bit 2 active and bit 3 stall on the transaction bus
- * (inferred from the names); the model stalls nothing. The activity-latch
- * qtest checks the model's rule; what would check it against the driver
- * is a guest run with that tunable set to 0, which must not log the
- * driver's pipe-hang message, and against hardware a read of a real
- * pipe's register after it has been idle.
- */
+/* Pipe status: only active (bit 2) is modelled, see kona.rst. */
 #define SGI_KONA_ACTIVITY 0x8003a8
 #define SGI_KONA_ACTIVITY_BUS (1u << 2)
+#define SGI_KONA_ACTIVITY_MASK 0xfu
+
+/* Interrupt acknowledge: the write is accepted and dropped. */
+#define SGI_KONA_INTR_ACK 0x800228
 
 /*
  * Written 5 and 1 by the loader after the load, never read. A stock tool's

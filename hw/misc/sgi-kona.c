@@ -20230,12 +20230,14 @@ static void sgi_kona_write_word(void *opaque, hwaddr addr,
         if (value & SGI_KONA_ACTIVITY_BUS) {
             s->activity = false;
         }
-        if (value & ~(uint64_t)SGI_KONA_ACTIVITY_BUS) {
+        if (value & ~(uint64_t)SGI_KONA_ACTIVITY_MASK) {
             qemu_log_mask(LOG_UNIMP,
                           "sgi-kona: unimplemented write of offset "
                           "0x%" HWADDR_PRIx " (value 0x%" PRIx64 ")\n",
                           addr, value);
         }
+        break;
+    case SGI_KONA_INTR_ACK:
         break;
     case SGI_KONA_LOADER_3B0:
         s->loader_3b0 = value;
@@ -20394,7 +20396,7 @@ static SGIKonaAccess sgi_kona_access_kind(hwaddr addr, bool write)
     /*
      * The kernel reads and writes the low-window word while the pipe
      * works, its video interrupt handler writes the other two at every
-     * retrace (0x800228 is unmodelled and logged), and its timeout check
+     * retrace (the 0x800228 acknowledge is dropped), and its timeout check
      * reads the activity latch every 500 ms while it waits on the pipe;
      * the command stream reaches none of them. The latch reads set while
      * work waits, the pipe being busy, and the work sets it again as it
@@ -20403,7 +20405,7 @@ static SGIKonaAccess sgi_kona_access_kind(hwaddr addr, bool write)
     case SGI_KONA_LOW_WINDOW_WRITE:
     case SGI_KONA_ACTIVITY:
         return SGI_KONA_ACCESS_NOW;
-    case 0x800228:
+    case SGI_KONA_INTR_ACK:
         return write ? SGI_KONA_ACCESS_NOW : SGI_KONA_ACCESS_WAITS;
     default:
         if (addr >= SGI_KONA_MAPRAM_BASE &&

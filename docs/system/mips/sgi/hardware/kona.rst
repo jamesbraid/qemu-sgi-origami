@@ -347,11 +347,18 @@ pipe has been read.
      - 0
      - R/W
      - Stored and traced; the loader writes 1 and 5.
+   * - ``0x800228``
+     - Interrupt acknowledge
+     - n/a
+     - W
+     - Accepted and dropped; reads log ``LOG_UNIMP``.
    * - ``0x8003a8``
-     - Activity
+     - Pipe status
      - 0
      - R/W
-     - Bit 2 set by consumed command words; a write with bit 2 clears it.
+     - Bit 2 (active) reads set while work waits or runs, and stays set
+       after a consumed command word until a write with bit 2 clears it.
+       Bits 0, 1 and 3 read zero.
    * - ``0x8003c0``, ``0x8003d0``
      - Indirect selector and data
      - 0
@@ -1409,9 +1416,22 @@ Model limits
   ``0x133`` and ``0x1ff`` are consumed without effect.
 - The low-water and activity rules are the model's readings; the
   interrupt enable reads zero.
-- The kernel's interrupt handlers write ``0x800228``, which is not
-  modelled; that write, and any other unlisted register access, logs
-  ``LOG_UNIMP``.
+- The interrupt acknowledge at ``0x800228`` is write-only and its data
+  is ignored by every shipped caller (*software expectation*); whether
+  the hardware needs the write, or it clears a cause, is *unknown*. The
+  model drops it. Reads of it, and any other unlisted register access,
+  log ``LOG_UNIMP``.
+- The pipe status at ``0x8003a8`` is read with mask ``0xf``, and the
+  driver's watchdog tests bit 2 (active) and writes 4 back (*software
+  expectation*). The names draw 0, load 1, active 2 and stall 3 are
+  *inferred*, as is write-1-to-clear and so the bits being sticky. What
+  sets each bit and the reset value are *unknown*. The model sets active
+  while display-list work waits or runs and when it consumes a command-port,
+  DMA FIFO or load word, and never sets draw, load or stall; all of this
+  is an *approximation*. Its limit: a driver that polls while the pipe is
+  idle with a timeout pending sees active clear and logs "pipe hung",
+  which a real pipe may not show; no guest run has checked this. A write
+  above bit 3 logs ``LOG_UNIMP``.
 - The DMA FIFO push register's placement at ``0x80007c`` is a model
   choice; the kernel's own offset is ambiguous.
 - A list-write DMA packet's address is used as given, not translated
