@@ -16,6 +16,7 @@ import yaml
 MARK = re.compile(r"^(?P<indent> *)# @generated (?P<name>[a-z0-9-]+)$")
 END = re.compile(r"^ *# @end$")
 PROVENANCE = "vendor-document"
+ROLES = (12, 14)
 
 
 def _flow(items) -> str:
@@ -38,6 +39,37 @@ class Plan:
 
     def label(self, router: str) -> str:
         return self.routers[router]["label"]
+
+    def check(self, name: str = "plan") -> None:
+        """Refuse a plan the PROM or the router could not take."""
+        used = set()
+        for c in self.cbricks:
+            if "router" in c:
+                used.add((c["router"], c["port"]))
+        for link in self.links:
+            pa, pb = link_ports(link)
+            for router, port in ((link["a"], pa), (link["b"], pb)):
+                if (router, port) in used:
+                    raise ValueError(
+                        f"{name}: {router} port {port} is on two cables")
+                used.add((router, port))
+        for router in self.routers.values():
+            role = router.get("role")
+            if role is None:
+                continue
+            if role not in ROLES:
+                raise ValueError(
+                    f"{name}: {router['id']} role {role} is not 12 or 14")
+            if any(c.get("router") == router["id"] for c in self.cbricks):
+                raise ValueError(
+                    f"{name}: {router['id']} has a role and a C-brick; "
+                    "a MetaRouter has no hub on any port")
+
+
+def link_ports(link: dict) -> tuple[int, int]:
+    """The port at each end of a link; one number when the ends match."""
+    both = link.get("port")
+    return link.get("a_port", both), link.get("b_port", both)
 
 
 def _sources(block: dict) -> str:
@@ -67,13 +99,14 @@ def _cbrick_links(plan, block):
 def _link_ports(plan, block):
     out = []
     for link in plan.links:
-        a, b, port = link["a"], link["b"], link["port"]
-        for own, other in ((a, b), (b, a)):
+        a, b = link["a"], link["b"]
+        pa, pb = link_ports(link)
+        for own, other, mine, theirs in ((a, b, pa, pb), (b, a, pb, pa)):
             reason = block["reason"].format(
                 a=plan.label(a), b=plan.label(b), own=plan.label(own),
-                other=plan.label(other), port=port)
-            out += _entry(f"{own}-port-{port}", "cabled", reason, block,
-                          f"{other}-port-{port}")
+                other=plan.label(other), port=mine, other_port=theirs)
+            out += _entry(f"{own}-port-{mine}", "cabled", reason, block,
+                          f"{other}-port-{theirs}")
     return out
 
 
@@ -110,8 +143,9 @@ def _instances(plan, block):
                 f"  parent: {_entity(plan, prefix).get('parent', block['parent'])}"]
         if block.get("comment"):
             out.append(f"  # {block['comment']}")
-        if block.get("omit_buses"):
-            out.append(f"  omit_buses: {_bare(block['omit_buses'])}")
+        omit = _entity(plan, prefix).get("omit_buses", block.get("omit_buses"))
+        if omit:
+            out.append(f"  omit_buses: {_bare(omit)}")
         if block.get("alias"):
             out.append(f"  observed_hardware: *{block['alias']}")
     return out
@@ -123,10 +157,21 @@ def _aliases(plan, block):
 
 
 def _chassis_numbers(plan, block):
-    return [f"- {{component: {c['id']}-chassis, number: {c['unit']}, reason: "
+    items = (list(plan.routers.values()) if block.get("of") == "routers"
+             else plan.cbricks)
+    suffix = block.get("suffix", "-chassis")
+    return [f"- {{component: {c['id']}{suffix}, number: {c['unit']}, reason: "
             + json.dumps(block["reason"].format(unit=c["unit"], rack=c.get("rack", "")),
                          ensure_ascii=False) + "}"
-            for c in plan.cbricks]
+            for c in items]
+
+
+def _router_roles(plan, block):
+    return [f"- {{component: {r['id']}-router, role: {r['role']}, reason: "
+            + json.dumps(block["reasons"][r["role"]].format(
+                r=r["label"], unit=r.get("unit", ""), rack=r.get("rack", "")),
+                ensure_ascii=False) + "}"
+            for r in plan.routers.values() if "role" in r]
 
 
 def _identities(plan, block):
@@ -142,10 +187,11 @@ def _identities(plan, block):
 def _link_buses(plan, block):
     out = []
     for link in plan.links:
-        a, b, port = link["a"], link["b"], link["port"]
+        a, b = link["a"], link["b"]
+        pa, pb = link_ports(link)
         la, lb = plan.label(a), plan.label(b)
         out += [f"- id: {link['id']}",
-                f"  name: NUMAlink 3 cable, {la} port {port} to {lb} port {port}",
+                f"  name: NUMAlink 3 cable, {la} port {pa} to {lb} port {pb}",
                 "  kind: fabric", f"  master: {a}-router",
                 "  link: {kind: cable}", f"  provenance: {PROVENANCE}",
                 f"  sources: {_bare(block['sources'])}",
@@ -171,11 +217,12 @@ def _cbrick_cables(plan, block):
 def _link_connections(plan, block):
     out = []
     for link in plan.links:
-        a, b, port, bus = link["a"], link["b"], link["port"], link["id"]
-        out += [_row(f"{a}-router", bus, "master", block, port),
-                _row(f"{b}-router", bus, "endpoint", block, port),
-                _row(f"{a}-port-{port}", bus, "endpoint", block, port),
-                _row(f"{b}-port-{port}", bus, "endpoint", block, port)]
+        a, b, bus = link["a"], link["b"], link["id"]
+        pa, pb = link_ports(link)
+        out += [_row(f"{a}-router", bus, "master", block, pa),
+                _row(f"{b}-router", bus, "endpoint", block, pb),
+                _row(f"{a}-port-{pa}", bus, "endpoint", block, pa),
+                _row(f"{b}-port-{pb}", bus, "endpoint", block, pb)]
     return out
 
 
@@ -183,7 +230,8 @@ KINDS = {
     "cbrick-links": _cbrick_links, "link-ports": _link_ports,
     "empty-ports": lambda plan, block: _empty_ports(block), "empty-components": _empty_components,
     "instances": _instances, "aliases": _aliases,
-    "chassis-numbers": _chassis_numbers, "identities": _identities,
+    "chassis-numbers": _chassis_numbers, "router-roles": _router_roles,
+    "identities": _identities,
     "link-buses": _link_buses, "cbrick-cables": _cbrick_cables,
     "link-connections": _link_connections,
 }
@@ -221,7 +269,9 @@ def expand(text: str, plan: Plan, path) -> tuple[str, set]:
 
 
 def load_plan(path: pathlib.Path) -> Plan:
-    return Plan(yaml.safe_load(path.read_text()))
+    plan = Plan(yaml.safe_load(path.read_text()))
+    plan.check(path.name)
+    return plan
 
 
 def plan_files(models: pathlib.Path, plan_path: pathlib.Path):
