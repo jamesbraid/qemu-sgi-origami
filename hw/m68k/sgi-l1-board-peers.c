@@ -13,6 +13,7 @@
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "monitor/qdev.h"
+#include "hw/core/irq.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/resettable.h"
 #include "hw/core/sysbus.h"
@@ -36,6 +37,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(BusSelect, SGI_L1_BUS_SELECT)
 #define TYPE_SGI_L1_DISPLAY "sgi-l1-display"
 OBJECT_DECLARE_SIMPLE_TYPE(Display, SGI_L1_DISPLAY)
 
+#define TYPE_SGI_L1_CBRICK_SIGNALS "sgi-l1-cbrick-signals"
+OBJECT_DECLARE_SIMPLE_TYPE(CBrickSignals, SGI_L1_CBRICK_SIGNALS)
+
 #define SELECT_ADDR7        0x27    /* wire address 0x4e */
 #define SELECT_OFF          0xff    /* every segment off */
 
@@ -54,6 +58,8 @@ struct Expander {
 
     uint8_t input_mask;
     uint8_t latch;
+    /* Each write drives this with the whole byte as its level. */
+    qemu_irq out;
 };
 
 struct BusSelect {
@@ -161,6 +167,7 @@ static int expander_send(I2CSlave *s, uint8_t data)
     e->latch = data;
     trace_sgi_l1_expander_write(s->address << 1,
                                 SGI_L1_SEGMENT_TARGET(s)->segment, data);
+    qemu_set_irq(e->out, data);
     return 0;
 }
 
@@ -173,6 +180,12 @@ static uint8_t expander_recv(I2CSlave *s)
     trace_sgi_l1_expander_read(s->address << 1,
                                SGI_L1_SEGMENT_TARGET(s)->segment, val);
     return val;
+}
+
+static void expander_init(Object *obj)
+{
+    qdev_init_gpio_out_named(DEVICE(obj), &SGI_L1_EXPANDER(obj)->out,
+                             "latch", 1);
 }
 
 static void expander_reset_hold(Object *obj, ResetType type)
@@ -385,6 +398,108 @@ static void display_class_init(ObjectClass *oc, const void *data)
                                   NULL);
 }
 
+/* The C-brick's signal decode: logical events, the pins are unknown. */
+#define SIG_FAN         0
+#define SIG_BEDROCK1    1
+#define SIG_BEDROCK2    2
+#define SIG_REGS        3
+
+#define SIG_NODE_POWER  0
+#define SIG_RESET_HOLD  1
+#define SIG_SOFT_RESET  2
+#define SIG_NMI         3
+#define SIG_LINES       4
+
+/* What the firmware writes at a cold start: supplies off, reset held. */
+static const uint8_t signal_cold[SIG_REGS] = { 0xff, 0x72, 0x8a };
+static const char *const signal_reg_names[SIG_REGS] = {
+    "fan", "bedrock1", "bedrock2"
+};
+static const char *const signal_line_names[SIG_LINES] = {
+    "node-power", "reset-hold", "soft-reset", "nmi"
+};
+
+typedef struct SignalReg {
+    CBrickSignals *d;
+    uint8_t val;
+} SignalReg;
+
+/* A sysbus device so the machine reset reaches it; it has no registers. */
+struct CBrickSignals {
+    SysBusDevice parent_obj;
+
+    SignalReg reg[SIG_REGS];
+    qemu_irq out[SIG_LINES];
+    int8_t level[SIG_LINES];    /* last driven; -1 before the first reset */
+};
+
+static void signals_update(CBrickSignals *d)
+{
+    uint8_t fan = d->reg[SIG_FAN].val;
+    uint8_t b1 = d->reg[SIG_BEDROCK1].val;
+    uint8_t b2 = d->reg[SIG_BEDROCK2].val;
+    bool level[SIG_LINES];
+    int i;
+
+    /* FAN bit 7 enables the 48 V supply; low is on. */
+    level[SIG_NODE_POWER] = !(fan & 0x80);
+    /* Held while any of the three bits the firmware clears is clear. */
+    level[SIG_RESET_HOLD] = !(b1 & 0x01) || !(b1 & 0x02) || !(b2 & 0x01);
+    level[SIG_SOFT_RESET] = b1 & 0x80;
+    level[SIG_NMI] = !(b1 & 0x40);
+    for (i = 0; i < SIG_LINES; i++) {
+        if (d->level[i] != level[i]) {
+            d->level[i] = level[i];
+            trace_sgi_l1_signal_decode(signal_line_names[i], level[i],
+                                       fan, b1, b2);
+            qemu_set_irq(d->out[i], level[i]);
+        }
+    }
+}
+
+static void signals_reg_in(void *opaque, int n, int level)
+{
+    SignalReg *r = opaque;
+
+    r->val = level;
+    signals_update(r->d);
+}
+
+static void signals_init(Object *obj)
+{
+    CBrickSignals *d = SGI_L1_CBRICK_SIGNALS(obj);
+    DeviceState *dev = DEVICE(obj);
+    int i;
+
+    for (i = 0; i < SIG_REGS; i++) {
+        d->reg[i].d = d;
+        qdev_init_gpio_in_named_with_opaque(dev, signals_reg_in, &d->reg[i],
+                                            signal_reg_names[i], 1);
+    }
+    for (i = 0; i < SIG_LINES; i++) {
+        d->level[i] = -1;
+        qdev_init_gpio_out_named(dev, &d->out[i], signal_line_names[i], 1);
+    }
+}
+
+/* Until the firmware writes the expanders, the lines are its cold values. */
+static void signals_reset_hold(Object *obj, ResetType type)
+{
+    CBrickSignals *d = SGI_L1_CBRICK_SIGNALS(obj);
+    int i;
+
+    for (i = 0; i < SIG_REGS; i++) {
+        d->reg[i].val = signal_cold[i];
+    }
+    signals_update(d);
+}
+
+static void signals_class_init(ObjectClass *oc, const void *data)
+{
+    DEVICE_CLASS(oc)->desc = "SGI L1 board C-brick signal decode";
+    RESETTABLE_CLASS(oc)->phases.hold = signals_reset_hold;
+}
+
 /* Chip select 3: the probe's registers and the activity bit. */
 #define USB_WINDOW_SIZE     (64 * KiB)
 #define USB_REVISION_REG    0x18
@@ -513,6 +628,7 @@ static const TypeInfo peer_types[] = {
         .name          = TYPE_SGI_L1_EXPANDER,
         .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
         .instance_size = sizeof(Expander),
+        .instance_init = expander_init,
         .class_init    = expander_class_init,
     },
     {
@@ -526,6 +642,13 @@ static const TypeInfo peer_types[] = {
         .parent        = TYPE_SGI_L1_SEGMENT_TARGET,
         .instance_size = sizeof(Display),
         .class_init    = display_class_init,
+    },
+    {
+        .name          = TYPE_SGI_L1_CBRICK_SIGNALS,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(CBrickSignals),
+        .instance_init = signals_init,
+        .class_init    = signals_class_init,
     },
     {
         .name          = TYPE_SGI_L1_USB_WINDOW,
@@ -549,6 +672,7 @@ static const struct {
     uint8_t wire;
     uint8_t segment;
     uint8_t input_mask;
+    const char *signal;     /* the decode input this expander feeds */
 } expanders[] = {
     { 0x40, 0, 0x0f },  /* display control */
     { 0x42, 2, 0xff },  /* LED 0 low */
@@ -556,12 +680,12 @@ static const struct {
     { 0x46, 2, 0xff },  /* LED 1 low */
     { 0x48, 2, 0xff },  /* LED 1 high */
     { 0x4c, 2, 0xf1 },  /* COM control */
-    { 0x42, 3, 0x00 },  /* Bedrock control 1 */
-    { 0x44, 3, 0x00 },  /* Bedrock control 2 */
+    { 0x42, 3, 0x00, "bedrock1" },  /* Bedrock control 1 */
+    { 0x44, 3, 0x00, "bedrock2" },  /* Bedrock control 2 */
     { 0x46, 3, 0x55 },  /* port control */
     { 0x48, 3, 0xde },  /* power control */
     { 0x4a, 3, 0xff },  /* processor module presence */
-    { 0x4c, 3, 0x40 },  /* fan control */
+    { 0x4c, 3, 0x40, "fan" },       /* fan control */
 };
 
 static const struct {
@@ -572,11 +696,21 @@ static const struct {
     { 0x5c, 4 }, { 0x5e, 4 },               /* processor module 0 A and B */
 };
 
-void sgi_l1_cbrick_peers_fit(I2CBus *bus)
+void sgi_l1_cbrick_peers_fit(I2CBus *bus, DeviceState *signals)
 {
     I2CSlave *sel = i2c_slave_new(TYPE_SGI_L1_BUS_SELECT, SELECT_ADDR7);
+    DeviceState *decode = NULL;
     I2CSlave *d;
     int i;
+
+    if (signals) {
+        decode = qdev_new(TYPE_SGI_L1_CBRICK_SIGNALS);
+        for (i = 0; i < SIG_LINES; i++) {
+            qdev_connect_gpio_out_named(decode, signal_line_names[i], 0,
+                qdev_get_gpio_in_named(signals, signal_line_names[i], 0));
+        }
+        sysbus_realize_and_unref(SYS_BUS_DEVICE(decode), &error_abort);
+    }
 
     qdev_set_id(DEVICE(sel), g_strdup("l1-bus-select"), &error_abort);
     i2c_slave_realize_and_unref(sel, bus, &error_abort);
@@ -589,6 +723,10 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus)
         qdev_prop_set_uint8(dev, "input-mask", expanders[i].input_mask);
         object_property_set_link(OBJECT(e), "bus-select", OBJECT(sel),
                                  &error_abort);
+        if (decode && expanders[i].signal) {
+            qdev_connect_gpio_out_named(dev, "latch", 0,
+                qdev_get_gpio_in_named(decode, expanders[i].signal, 0));
+        }
         i2c_slave_realize_and_unref(e, bus, &error_abort);
     }
     for (i = 0; i < ARRAY_SIZE(monitors); i++) {

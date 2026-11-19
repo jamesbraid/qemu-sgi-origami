@@ -17,9 +17,11 @@
 #include "qemu/error-report.h"
 #include "qemu/datadir.h"
 #include "target/m68k/cpu.h"
+#include "chardev/char.h"
 #include "hw/core/boards.h"
 #include "hw/core/irq.h"
 #include "hw/core/or-irq.h"
+#include "monitor/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
 #include "hw/char/serial-mm.h"
@@ -71,6 +73,9 @@ struct L1BoardMachine {
     char *node_board_part;
     char *node_board_revision;
     char *mac;
+    /* The chardev id of the signal link to the machine, and its epoch. */
+    char *signals;
+    uint32_t signal_epoch;
 
     struct L1Board *board;
     /* Fit the C-brick's polled devices; needs brick-type=cbrick. */
@@ -195,6 +200,7 @@ L1_BOARD_STRING_PROPERTY(node_board_name)
 L1_BOARD_STRING_PROPERTY(node_board_part)
 L1_BOARD_STRING_PROPERTY(node_board_revision)
 L1_BOARD_STRING_PROPERTY(mac)
+L1_BOARD_STRING_PROPERTY(signals)
 
 static void l1_board_add_identity_eeprom(I2CBus *bus, uint8_t addr7,
                                          GByteArray *chassis,
@@ -291,6 +297,39 @@ static void l1_board_set_board_peers(Object *obj, bool value, Error **errp)
     L1_BOARD_MACHINE(obj)->board_peers = value;
 }
 
+/* The board end of the signal link, or NULL when no chardev is named. */
+static DeviceState *l1_board_signal_link(L1BoardMachine *m)
+{
+    DeviceState *dev;
+    Chardev *chr;
+
+    if (!m->signals) {
+        return NULL;
+    }
+    chr = qemu_chr_find(m->signals);
+    if (!chr) {
+        error_setg(&error_fatal, "chardev '%s' not found", m->signals);
+    }
+    dev = qdev_new("sgi-l1-signal-link-board");
+    qdev_prop_set_chr(dev, "signals", chr);
+    qdev_prop_set_uint32(dev, "epoch", m->signal_epoch);
+    qdev_set_id(dev, g_strdup("l1-signals"), &error_abort);
+    qdev_realize_and_unref(dev, NULL, &error_fatal);
+    return dev;
+}
+
+static void l1_board_instance_init(Object *obj)
+{
+    L1BoardMachine *m = L1_BOARD_MACHINE(obj);
+
+    m->signal_epoch = 1;
+    object_property_add_uint32_ptr(obj, "signal-epoch", &m->signal_epoch,
+                                   OBJ_PROP_FLAG_READWRITE);
+    object_property_set_description(obj, "signal-epoch",
+        "Number the machine tells a restart of this process by; pass a new "
+        "one for each restart");
+}
+
 static void l1_board_init(MachineState *machine)
 {
     L1BoardMachine *lm = L1_BOARD_MACHINE(machine);
@@ -326,7 +365,10 @@ static void l1_board_init(MachineState *machine)
         if (!lm->brick_type || strcmp(lm->brick_type, "cbrick")) {
             error_setg(&error_fatal, "board-peers needs brick-type=cbrick");
         }
-        sgi_l1_cbrick_peers_fit(mcf5206e_sim_mbus(b->sim));
+        sgi_l1_cbrick_peers_fit(mcf5206e_sim_mbus(b->sim),
+                                l1_board_signal_link(lm));
+    } else if (lm->signals) {
+        error_setg(&error_fatal, "signals needs board-peers");
     }
 
     /* CS1: clock RAM. */
@@ -440,6 +482,11 @@ static void l1_board_class_init(ObjectClass *oc, const void *data)
         "Fit the C-brick's bus select, expanders and monitors on the "
         "two-wire bus and the management USB controller's registers; "
         "needs brick-type=cbrick");
+    object_class_property_add_str(oc, "signals", l1_board_get_signals,
+                                  l1_board_set_signals);
+    object_class_property_set_description(oc, "signals",
+        "Id of a socket chardev that carries the node's power, reset hold, "
+        "soft reset and NMI lines to the machine; needs board-peers");
     object_class_property_add_str(oc, "mac", l1_board_get_mac,
                                   l1_board_set_mac);
     object_class_property_set_description(oc, "mac",
@@ -450,6 +497,7 @@ static const TypeInfo l1_board_machine_info = {
     .name          = TYPE_L1_BOARD_MACHINE,
     .parent        = TYPE_MACHINE,
     .instance_size = sizeof(L1BoardMachine),
+    .instance_init = l1_board_instance_init,
     .class_init    = l1_board_class_init,
 };
 

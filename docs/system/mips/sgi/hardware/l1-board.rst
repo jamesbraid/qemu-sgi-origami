@@ -878,6 +878,64 @@ forty-six other bytes to endpoint, status and interrupt registers; the model
 logs them as unimplemented accesses and ignores them, and what they enable is
 *unknown*. Every other offset is a logged unimplemented access that reads zero.
 
+.. _sgi-l1-board-signals:
+
+Signals to the machine
+----------------------
+
+``signals=ID`` names a socket chardev, and the board then carries the C-brick's
+node supply, reset hold, soft reset and NMI to a machine process over an
+``sgi-l1-signal-link-board`` (:ref:`sgi-l1-signal-link`). It needs
+``board-peers``, because the lines come from the expanders above, and the
+machine refuses to start without it or with an unknown chardev. ``signal-epoch``
+is the number the machine tells a restart of this process by (default 1); the
+launcher must pass a new one for each restart. The device is
+``/machine/peripheral/l1-signals``; its ``up`` and ``lines`` properties show the
+link and the levels.
+
+Each write to Bedrock control 1, Bedrock control 2 or fan control hands the
+whole byte to a decode, which recomputes four lines and sends the ones that
+changed (*software expectation* for every bit and its sense; the first three
+rows follow the C-brick table in the two-wire bus sheet):
+
+.. list-table::
+   :header-rows: 1
+   :widths: 16 84
+
+   * - Line
+     - Asserted when
+   * - ``node-power``
+     - fan control bit 7 is clear (the first of the supply enables, active
+       low); *inferred* to be the node's main supply
+   * - ``reset-hold``
+     - any of Bedrock control 1 bit 0, bit 1 or Bedrock control 2 bit 0 is
+       clear; *inferred* from the firmware clearing all three to hold and
+       setting them last to release
+   * - ``soft-reset``
+     - Bedrock control 1 bit 7 is set (the firmware sets it, waits and clears
+       it)
+   * - ``nmi``
+     - Bedrock control 1 bit 6 is clear (it idles set); one node board, so
+       line ``nmi.0``
+
+Which pin of the node chip any bit reaches, its polarity there, and whether a
+soft reset and an NMI are separate inputs are *unknown*, so a line is a logical
+event and the decode an *approximation*. Writes that change none of the four
+lines send nothing, and no other expander is decoded; every write is still
+traced as ``sgi_l1_expander_write`` and each line change as
+``sgi_l1_signal_decode``. Before the firmware writes anything, and after every
+board reset, the three bytes are the cold-start values it applies (fan control
+``0xff``, Bedrock control 1 ``0x72``, Bedrock control 2 ``0x8a``): supplies off,
+reset held, an *approximation* of a part whose own power-on state is *unknown*.
+A reset of the board therefore lowers ``node-power`` and raises ``reset-hold``
+as changes: the firmware's restart that keeps a powered brick's outputs
+(*software expectation*) is not modelled, the expander latches go back to
+``0xff``, and a node left powered loses its supply.
+
+The machine's two lines, ``power-good`` and ``node-reset-state``, arrive and are
+traced and held. Nothing on the C-brick reads either, so nothing is connected
+to them. The Origin 300, I-brick and R-brick decodes are not modelled.
+
 .. _sgi-l1-board-identity-run:
 
 What the firmware does with the identity part
@@ -980,7 +1038,8 @@ board.
 Model limits
 ============
 
-- The board has no node, no link to another controller and no
+- The board has no node and no link to another controller. Its only link to a
+  node is the signal link above, which carries four logical lines. It has no
   environmental peers: the two-wire bus carries only the identity parts
   :ref:`sgi-l1-board-mbus-peers` lists, and with ``board-peers`` the devices
   :ref:`sgi-l1-board-cbrick-peers` lists, which answer the firmware's calls but
@@ -1021,7 +1080,13 @@ revision refusing a write, bit 0 of ``0x1c`` reading back and clearing on
 reset, and any other offset logging and reading zero. The processor module 0
 monitors are checked on segment 4 for their independence from the node
 monitor at the same wire address, and the display for its write forms, its
-read and its answering under any select byte. The functional test boots the
+read and its answering under any select byte. With ``signals`` a test-owned
+peer plays the machine from a socket: the board's hello and its cold-start
+state, each decoded bit and the bits that move nothing, the hold needing all
+three bits and releasing on the last, a board reset restoring the cold values as
+changes, a reconnect restating the levels without replaying a pulse made
+meanwhile, the machine's lines being accepted, and the two refusals. The
+functional test boots the
 C-brick with ``board-peers`` and checks which reports are gone, that the
 supply table reads, what ``env`` prints, and that the only address the
 firmware calls without an acknowledge is the memory module records'.

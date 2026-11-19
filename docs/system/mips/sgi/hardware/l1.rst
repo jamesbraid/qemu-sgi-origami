@@ -1230,7 +1230,8 @@ hello carries role 2 and it refuses any peer that is not role 1. It mirrors
 lines 8 and 9 to GPIO outputs ``power-good`` and ``node-reset-state``, and
 takes a change on no other line. After a reconnect its state carries the
 levels of lines 1 to 7, so a pulse made while the link was down is not
-replayed.
+replayed. The ``sgi-l1-board`` machine creates it
+(:ref:`sgi-l1-board-signals`).
 
 Every message is 9 bytes, big endian: a kind (1 hello, 2 change, 3 state),
 a 32-bit sequence number, a line byte, a 16-bit level and a check byte, the

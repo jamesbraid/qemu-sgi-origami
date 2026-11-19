@@ -12,5 +12,6 @@ sgi_l1_expander_read(uint8_t wire, uint8_t segment, uint8_t value) "wire 0x%02x 
 sgi_l1_monitor_write(uint8_t wire, uint8_t segment, uint8_t reg, uint8_t value) "wire 0x%02x segment %u register 0x%02x write 0x%02x"
 sgi_l1_monitor_read(uint8_t wire, uint8_t segment, uint8_t reg, uint8_t value) "wire 0x%02x segment %u register 0x%02x read 0x%02x"
 sgi_l1_display_write(uint8_t value) "write 0x%02x"
+sgi_l1_signal_decode(const char *line, bool level, uint8_t fan, uint8_t bedrock1, uint8_t bedrock2) "line %s level %d (fan 0x%02x bedrock1 0x%02x bedrock2 0x%02x)"
 sgi_l1_usb_read(uint64_t offset, uint8_t value) "offset 0x%" PRIx64 " read 0x%02x"
 sgi_l1_usb_write(uint64_t offset, uint8_t value) "offset 0x%" PRIx64 " write 0x%02x"

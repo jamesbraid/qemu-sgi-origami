@@ -9,7 +9,12 @@
  */
 
 #include "qemu/osdep.h"
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include "qemu/bswap.h"
 #include "libqtest.h"
+#include "qobject/qdict.h"
 
 #define FLASH_SIZE      (1024 * 1024)
 #define FLASH_BASE      0xffe00000u
@@ -1816,12 +1821,13 @@ static void test_peers_default_unfitted(void)
     quit_all(qts, &f);
 }
 
-/* board-peers is for the C-brick: the machine refuses to start without. */
-static void test_peers_need_cbrick(void)
+/* The machine must exit non-zero with @message; under -S it never would. */
+static void expect_refused(const char *machine, const char *chardev,
+                           const char *message)
 {
     const char *bin = qtest_qemu_binary(NULL);
-    const char *argv[] = { bin, "-machine", "sgi-l1-board,board-peers=on",
-                           "-display", "none", "-S", NULL };
+    const char *argv[] = { bin, "-machine", machine, "-display", "none", "-S",
+                           chardev ? "-chardev" : NULL, chardev, NULL };
     g_autoptr(GString) err = g_string_new(NULL);
     gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
     GError *gerr = NULL;
@@ -1835,13 +1841,12 @@ static void test_peers_need_cbrick(void)
                                            NULL, &pid, NULL, NULL, &errfd,
                                            &gerr));
     g_assert_no_error(gerr);
-    /* A machine that starts instead of refusing never exits under -S. */
     while (waitpid(pid, &status, WNOHANG) == 0) {
         if (g_get_monotonic_time() > end) {
             kill(pid, SIGKILL);
             waitpid(pid, &status, 0);
             close(errfd);
-            g_test_message("board-peers without a C-brick was accepted");
+            g_test_message("'%s' was accepted", machine);
             g_assert_not_reached();
         }
         g_usleep(10000);
@@ -1852,7 +1857,14 @@ static void test_peers_need_cbrick(void)
     close(errfd);
     g_assert_true(WIFEXITED(status));
     g_assert_cmpint(WEXITSTATUS(status), !=, 0);
-    g_assert_nonnull(strstr(err->str, "board-peers needs brick-type=cbrick"));
+    g_assert_nonnull(strstr(err->str, message));
+}
+
+/* board-peers is for the C-brick: the machine refuses to start without. */
+static void test_peers_need_cbrick(void)
+{
+    expect_refused("sgi-l1-board,board-peers=on", NULL,
+                   "board-peers needs brick-type=cbrick");
 }
 
 /* The select expander switches segments 2 to 13 and leaves segment 0. */
@@ -2342,6 +2354,343 @@ static void test_peers_usb(void)
     flash_free(&f);
 }
 
+/* The signal link: the test plays the machine from a socket it listens on. */
+#define SIG_DEV     "/machine/peripheral/l1-signals"
+#define SIG_EPOCH   7
+#define MSG_LEN     9
+
+enum { SIG_HELLO = 1, SIG_CHANGE, SIG_STATE };
+enum { SIG_NODE_POWER = 1, SIG_RESET_HOLD, SIG_SOFT_RESET, SIG_NMI0 };
+
+typedef struct Sig {
+    Flash f;
+    QTestState *qts;
+    char *dir;
+    char *path;
+    int listener;
+    int fd;
+} Sig;
+
+typedef struct SigMsg {
+    unsigned kind, line, level;
+    uint32_t seq;
+} SigMsg;
+
+static uint8_t sig_crc8(const uint8_t *m, size_t len)
+{
+    uint8_t crc = 0;
+
+    for (size_t i = 0; i < len; i++) {
+        crc ^= m[i];
+        for (int bit = 0; bit < 8; bit++) {
+            crc = (crc & 0x80) ? (crc << 1) ^ 0x07 : crc << 1;
+        }
+    }
+    return crc;
+}
+
+static void sig_listen(Sig *g)
+{
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+
+    g->listener = socket(AF_UNIX, SOCK_STREAM, 0);
+    g_assert_cmpint(g->listener, >=, 0);
+    g_assert_cmpuint(strlen(g->path), <, sizeof(address.sun_path));
+    strcpy(address.sun_path, g->path);
+    g_assert_cmpint(bind(g->listener, (struct sockaddr *)&address,
+                         sizeof(address)), ==, 0);
+    g_assert_cmpint(listen(g->listener, 1), ==, 0);
+}
+
+static void sig_start(Sig *g, const char *machine_extra)
+{
+    g_autofree char *machine = NULL;
+    g_autofree char *extra = NULL;
+    GError *error = NULL;
+
+    g->dir = g_dir_make_tmp("sgi-l1-board-signals-XXXXXX", &error);
+    g_assert_no_error(error);
+    g->path = g_build_filename(g->dir, "signals.sock", NULL);
+    g->fd = -1;
+    sig_listen(g);
+    machine = g_strdup_printf("%s,signals=sig,signal-epoch=%d", PEERS_CBRICK,
+                              SIG_EPOCH);
+    extra = g_strdup_printf("-chardev socket,id=sig,path=%s,reconnect-ms=50 %s",
+                            g->path, machine_extra);
+    g->qts = board_start(&g->f, machine, extra);
+}
+
+static void sig_stop(Sig *g)
+{
+    if (g->fd >= 0) {
+        close(g->fd);
+    }
+    close(g->listener);
+    unlink(g->path);
+    quit_all(g->qts, &g->f);
+    rmdir(g->dir);
+    g_free(g->path);
+    g_free(g->dir);
+}
+
+static uint64_t sig_prop(Sig *g, const char *name)
+{
+    QDict *resp = qtest_qmp(g->qts, "{'execute':'qom-get','arguments':"
+                            "{'path':%s,'property':%s}}", SIG_DEV, name);
+    uint64_t v = qdict_get_int(resp, "return");
+
+    qobject_unref(resp);
+    return v;
+}
+
+static void sig_wait(Sig *g, const char *name, uint64_t want)
+{
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+
+    while (sig_prop(g, name) != want) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(1000);
+    }
+}
+
+static void sig_wait_up(Sig *g, uint64_t want)
+{
+    sig_wait(g, "up", want);
+}
+
+static void sig_send(Sig *g, unsigned kind, uint32_t seq, unsigned line,
+                     unsigned level)
+{
+    uint8_t m[MSG_LEN];
+
+    m[0] = kind;
+    stl_be_p(m + 1, seq);
+    m[5] = line;
+    stw_be_p(m + 6, level);
+    m[8] = sig_crc8(m, MSG_LEN - 1);
+    g_assert_cmpint(send(g->fd, m, MSG_LEN, 0), ==, MSG_LEN);
+}
+
+static void sig_accept(Sig *g)
+{
+    struct pollfd p = { .fd = g->listener, .events = POLLIN };
+
+    g_assert_cmpint(poll(&p, 1, RUN_TIMEOUT_US / 1000), ==, 1);
+    g->fd = accept(g->listener, NULL, NULL);
+    g_assert_cmpint(g->fd, >=, 0);
+    sig_wait_up(g, 1);
+}
+
+static void sig_recv(Sig *g, SigMsg *msg)
+{
+    uint8_t m[MSG_LEN];
+
+    for (size_t got = 0; got < MSG_LEN;) {
+        struct pollfd p = { .fd = g->fd, .events = POLLIN };
+        ssize_t n;
+
+        g_assert_cmpint(poll(&p, 1, RUN_TIMEOUT_US / 1000), ==, 1);
+        n = read(g->fd, m + got, MSG_LEN - got);
+        g_assert_cmpint(n, >, 0);
+        got += n;
+    }
+    g_assert_cmphex(m[8], ==, sig_crc8(m, MSG_LEN - 1));
+    msg->kind = m[0];
+    msg->seq = ldl_be_p(m + 1);
+    msg->line = m[5];
+    msg->level = lduw_be_p(m + 6);
+}
+
+static bool sig_readable(Sig *g)
+{
+    struct pollfd p = { .fd = g->fd, .events = POLLIN };
+
+    return poll(&p, 1, 100) == 1;
+}
+
+/* The board's opening: its hello, then its state. */
+static void sig_expect_open(Sig *g, uint32_t seq, unsigned levels)
+{
+    SigMsg m;
+
+    sig_recv(g, &m);
+    g_assert_cmpuint(m.kind, ==, SIG_HELLO);
+    g_assert_cmpuint(m.seq, ==, SIG_EPOCH);
+    g_assert_cmpuint(m.line, ==, 1);
+    g_assert_cmpuint(m.level, ==, 2);
+    sig_recv(g, &m);
+    g_assert_cmpuint(m.kind, ==, SIG_STATE);
+    g_assert_cmpuint(m.seq, ==, seq);
+    g_assert_cmpuint(m.line, ==, 9);
+    g_assert_cmphex(m.level, ==, levels);
+}
+
+static void sig_expect_change(Sig *g, uint32_t seq, unsigned line,
+                              unsigned level)
+{
+    SigMsg m;
+
+    sig_recv(g, &m);
+    g_assert_cmpuint(m.kind, ==, SIG_CHANGE);
+    g_assert_cmpuint(m.seq, ==, seq);
+    g_assert_cmpuint(m.line, ==, line);
+    g_assert_cmpuint(m.level, ==, level);
+}
+
+/* Bedrock control 1 and 2 and fan control are on segment 3. */
+static void sig_write(Sig *g, uint8_t wire, uint8_t val)
+{
+    select_segment(g->qts, 0xb8);
+    g_assert_true(byte_write(g->qts, wire, val));
+}
+
+#define SIG_FAN         0x4c
+#define SIG_BEDROCK1    0x42
+#define SIG_BEDROCK2    0x44
+
+/* Before the firmware writes anything the lines are its cold values. */
+static void test_signals_cold_open(void)
+{
+    Sig g;
+
+    sig_start(&g, "");
+    sig_accept(&g);
+    /* One change at reset: the reset group is held. */
+    sig_expect_open(&g, 1, 1u << (SIG_RESET_HOLD - 1));
+    g_assert_false(sig_readable(&g));
+    sig_stop(&g);
+}
+
+/* Each decoded bit is a change; bits the decode does not name are not. */
+static void test_signals_decode(void)
+{
+    Sig g;
+
+    sig_start(&g, "");
+    sig_accept(&g);
+    sig_expect_open(&g, 1, 2);
+
+    /* The 48 V enable is FAN CONTROL bit 7, active low. */
+    sig_write(&g, SIG_FAN, 0x7f);
+    sig_expect_change(&g, 2, SIG_NODE_POWER, 1);
+    sig_write(&g, SIG_FAN, 0x3f);
+    sig_write(&g, SIG_FAN, 0xff);
+    sig_expect_change(&g, 3, SIG_NODE_POWER, 0);
+
+    /* The hold lasts until all three bits are set, the last one last. */
+    sig_write(&g, SIG_BEDROCK1, 0x73);
+    sig_write(&g, SIG_BEDROCK2, 0x03);
+    sig_expect_change(&g, 4, SIG_RESET_HOLD, 0);
+    sig_write(&g, SIG_BEDROCK2, 0x02);
+    sig_expect_change(&g, 5, SIG_RESET_HOLD, 1);
+    sig_write(&g, SIG_BEDROCK2, 0x03);
+    sig_expect_change(&g, 6, SIG_RESET_HOLD, 0);
+    sig_write(&g, SIG_BEDROCK1, 0x71);
+    sig_expect_change(&g, 7, SIG_RESET_HOLD, 1);
+    sig_write(&g, SIG_BEDROCK1, 0x73);
+    sig_expect_change(&g, 8, SIG_RESET_HOLD, 0);
+
+    /* Soft reset is bit 7 set and cleared. */
+    sig_write(&g, SIG_BEDROCK1, 0xf3);
+    sig_expect_change(&g, 9, SIG_SOFT_RESET, 1);
+    sig_write(&g, SIG_BEDROCK1, 0x73);
+    sig_expect_change(&g, 10, SIG_SOFT_RESET, 0);
+
+    /* NMI idles high: asserted is bit 6 clear. */
+    sig_write(&g, SIG_BEDROCK1, 0x33);
+    sig_expect_change(&g, 11, SIG_NMI0, 1);
+    sig_write(&g, SIG_BEDROCK1, 0x73);
+    sig_expect_change(&g, 12, SIG_NMI0, 0);
+
+    /* The other bits move nothing, and neither does another expander. */
+    sig_write(&g, SIG_BEDROCK2, 0x03 | 0x8a);
+    sig_write(&g, SIG_BEDROCK1, 0x73 | 0x0c);
+    g_assert_true(byte_write(g.qts, 0x46, 0x00));
+    g_assert_false(sig_readable(&g));
+    sig_stop(&g);
+}
+
+/* A board reset puts the lines back to the cold values, as changes. */
+static void test_signals_reset(void)
+{
+    Sig g;
+
+    sig_start(&g, "");
+    sig_accept(&g);
+    sig_expect_open(&g, 1, 2);
+    sig_write(&g, SIG_BEDROCK1, 0x73);
+    sig_write(&g, SIG_BEDROCK2, 0x03);
+    sig_expect_change(&g, 2, SIG_RESET_HOLD, 0);
+    sig_write(&g, SIG_FAN, 0x7f);
+    sig_expect_change(&g, 3, SIG_NODE_POWER, 1);
+
+    qtest_writel(g.qts, DONE, 0);
+    qtest_system_reset(g.qts);
+    wait_for(g.qts, DONE, 1);
+    sig_expect_change(&g, 4, SIG_NODE_POWER, 0);
+    sig_expect_change(&g, 5, SIG_RESET_HOLD, 1);
+    g_assert_false(sig_readable(&g));
+    sig_stop(&g);
+}
+
+/* A reconnect restates the levels; a pulse made meanwhile is not replayed. */
+static void test_signals_reconnect(void)
+{
+    Sig g;
+
+    sig_start(&g, "");
+    sig_accept(&g);
+    sig_expect_open(&g, 1, 2);
+    sig_write(&g, SIG_FAN, 0x7f);
+    sig_expect_change(&g, 2, SIG_NODE_POWER, 1);
+    /* Take the listener away too, or the reconnect lands in its backlog. */
+    close(g.fd);
+    close(g.listener);
+    unlink(g.path);
+    g.fd = -1;
+    sig_wait_up(&g, 0);
+
+    sig_write(&g, SIG_BEDROCK1, 0xf2);
+    sig_write(&g, SIG_BEDROCK1, 0x72);
+    sig_write(&g, SIG_BEDROCK1, 0x32);
+    sig_write(&g, SIG_BEDROCK1, 0x72);
+    sig_listen(&g);
+    sig_accept(&g);
+    /* Four changes later: the pulses are gone, the supply is still on. */
+    sig_expect_open(&g, 6, 3);
+    g_assert_false(sig_readable(&g));
+    sig_stop(&g);
+}
+
+/* The machine's lines are accepted and change nothing the C-brick reads. */
+static void test_signals_machine_lines(void)
+{
+    Sig g;
+
+    sig_start(&g, "");
+    sig_accept(&g);
+    sig_expect_open(&g, 1, 2);
+    sig_send(&g, SIG_HELLO, 5, 1, 1);
+    sig_send(&g, SIG_STATE, 0, 9, 0);
+    /* power-good, line 8, as seen by the board next to its own lines. */
+    sig_send(&g, SIG_CHANGE, 1, 8, 1);
+    sig_wait(&g, "lines", 0x82);
+    sig_write(&g, SIG_FAN, 0x7f);
+    sig_expect_change(&g, 2, SIG_NODE_POWER, 1);
+    sig_wait(&g, "lines", 0x83);
+    g_assert_false(sig_readable(&g));
+    sig_stop(&g);
+}
+
+static void test_signals_refused(void)
+{
+    expect_refused("sgi-l1-board,brick-type=cbrick,signals=sig", "null,id=sig",
+                   "signals needs board-peers");
+    expect_refused(PEERS_CBRICK ",signals=nosuch", NULL,
+                   "chardev 'nosuch' not found");
+}
+
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2407,6 +2756,13 @@ int main(int argc, char **argv)
 
     qtest_add_func("sgi-l1-board/peers-monitor-reset",
                    test_peers_monitor_reset);
+    qtest_add_func("sgi-l1-board/signals-cold-open", test_signals_cold_open);
+    qtest_add_func("sgi-l1-board/signals-decode", test_signals_decode);
+    qtest_add_func("sgi-l1-board/signals-reset", test_signals_reset);
+    qtest_add_func("sgi-l1-board/signals-reconnect", test_signals_reconnect);
+    qtest_add_func("sgi-l1-board/signals-machine-lines",
+                   test_signals_machine_lines);
+    qtest_add_func("sgi-l1-board/signals-refused", test_signals_refused);
 
     return g_test_run();
 }
