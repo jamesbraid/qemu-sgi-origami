@@ -1,4 +1,12 @@
-system_ss.add(files('sgi-renderer.c'))
+# Same flag as hw/display/sgi/meson.build: its interpolation and colour
+# rounding must match the rasterizer's on arm64.
+sgi_renderer_lib = static_library('sgi-renderer', files('sgi-renderer.c') + genh,
+                                  c_args: ['-DCONFIG_SOFTMMU',
+                                           '-DCOMPILING_SYSTEM_VS_USER',
+                                           '-ffp-contract=off'],
+                                  dependencies: [glib],
+                                  build_by_default: false)
+system_ss.add(declare_dependency(link_whole: sgi_renderer_lib))
 system_ss.add(files('sgi-display-shm.c', 'sgi-display-input.c',
                     'sgi-display-vk.c', 'sgi-display-pattern.c'))
 system_ss.add(files('display-shm.c', 'display-shm-transport.c',

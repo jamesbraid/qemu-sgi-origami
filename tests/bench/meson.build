@@ -47,5 +47,6 @@ if have_system
                             '../../hw/display/sgi/rasterizer.c',
                             '../../hw/display/sgi/board-memory.c'),
              dependencies: [qemuutil, migration, io],
+             c_args: ['-ffp-contract=off'],
              build_by_default: false)
 endif

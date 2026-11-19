@@ -412,6 +412,13 @@ foreach test_name, extra: tests
     test_link_args = ['-Wl,--wrap=g_try_realloc_n']
     test_c_args = ['-DSGI_GL_ALLOCATION_WRAP']
   endif
+  # Same flag as hw/display/sgi/meson.build, so the digests match on arm64.
+  if test_name in ['test-sgi-gl', 'test-sgi-gl-vmstate',
+                   'test-sgi-kona-texture', 'test-sgi-renderer',
+                   'test-sgi-renderer-gl', 'test-sgi-odyssey-planes',
+                   'test-sgi-odyssey-native-mesa']
+    test_c_args += ['-ffp-contract=off']
+  endif
   if test_name == 'test-crime-texture'
     test_c_args += ['-DCRIME_TEXTURE_TEST']
   endif
