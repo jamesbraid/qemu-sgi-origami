@@ -1092,8 +1092,11 @@ static void mcf5206e_sim_realize(DeviceState *dev, Error **errp)
         qemu_irq irq = qdev_get_gpio_in_named(dev, "internal-irq",
                                               MCF5206E_SRC_UART1 + i);
 
-        s->uart[i] = mcf_uart_create(irq,
-                                     qemu_chr_fe_get_driver(&s->uart_chr[i]));
+        Chardev *chr = qemu_chr_fe_get_driver(&s->uart_chr[i]);
+
+        /* The property claimed the backend; the UART claims it in turn. */
+        qemu_chr_fe_deinit(&s->uart_chr[i], false);
+        s->uart[i] = mcf_uart_create(irq, chr);
     }
 
     s->mbus = MCF5206E_MBUS(qdev_new(TYPE_MCF5206E_MBUS));

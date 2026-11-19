@@ -472,7 +472,10 @@ ring indicator clear unless a serial backend reports it, an *approximation*.
 Channel 2 is the L1 operator console at 38,400 baud, channel 3 the node link at
 57,600, and channels 0 and 1 the two peer links at 107,142, on these bricks, a
 *software expectation*. The model connects serial backend 0 to channel 2, 1
-to channel 3, 2 to channel 0, 3 to channel 1 and 4 to on-chip UART 1.
+to channel 3, 2 to channel 0, 3 to channel 1 and 4 to on-chip UART 1, so a
+bay model that frames the bytes is reached with five ``-serial`` options, the
+fifth a socket chardev. Nothing paces the bytes or models the UART's modem
+lines, so the link is a byte pipe at the speed the host moves it.
 
 .. _sgi-l1-board-mbus:
 
@@ -1116,17 +1119,24 @@ revision refusing a write, bit 0 of ``0x1c`` reading back and clearing on
 reset, and any other offset logging and reading zero. The processor module 0
 monitors are checked on segment 4 for their independence from the node
 monitor at the same wire address, and the display for its write forms, its
-read and its answering under any select byte. ``settings`` is checked by loading a file of known bytes and reading
-the window back through chip select 1, and by the two refusals. With ``signals`` a
-test-owned peer plays the machine from a socket: the board's hello and its cold-start
-state, each decoded bit and the bits that move nothing, the hold needing all
-three bits and releasing on the last, a board reset restoring the cold values as
-changes, a reconnect restating the levels without replaying a pulse made
-meanwhile, the machine's lines being accepted, and the two refusals. The
-functional test boots the
-C-brick with ``board-peers`` and checks which reports are gone, that the
-supply table reads, what ``env`` prints, and that the only address the
-firmware calls without an acknowledge is the memory module records'.
+read and its answering under any select byte.
+
+The power-bay link is checked by test-owned code that writes three bytes to
+on-chip UART 1 and reads one the peer sent, through a socket chardev as the
+fifth serial backend. ``settings`` is checked by loading a file of known bytes
+and reading the window back through chip select 1, and by the two refusals.
+
+With ``signals`` a test-owned peer plays the machine from a socket. It checks
+the board's hello and cold-start state, each decoded bit and the bits that move
+nothing, the hold needing all three bits and releasing on the last, a board
+reset restoring the cold values as changes, a reconnect restating the levels
+without replaying a pulse made meanwhile, the machine's lines being accepted,
+and the two refusals.
+
+The functional test boots the C-brick with ``board-peers`` and checks which
+reports are gone, that the supply table reads, what ``env`` prints, and that
+the only address the firmware calls without an acknowledge is the memory module
+records'.
 ``tests/functional/m68k/test_sgi_l1_board.py`` boots the stock firmware to the
 operator console prompt, with an empty bus and with a C-brick record, when the
 firmware image is available and is skipped when it is not.

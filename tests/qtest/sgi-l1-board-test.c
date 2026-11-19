@@ -2757,6 +2757,71 @@ static void test_settings_refused(void)
     expect_refused(machine, NULL, "missing");
 }
 
+/* On-chip UART 1 is the power-bay link, the fifth serial backend. */
+#define UART1_BASE      (MBAR_BASE + 0x140)
+#define UART_SR         0x04
+#define UART_CR         0x08
+#define UART_DATA       0x0c
+#define UART_RXRDY      0x01
+
+static void test_bay_uart(void)
+{
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    g_autofree char *dir = NULL;
+    g_autofree char *path = NULL;
+    g_autofree char *extra = NULL;
+    GError *error = NULL;
+    Asm a = { };
+    Flash f;
+    QTestState *qts;
+    char got[3];
+    size_t n = 0;
+    int fd;
+
+    prologue(&a);
+    mbar_on(&a);
+    put_b(&a, UART1_BASE + UART_CR, 0x05);
+    put_b(&a, UART1_BASE + UART_DATA, 'b');
+    put_b(&a, UART1_BASE + UART_DATA, 'a');
+    put_b(&a, UART1_BASE + UART_DATA, 'y');
+    poll_bits(&a, UART1_BASE + UART_SR, UART_RXRDY, true);
+    ld_b(&a, UART1_BASE + UART_DATA, 1);
+    st_l(&a, 1, RESULT(0));
+    finish(&a);
+
+    dir = g_dir_make_tmp("sgi-l1-board-bay-XXXXXX", &error);
+    g_assert_no_error(error);
+    path = g_build_filename(dir, "bay.sock", NULL);
+    extra = g_strdup_printf("-chardev socket,id=bay,path=%s,server=on,"
+                            "wait=off -serial null -serial null -serial null "
+                            "-serial null -serial chardev:bay", path);
+    f = flash_build(&a, NULL, NULL);
+    qts = start(&f, extra);
+    fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    g_assert_cmpint(fd, >=, 0);
+    g_assert_cmpuint(strlen(path), <, sizeof(address.sun_path));
+    strcpy(address.sun_path, path);
+    g_assert_cmpint(connect(fd, (struct sockaddr *)&address, sizeof(address)),
+                    ==, 0);
+    g_assert_cmpint(write(fd, "Z", 1), ==, 1);
+    go(qts);
+    wait_for(qts, DONE, 1);
+    g_assert_cmphex(qtest_readl(qts, RESULT(0)), ==, 'Z');
+    while (n < sizeof(got)) {
+        struct pollfd p = { .fd = fd, .events = POLLIN };
+        ssize_t r;
+
+        g_assert_cmpint(poll(&p, 1, RUN_TIMEOUT_US / 1000), ==, 1);
+        r = read(fd, got + n, sizeof(got) - n);
+        g_assert_cmpint(r, >, 0);
+        n += r;
+    }
+    g_assert_cmpmem(got, sizeof(got), "bay", 3);
+    close(fd);
+    quit_all(qts, &f);
+    g_rmdir(dir);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -2781,6 +2846,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/guest-errors-logged",
                    test_guest_errors_logged);
     qtest_add_func("sgi-l1-board/quad-uart", test_quad_uart);
+    qtest_add_func("sgi-l1-board/bay-uart", test_bay_uart);
     qtest_add_func("sgi-l1-board/unimplemented-logged",
                    test_unimplemented_logged);
     qtest_add_func("sgi-l1-board/mbus-registers", test_mbus_registers);
