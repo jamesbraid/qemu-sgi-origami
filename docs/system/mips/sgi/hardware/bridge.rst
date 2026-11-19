@@ -1305,9 +1305,13 @@ At the end of reset the Bridge settles each slot's DMA width
 Revision D feeds a reset received on its XIO link into its core logic and
 releases the core only once the link connection is determined,
 *established* (:src:`bridge-asic-spec-4.0`). Which registers survive is
-*unknown*. The model treats the whole core as lost, an *approximation*. A
-rising ``link-reset`` input, driven by a Crossbow's per-link reset or a
-Hub's I/O link warm reset, reloads the register file, clears the
+*unknown*. The model treats the whole core as lost, an *approximation*,
+except the two interrupt destination registers: an Octane guest writes them
+before the pulse and never after it, so they are kept (*inferred*). A rising
+``link-reset`` input, driven by a Crossbow's per-link reset or a
+Hub's I/O link warm reset, reloads the register file except the two
+destination registers (the Octane evidence is carried to every Bridge
+machine), clears the
 translation entries and latched errors and re-aims the windows. The core
 is released at once, not held until the link is determined, and the event
 logs ``LOG_UNIMP``. Pin levels are kept, because the devices driving them
@@ -1829,7 +1833,8 @@ Model limits
   boards. The Octanes' Bridge reads it as all ones, matching the
   reference Octane2, but the reads span only the sampled offsets and
   widths, and what a write does is *unknown*; the model fails writes.
-- An inbound link reset releases the core at once.
+- An inbound link reset releases the core at once, and the kept
+  interrupt destination rests on Octane evidence alone.
 - The one-wire part has no write or status-programming commands, and slot
   timing is decoded from fixed thresholds.
 - No hot plug. Migration works only between identical builds.

@@ -2243,7 +2243,10 @@ static void sgi_bridge_reset_exit(Object *obj, ResetType type)
  * stores. The available evidence does not prove the reset or retention state
  * of any individual register, and that boundary is open, so this is a
  * whole-core answer to whole-core evidence rather than a register-by-register
- * account.
+ * account, with one exception: the interrupt destination pair (0x30 and
+ * 0x38) is kept, because an Octane IRIX trace shows the kernel writing it
+ * before the pulse and never after, so the kernel evidently expects it to
+ * survive.
  *
  * Two things deliberately stay. The interrupt pins keep their levels: the
  * devices holding them are not in this reset, and a level cleared here would
@@ -2255,11 +2258,17 @@ static void sgi_bridge_reset_exit(Object *obj, ResetType type)
 static void sgi_bridge_link_reset(void *opaque, int line, int level)
 {
     SGIBridgeState *s = opaque;
+    uint32_t upper, lower;
 
     if (!level) {
         return;
     }
+    /* The guest never writes these again after the pulse (Octane trace). */
+    upper = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)];
+    lower = s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)];
     sgi_bridge_reset_core(s);
+    s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_UPPER)] = upper;
+    s->reg[SGI_BRIDGE_SLOT(BRIDGE_INT_DEST_LOWER)] = lower;
     qemu_log_mask(LOG_UNIMP,
                   "sgi-bridge: inbound link reset; the core is reset once "
                   "and released, not held until the link connection is "

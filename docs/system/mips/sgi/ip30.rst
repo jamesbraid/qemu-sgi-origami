@@ -273,7 +273,7 @@ Components and connections
      - *software expectation*: OpenBSD ``ip30.h`` (``IP30_BRIDGE_WIDGET``);
        the OpenBSD capture, *observed*, finds the Bridge at widget 15 and prints "Bridge
        revision 3". A Crossbow link reset of widget 15 resets the Bridge's
-       core, as on an :term:`XIO` board. The Bridge specification describes that
+       core except its interrupt destination, as on an :term:`XIO` board. The Bridge specification describes that
        path for revision D, the Octane2's, *established*; for the Octane's
        revision C it is *inferred* (:ref:`sgi-bridge-reset`)
    * - Two QLogic SCSI controllers

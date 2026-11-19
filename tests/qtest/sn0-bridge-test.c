@@ -3928,7 +3928,8 @@ static void bridge_link_reset(QTestState *qts)
     qtest_set_irq_in(qts, BRIDGE_PATH, "link-reset", 0, 0);
 }
 
-static void test_an_inbound_link_reset_clears_the_core(const void *data)
+static void test_a_link_reset_clears_the_core_but_the_destination(
+    const void *data)
 {
     bridge_reset();
 
@@ -3948,6 +3949,8 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
     qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 0xff);
     qtest_writel(qts, REG(BRIDGE_INT_DEVICE), 0xffffff);
     qtest_writel(qts, REG(BRIDGE_INT_HOST(0)), 0x100);
+    qtest_writel(qts, REG(INT_DEST_UPPER_REG), INT_TEST_DEST_UPPER);
+    qtest_writel(qts, REG(INT_DEST_LOWER_REG), INT_TEST_DEST_LOWER);
     qtest_writeq(qts, ATE(ATE_TEST_ENTRY), 0xa5a5000012345678ull);
 
     /* The core goes when the line rises, not when the pulse ends. */
@@ -3979,6 +3982,12 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_DEVICE)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_INT_HOST(0))), ==, 0);
 
+    /* The destination stays: a guest may never write it again. */
+    g_assert_cmphex(qtest_readl(qts, REG(INT_DEST_UPPER_REG)), ==,
+                    INT_TEST_DEST_UPPER);
+    g_assert_cmphex(qtest_readl(qts, REG(INT_DEST_LOWER_REG)), ==,
+                    INT_TEST_DEST_LOWER);
+
     /* The whole entry, the way a cold reset clears it. */
     g_assert_cmphex(qtest_readl(qts, ATE_UPPER(ATE_TEST_ENTRY)), ==, 0);
     g_assert_cmphex(qtest_readl(qts, ATE_LOW(ATE_TEST_ENTRY)), ==, 0);
@@ -3986,6 +3995,34 @@ static void test_an_inbound_link_reset_clears_the_core(const void *data)
     /* Composed on every reset, not a table row, so it is still right. */
     g_assert_cmphex(qtest_readl(qts, REG(BRIDGE_IDENTIFICATION)), ==,
                     bridge_identity(BRIDGE_REVISION));
+}
+
+/*
+ * End to end: the destination written before a link reset still routes the
+ * pin after it, which the guest maps, enables and numbers again; and a cold
+ * reset clears the destination.
+ */
+static void test_a_pin_edge_after_a_link_reset_reaches_the_hub(const void *data)
+{
+    QTestState *qts = qtest_init(MACHINE_WITH_BRIDGE
+                                 " -device sgi-bridge-dma-test,addr=3");
+
+    bridge_source_in_slot_three(qts);
+    bridge_route_pin(qts);
+    bridge_link_reset(qts);
+    bridge_source_in_slot_three(qts);
+    qtest_writel(qts, REG(BRIDGE_INT_HOST(INT_TEST_SLOT)),
+                 ((INT_HOST_IO_VIEW | INT_TEST_HOST_NODE) << 8) |
+                 INT_TEST_HOST_NUMBER);
+    qtest_writel(qts, REG(BRIDGE_INT_ENABLE), 1u << INT_TEST_SLOT);
+    g_assert_false(hub_pends_the_test_number(qts));
+    bridge_drive_pin(qts, 1);
+    g_assert_true(hub_pends_the_test_number(qts));
+
+    qtest_system_reset(qts);
+    g_assert_cmphex(qtest_readl(qts, REG(INT_DEST_UPPER_REG)), ==, 0);
+    g_assert_cmphex(qtest_readl(qts, REG(INT_DEST_LOWER_REG)), ==, 0);
+    qtest_quit(qts);
 }
 
 /*
@@ -5111,8 +5148,12 @@ int main(int argc, char **argv)
                         test_dma_device_window_64bit_doubleword);
     qtest_add_data_func("sn0/bridge/per-pin-host-registers", NULL,
                         test_the_per_pin_host_registers);
-    qtest_add_data_func("sn0/bridge/inbound-link-reset-clears-the-core", NULL,
-                        test_an_inbound_link_reset_clears_the_core);
+    qtest_add_data_func("sn0/bridge/link-reset-clears-core-but-destination",
+                        NULL,
+                        test_a_link_reset_clears_the_core_but_the_destination);
+    qtest_add_data_func("sn0/bridge/pin-edge-after-link-reset-reaches-the-hub",
+                        NULL,
+                        test_a_pin_edge_after_a_link_reset_reaches_the_hub);
     qtest_add_data_func("sn0/bridge/inbound-link-reset-stops-at-the-pci-side",
                         NULL,
                         test_an_inbound_link_reset_stops_at_the_pci_side);
