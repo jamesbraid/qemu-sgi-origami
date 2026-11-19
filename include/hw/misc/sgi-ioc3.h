@@ -421,6 +421,9 @@ struct SGIIOC3State {
     qemu_irq gpio5_reset_request;
     uint32_t int_status;
     uint32_t int_enable;
+    /* The PS/2 controller's line, and a rise of it bit 22 could not latch. */
+    bool kbc_line;
+    bool kbc_rise_held;
 
     uint32_t microlan_control;
     uint32_t pin_control;

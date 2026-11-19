@@ -1132,8 +1132,21 @@ spacing is an *approximation*: the character time stands in for the chip's
 own interval, as do per-character assertion and the release of a clamp on a
 read at all. A capture of the interval between a receive read and the next
 interrupt, and between back-to-back interrupts, on the physical chip would
-settle the period. A guest that acknowledges and never reads
-sees the source go quiet. Writes setting the emulation or fast-clock bits (12,
+settle the period. The pacing alone does not close the gap: the virtual
+clock runs while the host has descheduled the vCPU, so a handler's last
+read and its acknowledge can be more than a character time apart. Under
+the model, IRIX 6.5.30 on an Octane2 reads until the mouse port is empty
+and acknowledges afterwards, and a mouse byte that landed 1.2 ms after the
+last read and 16 us before the acknowledge went unread until the next
+packet, *observed* (Origami guest trace ``ps2-ack-race-20261119``). Whether
+the chip latches a line that falls and rises again before the acknowledge
+is *unknown*. The model remembers such a rise and sets bit 22 again on the
+acknowledge if a character is still held, an *approximation*. A capture on
+the physical chip of the data-available line and bit 22, with a character
+arriving between a receive read and the acknowledge, would settle it. A
+guest that acknowledges and never reads still sees the source go quiet,
+since a line that never fell does not rise
+again. Writes setting the emulation or fast-clock bits (12,
 13) log ``LOG_UNIMP``. Reads of the transmit registers and writes to the
 receive registers log ``LOG_GUEST_ERROR``. Transmit completes inside the
 write, so the write-pending status never reads set.

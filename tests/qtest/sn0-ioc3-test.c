@@ -1531,11 +1531,14 @@ static void test_the_ps2_drain_then_acknowledge_takes_one(const void *data)
 }
 
 /*
- * Linux's order with the resumed backlog: read three, let the keyboard send
- * its next two, then acknowledge. The acknowledge clears the latch, the two
- * held characters stay readable, and reading them leaves nothing pending.
+ * Characters that land after the handler's last read and before its
+ * acknowledge. IRIX 6.5.30 reads until the port is empty and acknowledges
+ * after, and a host that pauses the vCPU in between lets the next character
+ * land first. Its rise could not latch a bit already set, so the acknowledge
+ * leaves the source raised and the characters are read now, not when the
+ * next one arrives.
  */
-static void test_the_ps2_resumed_backlog_survives_an_acknowledge(
+static void test_the_ps2_backlog_before_the_acknowledge_signals(
     const void *data)
 {
     ioc3_reset();
@@ -1547,13 +1550,13 @@ static void test_the_ps2_resumed_backlog_survives_an_acknowledge(
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID_ALL);
     qtest_clock_step(qts, KBC_WIRE_NS(2));
-    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
-                    INT_KEYBOARD);
 
     qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
-    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
+    g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==,
+                    INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, KBC_KBD_RECEIVE) & KBC_RX_FLAGS, ==,
                     KBC_RX_VALID(2) | KBC_RX_VALID(1));
+    qtest_writel(qts, INT_STATUS, INT_KEYBOARD);
     g_assert_cmphex(qtest_readl(qts, INT_STATUS) & INT_KEYBOARD, ==, 0);
 }
 
@@ -7251,9 +7254,9 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/ioc3/ps2-drain-then-acknowledge-takes-one",
                         NULL,
                         test_the_ps2_drain_then_acknowledge_takes_one);
-    qtest_add_data_func("sn0/ioc3/ps2-resumed-backlog-survives-an-acknowledge",
+    qtest_add_data_func("sn0/ioc3/ps2-backlog-before-the-acknowledge-signals",
                         NULL,
-                        test_the_ps2_resumed_backlog_survives_an_acknowledge);
+                        test_the_ps2_backlog_before_the_acknowledge_signals);
     qtest_add_data_func("sn0/ioc3/ps2-receive-overflows-without-a-clamp", NULL,
                         test_the_ps2_receive_overflows_without_a_clamp);
     qtest_add_data_func("sn0/ioc3/ps2-clamp-after-one-splits-a-reply", NULL,
