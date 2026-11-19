@@ -243,6 +243,7 @@ static MemTxResult crime_clip_commit(SGICrimeState *s, hwaddr offset,
 static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
                                           unsigned index, uint32_t value)
 {
+    static const uint8_t zero_page[4096];
     uint32_t parameter[CRIME_TRANSFER_PARAMETERS];
     CrimeTransferSpan source[32], destination[32];
     CrimeTransferSuppression suppressed = { 0 };
@@ -251,6 +252,7 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
     uint32_t mode, src, dst;
     bool copy;
     g_autofree uint8_t *buffer = NULL;
+    const uint8_t *fill = zero_page;
     unsigned position;
 
     memcpy(parameter, s->transfer.parameter, sizeof(parameter));
@@ -306,8 +308,8 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         crime_healthy_memory_notice(s);
     }
     /* MMIO holds the BQL, so the validated RAM mappings remain stable. */
-    buffer = g_malloc(destination_length);
     if (copy) {
+        buffer = g_malloc(destination_length);
         position = 0;
         for (unsigned i = 0; i < source_count; i++) {
             CrimeTransferSpan *span = &source[i];
@@ -320,7 +322,13 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
             position += span->length;
         }
     } else {
-        memset(buffer, parameter[3] & 0xff, destination_length);
+        if ((parameter[3] & 0xff) && destination_count) {
+            size_t fill_size = MIN(destination_length, sizeof(zero_page));
+
+            buffer = g_malloc(fill_size);
+            memset(buffer, parameter[3] & 0xff, fill_size);
+            fill = buffer;
+        }
         if (index < CRIME_TRANSFER_PARAMETERS) {
             s->transfer.parameter[index] = value;
         }
@@ -330,7 +338,8 @@ static MemTxResult crime_transfer_commit(SGICrimeState *s, hwaddr offset,
         CrimeTransferSpan *span = &destination[i];
 
         if (address_space_write(&address_space_memory, span->physical,
-                                MEMTXATTRS_UNSPECIFIED, buffer + position,
+                                MEMTXATTRS_UNSPECIFIED,
+                                copy ? buffer + position : fill,
                                 span->length) != MEMTX_OK) {
             return crime_transfer_fail(offset, "validated RAM write failed");
         }

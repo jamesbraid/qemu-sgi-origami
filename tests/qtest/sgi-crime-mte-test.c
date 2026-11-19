@@ -562,11 +562,15 @@ static void test_maximum_interval(void)
     for (unsigned i = 0; i < 16; i++) {
         page_pair(s, 0, i, 64 + i * 2, 65 + i * 2);
     }
-    qtest_memset(s, 0x40000, 0x5a, 0x20001);
-    clear(s, 1, 0x1ffff, 0xb3);
-    assert_bytes(s, 0x40001, 0x1ffff, 0xb3);
-    g_assert_cmphex(qtest_readb(s, 0x40000), ==, 0x5a);
-    g_assert_cmphex(qtest_readb(s, 0x60000), ==, 0x5a);
+    const uint8_t fills[] = { 0, 0xb3 };
+
+    for (unsigned i = 0; i < ARRAY_SIZE(fills); i++) {
+        qtest_memset(s, 0x40000, 0x5a, 0x20001);
+        clear(s, 1, 0x1ffff, fills[i]);
+        assert_bytes(s, 0x40001, 0x1ffff, fills[i]);
+        g_assert_cmphex(qtest_readb(s, 0x40000), ==, 0x5a);
+        g_assert_cmphex(qtest_readb(s, 0x60000), ==, 0x5a);
+    }
     qtest_quit(s);
 }
 
