@@ -1798,19 +1798,20 @@ static const struct {
     uint8_t wire;
     uint8_t sel;        /* select byte for the segment; 0 for segment 0 */
     uint8_t mask;       /* input bits */
+    uint8_t pins;       /* what the input pins read with nothing attached */
 } peer_expanders[] = {
-    { "display control", 0x40, 0x00, 0x0f },
-    { "LED0 low", 0x42, 0x78, 0xff },
-    { "LED0 high", 0x44, 0x78, 0xff },
-    { "LED1 low", 0x46, 0x78, 0xff },
-    { "LED1 high", 0x48, 0x78, 0xff },
-    { "COM control", 0x4c, 0x78, 0xf1 },
-    { "Bedrock control 1", 0x42, 0xb8, 0x00 },
-    { "Bedrock control 2", 0x44, 0xb8, 0x00 },
-    { "port control", 0x46, 0xb8, 0x55 },
-    { "power control", 0x48, 0xb8, 0xde },
-    { "PIMM presence", 0x4a, 0xb8, 0xff },
-    { "fan control", 0x4c, 0xb8, 0x40 },
+    { "display control", 0x40, 0x00, 0x0f, 0xff },
+    { "LED0 low", 0x42, 0x78, 0xff, 0xff },
+    { "LED0 high", 0x44, 0x78, 0xff, 0xff },
+    { "LED1 low", 0x46, 0x78, 0xff, 0xff },
+    { "LED1 high", 0x48, 0x78, 0xff, 0xff },
+    { "COM control", 0x4c, 0x78, 0xf1, 0xff },
+    { "Bedrock control 1", 0x42, 0xb8, 0x00, 0xff },
+    { "Bedrock control 2", 0x44, 0xb8, 0x00, 0xff },
+    { "port control", 0x46, 0xb8, 0x55, 0xee },
+    { "power control", 0x48, 0xb8, 0xde, 0x00 },
+    { "PIMM presence", 0x4a, 0xb8, 0xff, 0xff },
+    { "fan control", 0x4c, 0xb8, 0x40, 0xff },
 };
 
 /* Without board-peers a C-brick's bus carries only the identity part. */
@@ -1896,7 +1897,7 @@ static void test_peers_bus_select(void)
     g_assert_true(answers(qts, 0x42));
     g_assert_false(answers(qts, 0x4a));
     /* Same wire address, different part: 0x42 is all inputs on segment 2. */
-    g_assert_true(byte_write(qts, 0x42, 0x00));
+    g_assert_true(byte_write(qts, 0x42, 0xff));
     g_assert_true(byte_read(qts, 0x43, &v));
     g_assert_cmphex(v, ==, 0xff);
 
@@ -1992,7 +1993,7 @@ static void test_peers_multi_segment(void)
     quit_all(qts, &f);
 }
 
-/* A system reset returns the peers to power-up: select off, latches 0xff. */
+/* A system reset keeps the expanders' outputs, the select byte included. */
 static void test_peers_reset(void)
 {
     Flash f;
@@ -2011,15 +2012,14 @@ static void test_peers_reset(void)
     wait_for(qts, DONE, 1);
 
     g_assert_true(byte_read(qts, SEL_WIRE | 1, &v));
-    g_assert_cmphex(v, ==, 0xff);
-    g_assert_cmphex(enabled_segments(qts), ==, 0);
-    select_segment(qts, 0xb8);
+    g_assert_cmphex(v, ==, 0xb8);
+    g_assert_cmphex(enabled_segments(qts), ==, 1u << 3);
     g_assert_true(byte_read(qts, 0x43, &v));
-    g_assert_cmphex(v, ==, 0xff);
+    g_assert_cmphex(v, ==, 0x00);
     quit_all(qts, &f);
 }
 
-/* Each expander: latch from 0xff, a write read back with its inputs set. */
+/* Each expander: latch from 0xff, a write read back through its pins. */
 static void test_peers_expanders(void)
 {
     Flash f;
@@ -2035,18 +2035,68 @@ static void test_peers_expanders(void)
         if (peer_expanders[i].sel) {
             select_segment(qts, peer_expanders[i].sel);
         }
+        uint8_t drive = peer_expanders[i].pins | ~mask;
+
         g_assert_true(byte_read(qts, wire | 1, &v));
-        g_assert_cmphex(v, ==, 0xff);
+        g_assert_cmphex(v, ==, 0xff & drive);
         g_assert_true(byte_write(qts, wire, 0x00));
         g_assert_true(byte_read(qts, wire | 1, &v));
-        g_assert_cmphex(v, ==, mask);
-        g_assert_true(byte_write(qts, wire, 0xa5 | mask));
+        g_assert_cmphex(v, ==, 0x00);
+        g_assert_true(byte_write(qts, wire, 0xa5));
         g_assert_true(byte_read(qts, wire | 1, &v));
-        g_assert_cmphex(v, ==, 0xa5 | mask);
+        g_assert_cmphex(v, ==, 0xa5 & drive);
         g_assert_true(byte_write(qts, wire, 0x5a));
         g_assert_true(byte_read(qts, wire | 1, &v));
-        g_assert_cmphex(v, ==, 0x5a | mask);
+        g_assert_cmphex(v, ==, 0x5a & drive);
     }
+    quit_all(qts, &f);
+}
+
+static void set_input_pins(QTestState *qts, const char *id, uint8_t pins)
+{
+    g_autofree char *path = g_strdup_printf("/machine/peripheral/%s", id);
+    QDict *rsp = qtest_qmp(qts, "{'execute': 'qom-set', 'arguments': "
+                           "{'path': %s, 'property': 'input-pins', "
+                           "'value': %d}}", path, pins);
+
+    g_assert_true(qdict_haskey(rsp, "return"));
+    qobject_unref(rsp);
+}
+
+/*
+ * An empty brick: remote power OK reads low on both ports and no regulator
+ * reads faulted. A peer drives the pin high; a set status bit is a fault.
+ */
+static void test_peers_input_pins(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t v;
+
+    select_segment(qts, 0xb8);
+    /* The firmware's port write: both enables and the input bits high. */
+    g_assert_true(byte_write(qts, 0x46, 0xdd));
+    g_assert_true(byte_read(qts, 0x47, &v));
+    g_assert_cmphex(v & 0x11, ==, 0x00);
+    g_assert_cmphex(v & 0xee, ==, 0xcc);
+    set_input_pins(qts, "l1-port-control", 0xef);
+    g_assert_true(byte_read(qts, 0x47, &v));
+    g_assert_cmphex(v, ==, 0xcd);
+    set_input_pins(qts, "l1-port-control", 0xff);
+    g_assert_true(byte_read(qts, 0x47, &v));
+    g_assert_cmphex(v, ==, 0xdd);
+
+    g_assert_true(byte_write(qts, 0x48, 0xff));
+    g_assert_true(byte_read(qts, 0x49, &v));
+    g_assert_cmphex(v, ==, 0x21);
+    set_input_pins(qts, "l1-power-control", 0x04);
+    g_assert_true(byte_read(qts, 0x49, &v));
+    g_assert_cmphex(v, ==, 0x25);
+
+    /* 48 V power OK, FAN CONTROL bit 6, reads high without anything set. */
+    g_assert_true(byte_write(qts, 0x4c, 0xff));
+    g_assert_true(byte_read(qts, 0x4d, &v));
+    g_assert_cmphex(v & 0x40, ==, 0x40);
     quit_all(qts, &f);
 }
 
@@ -2552,15 +2602,26 @@ static void sig_write(Sig *g, uint8_t wire, uint8_t val)
 #define SIG_BEDROCK1    0x42
 #define SIG_BEDROCK2    0x44
 
-/* Before the firmware writes anything the lines are its cold values. */
+/* The firmware's first writes: the supplies off, the reset group held. */
+static void sig_cold_writes(Sig *g)
+{
+    sig_write(g, SIG_BEDROCK1, 0x72);
+    sig_expect_change(g, 1, SIG_RESET_HOLD, 1);
+    sig_write(g, SIG_BEDROCK2, 0x8a);
+}
+
+/* Power-on expanders read all ones: no supply, nothing held or asserted. */
 static void test_signals_cold_open(void)
 {
     Sig g;
 
     sig_start(&g, "");
     sig_accept(&g);
-    /* One change at reset: the reset group is held. */
-    sig_expect_open(&g, 1, 1u << (SIG_RESET_HOLD - 1));
+    sig_expect_open(&g, 0, 0);
+    g_assert_false(sig_readable(&g));
+    /* Soft reset, idle in that window, asserts on the first write of bit 7. */
+    sig_write(&g, SIG_BEDROCK1, 0xf3);
+    sig_expect_change(&g, 1, SIG_SOFT_RESET, 1);
     g_assert_false(sig_readable(&g));
     sig_stop(&g);
 }
@@ -2572,7 +2633,8 @@ static void test_signals_decode(void)
 
     sig_start(&g, "");
     sig_accept(&g);
-    sig_expect_open(&g, 1, 2);
+    sig_expect_open(&g, 0, 0);
+    sig_cold_writes(&g);
 
     /* The 48 V enable is FAN CONTROL bit 7, active low. */
     sig_write(&g, SIG_FAN, 0x7f);
@@ -2614,16 +2676,18 @@ static void test_signals_decode(void)
     sig_stop(&g);
 }
 
-/* A board reset puts the lines back to the cold values, as changes. */
+/* A board reset keeps the outputs: the supply stays on, the node released. */
 static void test_signals_reset(void)
 {
     Sig g;
+    uint8_t v;
 
     sig_start(&g, "");
     sig_accept(&g);
-    sig_expect_open(&g, 1, 2);
+    sig_expect_open(&g, 0, 0);
+    sig_cold_writes(&g);
     sig_write(&g, SIG_BEDROCK1, 0x73);
-    sig_write(&g, SIG_BEDROCK2, 0x03);
+    sig_write(&g, SIG_BEDROCK2, 0x8b);
     sig_expect_change(&g, 2, SIG_RESET_HOLD, 0);
     sig_write(&g, SIG_FAN, 0x7f);
     sig_expect_change(&g, 3, SIG_NODE_POWER, 1);
@@ -2631,9 +2695,9 @@ static void test_signals_reset(void)
     qtest_writel(g.qts, DONE, 0);
     qtest_system_reset(g.qts);
     wait_for(g.qts, DONE, 1);
-    sig_expect_change(&g, 4, SIG_NODE_POWER, 0);
-    sig_expect_change(&g, 5, SIG_RESET_HOLD, 1);
     g_assert_false(sig_readable(&g));
+    g_assert_true(byte_read(g.qts, SIG_FAN | 1, &v));
+    g_assert_cmphex(v, ==, 0x7f);
     sig_stop(&g);
 }
 
@@ -2644,7 +2708,8 @@ static void test_signals_reconnect(void)
 
     sig_start(&g, "");
     sig_accept(&g);
-    sig_expect_open(&g, 1, 2);
+    sig_expect_open(&g, 0, 0);
+    sig_cold_writes(&g);
     sig_write(&g, SIG_FAN, 0x7f);
     sig_expect_change(&g, 2, SIG_NODE_POWER, 1);
     /* Take the listener away too, or the reconnect lands in its backlog. */
@@ -2673,7 +2738,8 @@ static void test_signals_machine_lines(void)
 
     sig_start(&g, "");
     sig_accept(&g);
-    sig_expect_open(&g, 1, 2);
+    sig_expect_open(&g, 0, 0);
+    sig_cold_writes(&g);
     sig_send(&g, SIG_HELLO, 5, 1, 1);
     sig_send(&g, SIG_STATE, 0, 9, 0);
     /* power-good, line 8, as seen by the board next to its own lines. */
@@ -2878,6 +2944,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/peers-multi-segment",
                    test_peers_multi_segment);
     qtest_add_func("sgi-l1-board/peers-reset", test_peers_reset);
+    qtest_add_func("sgi-l1-board/peers-input-pins", test_peers_input_pins);
     qtest_add_func("sgi-l1-board/peers-expanders", test_peers_expanders);
     qtest_add_func("sgi-l1-board/peers-monitors", test_peers_monitors);
     qtest_add_func("sgi-l1-board/peers-pimm0-monitors",

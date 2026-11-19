@@ -57,6 +57,8 @@ struct Expander {
     SegmentTarget parent_obj;
 
     uint8_t input_mask;
+    /* What the outside drives on the input pins. */
+    uint8_t input_pins;
     uint8_t latch;
     /* Each write drives this with the whole byte as its level. */
     qemu_irq out;
@@ -171,36 +173,42 @@ static int expander_send(I2CSlave *s, uint8_t data)
     return 0;
 }
 
-/* The pins the firmware uses as inputs are written high and read high. */
+/* A pin reads low if the latch or the outside drives it low. */
 static uint8_t expander_recv(I2CSlave *s)
 {
     Expander *e = SGI_L1_EXPANDER(s);
-    uint8_t val = e->latch | e->input_mask;
+    uint8_t val = e->latch & (e->input_pins | ~e->input_mask);
 
     trace_sgi_l1_expander_read(s->address << 1,
                                SGI_L1_SEGMENT_TARGET(s)->segment, val);
     return val;
 }
 
+/*
+ * Latches power on at 0xff and nothing resets them: an approximation, the
+ * supply tie to the controller reset is unknown.
+ */
 static void expander_init(Object *obj)
 {
-    qdev_init_gpio_out_named(DEVICE(obj), &SGI_L1_EXPANDER(obj)->out,
-                             "latch", 1);
-}
+    Expander *e = SGI_L1_EXPANDER(obj);
 
-static void expander_reset_hold(Object *obj, ResetType type)
-{
-    SGI_L1_EXPANDER(obj)->latch = 0xff;
+    e->latch = 0xff;
+    e->input_pins = 0xff;
+    /* Settable while running: a peer attached or a regulator failing. */
+    object_property_add_uint8_ptr(obj, "input-pins", &e->input_pins,
+                                  OBJ_PROP_FLAG_READWRITE);
+    qdev_init_gpio_out_named(DEVICE(obj), &e->out, "latch", 1);
 }
 
 /* The board refuses migration, but a timed wire bus needs a vmsd. */
 static const VMStateDescription vmstate_expander = {
     .name = TYPE_SGI_L1_EXPANDER,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_I2C_SLAVE(parent_obj.parent_obj, Expander),
         VMSTATE_UINT8(latch, Expander),
+        VMSTATE_UINT8(input_pins, Expander),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -218,7 +226,6 @@ static void expander_class_init(ObjectClass *oc, const void *data)
     device_class_set_props(DEVICE_CLASS(oc), expander_props);
     DEVICE_CLASS(oc)->desc = "SGI L1 board byte-wide expander";
     DEVICE_CLASS(oc)->vmsd = &vmstate_expander;
-    RESETTABLE_CLASS(oc)->phases.hold = expander_reset_hold;
 }
 
 /* The enabled segments as a mask, bit n for segment n: a test hook. */
@@ -410,8 +417,6 @@ static void display_class_init(ObjectClass *oc, const void *data)
 #define SIG_NMI         3
 #define SIG_LINES       4
 
-/* What the firmware writes at a cold start: supplies off, reset held. */
-static const uint8_t signal_cold[SIG_REGS] = { 0xff, 0x72, 0x8a };
 static const char *const signal_reg_names[SIG_REGS] = {
     "fan", "bedrock1", "bedrock2"
 };
@@ -431,6 +436,7 @@ struct CBrickSignals {
     SignalReg reg[SIG_REGS];
     qemu_irq out[SIG_LINES];
     int8_t level[SIG_LINES];    /* last driven; -1 before the first reset */
+    bool b1_written;            /* soft reset is idle until the first write */
 };
 
 static void signals_update(CBrickSignals *d)
@@ -445,7 +451,8 @@ static void signals_update(CBrickSignals *d)
     level[SIG_NODE_POWER] = !(fan & 0x80);
     /* Held while any of the three bits the firmware clears is clear. */
     level[SIG_RESET_HOLD] = !(b1 & 0x01) || !(b1 & 0x02) || !(b2 & 0x01);
-    level[SIG_SOFT_RESET] = b1 & 0x80;
+    /* Idle low until written: all ones would assert it, which is unknown. */
+    level[SIG_SOFT_RESET] = d->b1_written && (b1 & 0x80);
     level[SIG_NMI] = !(b1 & 0x40);
     for (i = 0; i < SIG_LINES; i++) {
         if (d->level[i] != level[i]) {
@@ -462,6 +469,9 @@ static void signals_reg_in(void *opaque, int n, int level)
     SignalReg *r = opaque;
 
     r->val = level;
+    if (r == &r->d->reg[SIG_BEDROCK1]) {
+        r->d->b1_written = true;
+    }
     signals_update(r->d);
 }
 
@@ -473,6 +483,7 @@ static void signals_init(Object *obj)
 
     for (i = 0; i < SIG_REGS; i++) {
         d->reg[i].d = d;
+        d->reg[i].val = 0xff;   /* the expanders' power-on state */
         qdev_init_gpio_in_named_with_opaque(dev, signals_reg_in, &d->reg[i],
                                             signal_reg_names[i], 1);
     }
@@ -482,16 +493,14 @@ static void signals_init(Object *obj)
     }
 }
 
-/* Until the firmware writes the expanders, the lines are its cold values. */
+/* The first reset drives the power-on levels; later ones keep the outputs. */
 static void signals_reset_hold(Object *obj, ResetType type)
 {
     CBrickSignals *d = SGI_L1_CBRICK_SIGNALS(obj);
-    int i;
 
-    for (i = 0; i < SIG_REGS; i++) {
-        d->reg[i].val = signal_cold[i];
+    if (d->level[0] < 0) {
+        signals_update(d);
     }
-    signals_update(d);
 }
 
 static void signals_class_init(ObjectClass *oc, const void *data)
@@ -673,6 +682,8 @@ static const struct {
     uint8_t segment;
     uint8_t input_mask;
     const char *signal;     /* the decode input this expander feeds */
+    const char *id;         /* a qdev id, for the ones a test drives */
+    uint8_t pins;           /* the input pins' level with nothing attached */
 } expanders[] = {
     { 0x40, 0, 0x0f },  /* display control */
     { 0x42, 2, 0xff },  /* LED 0 low */
@@ -682,8 +693,10 @@ static const struct {
     { 0x4c, 2, 0xf1 },  /* COM control */
     { 0x42, 3, 0x00, "bedrock1" },  /* Bedrock control 1 */
     { 0x44, 3, 0x00, "bedrock2" },  /* Bedrock control 2 */
-    { 0x46, 3, 0x55 },  /* port control */
-    { 0x48, 3, 0xde },  /* power control */
+    /* Remote power OK is low without a peer; the link LED bits are unknown. */
+    { 0x46, 3, 0x55, NULL, "l1-port-control", 0xee },
+    /* A set bit is a regulator fault, so none reads set. */
+    { 0x48, 3, 0xde, NULL, "l1-power-control", 0x00 },
     { 0x4a, 3, 0xff },  /* processor module presence */
     { 0x4c, 3, 0x40, "fan" },       /* fan control */
 };
@@ -721,6 +734,11 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus, DeviceState *signals)
 
         qdev_prop_set_uint8(dev, "segment", expanders[i].segment);
         qdev_prop_set_uint8(dev, "input-mask", expanders[i].input_mask);
+        if (expanders[i].id) {
+            qdev_set_id(dev, g_strdup(expanders[i].id), &error_abort);
+            object_property_set_uint(OBJECT(e), "input-pins",
+                                     expanders[i].pins, &error_abort);
+        }
         object_property_set_link(OBJECT(e), "bus-select", OBJECT(sel),
                                  &error_abort);
         if (decode && expanders[i].signal) {

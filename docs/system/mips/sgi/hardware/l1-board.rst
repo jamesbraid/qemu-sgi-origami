@@ -718,8 +718,9 @@ it is *inferred*.
 **Bus select.** The expander at ``0x4e`` is a one-byte latch whose value
 decides which segments the controller reaches, as the firmware writes it
 (*software expectation*). It starts at ``0xff``, every segment off, which
-is the byte the firmware writes to it at start-up (*software expectation*);
-the part's own power-on state before that write is *unknown*. The model reads the bits as the
+is the byte the firmware writes to it at start-up (*software expectation*)
+and the power-on state of its family (*inferred*). A board reset leaves it
+as it is, as for the other expanders below. The model reads the bits as the
 firmware's select bytes suggest (*inferred*): bit 7 low enables segment 2,
 bit 6 segment 3, bit 5 segment 4, bit 4 segment 5, and with bit 3 low bits
 2 to 0 enable segment 6 plus that number. The firmware writes only ``0xff``,
@@ -736,14 +737,35 @@ not.
 
 **Expanders.** Each is a one-byte quasi-bidirectional latch with no
 register byte (*software expectation*; PCF8574 family, *inferred*). A write
-stores the byte. A read returns the stored byte with the input bits set, as a
-part of that family does when its inputs are written high (*inferred*). The
-firmware writes each expander and reads it back (*software expectation*);
-beyond the supply, fan and display state its start-up check compares, what it
-does with the byte is *unknown*. The latch starts at ``0xff``, the power-on
-state of that family (*inferred*). Input pins read high whatever drives them, as if nothing pulled them low,
-an *approximation*: the pin meanings are *unknown* beyond the masks. No
-change is ever reported, because the interrupt wiring is *unknown*.
+stores the byte. A read returns the stored byte on the output pins and the
+level driven on the input pins, which the firmware writes high so that the part
+can read them (*inferred*). The firmware writes each expander and reads it back
+(*software expectation*); beyond the supply, fan and display state its
+start-up check compares, what it does with the byte is *unknown*.
+
+The latch starts at ``0xff``, the power-on state of that family, so every
+expander reads and drives all ones until the firmware's first write
+(*inferred*; the bytes the firmware first writes are not power-on states).
+The part has no reset pin, so a board reset leaves every latch as it was
+(*inferred*). Whether the board ties the parts' supply or a bus switch to the
+controller's reset is *unknown*, so keeping the outputs is an *approximation*;
+a power cycle is a new process. What the node chip sees in the window before
+the first write is *unknown*.
+
+The input pins read the ``input-pins`` property of the expander, writable while
+the machine runs. A pin reads low if the latch bit or the property bit is low,
+as with a quasi-bidirectional pin written low (*inferred*). Nothing is attached
+by default: the pins read high, an *approximation* because the pin meanings are
+*unknown* beyond the masks, except for three. Remote power OK, bits 0 and 4 of
+port control, reads low without a peer (*inferred*: the sheets give only what
+the firmware's port step does when it reads the bit clear, which is to leave
+its software LED and :term:`Bedrock` control 1 bits 2 and 3 clear). The power
+control status bits read clear, because a set bit is a regulator fault
+(*inferred*). Fan control bit 6, the 48 V power OK input, reads high at all
+times, including with the 48 V enable off, an *approximation* the sheets do not
+settle (*unknown*). The link LED bits of port control are *unknown* and read
+high. The devices ``l1-port-control`` and ``l1-power-control`` are the first
+two. No change is ever reported, because the interrupt wiring is *unknown*.
 
 .. list-table::
    :header-rows: 1
@@ -898,8 +920,9 @@ link and the levels.
 
 Each write to Bedrock control 1, Bedrock control 2 or fan control hands the
 whole byte to a decode, which recomputes four lines and sends the ones that
-changed (*software expectation* for every bit and its sense; the first three
-rows follow the C-brick table in the two-wire bus sheet):
+changed (*software expectation* for the writes, *inferred* for what a level
+means at the chip; the first three rows follow the C-brick table in the
+two-wire bus sheet):
 
 .. list-table::
    :header-rows: 1
@@ -908,15 +931,16 @@ rows follow the C-brick table in the two-wire bus sheet):
    * - Line
      - Asserted when
    * - ``node-power``
-     - fan control bit 7 is clear (the first of the supply enables, active
-       low); *inferred* to be the node's main supply
+     - fan control bit 7 is clear: a low bit enables the 48 V supply, the first
+       of the supply enables (*software expectation*); *inferred* to be the
+       node's main supply
    * - ``reset-hold``
      - any of Bedrock control 1 bit 0, bit 1 or Bedrock control 2 bit 0 is
        clear; *inferred* from the firmware clearing all three to hold and
        setting them last to release
    * - ``soft-reset``
      - Bedrock control 1 bit 7 is set (the firmware sets it, waits and clears
-       it)
+       it); idle until that register is first written
    * - ``nmi``
      - Bedrock control 1 bit 6 is clear (it idles set); one node board, so
        line ``nmi.0``
@@ -926,14 +950,17 @@ soft reset and an NMI are separate inputs are *unknown*, so a line is a logical
 event and the decode an *approximation*. Writes that change none of the four
 lines send nothing, and no other expander is decoded; every write is still
 traced as ``sgi_l1_expander_write`` and each line change as
-``sgi_l1_signal_decode``. Before the firmware writes anything, and after every
-board reset, the three bytes are the cold-start values it applies (fan control
-``0xff``, Bedrock control 1 ``0x72``, Bedrock control 2 ``0x8a``): supplies off,
-reset held, an *approximation* of a part whose own power-on state is *unknown*.
-A reset of the board therefore lowers ``node-power`` and raises ``reset-hold``
-as changes: the firmware's restart that keeps a powered brick's outputs
-(*software expectation*) is not modelled, the expander latches go back to
-``0xff``, and a node left powered loses its supply.
+``sgi_l1_signal_decode``. Before the firmware writes anything the three bytes
+are the expanders' power-on ones, ``0xff``: the supply off, the reset group not
+held, no NMI (*inferred*). Soft reset would read asserted from ``0xff``, whose
+meaning at the chip is *unknown*, so the decode keeps it idle until Bedrock
+control 1 is first written, an *approximation* that gives the machine a defined
+level. What the node chip does in this window is *unknown*. The firmware's
+first writes, ``0x72`` and ``0x8a``, then hold the reset. A board reset does
+not touch the latches or the decode, so no line changes: a node left powered
+keeps its supply and a released node stays released, as the firmware's restart
+that keeps a powered brick's outputs expects (*software expectation*). The
+firmware rewrites the cold values itself on its other paths.
 
 The machine's two lines, ``power-good`` and ``node-reset-state``, arrive and are
 traced and held. Nothing on the C-brick reads either, so nothing is connected
@@ -1101,25 +1128,27 @@ Tests
 
 ``tests/qtest/sgi-l1-board-test.c`` runs test-owned ColdFire code from a test
 flash image and checks the global chip select, the chip-select windows, the
-interrupt controller, the timers, the watchdog and the four-channel UART.
-The same test reads the two-wire controller from the host against a stock
-AT24C EEPROM and an address nothing answers, and each identity part through the
+interrupt controller, the timers, the watchdog and the four-channel UART. The
+same test reads the two-wire controller from the host against a stock AT24C
+EEPROM and an address nothing answers, and each identity part through the
 controller, checking the record layout and the names given. With
 ``board-peers`` it checks, through the controller, that the select expander
 reads all ones at power-up and switches segments, that a segment 0 access
 leaves the select alone, that segments 4 to 13 hold nothing, and each
-expander's wire address, segment, reset value and input bits, from the
-firmware's table written out in the test, and that each node monitor starts
-at zero, takes the firmware's initialisation writes and reads them back, and
-keeps its register pointer between reads without stepping it. The USB
-window test programs chip select 3 from test-owned code, then checks the
-firmware probe's reads and writes: the revision at ``0x18``, the scratch
-register at ``0x1b`` holding ``0xb5`` and every even value to ``0xfc``, the
-revision refusing a write, bit 0 of ``0x1c`` reading back and clearing on
-reset, and any other offset logging and reading zero. The processor module 0
-monitors are checked on segment 4 for their independence from the node
-monitor at the same wire address, and the display for its write forms, its
-read and its answering under any select byte.
+expander's wire address, segment, power-on value, input bits and the level its
+input pins read with nothing attached, from the firmware's table written out in
+the test, that the latches survive a system reset, that remote power OK reads
+low and a power control status bit high only when its pin is driven, and that
+each node monitor starts at zero, takes the firmware's initialisation writes
+and reads them back, and keeps its register pointer between reads without
+stepping it. The USB window test programs chip select 3 from test-owned code,
+then checks the firmware probe's reads and writes: the revision at ``0x18``,
+the scratch register at ``0x1b`` holding ``0xb5`` and every even value to
+``0xfc``, the revision refusing a write, bit 0 of ``0x1c`` reading back and
+clearing on reset, and any other offset logging and reading zero. The processor
+module 0 monitors are checked on segment 4 for their independence from the node
+monitor at the same wire address, and the display for its write forms, its read
+and its answering under any select byte.
 
 The power-bay link is checked by test-owned code that writes three bytes to
 on-chip UART 1 and reads one the peer sent, through a socket chardev as the
@@ -1127,9 +1156,9 @@ fifth serial backend. ``settings`` is checked by loading a file of known bytes
 and reading the window back through chip select 1, and by the two refusals.
 
 With ``signals`` a test-owned peer plays the machine from a socket. It checks
-the board's hello and cold-start state, each decoded bit and the bits that move
+the board's hello and power-on state, each decoded bit and the bits that move
 nothing, the hold needing all three bits and releasing on the last, a board
-reset restoring the cold values as changes, a reconnect restating the levels
+reset changing no line and keeping the latches, a reconnect restating the levels
 without replaying a pulse made meanwhile, the machine's lines being accepted,
 and the two refusals.
 
