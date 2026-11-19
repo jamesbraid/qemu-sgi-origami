@@ -337,6 +337,7 @@ hw/misc/sgi-l1-pbay.c
 hw/misc/sgi-l1-link.c
 hw/misc/sgi-l1-signal-link.c
 hw/misc/sgi-l1.c
+hw/misc/sgi-l1-frame.c
 hw/misc/sgi-mgras-display.c
 hw/misc/sgi-mgras-display.h
 hw/misc/sgi-mgras-gl.c
@@ -451,6 +452,7 @@ include/hw/misc/sgi-kona-texture.h
 include/hw/misc/sgi-kona.h
 include/hw/misc/sgi-l1-pbay.h
 include/hw/misc/sgi-l1.h
+include/hw/misc/sgi-l1-frame.h
 include/hw/misc/sgi-l1-l2-link.h
 include/hw/misc/sgi-l1-provider.h
 include/hw/misc/sgi-l2-hub.h
@@ -1086,6 +1088,7 @@ tests/unit/sgi-gl-texture-test.h
 tests/unit/test-i2c-masters.c
 tests/unit/test-i2c-wire.c
 tests/unit/test-onewire.c
+tests/unit/test-sgi-l1-frame.c
 tests/unit/test-sgi-bedrock-ni.c
 tests/unit/test-sgi-board-identity.c
 tests/unit/test-sgi-board-mac.c

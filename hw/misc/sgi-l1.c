@@ -1000,21 +1000,11 @@ static void l1_boot(SGIL1State *s)
 
 /* The packet protocol. */
 
-static uint16_t l1_fcs(uint16_t value, uint8_t byte)
-{
-    value ^= byte;
-    for (unsigned i = 0; i < 8; i++) {
-        value = (value >> 1) ^ ((value & 1) ? 0x8408 : 0);
-    }
-    return value;
-}
-
 static void l1_emit_transport(SGIL1State *s, unsigned transport,
                               const uint8_t *payload, unsigned length)
 {
     uint8_t encoded[2 * SGI_L1_FRAME_SIZE + 2];
-    uint16_t crc = 0xffff;
-    unsigned n = 0;
+    unsigned n;
 
     /* The firmware's frame is 128 payload bytes including the header. */
     assert(length <= 128);
@@ -1024,22 +1014,7 @@ static void l1_emit_transport(SGIL1State *s, unsigned transport,
                       transport);
         return;
     }
-    for (unsigned i = 0; i < length; i++) {
-        crc = l1_fcs(crc, payload[i]);
-    }
-    crc = ~crc;
-    encoded[n++] = 0x7e;
-    for (unsigned i = 0; i < length + 2; i++) {
-        uint8_t byte = i < length ? payload[i] :
-                       i == length ? crc : crc >> 8;
-        /* Selected serial-multiplex startup escapes CR, but not XON/XOFF. */
-        if (byte == 0x7e || byte == 0x7d || byte == 0x0d) {
-            encoded[n++] = 0x7d;
-            byte ^= 0x20;
-        }
-        encoded[n++] = byte;
-    }
-    encoded[n++] = 0x7e;
+    n = sgi_l1_frame_encode(encoded, payload, length, true);
     sgi_l1_uart_queue(s->transport[transport], encoded, n);
 }
 
@@ -1075,40 +1050,6 @@ static void l1_reply(SGIL1State *s, uint8_t channel, int32_t code,
 {
     l1_reply_direct(s->reply_to ? s->reply_to : s, channel, code, count,
                     fields, length);
-}
-
-/* Reject malformed typed arguments before any command changes state. */
-static bool l1_arguments(const uint8_t *p, unsigned length, unsigned count)
-{
-    unsigned offset = 0;
-
-    for (unsigned i = 0; i < count; i++) {
-        uint8_t tag;
-        if (offset == length) {
-            return false;
-        }
-        tag = p[offset++];
-        if (tag == 0) {
-            if (length - offset < 4) {
-                return false;
-            }
-            offset += 4;
-        } else if (tag == 1) {
-            const uint8_t *end = memchr(p + offset, 0, length - offset);
-            if (!end) {
-                return false;
-            }
-            offset = end - p + 1;
-        } else if (tag & 0x80) {
-            if (length - offset < (tag & 0x7f)) {
-                return false;
-            }
-            offset += tag & 0x7f;
-        } else {
-            return false;
-        }
-    }
-    return offset == length;
 }
 
 static void l1_selected_read(SGIL1State *s, SGIL1State *recipient,
@@ -1562,7 +1503,7 @@ static bool l1_l2_forward_plain(SGIL1State *s, uint8_t channel,
     unsigned tag = transport * SGI_L1_IROUTER_CHANNELS + channel;
     unsigned length = SGI_L1_L2_SEG_DESC + 8 * count;
 
-    if (!l1_l2_linked(s) || !l1_arguments(args, args_len, count) ||
+    if (!l1_l2_linked(s) || !sgi_l1_arguments_valid(args, args_len, count) ||
         length > sizeof(segment)) {
         return false;
     }
@@ -4480,7 +4421,7 @@ static void l1_serve_query(SGIL1State *serving,
     const uint8_t *args = p + MIN(request->length, 8);
 
     assert(l1_local(serving, ldl_be_p(p + 1)));
-    if (!l1_arguments(args, args_len, count)) {
+    if (!sgi_l1_arguments_valid(args, args_len, count)) {
         l1_reply_direct(request->recipient, request->channel, -100, 0, NULL, 0);
     } else if (l1_discovery_reference(serving)) {
         l1_reference_refuse(serving, request->recipient, request->channel,
@@ -5277,7 +5218,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     if (l1_discovery_reference(s)) {
         SGIL1State *recipient = s->reply_to ? s->reply_to : s;
 
-        if (!l1_arguments(args, args_len, count)) {
+        if (!sgi_l1_arguments_valid(args, args_len, count)) {
             l1_reply_direct(recipient, channel, -100, 0, NULL, 0);
         } else {
             l1_reference_refuse(s, recipient, channel, address & 0x1f);
@@ -5288,7 +5229,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
     case 6:
         break;
     case 3:
-        if (l1_arguments(args, args_len, count)) {
+        if (sgi_l1_arguments_valid(args, args_len, count)) {
             l1_interpret(s, channel, args, count);
         } else {
             l1_reply(s, channel, -100, 0, NULL, 0);
@@ -5321,7 +5262,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         return;
     }
     case 18:
-        if (l1_arguments(args, args_len, count)) {
+        if (sgi_l1_arguments_valid(args, args_len, count)) {
             l1_loopback(s, channel, command, args, args_len, count);
         }
         return;
@@ -5367,7 +5308,7 @@ static void l1_request_frame(SGIL1State *s, const uint8_t *p,
         l1_reply(s, channel, -101, 0, NULL, 0);
         return;
     }
-    if (!l1_arguments(args, args_len, count)) {
+    if (!sgi_l1_arguments_valid(args, args_len, count)) {
         l1_reply(s, channel, -100, 0, NULL, 0);
         return;
     }
@@ -5645,41 +5586,10 @@ static void l1_parse(SGIL1State *s, unsigned transport, uint8_t byte)
 {
     SGIL1FrameState *frame = &s->frame[transport];
 
-    if (byte == 0x7e) {
-        /* A header and its check: the PROM's one-character echo is four. */
-        if (frame->in_frame && !frame->overflow && !frame->escape &&
-            frame->length >= 3) {
-            uint16_t crc = 0xffff;
-            for (unsigned i = 0; i < frame->length; i++) {
-                crc = l1_fcs(crc, frame->data[i]);
-            }
-            if (crc == 0xf0b8) {
-                l1_request(s, transport);
-            }
-        }
-        frame->in_frame = true;
-        frame->length = 0;
-        frame->escape = false;
-        frame->overflow = false;
-        return;
+    if (sgi_l1_frame_parse(frame, SGI_L1_FRAME_SIZE, byte)) {
+        l1_request(s, transport);
+        sgi_l1_frame_restart(frame);
     }
-    if (!frame->in_frame || frame->overflow) {
-        return;
-    }
-    if (byte == 0x7d) {
-        /* A second escape only re-arms the first. */
-        frame->escape = true;
-        return;
-    }
-    if (frame->escape) {
-        byte ^= 0x20;
-        frame->escape = false;
-    }
-    if (frame->length == SGI_L1_FRAME_SIZE) {
-        frame->overflow = true;
-        return;
-    }
-    frame->data[frame->length++] = byte;
 }
 
 /* The UART window's register file. */

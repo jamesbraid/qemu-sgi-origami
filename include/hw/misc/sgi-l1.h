@@ -4,6 +4,7 @@
 #define HW_MISC_SGI_L1_H
 
 #include "hw/misc/sgi-l1-env.h"
+#include "hw/misc/sgi-l1-frame.h"
 #include "hw/misc/sgi-l1-l2-link.h"
 #include "hw/misc/sgi-l1-pbay.h"
 #include "hw/misc/sgi-l1-provider.h"
@@ -15,8 +16,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIL1State, SGI_L1)
 #define TYPE_SGI_L1_UART "sgi-l1-uart"
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1UARTState, SGI_L1_UART)
 #define SGI_L1_SIZE 0x40
-/* 256 payload bytes plus the two check bytes: the firmware's receive cap. */
-#define SGI_L1_FRAME_SIZE 258
 #define SGI_L1_QUEUE_SIZE 4096
 #define SGI_L1_LOG_ENTRIES 128
 #define SGI_L1_LOG_TEXT 48
@@ -128,14 +127,6 @@ typedef struct SGIL1IRouterAssembly {
     uint16_t first_length;
     uint8_t data[SGI_L1_IROUTER_MAX_FRAGMENT];
 } SGIL1IRouterAssembly;
-
-typedef struct SGIL1FrameState {
-    uint8_t data[SGI_L1_FRAME_SIZE];
-    uint32_t length;
-    bool in_frame;
-    bool escape;
-    bool overflow;
-} SGIL1FrameState;
 
 /* Qtest-only inputs for the selected image's software status builder. */
 typedef struct SGIL1USBTestState {
