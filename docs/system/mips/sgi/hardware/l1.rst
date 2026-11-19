@@ -1237,10 +1237,38 @@ I/O brick's identity requests, its partition number) crosses only if the
 firmware's own cables carry it, which this machine does not wire. A run in
 this mode is a partial-firmware machine, not a model of the controller network.
 
-The node's ``power`` and ``reset`` inputs are not driven by a firmware
-controller yet: the node is powered as built. The signal link's ``nmi`` lines
-reach the node's NMI split, and ``soft-reset`` is not connected, as for the
-behavioural controller on the Origin 3000.
+**Node power and reset.** The controller drives its node with ``node-power``
+and ``reset-hold``. The machine joins them to the node's ``power`` and
+``reset`` inputs from the two levels and one "start owed" bit. The signal
+link applies a message's lines in id order, ``node-power`` first, so the
+"supply rose with the hold low" decision waits until the message is applied:
+a message that raises both lines still owes the start.
+
+* The node is unpowered at build, whatever the lines read.
+* When ``node-power`` rises, the node is powered at once if ``reset-hold`` is
+  low once the message has been applied, and otherwise a start is owed.
+* A release of ``reset-hold`` pays an owed start by powering the node. With
+  none owed, it pulses the node's ``reset`` input if the node is powered, and
+  does nothing if it is not.
+* ``node-power`` falling powers the node off and cancels an owed start.
+* A hold on a powered node changes nothing, so the node is not frozen for the
+  length of the hold (*approximation*). Whether a held Bedrock answers reads
+  is *unknown*.
+* The bit is not cleared by a machine reset, because the controller's process
+  is not reset with the machine.
+
+The node's reset input follows the machine's reset reach: a reset that
+reaches every powered compute node, which is the case when the resetting
+node is the only one powered, is a whole-machine reset (*approximation*,
+the same one a behavioural controller's ``reset`` makes).
+
+While any controller is a firmware one, the last compute node going off does
+not end the machine, because the controller may power it again.
+
+The signal link's ``soft-reset`` is not connected, as for the behavioural
+controller on the Origin 3000. Its ``nmi`` lines reach the node's NMI split.
+``power-good`` and ``node-reset-state`` are not driven by the machine
+(*approximation*: nothing reads them yet).
 
 .. _sgi-l1-signal-link:
 
@@ -1646,8 +1674,14 @@ the aliased properties, a chardev without its pair refused, and ``-icount``
 refused with its reason and accepted when inert.
 
 ``tests/qtest/sgi-l1-attach-test.c`` plays a C-brick's board against the
-Origin 3200 from sockets the test listens on: the dropped edges, bytes
-through the node's UART window, and the option refusals.
+Origin 3200 from sockets the test listens on: the reset rule above, case by
+case (a reset while powered, a power-up by release, ``power up hold`` that is
+never released, a supply that falls with a start owed, a link that drops and
+resyncs, a machine reset with a start owed, the only powered node resetting
+the whole machine), bytes through the node's UART window, the dropped edges,
+a machine with no board connected, the last node going off, and the option
+refusals. It observes nothing of an NMI, since the node's processors do not
+run under the test accelerator.
 
 ``tests/qtest/sgi-l1-signal-link-test.c`` plays the board from a socket the
 test listens on: the hello exchange and the refusal of a wrong role or

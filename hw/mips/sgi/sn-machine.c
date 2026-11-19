@@ -10766,7 +10766,8 @@ static void sgi_machine_node_power_bh(void *opaque)
         /* A node whose processors are still stopping announces itself. */
         on = on || sn1_node_powered(node) || node->stop_pending;
     }
-    if (compute && !on && !s->power_shutdown) {
+    /* A firmware L1 may power its node again, so the machine idles. */
+    if (compute && !on && !s->power_shutdown && !s->l1_link_count) {
         s->power_shutdown = true;
         qemu_system_shutdown_request(SHUTDOWN_CAUSE_GUEST_SHUTDOWN);
     }
@@ -10885,6 +10886,87 @@ static void sgi_machine_board_reset(void *opaque, int n, int level)
     sgi_machine_node_reset_reach(reset->machine, reset->node, bedrocks);
 }
 
+/* Levels plus one "start owed" bit decide, not edges; a reset keeps the bit. */
+typedef struct SGIL1Gate {
+    SN1NodeState *node;
+    qemu_irq power;
+    qemu_irq reset;
+    bool node_power;
+    bool hold;
+    bool owed;
+    bool settle_pending;
+} SGIL1Gate;
+
+/* Runs after the message: the link applies node-power before reset-hold. */
+static void sgi_machine_l1_gate_settle(void *opaque)
+{
+    SGIL1Gate *g = opaque;
+
+    g->settle_pending = false;
+    if (!g->node_power || sn1_node_powered(g->node)) {
+        return;
+    }
+    if (g->hold) {
+        g->owed = true;
+    } else {
+        qemu_set_irq(g->power, 1);
+    }
+}
+
+static void sgi_machine_l1_gate_power(void *opaque, int n, int level)
+{
+    SGIL1Gate *g = opaque;
+
+    if (level == g->node_power) {
+        return;
+    }
+    g->node_power = level;
+    g->owed = false;
+    if (!level) {
+        qemu_set_irq(g->power, 0);
+    } else if (g->hold) {
+        g->owed = true;
+    } else if (!g->settle_pending) {
+        g->settle_pending = true;
+        replay_bh_schedule_oneshot_event(qemu_get_aio_context(),
+                                         sgi_machine_l1_gate_settle, g);
+    }
+}
+
+static void sgi_machine_l1_gate_hold(void *opaque, int n, int level)
+{
+    SGIL1Gate *g = opaque;
+    bool released = g->hold && !level;
+
+    g->hold = level;
+    if (!released) {
+        return;
+    }
+    if (g->owed) {
+        g->owed = false;
+        qemu_set_irq(g->power, 1);
+    } else if (sn1_node_powered(g->node)) {
+        qemu_irq_pulse(g->reset);
+    }
+}
+
+static void sgi_machine_wire_l1_gate(SN1NodeState *node)
+{
+    SGIL1Gate *g = g_new0(SGIL1Gate, 1);
+
+    g->node = node;
+    g->power = qdev_get_gpio_in_named(DEVICE(node), "power", 0);
+    g->reset = qdev_get_gpio_in_named(DEVICE(node), "reset", 0);
+    qdev_connect_gpio_out_named(node->l1, "node-power", 0,
+                                qemu_allocate_irq(sgi_machine_l1_gate_power,
+                                                  g, 0));
+    qdev_connect_gpio_out_named(node->l1, "reset-hold", 0,
+                                qemu_allocate_irq(sgi_machine_l1_gate_hold,
+                                                  g, 0));
+    /* A node defaults to powered; the controller owns it from here. */
+    qemu_set_irq(g->power, 0);
+}
+
 /*
  * Each node's supply follows its brick's L1: the L1's "node-power" output is
  * the node's "power" input. A Cx-brick's L1 serves several nodes, so its one
@@ -10911,6 +10993,7 @@ static void sgi_machine_wire_node_power(SGIMachineState *s)
             continue;
         }
         if (!sgi_machine_behavioural_l1(l1)) {
+            sgi_machine_wire_l1_gate(node);
             continue;
         }
         for (unsigned int j = 0; j < s->num_nodes; j++) {
