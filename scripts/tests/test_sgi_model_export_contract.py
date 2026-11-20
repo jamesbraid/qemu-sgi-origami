@@ -75,9 +75,10 @@ class ExportTests(unittest.TestCase):
     def test_every_offering_names_its_emulator_target(self):
         catalogue = json.loads(
             (ROOT / "hw/mips/sgi/sgi-machines.json").read_text())
-        self.assertEqual(
-            {offering.get("target") for offering in catalogue["offerings"]},
-            {"mips64"})
+        targets = {offering["product"]: offering["target"]
+                   for offering in catalogue["offerings"]}
+        self.assertEqual(targets.pop("altix350"), "ia64")
+        self.assertEqual(set(targets.values()), {"mips64"})
 
     def test_graphics_profiles_are_in_the_origin300_export(self):
         outputs = render_qemu_inputs(INPUTS, machines=("origin300",))

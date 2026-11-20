@@ -368,6 +368,8 @@ def capture(args):
     catalogue = read_catalogue(args.qemu)
     jobs = []
     for o in catalogue["offerings"]:
+        if o.get("target", "mips64") != "mips64":
+            continue
         if args.only and not re.search(args.only, offering_key(o)):
             continue
         jobs.append((args.qemu, o, record_hash(catalogue, o), args.dump_dir))

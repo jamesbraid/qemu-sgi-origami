@@ -110,9 +110,11 @@ def offerings(cat: dict, product: str) -> list[dict]:
 
 
 def products(cat: dict) -> list[str]:
+    """The mips64 products; the pages run qemu-system-mips64."""
     seen: dict[str, None] = {}
     for o in cat["offerings"]:
-        seen.setdefault(o["product"], None)
+        if o.get("target", "mips64") == "mips64":
+            seen.setdefault(o["product"], None)
     return list(seen)
 
 

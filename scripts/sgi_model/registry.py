@@ -16,6 +16,7 @@ PRODUCT_MODELS = {
     "onyx2": "onyx2-rack",
     "octane": "octane",
     "octane2": "octane2",
+    "altix350": "altix350",
 }
 PRODUCT_NAMES = tuple(PRODUCT_MODELS)
 IMPLEMENTED_TOPOLOGIES = (
@@ -50,6 +51,7 @@ IMPLEMENTED_TOPOLOGIES = (
     "tezro-ip59",
     "tezro-rack-ip53",
     "tezro-rack-ip59",
+    "altix350",
 )
 
 # The compositions that declare variants, by file name, each compiling to
@@ -120,6 +122,7 @@ HOSTID_SOURCES = {
     "octane": "address", "octane2": "address", "fuel": "address",
     "origin200": "address",
     "o2": "o2",
+    "altix350": "address",
 }
 
 # The user-facing devices a launch may attach, by QEMU machine name.
@@ -151,6 +154,7 @@ DEVICES = {
     "onyx350": {"usb": False, "tablet": False},
     "onyx4": {"usb": False, "tablet": False},
     "tezro": {"usb": False, "tablet": False},
+    "altix350": {"usb": False, "tablet": False},
 }
 
 _ICOUNT_SHIFTS = list(range(11))
@@ -162,7 +166,12 @@ def clock_record(machine_name: str) -> dict:
     otherwise), so shift 3 is its default and only shift; counting may be
     off for the diagnostic that boots an installed disk without it. The
     Octane keeps the battery clock on the host's time unless asked. Every
-    other machine's counted time runs on the virtual clock."""
+    other machine's counted time runs on the virtual clock. The Altix 350
+    runs without counting only, so it lists no shift."""
+    if machine_name == "altix350":
+        return {"icount-shifts": [], "icount-off": True,
+                "default-rtc": "host", "rtc": ["host"],
+                "vm-needs-icount": False}
     if machine_name == "o2":
         return {"default-icount-shift": 3, "icount-shifts": [3],
                 "icount-off": True, "default-rtc": "vm",

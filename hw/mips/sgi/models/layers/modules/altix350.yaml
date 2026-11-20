@@ -1,0 +1,82 @@
+# SPDX-License-Identifier: BSD-3-Clause
+layer_version: 1
+layer:
+  kind: module
+  id: altix350-module
+  requires: {architecture: ia64, assembly: ip57}
+  data:
+    components:
+    - id: ip57-board
+      name: Altix 350 node board
+      kind: board
+      hardware_kind: ip57
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: cpu0
+      name: Itanium 2 processor
+      kind: cpu
+      parent: ip57-board
+      hardware_kind: madison
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: cpu1
+      name: Itanium 2 processor
+      kind: cpu
+      parent: ip57-board
+      hardware_kind: madison
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: shub
+      name: SHub 1 node controller
+      kind: node-asic
+      parent: ip57-board
+      hardware_kind: shub
+      node_asic: {processor_interfaces: 1, cpus_per_interface: 2}
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: pic
+      name: PIC
+      kind: io-controller
+      parent: ip57-board
+      hardware_kind: pic
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: ioc4
+      name: IOC4
+      kind: io-controller
+      parent: pic
+      hardware_kind: ioc4
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: scsi
+      name: QLogic ISP12160
+      kind: storage-hba
+      parent: pic
+      hardware_kind: isp12160
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - id: ethernet
+      name: BCM5701
+      kind: io-controller
+      parent: pic
+      hardware_kind: bcm5701
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    buses:
+    - id: sysbus
+      name: Processor system interface
+      kind: sysad
+      master: cpu0
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    connections:
+    - component: cpu0
+      bus: sysbus
+      role: master
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]
+    - component: shub
+      bus: sysbus
+      role: endpoint
+      provenance: derived
+      sources: ["qemu:docs/system/ia64/altix350.rst#altix350"]

@@ -900,8 +900,15 @@ static GPtrArray *catalogue_cases(void)
 
     QLIST_FOREACH_ENTRY(offerings, entry) {
         QDict *offering = qobject_to(QDict, qlist_entry_obj(entry));
-        char *name = g_strdup(qdict_get_str(offering, "topology"));
-        QDict *best = g_hash_table_lookup(largest, name);
+        char *name;
+        QDict *best;
+
+        /* Another target's machine does not exist in this binary. */
+        if (!g_str_equal(qdict_get_str(offering, "target"), "mips64")) {
+            continue;
+        }
+        name = g_strdup(qdict_get_str(offering, "topology"));
+        best = g_hash_table_lookup(largest, name);
 
         g_hash_table_add(offered,
                          (gpointer)qdict_get_str(offering, "topology"));

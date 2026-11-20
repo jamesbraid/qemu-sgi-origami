@@ -115,9 +115,9 @@ def _flash(raw: dict) -> dict:
 
 
 def _node(raw: dict) -> dict:
-    if raw["asic_kind"] == "CRIME":
+    if raw["asic_kind"] in ("CRIME", "SHUB"):
         return {
-            "id": raw["id"], "asic-kind": "crime",
+            "id": raw["id"], "asic-kind": _enum(raw["asic_kind"]),
             "cpu-slots": _kebab_keys(raw["cpu_slots"]),
             "bank-mib": raw["bank_mib"],
             "accepted-memory-mib": raw["accepted_memory_mib"],
@@ -494,6 +494,8 @@ _IP30_SCSI_TARGETS = {0: list(range(1, 4)), 1: list(range(1, 16))}
 # Adapters whose bus is not plain SCSI. A disk on a Fibre Channel private
 # loop is a loop port and needs the port_wwn and wwn names that port has.
 _SCSI_BUS_TYPES = {"qlogic-isp2200": "fc-loop"}
+# SCSI channels, so SCSI buses, per host adapter; one where not listed.
+_SCSI_CHANNELS = {"isp12160": 2}
 
 # The `-serial` line order a Hub-family launch places each backend on,
 # structurally: ioc3_a (also the primary console), ioc3_b, elsc (the
@@ -530,7 +532,7 @@ _EXPANSION_FLASH_BYTES = 16 * 1024 * 1024
 _IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
 _BOOT_PROM_KINDS = {
     "SN0": "ip27-prom", "SN1": "ip35-prom",
-    "IP30": "ip30-prom", "IP32": "ip32-prom",
+    "IP30": "ip30-prom", "IP32": "ip32-prom", "IA64": "snprom",
 }
 
 
@@ -547,6 +549,13 @@ def _scsi_adapters_for(topology: dict) -> list[dict]:
                  "targets": list(range(7)) if index == 0 else [],
                  **({"boot-target": 1} if index == 0 else {})}
                 for index in range(2)]
+    if topology["generation"] == "IA64":
+        # One adapter, one bus per channel; the PROM boots the first.
+        kind = topology["scsi_hbas"][0]
+        return [{"type": "scsi", "bus": f"scsi.{channel}",
+                 "targets": list(_SCSI_TARGETS[kind]) if not channel else [],
+                 **({"boot-target": 1} if not channel else {})}
+                for channel in range(_SCSI_CHANNELS[kind])]
     adapters = []
     for board in topology["io_boards"]:
         for function in board["pci"]:
@@ -589,6 +598,9 @@ def _consoles_for(topology: dict, harness: dict) -> list[dict]:
             {"kind": "second-port", "node": 0, "argument": "-serial chardev:mace_b",
              "launcher-name": "mace-b"},
         ]
+    if topology["generation"] == "IA64":
+        return [{"kind": "console", "node": 0,
+                 "argument": "-serial chardev:l1", "launcher-name": "l1"}]
     if topology["generation"] == "IP30":
         return [
             {"kind": "console", "node": 0, "argument": "-serial chardev:ioc3_a"},
@@ -788,6 +800,17 @@ def _networks_for(topology: dict) -> list[dict]:
                  "mac": {"derived": True, "machine-property": "mac",
                          "offset": 0,
                          "default-address": _mac_text(_BOARD_DEFAULT_MAC)}}]
+    if topology["generation"] == "IA64":
+        # No source gives an Altix 350 station address: the shared
+        # identity rule's default stands in, so it is an approximation.
+        return [{"kind": "bcm5701-ethernet", "argument": "-netdev ...,id=net0",
+                 "nic-model": "bcm570x", "nic-mac-option": "macaddr",
+                 "index": 0, "interface": "eth0", "default": True,
+                 "required": False,
+                 "mac": {"derived": True, "machine-property": "mac",
+                         "offset": 0,
+                         "default-address": _mac_text(_BOARD_DEFAULT_MAC),
+                         "default-provenance": "approximated"}}]
     networks = []
     per_kind: dict[str, int] = {}
     for board in topology["io_boards"]:
@@ -944,6 +967,8 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     Timekeeper image or zeroes.
     """
     generation = topology["generation"]
+    if generation == "IA64":
+        return []
     if generation == "IP32":
         # The O2's boot flash is an AT29C040A array and its state record
         # (include/hw/mips/sgi/o2-rom.h), then the DS1685's RAM and clock
@@ -1030,6 +1055,8 @@ def _storage_for(topology: dict, harness: dict, product: dict,
 def _init_inputs_for(topology: dict, storage: list[dict]) -> list[dict]:
     """The images creating a new machine's storage needs, one per
     `initial` source its `storage` list names."""
+    if topology["generation"] == "IA64":
+        return []
     inputs = [{"name": "boot-prom",
                "kind": _BOOT_PROM_KINDS[topology["generation"]],
                "required": True}]
@@ -1118,6 +1145,8 @@ def _machine_options(machine_name: str, topology: dict, nodes: int,
     the CPU total alone does not name one population, and the processor
     module where it is not the topology's default. The topology name fixes
     the board."""
+    if topology["generation"] == "IA64":
+        return machine_name
     if topology["generation"] == "IP32":
         return (machine_name if topology["name"] == "o2"
                 else f"{machine_name},variant={topology['name']}")
@@ -1133,6 +1162,7 @@ _SETTING_RESOURCES = ("identity-eeprom", "spd-eeprom")
 
 # Suffix of the qemu-system-<target> binary that runs an offering.
 _EMULATOR_TARGET = "mips64"
+_IA64_EMULATOR_TARGET = "ia64"
 
 
 def _offering_id(topology: dict, cpu_population: tuple[int, ...],
@@ -1361,6 +1391,8 @@ def _serial_lines_for(topology: dict, machine_name: str,
                 **({"serial": serial} if serial is not None else {}),
                 **({"property": prop} if prop is not None else {})}
 
+    if generation == "IA64":
+        return [line("l1", "l1", "console", serial=0)]
     if generation == "IP32":
         return [line("mace-a", "mace_a", "console", serial=0),
                 line("mace-b", "mace_b", "second-port", serial=1)]
@@ -1552,10 +1584,12 @@ def _offerings_for(model: dict, topology: dict,
         )
     scsi_adapters = _scsi_adapters_for(topology)
     launch_recipe = launch_harness.get("launch_recipe")
-    if launch_recipe not in (None, "ip53-discovery", "ip32"):
+    if launch_recipe not in (None, "ip53-discovery", "ip32", "ia64"):
         raise ValueError(f"unsupported offering launch recipe {launch_recipe!r}")
     if (launch_recipe == "ip32") != (topology["generation"] == "IP32"):
         raise ValueError("IP32 requires its own launch recipe")
+    if (launch_recipe == "ia64") != (topology["generation"] == "IA64"):
+        raise ValueError("IA64 requires its own launch recipe")
     if launch_recipe is None and (
             "console_records" in launch_harness or
             model_harness.get("console") == "ip53-ioc4" or
@@ -1620,7 +1654,9 @@ def _offerings_for(model: dict, topology: dict,
                     topology, tuple(cpu_population),
                     assembly["id"] if len(choices) > 1 else None),
                 "product": machine_name,
-                "target": _EMULATOR_TARGET,
+                "target": (_IA64_EMULATOR_TARGET
+                           if topology["generation"] == "IA64"
+                           else _EMULATOR_TARGET),
                 "topology": configuration_name,
                 **({"default-topology": selected_default}
                    if (selected_default := default_topology(
@@ -1644,7 +1680,8 @@ def _offerings_for(model: dict, topology: dict,
                     "cache-mib": assembly["cache_mib"],
                 },
                 **({"firmware": firmware}
-                   if launch_recipe in ("ip53-discovery", "ip32") else {}),
+                   if launch_recipe in ("ip53-discovery", "ip32", "ia64")
+                   else {}),
                 "init-inputs": init_inputs,
                 "storage": storage,
                 "resources": [item for item in resources

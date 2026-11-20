@@ -1204,6 +1204,13 @@ scripts/tests/test_sgi_model_ip32.py
 hw/mips/sgi/models/o2plus.yaml
 hw/mips/sgi/models/layers/modules/o2plus.yaml
 hw/mips/sgi/models/layers/products/o2plus.yaml
+hw/mips/sgi/models/altix350.yaml
+hw/mips/sgi/models/layers/architectures/ia64.yaml
+hw/mips/sgi/models/layers/assemblies/ip57.yaml
+hw/mips/sgi/models/layers/modules/altix350.yaml
+hw/mips/sgi/models/layers/products/altix350.yaml
+scripts/sgi_model/model_ia64.py
+scripts/tests/test_sgi_model_ia64.py
 hw/mips/sgi/crime-test.c
 hw/mips/sgi/crime-rational.h
 hw/mips/sgi/crime-texture.c

@@ -129,12 +129,13 @@ static void check_modules_partition_nodes(const SGIModelTopology *t)
     }
 }
 
-/* IP32 records are standalone boards, not module-owned Scalable Nodes. */
+/* IP32 and IA64 records are standalone boards, not Scalable Nodes. */
 static void check_topology_ownership(const SGIModelTopology *t)
 {
     const SGIModelNode *node;
 
-    if (t->generation != SGI_MODEL_GENERATION_IP32) {
+    if (t->generation != SGI_MODEL_GENERATION_IP32 &&
+        t->generation != SGI_MODEL_GENERATION_IA64) {
         check_modules_partition_nodes(t);
         return;
     }
@@ -151,7 +152,9 @@ static void check_topology_ownership(const SGIModelTopology *t)
     g_assert_null(t->xio_slots);
     g_assert_null(t->io_boards);
     node = node0(t);
-    g_assert_cmpint(node->asic_kind, ==, SGI_MODEL_ASIC_KIND_CRIME);
+    g_assert_cmpint(node->asic_kind, ==,
+                    t->generation == SGI_MODEL_GENERATION_IP32 ?
+                    SGI_MODEL_ASIC_KIND_CRIME : SGI_MODEL_ASIC_KIND_SHUB);
     g_assert_false(node->has_module_index);
     g_assert_false(node->has_slot);
     g_assert_false(node->has_hub_slot_bits);
@@ -179,6 +182,15 @@ static void check_crime_node_shape(const SGIModelNode *node)
     g_assert_nonnull(node->flash);
     g_assert_cmpint(node->flash->kind, ==, SGI_MODEL_FLASH_KIND_OPERATOR_PROM);
     g_assert_cmpuint(node->flash->size, ==, 524288);
+}
+
+/* The Altix 350 node board fits one SHub, two processors and 2 GiB. */
+static void check_shub_node_shape(const SGIModelNode *node)
+{
+    g_assert_null(node->identity);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->cpu_slots), ==, 2);
+    g_assert_cmpuint(QAPI_LIST_LENGTH(node->accepted_memory_mib), ==, 1);
+    g_assert_cmpuint(node->accepted_memory_mib->value, ==, 2048);
 }
 
 /* The selected IP30 profiles have one CPU; this is not a HEART CPU limit. */
@@ -252,6 +264,12 @@ static void check_node_shapes(const SGIModelTopology *t)
         if (node->asic_kind == SGI_MODEL_ASIC_KIND_CRIME) {
             g_assert_cmpint(t->generation, ==, SGI_MODEL_GENERATION_IP32);
             check_crime_node_shape(node);
+            continue;
+        }
+
+        if (node->asic_kind == SGI_MODEL_ASIC_KIND_SHUB) {
+            g_assert_cmpint(t->generation, ==, SGI_MODEL_GENERATION_IA64);
+            check_shub_node_shape(node);
             continue;
         }
 

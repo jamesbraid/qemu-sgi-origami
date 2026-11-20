@@ -97,6 +97,9 @@ def render(catalogue: dict) -> str:
         offering = products[product]
         title = f"``{product}``"
         out += [title, "-" * len(title), ""]
+        if not offering["settings"]:
+            out += [f"{title} takes no settings.", ""]
+            continue
         out += [".. list-table::", "   :header-rows: 1", "",
                 "   * - Setting", "     - Kind", "     - Slots",
                 "     - Applied as", "     - Default"]

@@ -39,10 +39,12 @@
 #
 # @bedrock: the SN1 (IP35) Bedrock
 #
+# @shub: the Altix 350's SHub 1
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelAsicKind',
-  'data': ['hub', 'bedrock', 'heart', 'crime'] }
+  'data': ['hub', 'bedrock', 'heart', 'crime', 'shub'] }
 
 ##
 # @SGIModelProcessor:
@@ -1597,10 +1599,12 @@
 #
 # @sn1: SN1 (IP35 Bedrock-family boards)
 #
+# @ia64: the Altix 350 SHub 1 node board (``qemu-system-ia64``)
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelGeneration',
-  'data': ['sn0', 'sn1', 'ip30', 'ip32'] }
+  'data': ['sn0', 'sn1', 'ip30', 'ip32', 'ia64'] }
 
 ##
 # @SGIModelIp27FirmwareConfig:
@@ -2187,10 +2191,12 @@
 #
 # @ip32: explicit O2 firmware, platform identity and persistent stores
 #
+# @ia64: explicit Altix 350 firmware; it runs on ``qemu-system-ia64``
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelLaunchRecipe',
-  'data': [ 'ip53-discovery', 'ip32' ] }
+  'data': [ 'ip53-discovery', 'ip32', 'ia64' ] }
 
 ##
 # @SGIModelFirmware:
@@ -2415,6 +2421,10 @@
 #     @offset.  With none named, the machine derives the address from
 #     its emu-id under the same 08:00:69 prefix; present when @derived
 #
+# @default-provenance: how well @default-address is known, as for a
+#     setting's default: established, inferred or approximated; absent
+#     where the address is unrated
+#
 # @required-prefix: the address prefix the product's PROM accepts on
 #     this NIC; with any other the PROM does not bring the interface
 #     up.  The PROM enforces it, not QEMU, so a launcher should check
@@ -2428,6 +2438,7 @@
             '*machine-property': 'str',
             '*offset': 'uint32',
             '*default-address': 'str',
+            '*default-provenance': 'str',
             '*required-prefix': 'str' } }
 
 ##

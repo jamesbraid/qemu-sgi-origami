@@ -2,6 +2,272 @@
   "offerings": [
     {
       "clock": {
+        "default-rtc": "host",
+        "icount-off": true,
+        "icount-shifts": [],
+        "rtc": [
+          "host"
+        ],
+        "vm-needs-icount": false
+      },
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        1
+      ],
+      "default-cpu-model": "madison-1600-3m",
+      "default-topology": "altix350",
+      "devices": {
+        "tablet": false,
+        "usb": false
+      },
+      "dimms-per-node": [
+        1
+      ],
+      "display-name": "Altix 350",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/snprom-10.54/shub1snprom.bin",
+        "kind": "snprom",
+        "per-node-flash": false,
+        "sha256": "51ccf9ad830b85ee6c88d6d73d2512322a86454e63db51c57454679283a34617",
+        "size": 6291456
+      },
+      "hostid-source": "address",
+      "id": "altix350.1",
+      "init-inputs": [],
+      "install-media": [
+        "disk-image"
+      ],
+      "launch-recipe": "ia64",
+      "machine-options": "altix350",
+      "memory-per-node-mib": {
+        "accepted": [
+          2048
+        ],
+        "default": 2048
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "none",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "eth0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:e1:00:00",
+            "default-provenance": "approximated",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 3,
+        "clock-hz": 1600000000,
+        "id": "madison-1600-3m",
+        "part": "MADISON"
+      },
+      "product": "altix350",
+      "prom-dialogue": "none",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "boot-target": 1,
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [],
+          "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        }
+      ],
+      "setting-groups": [],
+      "settings": [],
+      "smp": 1,
+      "storage": [],
+      "supported-guests": [
+        "linux"
+      ],
+      "target": "ia64",
+      "topology": "altix350"
+    },
+    {
+      "clock": {
+        "default-rtc": "host",
+        "icount-off": true,
+        "icount-shifts": [],
+        "rtc": [
+          "host"
+        ],
+        "vm-needs-icount": false
+      },
+      "console": "l1-uart",
+      "consoles": [
+        {
+          "argument": "-serial chardev:l1",
+          "kind": "console",
+          "launcher-name": "l1",
+          "node": 0
+        }
+      ],
+      "cpus-per-node": [
+        2
+      ],
+      "default-cpu-model": "madison-1600-3m",
+      "default-topology": "altix350",
+      "devices": {
+        "tablet": false,
+        "usb": false
+      },
+      "dimms-per-node": [
+        1
+      ],
+      "display-name": "Altix 350",
+      "firmware": {
+        "argument": "-bios",
+        "asset": "assets/firmware/snprom-10.54/shub1snprom.bin",
+        "kind": "snprom",
+        "per-node-flash": false,
+        "sha256": "51ccf9ad830b85ee6c88d6d73d2512322a86454e63db51c57454679283a34617",
+        "size": 6291456
+      },
+      "hostid-source": "address",
+      "id": "altix350.2",
+      "init-inputs": [],
+      "install-media": [
+        "disk-image"
+      ],
+      "launch-recipe": "ia64",
+      "machine-options": "altix350",
+      "memory-per-node-mib": {
+        "accepted": [
+          2048
+        ],
+        "default": 2048
+      },
+      "needs-debug-leds-off": false,
+      "netboot-adapter": "none",
+      "networks": [
+        {
+          "argument": "-netdev ...,id=net0",
+          "default": true,
+          "index": 0,
+          "interface": "eth0",
+          "kind": "bcm5701-ethernet",
+          "mac": {
+            "default-address": "08:00:69:e1:00:00",
+            "default-provenance": "approximated",
+            "derived": true,
+            "machine-property": "mac",
+            "offset": 0
+          },
+          "nic-mac-option": "macaddr",
+          "nic-model": "bcm570x",
+          "required": false
+        }
+      ],
+      "nodes": 1,
+      "processor": {
+        "cache-mib": 3,
+        "clock-hz": 1600000000,
+        "id": "madison-1600-3m",
+        "part": "MADISON"
+      },
+      "product": "altix350",
+      "prom-dialogue": "none",
+      "resources": [],
+      "scsi-adapters": [
+        {
+          "boot-target": 1,
+          "bus": "scsi.0",
+          "targets": [
+            1,
+            2,
+            3,
+            4,
+            5,
+            6,
+            7,
+            8,
+            9,
+            10,
+            11,
+            12,
+            13,
+            14,
+            15
+          ],
+          "type": "scsi"
+        },
+        {
+          "bus": "scsi.1",
+          "targets": [],
+          "type": "scsi"
+        }
+      ],
+      "serial-lines": [
+        {
+          "chardev": "l1",
+          "kind": "console",
+          "name": "l1",
+          "node": 0,
+          "serial": 0
+        }
+      ],
+      "setting-groups": [],
+      "settings": [],
+      "smp": 2,
+      "storage": [],
+      "supported-guests": [
+        "linux"
+      ],
+      "target": "ia64",
+      "topology": "altix350"
+    },
+    {
+      "clock": {
         "default-rtc": "vm",
         "icount-off": true,
         "icount-shifts": [
@@ -47752,6 +48018,85 @@
     }
   ],
   "topologies": [
+    {
+      "cables": [],
+      "console": 0,
+      "controllers": [],
+      "crossbars": [],
+      "description": "SGI Altix 350 (IP57)",
+      "generation": "ia64",
+      "io-boards": [],
+      "junk-uart": -1,
+      "machine-default": true,
+      "modules": [],
+      "name": "altix350",
+      "node-populations": [
+        {
+          "cables": [],
+          "grade": "inferred",
+          "nodes": [
+            0
+          ],
+          "routers": [],
+          "supported-cpu-populations": [
+            {
+              "cpus-per-node": [
+                1
+              ]
+            },
+            {
+              "cpus-per-node": [
+                2
+              ]
+            }
+          ],
+          "xio-slots": []
+        }
+      ],
+      "nodes": [
+        {
+          "accepted-memory-mib": [
+            2048
+          ],
+          "asic-kind": "shub",
+          "bank-mib": [
+            2048
+          ],
+          "cpu-slots": [
+            {
+              "assembly": {
+                "cache-mib": 3,
+                "clock-hz": 1600000000,
+                "id": "madison-1600-3m",
+                "kind": "MADISON"
+              },
+              "interface": 0,
+              "slot": 0
+            },
+            {
+              "assembly": {
+                "cache-mib": 3,
+                "clock-hz": 1600000000,
+                "id": "madison-1600-3m",
+                "kind": "MADISON"
+              },
+              "interface": 0,
+              "slot": 1
+            }
+          ],
+          "flash": {
+            "kind": "operator-prom",
+            "size": 6291456
+          },
+          "id": "shub",
+          "slave-role": false
+        }
+      ],
+      "product": "altix350",
+      "routers": [],
+      "xio-attachments": [],
+      "xio-slots": []
+    },
     {
       "board": "ip34",
       "cables": [],

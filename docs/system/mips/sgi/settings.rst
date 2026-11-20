@@ -20,6 +20,11 @@ the product offers a setting under other keys (the Origin 300's
 chassis count, say), the keys shown are the product's first
 offering's.
 
+``altix350``
+------------
+
+``altix350`` takes no settings.
+
 ``fuel``
 --------
 

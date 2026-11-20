@@ -3715,6 +3715,9 @@ def compile_model(model: dict) -> dict:
     if generation == "IP32":
         from .model_ip32 import compile_ip32
         return compile_ip32(model)
+    if generation == "IA64":
+        from .model_ia64 import compile_ia64
+        return compile_ia64(model)
     if generation not in ("SN0", "SN1", "IP30"):
         raise CompileError(
             f"generation '{generation}' is not supported by this compiler yet "

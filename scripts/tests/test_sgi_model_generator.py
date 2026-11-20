@@ -23,7 +23,7 @@ L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "fd9924d2f1a1c9d3ea13cf7f73a968bbd8bce237503096cf3d4f9f03d4dc6740"
+    "c70ca95aac7a6440c775849d9b75d3a62cef8b11eac9e635ce93a647452e8372"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -225,9 +225,9 @@ class GeneratorTests(unittest.TestCase):
 
     def test_every_authored_model_layer_has_supported_structure(self):
         layers = sorted((INPUTS / "layers").rglob("*.yaml"))
-        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 170)
-        self.assertEqual(len(discover_model_paths(INPUTS)), 49)
-        self.assertEqual(len(layers), 111)
+        self.assertEqual(len(list(INPUTS.rglob("*.yaml"))), 175)
+        self.assertEqual(len(discover_model_paths(INPUTS)), 50)
+        self.assertEqual(len(layers), 115)
 
         for path in layers:
             with self.subTest(path=path.relative_to(INPUTS)):
@@ -603,6 +603,12 @@ class StorageTests(unittest.TestCase):
                     ",population=" + ":".join(
                         str(c) for c in offering["cpus-per-node"])
                     if len(same_total) > 1 else "")
+                if offering.get("launch-recipe") == "ia64":
+                    self.assertEqual(offering["machine-options"], "altix350")
+                    self.assertEqual(offering["storage"], [])
+                    self.assertEqual(offering["init-inputs"], [])
+                    self.assertEqual(offering["firmware"]["kind"], "snprom")
+                    continue
                 if offering.get("launch-recipe") == "ip32":
                     self.assertEqual(offering["machine-options"],
                                      "o2" if offering["topology"] == "o2"
@@ -685,7 +691,7 @@ class StorageTests(unittest.TestCase):
                 if offering["product"] in ds1744_products
                 or offering.get("launch-recipe") == "ip32"
                 else set()
-                if offering.get("launch-recipe") == "ip53-discovery"
+                if offering.get("launch-recipe") in ("ip53-discovery", "ia64")
                 else {"zero"})
             with self.subTest(options=offering["machine-options"]):
                 self.assertEqual(nvram, expected)
@@ -1067,6 +1073,8 @@ class StorageTests(unittest.TestCase):
                   "bcm5701": ("bcm5701-ethernet", "bcm570x", "tg"),
                   "mace": ("mace-ethernet", "sgi-mace-eth", "ec")}
         for offering in self.catalogue["offerings"]:
+            if offering.get("launch-recipe") == "ia64":
+                continue  # its record lists no I/O board
             listed = [function["kind"]
                       for board in topologies[offering["topology"]]
                       ["io-boards"]
@@ -1600,6 +1608,7 @@ class FuelTests(unittest.TestCase):
             "o2": ["password-clear-input", "rom-at29c040a-protection",
                    "rom-at29c040a-lower-lock", "rom-at29c040a-upper-lock",
                    "identity-eprom-file"],
+            "altix350": [],
         }
         for row in catalogue["offerings"]:
             names = [item["name"] for item in row["settings"]]
