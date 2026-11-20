@@ -392,6 +392,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -786,6 +787,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -1180,6 +1182,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -1574,6 +1577,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -1968,6 +1972,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -2354,6 +2359,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -2740,6 +2746,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -3126,6 +3133,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -3512,6 +3520,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -3890,6 +3899,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -4268,6 +4278,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -4646,6 +4657,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -5016,6 +5028,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -5386,6 +5399,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     }
   ],

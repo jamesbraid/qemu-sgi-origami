@@ -409,6 +409,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -820,6 +821,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -1231,6 +1233,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -1642,6 +1645,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -2053,6 +2057,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -2456,6 +2461,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -2859,6 +2865,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -3262,6 +3269,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -3665,6 +3673,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -4060,6 +4069,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -4455,6 +4465,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -4850,6 +4861,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -5237,6 +5249,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -5624,6 +5637,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     }
   ],

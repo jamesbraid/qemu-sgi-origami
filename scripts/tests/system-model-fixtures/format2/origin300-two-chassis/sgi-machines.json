@@ -366,6 +366,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -734,6 +735,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -1102,6 +1104,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -1470,6 +1473,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     }
   ],

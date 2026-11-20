@@ -1131,6 +1131,9 @@ def _machine_options(machine_name: str, topology: dict, nodes: int,
 # records a caller may give.
 _SETTING_RESOURCES = ("identity-eeprom", "spd-eeprom")
 
+# Suffix of the qemu-system-<target> binary that runs an offering.
+_EMULATOR_TARGET = "mips64"
+
 
 def _offering_id(topology: dict, cpu_population: tuple[int, ...],
                  processor: str | None) -> str:
@@ -1617,6 +1620,7 @@ def _offerings_for(model: dict, topology: dict,
                     topology, tuple(cpu_population),
                     assembly["id"] if len(choices) > 1 else None),
                 "product": machine_name,
+                "target": _EMULATOR_TARGET,
                 "topology": configuration_name,
                 **({"default-topology": selected_default}
                    if (selected_default := default_topology(

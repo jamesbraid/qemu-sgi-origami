@@ -394,6 +394,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -790,6 +791,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -1190,6 +1192,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -1596,6 +1599,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     }
   ],

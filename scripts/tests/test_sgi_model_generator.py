@@ -23,7 +23,7 @@ L2_DEFAULT_ON = {"origin3400", "origin3400-two-partitions", "onyx3400-ir"}
 L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "e7227bdc7439a16adbaa204ad661d1c4c513c65393adc1fde6411db24c5c1822"
+    "fd9924d2f1a1c9d3ea13cf7f73a968bbd8bce237503096cf3d4f9f03d4dc6740"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))

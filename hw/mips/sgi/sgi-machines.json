@@ -280,6 +280,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "fuel"
     },
     {
@@ -476,6 +477,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "o2"
     },
     {
@@ -672,6 +674,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "o2plus"
     },
     {
@@ -913,6 +916,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "octane"
     },
     {
@@ -1218,6 +1222,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "octane2"
     },
     {
@@ -1607,6 +1612,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -1996,6 +2002,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -2385,6 +2392,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -2766,6 +2774,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -3147,6 +3156,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -3558,6 +3568,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -3969,6 +3980,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -4380,6 +4392,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -4791,6 +4804,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -5202,6 +5216,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -5605,6 +5620,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -6008,6 +6024,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -6411,6 +6428,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -6814,6 +6832,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -7209,6 +7228,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -7604,6 +7624,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -7999,6 +8020,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -8386,6 +8408,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -8773,6 +8796,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-rack"
     },
     {
@@ -9220,6 +9244,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx3000"
     },
     {
@@ -9661,6 +9686,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx3000"
     },
     {
@@ -10102,6 +10128,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx3000"
     },
     {
@@ -10541,6 +10568,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx3000"
     },
     {
@@ -11001,6 +11029,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx3400-ir"
     },
     {
@@ -11286,6 +11315,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "onyx350-ip53"
     },
     {
@@ -11571,6 +11601,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "onyx350-ip59"
     },
     {
@@ -11849,6 +11880,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "onyx4"
     },
     {
@@ -12245,6 +12277,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -12641,6 +12674,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -13041,6 +13075,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -13447,6 +13482,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-dual"
     },
     {
@@ -13766,6 +13802,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -14085,6 +14122,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -14404,6 +14442,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -14723,6 +14762,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -15046,6 +15086,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -15375,6 +15416,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel-loopback"
     },
     {
@@ -15705,6 +15747,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -16035,6 +16078,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -16365,6 +16409,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -16695,6 +16740,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -17029,6 +17075,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -17369,6 +17416,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200-gigachannel"
     },
     {
@@ -17688,6 +17736,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -18007,6 +18056,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -18326,6 +18376,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -18645,6 +18696,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -18968,6 +19020,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -19297,6 +19350,7 @@
         "openbsd",
         "gentoo"
       ],
+      "target": "mips64",
       "topology": "origin200"
     },
     {
@@ -19691,6 +19745,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -20085,6 +20140,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -20479,6 +20535,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -20873,6 +20930,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -21267,6 +21325,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -21653,6 +21712,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -22039,6 +22099,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -22425,6 +22486,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -22811,6 +22873,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -23189,6 +23252,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -23567,6 +23631,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -23945,6 +24010,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -24315,6 +24381,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -24685,6 +24752,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-deskside"
     },
     {
@@ -25079,6 +25147,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -25473,6 +25542,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -25867,6 +25937,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -26261,6 +26332,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -26655,6 +26727,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -27041,6 +27114,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -27427,6 +27501,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -27813,6 +27888,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -28199,6 +28275,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -28577,6 +28654,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -28955,6 +29033,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -29333,6 +29412,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -29703,6 +29783,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -30073,6 +30154,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin2000-rack"
     },
     {
@@ -30495,6 +30577,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-numalink-pci-expansion"
     },
     {
@@ -30917,6 +31000,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-numalink-pci-expansion"
     },
     {
@@ -31339,6 +31423,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-numalink-pci-expansion"
     },
     {
@@ -31761,6 +31846,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-numalink-pci-expansion"
     },
     {
@@ -32092,6 +32178,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-pci-expansion"
     },
     {
@@ -32423,6 +32510,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-pci-expansion"
     },
     {
@@ -32791,6 +32879,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -33159,6 +33248,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -33527,6 +33617,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -33895,6 +33986,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300-two-chassis"
     },
     {
@@ -34180,6 +34272,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300"
     },
     {
@@ -34465,6 +34558,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300"
     },
     {
@@ -35067,6 +35161,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3200-two-ibricks"
     },
     {
@@ -35508,6 +35603,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3200"
     },
     {
@@ -35943,6 +36039,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3200"
     },
     {
@@ -36378,6 +36475,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3200"
     },
     {
@@ -36811,6 +36909,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3200"
     },
     {
@@ -37342,6 +37441,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400-two-partitions"
     },
     {
@@ -37772,6 +37872,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400-two-routers"
     },
     {
@@ -38202,6 +38303,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400"
     },
     {
@@ -38626,6 +38728,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400"
     },
     {
@@ -39050,6 +39153,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400"
     },
     {
@@ -39472,6 +39576,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3400"
     },
     {
@@ -39752,6 +39857,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "origin350-ip53"
     },
     {
@@ -40032,6 +40138,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "origin350-ip53"
     },
     {
@@ -40310,6 +40417,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "origin350-ip59"
     },
     {
@@ -41101,6 +41209,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3800-64p"
     },
     {
@@ -41651,6 +41760,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3800-high-bandwidth"
     },
     {
@@ -42201,6 +42311,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3800"
     },
     {
@@ -42542,6 +42653,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3900-memory-node"
     },
     {
@@ -42883,6 +42995,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3900-ip53"
     },
     {
@@ -43224,6 +43337,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin3900-ip59"
     },
     {
@@ -43505,6 +43619,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip53"
     },
     {
@@ -43786,6 +43901,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip53"
     },
     {
@@ -44067,6 +44183,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip53"
     },
     {
@@ -44348,6 +44465,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip53"
     },
     {
@@ -44629,6 +44747,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip53"
     },
     {
@@ -44908,6 +45027,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip59"
     },
     {
@@ -45187,6 +45307,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-rack-ip59"
     },
     {
@@ -45474,6 +45595,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-one-processor"
     },
     {
@@ -45761,6 +45883,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip53"
     },
     {
@@ -46048,6 +46171,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip53"
     },
     {
@@ -46335,6 +46459,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip53"
     },
     {
@@ -46622,6 +46747,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip53"
     },
     {
@@ -46907,6 +47033,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip59"
     },
     {
@@ -47192,6 +47319,7 @@
         }
       ],
       "supported-guests": [],
+      "target": "mips64",
       "topology": "tezro-ip59"
     }
   ],

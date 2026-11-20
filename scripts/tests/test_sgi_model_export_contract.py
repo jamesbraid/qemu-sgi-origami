@@ -72,6 +72,13 @@ class ExportTests(unittest.TestCase):
                 {"origin2000-a": "origin2000", "origin2000-b": "origin2000"},
                 {"origin2000": {"composition": {"product": "origin2000"}}})
 
+    def test_every_offering_names_its_emulator_target(self):
+        catalogue = json.loads(
+            (ROOT / "hw/mips/sgi/sgi-machines.json").read_text())
+        self.assertEqual(
+            {offering.get("target") for offering in catalogue["offerings"]},
+            {"mips64"})
+
     def test_graphics_profiles_are_in_the_origin300_export(self):
         outputs = render_qemu_inputs(INPUTS, machines=("origin300",))
         catalogue = json.loads(outputs["hw/mips/sgi/sgi-machines.json"])

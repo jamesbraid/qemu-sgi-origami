@@ -3127,6 +3127,9 @@
 #
 # @product: ``-M`` value this offering is for
 #
+# @target: the emulator this offering runs on, the suffix of the
+#     ``qemu-system-TARGET`` binary
+#
 # @topology: ``topology=`` value this offering is for
 #
 # @default-topology: the topology @product builds with no
@@ -3225,6 +3228,7 @@
 { 'struct': 'SGIModelOffering',
   'data': { 'id': 'str',
             'product': 'str',
+            'target': 'str',
             'topology': 'str',
             '*default-topology': 'str',
             'display-name': 'str',

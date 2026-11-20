@@ -283,6 +283,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300"
     },
     {
@@ -568,6 +569,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "origin300"
     }
   ],

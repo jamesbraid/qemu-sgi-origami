@@ -387,6 +387,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -776,6 +777,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -1165,6 +1167,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -1546,6 +1549,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     },
     {
@@ -1927,6 +1931,7 @@
       "supported-guests": [
         "irix"
       ],
+      "target": "mips64",
       "topology": "onyx2-deskside"
     }
   ],
