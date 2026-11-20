@@ -350,6 +350,26 @@ static void test_silent_without_peer(void)
  * Bytes queued toward the node survive the peer leaving; those written
  * meanwhile are dropped, not resent when it returns.
  */
+/* A burst of frames to a peer that is not reading yet is delivered whole. */
+static void test_burst_to_slow_peer(void)
+{
+    enum { TOTAL = 2525 };
+    Rig r;
+    g_autofree uint8_t *sent = g_malloc(TOTAL);
+    g_autofree uint8_t *got = g_malloc(TOTAL);
+
+    rig_start(&r, 1, true);
+    connect_peers(&r, 1);
+    pattern(sent, TOTAL);
+    for (unsigned i = 0; i < TOTAL; i++) {
+        reg_write(&r, 0, REG_DATA, sent[i]);
+    }
+    peer_recv(&r, 0, got, TOTAL);
+    g_assert_cmpmem(got, TOTAL, sent, TOTAL);
+    g_assert_false(peer_readable(&r, 0));
+    rig_stop(&r);
+}
+
 /*
  * A peer that stops reading fills the socket. The write that no longer fits
  * is dropped and traced instead of stalling the machine, and what did fit
@@ -772,6 +792,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-link/transports", test_transports);
     qtest_add_func("sgi-l1-link/silent-without-peer",
                    test_silent_without_peer);
+    qtest_add_func("sgi-l1-link/burst-to-slow-peer", test_burst_to_slow_peer);
     qtest_add_func("sgi-l1-link/stalled-peer", test_stalled_peer);
     qtest_add_func("sgi-l1-link/reconnect", test_reconnect);
     qtest_add_func("sgi-l1-link/nodes-up-clears-on-unrealize",

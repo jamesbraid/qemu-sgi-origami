@@ -6,6 +6,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "chardev/char-fe.h"
 #include "exec/icount.h"
@@ -17,11 +18,19 @@
 
 OBJECT_DECLARE_SIMPLE_TYPE(SGIL1LinkState, SGI_L1_LINK)
 
+/* A socket holds about 280 one-byte writes; a frame burst must outlast that. */
+#define LINK_TXQ 16384
+
 typedef struct SGIL1LinkNode {
     SGIL1LinkState *link;
     unsigned transport;
     CharFrontend chr;
     SGIL1UARTState *window;
+    /* Bytes the chardev has not taken yet, and the watch that flushes them. */
+    uint8_t txq[LINK_TXQ];
+    unsigned tx_head, tx_len;
+    guint tx_watch;
+    bool tx_full_logged;
 } SGIL1LinkNode;
 
 struct SGIL1LinkState {
@@ -48,6 +57,54 @@ static void link_receive(void *opaque, const uint8_t *buf, int size)
     sgi_l1_uart_queue(n->window, buf, size);
 }
 
+static void link_tx_clear(SGIL1LinkNode *n)
+{
+    n->tx_head = n->tx_len = 0;
+    n->tx_full_logged = false;
+    if (n->tx_watch) {
+        g_source_remove(n->tx_watch);
+        n->tx_watch = 0;
+    }
+}
+
+static gboolean link_writable(void *chr, GIOCondition cond, void *opaque);
+
+/* Give the chardev what it takes; wait until it is writable for the rest. */
+static void link_flush(SGIL1LinkNode *n)
+{
+    while (n->tx_len) {
+        int done = qemu_chr_fe_write(&n->chr, n->txq + n->tx_head,
+                                     MIN(n->tx_len, LINK_TXQ - n->tx_head));
+
+        if (done <= 0) {
+            break;
+        }
+        n->tx_head = (n->tx_head + done) % LINK_TXQ;
+        n->tx_len -= done;
+    }
+    if (!n->tx_len) {
+        n->tx_full_logged = false;
+    } else if (!n->tx_watch) {
+        n->tx_watch = qemu_chr_fe_add_watch(&n->chr, G_IO_OUT | G_IO_HUP,
+                                            link_writable, n);
+        if (!n->tx_watch) {
+            qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1-link: transport %u "
+                          "backend cannot wait, %u bytes dropped\n",
+                          n->transport, n->tx_len);
+            n->tx_len = 0;
+        }
+    }
+}
+
+static gboolean link_writable(void *chr, GIOCondition cond, void *opaque)
+{
+    SGIL1LinkNode *n = opaque;
+
+    n->tx_watch = 0;
+    link_flush(n);
+    return G_SOURCE_REMOVE;
+}
+
 static void link_event(void *opaque, QEMUChrEvent event)
 {
     SGIL1LinkNode *n = opaque;
@@ -56,6 +113,7 @@ static void link_event(void *opaque, QEMUChrEvent event)
         n->link->nodes_up |= 1 << n->transport;
     } else if (event == CHR_EVENT_CLOSED) {
         n->link->nodes_up &= ~(1 << n->transport);
+        link_tx_clear(n);
     } else {
         return;
     }
@@ -80,9 +138,19 @@ static void link_node_byte(SGIL1Provider *p, unsigned transport, uint8_t byte)
 {
     SGIL1LinkState *s = SGI_L1_LINK(p);
     SGIL1LinkNode *n = &s->node[transport];
-    bool sent = (s->nodes_up & (1 << transport)) &&
-                qemu_chr_fe_write(&n->chr, &byte, 1) == 1;
+    bool sent = (s->nodes_up & (1 << transport)) && n->tx_len < LINK_TXQ;
 
+    if (sent) {
+        n->txq[(n->tx_head + n->tx_len++) % LINK_TXQ] = byte;
+        if (!n->tx_watch) {
+            link_flush(n);
+        }
+    } else if ((s->nodes_up & (1 << transport)) && !n->tx_full_logged) {
+        n->tx_full_logged = true;
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-l1-link: transport %u transmit "
+                      "queue full, bytes dropped until it drains\n",
+                      transport);
+    }
     trace_sgi_l1_link_tx(transport, byte, sent);
 }
 
@@ -147,6 +215,7 @@ static void link_unrealize(DeviceState *dev)
     for (unsigned i = 0; i < SGI_L1_IROUTER_TRANSPORTS; i++) {
         qemu_chr_fe_set_handlers(&s->node[i].chr, NULL, NULL, NULL, NULL,
                                  NULL, NULL, true);
+        link_tx_clear(&s->node[i]);
     }
     s->nodes_up = 0;
     if (s->blocker) {

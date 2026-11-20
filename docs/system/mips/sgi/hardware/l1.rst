@@ -1142,10 +1142,16 @@ node writes is dropped and traced, not kept for a peer that connects
 later. Bytes already in the window's queue stay there when the peer
 leaves, and nothing already sent is sent again when it returns.
 
-With a peer connected, a byte that does not fit a short write is dropped
-and traced, an *approximation*. A byte dropped mid-frame loses that frame
-at the receiver: the window cannot push back, because its transmit-ready
-bit is always set, so back-pressure is the board-side pacing's job.
+With a peer connected, a byte the node writes joins a queue of 16384 bytes
+that the link hands to the chardev as it accepts them, so a burst of frames
+reaches a peer that is slow to read. A one-byte write costs a socket far more
+than a byte of its buffer, so writing each byte straight through lost bytes
+once about 280 were unread. A byte that finds the queue full is dropped,
+logged once per overflow with ``LOG_GUEST_ERROR`` and traced, an
+*approximation*. A byte dropped mid-frame loses that frame at the receiver:
+the window cannot push back, because its transmit-ready bit is always set,
+so a node that writes faster than the peer reads for longer than the queue
+holds loses the tail. Bytes still queued when the peer leaves are discarded.
 
 With neither chardev set the link is inert: it is silent in the same way
 and adds no migration blocker. With both set, the link adds a migration
