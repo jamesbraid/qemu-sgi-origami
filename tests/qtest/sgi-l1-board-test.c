@@ -3113,6 +3113,206 @@ static void test_scan_pins(void)
     quit_all(qts, &f);
 }
 
+#define NODE_UART       (0x50000000 + 8 * 3)
+
+/* The firmware's setup of the node channel, from the host. */
+static void quart_setup(QTestState *qts)
+{
+    qtest_writeb(qts, NODE_UART + 3, 0xbf);
+    qtest_writeb(qts, NODE_UART + 1, 0);
+    qtest_writeb(qts, NODE_UART + 0, 13);
+    qtest_writeb(qts, NODE_UART + 2, 0xd0);
+    qtest_writeb(qts, NODE_UART + 3, 0x03);
+    qtest_writeb(qts, NODE_UART + 2, 0x01);
+    qtest_writeb(qts, NODE_UART + 2, 0x8f);
+    qtest_writeb(qts, NODE_UART + 4, 0x03);
+    qtest_writeb(qts, NODE_UART + 1, 0x05);
+}
+
+static uint8_t quart_iir_wait(QTestState *qts, uint8_t want)
+{
+    gint64 end = g_get_monotonic_time() + RUN_TIMEOUT_US;
+    uint8_t iir;
+
+    while ((iir = qtest_readb(qts, NODE_UART + 2)) != want) {
+        g_assert_cmpint(g_get_monotonic_time(), <, end);
+        g_usleep(1000);
+    }
+    return iir;
+}
+
+static QTestState *quart_board(Flash *f)
+{
+    Asm a = { };
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
+    cs_setup(&a, 4, 0x5000, 0, 0x095f);
+    finish(&a);
+    *f = flash_build(&a, NULL, NULL);
+    qts = start(f, "");
+    go(qts);
+    wait_for(qts, DONE, 1);
+    return qts;
+}
+
+/* The enhanced bank behind LCR 0xbf holds EFR and the four flow characters. */
+static void test_quart_efr_bank(void)
+{
+    Flash f;
+    QTestState *qts = quart_board(&f);
+
+    qtest_writeb(qts, NODE_UART + 4, 0x03);
+    qtest_writeb(qts, NODE_UART + 7, 0x5a);
+    qtest_writeb(qts, NODE_UART + 3, 0xbf);
+    qtest_writeb(qts, NODE_UART + 2, 0xd0);
+    for (unsigned i = 4; i < 8; i++) {
+        qtest_writeb(qts, NODE_UART + i, 0x10 + i);
+    }
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 2), ==, 0xd0);
+    for (unsigned i = 4; i < 8; i++) {
+        g_assert_cmphex(qtest_readb(qts, NODE_UART + i), ==, 0x10 + i);
+    }
+    /* Out of the bank the ordinary registers are as they were. */
+    qtest_writeb(qts, NODE_UART + 3, 0x03);
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 2), ==, 0x01);
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 4), ==, 0x03);
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 7), ==, 0x5a);
+    quit_all(qts, &f);
+}
+
+typedef struct QuartPeer {
+    Flash f;
+    char *dir, *path;
+    int fd;
+} QuartPeer;
+
+/* The board with its node channel on a socket, and a peer connected to it. */
+static QTestState *quart_peer_start(QuartPeer *p)
+{
+    struct sockaddr_un address = { .sun_family = AF_UNIX };
+    g_autofree char *extra = NULL;
+    GError *error = NULL;
+    Asm a = { };
+    QTestState *qts;
+
+    prologue(&a);
+    mbar_on(&a);
+    cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
+    cs_setup(&a, 4, 0x5000, 0, 0x095f);
+    finish(&a);
+    p->dir = g_dir_make_tmp("sgi-l1-quart-XXXXXX", &error);
+    g_assert_no_error(error);
+    p->path = g_build_filename(p->dir, "node.sock", NULL);
+    extra = g_strdup_printf("-chardev socket,id=nl,path=%s,server=on,"
+                            "wait=off -serial null -serial chardev:nl "
+                            "-serial null -serial null", p->path);
+    p->f = flash_build(&a, NULL, NULL);
+    qts = start(&p->f, extra);
+    go(qts);
+    wait_for(qts, DONE, 1);
+    p->fd = socket(AF_UNIX, SOCK_STREAM, 0);
+    g_assert_cmpint(p->fd, >=, 0);
+    strcpy(address.sun_path, p->path);
+    g_assert_cmpint(connect(p->fd, (struct sockaddr *)&address,
+                            sizeof(address)), ==, 0);
+    return qts;
+}
+
+static void quart_peer_stop(QTestState *qts, QuartPeer *p)
+{
+    close(p->fd);
+    quit_all(qts, &p->f);
+    g_unlink(p->path);
+    g_rmdir(p->dir);
+    g_free(p->path);
+    g_free(p->dir);
+}
+
+/* Read @n bytes by line status, as the timeout interrupt's handler does. */
+static void quart_read_by_line(QTestState *qts, uint8_t *got, unsigned n)
+{
+    for (unsigned i = 0; i < n; i++) {
+        g_assert_cmphex(qtest_readb(qts, NODE_UART + 5) & 1, ==, 1);
+        got[i] = qtest_readb(qts, NODE_UART);
+    }
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 5) & 1, ==, 0);
+}
+
+/* A 64-byte FIFO: level 10 interrupts at 56 bytes, fewer end in a timeout. */
+static void test_quart_fifo(void)
+{
+    QuartPeer p;
+    QTestState *qts = quart_peer_start(&p);
+    uint8_t sent[96], got[96];
+
+    quart_setup(qts);
+    for (unsigned i = 0; i < sizeof(sent); i++) {
+        sent[i] = i * 5 + 1;
+    }
+    /* 40 and 55 bytes are below the trigger: the timeout, read by line. */
+    for (unsigned n = 40; n <= 55; n += 15) {
+        g_assert_cmpint(write(p.fd, sent, n), ==, n);
+        quart_iir_wait(qts, 0xcc);
+        quart_read_by_line(qts, got, n);
+        g_assert_cmpmem(got, n, sent, n);
+        g_assert_cmphex(qtest_readb(qts, NODE_UART + 2), ==, 0xc1);
+    }
+    /* 56 bytes in a burst: the trigger interrupt, then 56 reads, no checks. */
+    g_assert_cmpint(write(p.fd, sent, 56), ==, 56);
+    quart_iir_wait(qts, 0xc4);
+    for (unsigned i = 0; i < 56; i++) {
+        got[i] = qtest_readb(qts, NODE_UART);
+    }
+    g_assert_cmpmem(got, 56, sent, 56);
+    quart_peer_stop(qts, &p);
+}
+
+/* The timeout comes only after four character times at the divisor. */
+static void test_quart_timeout(void)
+{
+    QuartPeer p;
+    QTestState *qts = quart_peer_start(&p);
+    gint64 start_us;
+
+    /* Divisor 0x4000: four character times are 0.87 s at 12 MHz. */
+    qtest_writeb(qts, NODE_UART + 3, 0x83);
+    qtest_writeb(qts, NODE_UART + 0, 0x00);
+    qtest_writeb(qts, NODE_UART + 1, 0x40);
+    qtest_writeb(qts, NODE_UART + 3, 0x03);
+    qtest_writeb(qts, NODE_UART + 2, 0x8f);
+    qtest_writeb(qts, NODE_UART + 1, 0x01);
+    g_assert_cmpint(write(p.fd, "abcd", 4), ==, 4);
+    start_us = g_get_monotonic_time();
+    while (!(qtest_readb(qts, NODE_UART + 5) & 1)) {
+        g_usleep(1000);
+    }
+    /* Not before most of the interval, whatever the host load. */
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 2), ==, 0xc1);
+    quart_iir_wait(qts, 0xcc);
+    g_assert_cmpint(g_get_monotonic_time() - start_us, >, 700 * 1000);
+    quart_peer_stop(qts, &p);
+}
+
+/* A write to FCR with bit 1 set empties the receive FIFO. */
+static void test_quart_fcr_reset(void)
+{
+    QuartPeer p;
+    QTestState *qts = quart_peer_start(&p);
+
+    quart_setup(qts);
+    g_assert_cmpint(write(p.fd, "abcd", 4), ==, 4);
+    while (!(qtest_readb(qts, NODE_UART + 5) & 1)) {
+        g_usleep(1000);
+    }
+    qtest_writeb(qts, NODE_UART + 2, 0x8f | 0x02);
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 5) & 1, ==, 0);
+    g_assert_cmphex(qtest_readb(qts, NODE_UART + 2), ==, 0xc1);
+    quart_peer_stop(qts, &p);
+}
+
 /* A file that is not the window's size is refused, and so is a missing one. */
 static void test_settings_refused(void)
 {
@@ -3285,6 +3485,10 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/scan-trst", test_scan_trst);
     qtest_add_func("sgi-l1-board/scan-tdo-edge", test_scan_tdo_edge);
     qtest_add_func("sgi-l1-board/scan-pins", test_scan_pins);
+    qtest_add_func("sgi-l1-board/quart-fifo", test_quart_fifo);
+    qtest_add_func("sgi-l1-board/quart-efr-bank", test_quart_efr_bank);
+    qtest_add_func("sgi-l1-board/quart-timeout", test_quart_timeout);
+    qtest_add_func("sgi-l1-board/quart-fcr-reset", test_quart_fcr_reset);
     qtest_add_func("sgi-l1-board/system-serial", test_system_serial);
     qtest_add_func("sgi-l1-board/system-serial-refused",
                    test_system_serial_refused);

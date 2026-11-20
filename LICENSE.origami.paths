@@ -1416,6 +1416,7 @@ include/hw/m68k/mcf5206e-mbus.h
 hw/misc/sgi-l1-identity.c
 include/hw/misc/sgi-l1-identity.h
 hw/m68k/sgi-l1-board-peers.c
+hw/m68k/sgi-l1-quart.c
 include/hw/m68k/sgi-l1-board-peers.h
 rust/hw/misc/Kconfig
 rust/hw/misc/meson.build

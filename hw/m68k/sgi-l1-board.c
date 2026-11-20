@@ -24,7 +24,6 @@
 #include "monitor/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/qdev-properties-system.h"
-#include "hw/char/serial-mm.h"
 #include "hw/misc/unimp.h"
 #include "hw/m68k/mcf5206e.h"
 #include "hw/m68k/sgi-l1-board-peers.h"
@@ -45,7 +44,6 @@
 #define CS_QUART            4
 #define CS_USB1             5
 
-#define QUART_CLOCK_HZ      12000000
 #define QUART_CHANNELS      4
 #define QUART_EXT_IRQ       4
 
@@ -498,9 +496,17 @@ static void l1_board_init(MachineState *machine)
         static const int channel_serial[QUART_CHANNELS] = { 2, 3, 0, 1 };
 
         for (i = 0; i < QUART_CHANNELS; i++) {
-            serial_mm_init(quart_window, i * 8, 0,
-                           qdev_get_gpio_in(or_dev, i), QUART_CLOCK_HZ / 16,
-                           serial_hd(channel_serial[i]), DEVICE_BIG_ENDIAN);
+            DeviceState *quart = qdev_new("sgi-l1-quart");
+            Chardev *chr = serial_hd(channel_serial[i]);
+
+            if (chr) {
+                qdev_prop_set_chr(quart, "chardev", chr);
+            }
+            sysbus_realize_and_unref(SYS_BUS_DEVICE(quart), &error_fatal);
+            memory_region_add_subregion(quart_window, i * 8,
+                sysbus_mmio_get_region(SYS_BUS_DEVICE(quart), 0));
+            sysbus_connect_irq(SYS_BUS_DEVICE(quart), 0,
+                               qdev_get_gpio_in(or_dev, i));
         }
     }
 

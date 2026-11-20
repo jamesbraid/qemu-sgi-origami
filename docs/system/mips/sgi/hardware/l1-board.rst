@@ -37,7 +37,7 @@ Sources
   the software watchdog, the timers and the register map. Page numbers
   below are its printed pages.
 - National Semiconductor's *PC16550D UART* datasheet, :src:`ns-pc16550d-1995`,
-  for the register set that the QEMU 16550 model implements.
+  for the register set that the model's UART implements.
 - The Dallas DS1742 data sheet, :src:`analog-ds1742-rev-6-13`, for the clock
   register layout.
 - The shipped L1 firmware, 1.44.0, Base 1MB image, which runs on the C-, I-
@@ -514,14 +514,35 @@ register, which is a feature of the 16C654 family and not of the PC16550D, a
 from a 12 MHz clock at the divisors 7, 13 and 20 for 107,142, 57,692 and
 37,500 baud, a *software expectation*.
 
-The model uses four QEMU 16550A UARTs on a 12 MHz clock. They implement the
-PC16550D registers, the scratch register and the FIFOs (:src:`ns-pc16550d-1995`,
-*established* for the part's register set). They do not implement the enhanced
-register set: the firmware's writes to it reach the FIFO control and modem
-registers, an *approximation*, and the automatic flow control the firmware
-asks for on the node link is absent. The model drives no modem input line,
-so the modem status register reads as the 16550A model gives it, with the
-ring indicator clear unless a serial backend reports it, an *approximation*.
+The model uses four channels of ``sgi-l1-quart`` on a 12 MHz clock. They
+implement the PC16550D registers and the scratch register
+(:src:`ns-pc16550d-1995`, *established* for the part's register set), with a
+64-byte receive FIFO. The firmware writes ``0x8f`` to the FIFO control
+register, receive trigger level 10, and at each receive interrupt reads 56
+bytes without looking at the line status. A 16-byte FIFO raises that interrupt
+at 8 bytes, so the read ran past the data and returned zeros inside the frame;
+the node link then saw bad checksums on every frame that arrived in a burst. So
+the model raises the interrupt at 56 bytes for level 10 and reports the
+character timeout, which the firmware reads byte by byte with the line status,
+after four character times at the programmed rate with fewer bytes waiting.
+That the FIFO is 64 bytes and level 10 is 56 is a *software expectation* from
+the firmware's reads. The other three levels (8, 16 and 60) are the receive
+trigger byte counts of the 16C654 in Linux's 8250 driver (``PORT_16654``,
+``rxtrig_bytes`` in ``8250_port.c``) and the timeout interval is the usual four
+character times, both *inferred*: the part is *unknown* and no data sheet for
+the family is among the cited sources. The enhanced register set, selected by
+``0xbf`` in the line control register, keeps what is written to EFR and the
+four flow-control characters, with EFR at offset 2 and the characters at
+offsets 4 to 7, and acts on none of them. That map is *inferred* from the
+family and uncited, and the automatic flow control the firmware asks for on the
+node link is absent, an *approximation*. Bytes from the serial backend reach
+the FIFO at once, not one per character time (about 173 microseconds at 57,692
+baud), an *approximation* that is the hardest case for the firmware's interrupt
+handler. The FIFO is never overrun because the backend is held back while it is
+full, so no overrun error is modelled. The transmitter is always ready and
+sends a byte as it is written, so no transmit FIFO is modelled. The model
+drives no modem input line, so the modem status register reads ``0xb0``, and
+loopback is logged and not modelled, an *approximation* in each case.
 
 Channel 2 is the L1 operator console at 38,400 baud, channel 3 the node link at
 57,600, and channels 0 and 1 the two peer links at 107,142, on these bricks, a
@@ -1267,6 +1288,12 @@ and reading the window back through chip select 1, and by the two refusals.
 ``system-serial`` is checked by reading the serial, the record sum and the
 mirror back through chip select 1, and by the refused values and the
 exclusion with ``settings``.
+
+The node channel's UART is checked from a socket peer: 40 bytes end in the
+timeout interrupt, which comes only after the programmed four character times,
+and are read by line status; 56 bytes raise the trigger interrupt and are read
+back without checking it; a write to the FIFO control register with bit 1 set
+empties the FIFO; and the enhanced bank holds what is written to it.
 
 With ``signals`` a test-owned peer plays the machine from a socket. It checks
 the board's hello and power-on state, each decoded bit and the bits that move
