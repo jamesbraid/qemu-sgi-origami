@@ -101,6 +101,10 @@ slow_qtests = {
   'sgi-mgras-pixels-test': 330,
   'sgi-mgras-texture-test': 1050,
   'sgi-migration-roundtrip-test': 170,
+  # Both were killed at the 60 s default in loaded CI full runs, 2026-11-20,
+  # with the DMA group at 54 s in another; twice the default.
+  'sgi-o2-rom-test': 120,
+  'sgi-o2-test-dma': 120,
   'sgi-pci-expansion-ni-test': 2050,
   # The expanded PIC suite passed in 86s locally; CI reached 80/85 at 60s.
   'sgi-pic-test': 300,
