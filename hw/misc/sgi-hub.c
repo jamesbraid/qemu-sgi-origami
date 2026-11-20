@@ -1726,9 +1726,8 @@ sgi_hub_rt_reciprocal_build(SGIHubState *s, uint64_t period)
  * the same reason a counter exists: firmware measures elapsed time by polling
  * this register, so a held value shortens what it measures.
 */
-static uint64_t sgi_hub_rt_count(SGIHubState *s)
+static uint64_t sgi_hub_rt_count_at(SGIHubState *s, int64_t now)
 {
-    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     uint64_t period = clock_get(s->rt_clk);
     uint64_t rt_period, reciprocal, limit;
     int64_t origin, delta;
@@ -1763,6 +1762,29 @@ static uint64_t sgi_hub_rt_count(SGIHubState *s)
         return ticks & PI_RT_MASK;
     }
     return clock_ns_to_ticks(s->rt_clk, delta) & PI_RT_MASK;
+}
+
+static uint64_t sgi_hub_rt_count(SGIHubState *s)
+{
+    return sgi_hub_rt_count_at(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+}
+
+/*
+ * Arm a comparator's timer for its next match. One clock sample both reads
+ * the counter and places the deadline: sampled twice, the counter can step
+ * onto the target in between, and the timer then waits a whole revolution.
+ */
+static void sgi_hub_comparator_arm(SGIHubState *s, QEMUTimer *timer,
+                                   uint64_t compare, bool written)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    uint64_t count = sgi_hub_rt_count_at(s, now);
+    uint64_t ticks = ((compare - count - 1) & PI_RT_MASK) + 1;
+
+    if (written && compare == count) {
+        ticks = 0;
+    }
+    timer_mod(timer, now + clock_ticks_to_ns(s->rt_clk, ticks));
 }
 
 /*
@@ -2245,17 +2267,12 @@ static void sgi_hub_rt_match(SGIHubState *s, unsigned int index)
 */
 static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
 {
-    uint64_t ticks = ((s->pi_rt_compare[index] -
-                       sgi_hub_rt_count(s) - 1) &
-                      PI_RT_MASK) + 1;
-
     /* An unpopulated slice has no line wired. */
     if (index >= s->cpus) {
         return;
     }
-
-    timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              clock_ticks_to_ns(s->rt_clk, ticks));
+    sgi_hub_comparator_arm(s, s->rt_timer[index], s->pi_rt_compare[index],
+                           false);
 }
 
 /*
@@ -2268,11 +2285,11 @@ static void sgi_hub_rt_arm(SGIHubState *s, unsigned int index)
  */
 static void sgi_hub_rt_arm_written(SGIHubState *s, unsigned int index)
 {
-    if (index < s->cpus && s->pi_rt_compare[index] == sgi_hub_rt_count(s)) {
-        timer_mod(s->rt_timer[index], qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
+    if (index >= s->cpus) {
         return;
     }
-    sgi_hub_rt_arm(s, index);
+    sgi_hub_comparator_arm(s, s->rt_timer[index], s->pi_rt_compare[index],
+                           true);
 }
 
 /*
@@ -2313,11 +2330,7 @@ static void sgi_hub_rt_expire(void *opaque)
  */
 static void sgi_hub_prof_arm(SGIHubState *s)
 {
-    uint64_t ticks = ((s->pi_prof_compare - sgi_hub_rt_count(s) - 1) &
-                      PI_RT_MASK) + 1;
-
-    timer_mod(s->prof_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-              clock_ticks_to_ns(s->rt_clk, ticks));
+    sgi_hub_comparator_arm(s, s->prof_timer, s->pi_prof_compare, false);
 }
 
 static void sgi_hub_prof_expire(void *opaque)
@@ -3058,11 +3071,7 @@ static void sgi_hub_write_prof_compare(SGIHubState *s, hwaddr addr,
 {
     s->pi_prof_compare = val & PI_RT_MASK;
     /* Equal to the counter matches at once, as for the comparators above. */
-    if (s->pi_prof_compare == sgi_hub_rt_count(s)) {
-        timer_mod(s->prof_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
-        return;
-    }
-    sgi_hub_prof_arm(s);
+    sgi_hub_comparator_arm(s, s->prof_timer, s->pi_prof_compare, true);
 }
 
 static void sgi_hub_write_prof_pending(SGIHubState *s, hwaddr addr,
