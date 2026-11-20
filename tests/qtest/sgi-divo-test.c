@@ -11,8 +11,10 @@
  */
 
 #include "qemu/osdep.h"
+#include <math.h>
 #include "libqtest.h"
 #include "qemu/bswap.h"
+#include "qobject/qdict.h"
 #include "libqos/qgraph.h"
 #include "libqos/pci.h"
 #include "hw/pci/pci_regs.h"
@@ -32,14 +34,18 @@
 #define STATUS              0x7800018
 #define FLASH               0x7c00000
 
+#define OP_CONTROL          0x03
 #define OP_RING_BASE        0x09
 #define OP_BUFFER_BASE      0x0c
 #define OP_RING_CONSUMED    0x0b
 #define OP_READ_WORD        0x10
 #define OP_READ_HALF        0x12
 #define OP_BLOCK_SEND       0x20
+#define OP_DMA_BUFFER0      0x21
 #define OP_LOAD_FIRST       0x23
+#define OP_DMA_BUFFER1      0x24
 #define OP_LOAD_AUDIO       0x28
+#define OP_DMA_ABORT        0x26
 #define OP_UNKNOWN          0x3f
 
 #define STATUS_BYTES        0x4000
@@ -496,12 +502,416 @@ static void test_narrow_mailbox(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 0);
 }
 
+/* Video out. The rhythm and the packet's time words are approximations. */
+#define CTL_WIDTH           0
+#define CTL_FIELD_LINES     1
+#define CTL_ROW_DWORDS      2
+#define CTL_FRAME_MODE      6
+#define CTL_DMA             0x13
+#define PAGE                0x4000
+#define DESC_HEADER         0x50
+#define PKT_DMA_DONE        0x8000
+#define NTSC_FRAME_NS       33366666
+#define PAL_FRAME_NS        40000000
+#define NTSC_PAGES          43
+#define PAL_PAGES           51
+
+static char *sink_path;
+
+static uint64_t ctl_word(unsigned index, uint32_t val)
+{
+    return op_word(OP_CONTROL, ((uint64_t)index << 52) | val);
+}
+
+static uint64_t sink_get(Divo *t, const char *prop)
+{
+    QDict *r = qtest_qmp(t->qts, "{'execute':'qom-get','arguments':"
+                         "{'path':'/machine/peripheral/rec',"
+                         "'property':%s}}", prop);
+    uint64_t v = qdict_get_int(r, "return");
+
+    qobject_unref(r);
+    return v;
+}
+
+static void sink_wait(Divo *t, uint64_t written)
+{
+    for (int i = 0; i < 2000 && sink_get(t, "written") < written; i++) {
+        g_usleep(5000);
+    }
+    g_assert_cmpuint(sink_get(t, "written"), ==, written);
+}
+
+/* Fill the board's view: ring, status block and a frame format. */
+static void video_setup_bpp(Divo *t, unsigned width, unsigned lines,
+                            unsigned bpp, unsigned mode)
+{
+    uint64_t status = guest_alloc(t->alloc, STATUS_BYTES);
+
+    /* The device outlives the test before it: stop whatever it was doing. */
+    mb_send(t, 0, op_word(OP_DMA_ABORT, 0));
+    ring_setup(t);
+    mb_send(t, 1, op_word(OP_BUFFER_BASE, dma_field(status)));
+    mb_send(t, 2, ctl_word(CTL_WIDTH, width));
+    mb_send(t, 3, ctl_word(CTL_FIELD_LINES, lines));
+    mb_send(t, 4, ctl_word(CTL_ROW_DWORDS, width * bpp / 32));
+    mb_send(t, 5, ctl_word(CTL_FRAME_MODE, mode));
+}
+
+static void video_setup(Divo *t, unsigned width, unsigned lines)
+{
+    video_setup_bpp(t, width, lines, 16, 1);
+}
+
+/*
+ * A buffer of the given pages, its bytes a function of the position, and a
+ * descriptor that lists the pages. Returns the descriptor's address.
+ */
+static uint64_t make_buffer(Divo *t, unsigned pages, uint8_t seed)
+{
+    uint64_t desc = guest_alloc(t->alloc, DESC_HEADER + 8 * pages);
+    uint64_t data = guest_alloc(t->alloc, pages * PAGE);
+    g_autofree uint8_t *bytes = g_malloc(pages * PAGE);
+    g_autofree uint8_t *list = g_malloc(8 * pages);
+
+    for (unsigned i = 0; i < pages * PAGE; i++) {
+        bytes[i] = seed + i * 7 + (i >> 8);
+    }
+    qtest_memwrite(t->qts, HUB_ALIAS(data), bytes, pages * PAGE);
+    for (unsigned i = 0; i < pages; i++) {
+        /* Odd pages are 32-bit direct addresses, sign extended. */
+        if (i & 1) {
+            stq_be_p(list + 8 * i,
+                     0xffffffff00000000ULL | (uint32_t)(data + i * PAGE));
+        } else {
+            stq_be_p(list + 8 * i, (1ULL << 63) | (data + i * PAGE));
+        }
+    }
+    qtest_memwrite(t->qts, HUB_ALIAS(desc + DESC_HEADER), list, 8 * pages);
+    return desc;
+}
+
+static uint64_t buffer_word(unsigned op, unsigned pages, uint64_t desc)
+{
+    return op_word(op, ((uint64_t)pages << 49) | dma_field(desc));
+}
+
+/* The ring entry of the first valid packet of a type, or -1. */
+static int find_packet(Divo *t, uint32_t type)
+{
+    for (unsigned i = 0; i < RING_ENTRIES; i++) {
+        if (entry_valid(t, i) && entry_word(t, i, 0) == type) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static unsigned count_packets(Divo *t, uint32_t type)
+{
+    unsigned n = 0;
+
+    for (unsigned i = 0; i < RING_ENTRIES; i++) {
+        n += entry_valid(t, i) && entry_word(t, i, 0) == type;
+    }
+    return n;
+}
+
+static void test_video_out_frame(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc;
+    g_autofree char *file = NULL;
+    const char *head = "YUV4MPEG2 W720 H486 F30000:1001 It A0:0 C422\n";
+    size_t hlen = strlen(head), luma = 720 * 486;
+    gsize len;
+    const uint8_t *last;
+    int at;
+    uint64_t before;
+
+    divo_open(&t, obj, alloc);
+    before = sink_get(&t, "written");
+    video_setup(&t, 720, 243);
+    desc = make_buffer(&t, NTSC_PAGES, 0x11);
+    /* The start comes in a command block, as the shipped library sends it. */
+    {
+        uint64_t block = guest_alloc(alloc, 16);
+        uint8_t words[8];
+
+        stq_be_p(words, ctl_word(CTL_DMA, 1));
+        qtest_memwrite(t.qts, HUB_ALIAS(block), words, 8);
+        mb_send(&t, 4, op_word(OP_BLOCK_SEND, (1ULL << 51) | dma_field(block)));
+    }
+    mb_send(&t, 5, buffer_word(OP_DMA_BUFFER0, NTSC_PAGES, desc));
+
+    /* Nothing completes before a frame time, and one does at it. */
+    qtest_clock_step(t.qts, NTSC_FRAME_NS - 3000000);
+    g_assert_cmpint(find_packet(&t, PKT_DMA_DONE), ==, -1);
+    qtest_clock_step(t.qts, 3000000);
+    at = find_packet(&t, PKT_DMA_DONE);
+    g_assert_cmpint(at, >=, 0);
+    g_assert_cmphex(entry_word(&t, at, 1), ==, 0);
+    g_assert_cmpuint(entry_word(&t, at, 2), ==, 0);
+    g_assert_cmpuint(entry_word(&t, at, 3), >, 0);
+    g_assert_cmpuint(entry_word(&t, at, 4), ==, 0);
+    g_assert_cmpuint(entry_word(&t, at, 5), ==, 0);
+    sink_wait(&t, before + 1);
+
+    /* The file is the frame: planar, luma and then the two chroma planes. */
+    g_assert(g_file_get_contents(sink_path, &file, &len, NULL));
+    g_assert_cmpuint(len, ==, hlen + (before + 1) * (6 + 2 * luma));
+    g_assert(!memcmp(file, head, hlen));
+    last = (const uint8_t *)file + len - 6 - 2 * luma;
+    g_assert(!memcmp(last, "FRAME\n", 6));
+    for (unsigned i = 0; i < 720 * 486 / 2; i++) {
+        uint8_t y0 = 0x11 + (4 * i + 1) * 7 + ((4 * i + 1) >> 8);
+        uint8_t cb = 0x11 + (4 * i) * 7 + ((4 * i) >> 8);
+        uint8_t cr = 0x11 + (4 * i + 2) * 7 + ((4 * i + 2) >> 8);
+        uint8_t y1 = 0x11 + (4 * i + 3) * 7 + ((4 * i + 3) >> 8);
+        const uint8_t *f = last + 6;
+
+        g_assert_cmphex(f[2 * i], ==, y0);
+        g_assert_cmphex(f[2 * i + 1], ==, y1);
+        g_assert_cmphex(f[luma + i], ==, cb);
+        g_assert_cmphex(f[luma + luma / 2 + i], ==, cr);
+    }
+}
+
+/* Two buffers complete a frame time apart; a stop lets them finish. */
+static void test_video_out_rhythm(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t d0, d1, before;
+    int a, b;
+
+    divo_open(&t, obj, alloc);
+    before = sink_get(&t, "written");
+    video_setup(&t, 720, 243);
+    d0 = make_buffer(&t, NTSC_PAGES, 0x21);
+    d1 = make_buffer(&t, NTSC_PAGES, 0x31);
+    mb_send(&t, 4, ctl_word(CTL_DMA, 1));
+    mb_send(&t, 5, buffer_word(OP_DMA_BUFFER0, NTSC_PAGES, d0));
+    mb_send(&t, 6, buffer_word(OP_DMA_BUFFER1, NTSC_PAGES, d1));
+    /* The stop comes at once, as for a one-frame transfer. */
+    mb_send(&t, 7, ctl_word(CTL_DMA, 0));
+
+    qtest_clock_step(t.qts, NTSC_FRAME_NS - 5000000);
+    g_assert_cmpint(find_packet(&t, PKT_DMA_DONE), ==, -1);
+    qtest_clock_step(t.qts, 5000000);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 1);
+    a = find_packet(&t, PKT_DMA_DONE);
+    g_assert_cmphex(entry_word(&t, a, 1), ==, 0);
+    g_assert_cmpuint(entry_word(&t, a, 5), ==, 0);
+    qtest_clock_step(t.qts, NTSC_FRAME_NS);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 2);
+    b = a + 1;
+    while (!entry_valid(&t, b) || entry_word(&t, b, 0) != PKT_DMA_DONE) {
+        b++;
+    }
+    g_assert_cmphex(entry_word(&t, b, 1), ==, 1);
+    g_assert_cmpuint(entry_word(&t, b, 5), ==, 1);
+    /* Nothing follows once both are done. */
+    qtest_clock_step(t.qts, 3 * NTSC_FRAME_NS);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 2);
+    sink_wait(&t, before + 2);
+}
+
+/* A 625-line format completes at 25 frames a second. */
+static void test_video_out_pal(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc;
+
+    divo_open(&t, obj, alloc);
+    video_setup(&t, 720, 288);
+    desc = make_buffer(&t, PAL_PAGES, 0x61);
+    mb_send(&t, 4, ctl_word(CTL_DMA, 1));
+    mb_send(&t, 5, buffer_word(OP_DMA_BUFFER0, PAL_PAGES, desc));
+    mb_send(&t, 6, ctl_word(CTL_DMA, 0));
+    qtest_clock_step(t.qts, PAL_FRAME_NS - 5000000);
+    g_assert_cmpint(find_packet(&t, PKT_DMA_DONE), ==, -1);
+    qtest_clock_step(t.qts, 5000000);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 1);
+}
+
+/* A buffer that is not a frame of the format completes and plays nothing. */
+static void test_video_out_other_buffer(void *obj, void *data,
+                                        QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc, before;
+
+    divo_open(&t, obj, alloc);
+    before = sink_get(&t, "frames");
+    video_setup(&t, 720, 243);
+    desc = make_buffer(&t, 2, 0x41);
+    mb_send(&t, 4, ctl_word(CTL_DMA, 1));
+    mb_send(&t, 5, buffer_word(OP_DMA_BUFFER0, 2, desc));
+    mb_send(&t, 6, ctl_word(CTL_DMA, 0));
+    qtest_clock_step(t.qts, 2 * NTSC_FRAME_NS);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 1);
+    g_assert_cmpuint(sink_get(&t, "frames"), ==, before);
+}
+
+/* An abort drops the queue and no completion follows. */
+static void test_video_out_abort(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc;
+
+    divo_open(&t, obj, alloc);
+    video_setup(&t, 720, 243);
+    desc = make_buffer(&t, NTSC_PAGES, 0x51);
+    mb_send(&t, 4, ctl_word(CTL_DMA, 1));
+    mb_send(&t, 5, buffer_word(OP_DMA_BUFFER0, NTSC_PAGES, desc));
+    mb_send(&t, 6, op_word(OP_DMA_ABORT, 0));
+    qtest_clock_step(t.qts, 2 * NTSC_FRAME_NS);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 0);
+}
+
+/* The last frame of the sink: the pointer to its planes, or NULL. */
+static const uint8_t *sink_last(char **file, size_t luma_bytes)
+{
+    gsize len;
+
+    g_assert(g_file_get_contents(sink_path, file, &len, NULL));
+    return (const uint8_t *)*file + len - luma_bytes * 2;
+}
+
+static void play_one(Divo *t, uint64_t desc, unsigned pages)
+{
+    mb_send(t, 6, ctl_word(CTL_DMA, 1));
+    mb_send(t, 7, buffer_word(OP_DMA_BUFFER0, pages, desc));
+    mb_send(t, 8, ctl_word(CTL_DMA, 0));
+    qtest_clock_step(t->qts, 2 * NTSC_FRAME_NS);
+}
+
+/*
+ * Rows of 3 or 4 bytes a pixel are R, G, B (then alpha, ignored), converted
+ * to limited-range BT.601 4:2:2 with the pair's chroma averaged. The
+ * packing is chosen by the row length, the model's approximation.
+ */
+static void check_rgb(void *obj, QGuestAllocator *alloc, unsigned bytes,
+                      unsigned pages)
+{
+    Divo t;
+    uint64_t desc, before;
+    g_autofree char *file = NULL;
+    size_t luma = 720 * 486;
+    const uint8_t *f;
+    const uint8_t seed = 0x31;
+
+    divo_open(&t, obj, alloc);
+    before = sink_get(&t, "written");
+    video_setup_bpp(&t, 720, 243, bytes * 8, 1);
+    desc = make_buffer(&t, pages, seed);
+    play_one(&t, desc, pages);
+    sink_wait(&t, before + 1);
+    f = sink_last(&file, luma);
+    for (unsigned y = 0; y < 486; y++) {
+        for (unsigned x = 0; x < 720; x += 2) {
+            double cb = 0, cr = 0;
+
+            for (unsigned k = 0; k < 2; k++) {
+                unsigned o = y * 720 * bytes + (x + k) * bytes;
+                double r = (uint8_t)(seed + (o + 0) * 7 + ((o + 0) >> 8));
+                double g = (uint8_t)(seed + (o + 1) * 7 + ((o + 1) >> 8));
+                double b = (uint8_t)(seed + (o + 2) * 7 + ((o + 2) >> 8));
+
+                g_assert_cmpuint(f[y * 720 + x + k], ==,
+                                 lround(16 + (65.481 * r + 128.553 * g +
+                                              24.966 * b) / 255));
+                cb += 128 + (-37.797 * r - 74.203 * g + 112.0 * b) / 255;
+                cr += 128 + (112.0 * r - 93.786 * g - 18.214 * b) / 255;
+            }
+            g_assert_cmpuint(f[luma + (y * 720 + x) / 2], ==, lround(cb / 2));
+            g_assert_cmpuint(f[luma + luma / 2 + (y * 720 + x) / 2], ==,
+                             lround(cr / 2));
+        }
+    }
+}
+
+static void test_video_out_rgb24(void *obj, void *data, QGuestAllocator *alloc)
+{
+    check_rgb(obj, alloc, 3, 65);
+}
+
+static void test_video_out_rgba32(void *obj, void *data,
+                                  QGuestAllocator *alloc)
+{
+    check_rgb(obj, alloc, 4, 86);
+}
+
+/*
+ * Capture type 4 sends one field of lines, not two: the buffer is accepted
+ * and, being not the sink's frame size, counted and dropped there.
+ */
+static void test_video_out_field(void *obj, void *data, QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc, frames, dropped;
+
+    divo_open(&t, obj, alloc);
+    frames = sink_get(&t, "frames");
+    dropped = sink_get(&t, "dropped");
+    video_setup_bpp(&t, 720, 243, 16, 4);
+    desc = make_buffer(&t, 22, 0x71);
+    play_one(&t, desc, 22);
+    for (int i = 0; i < 2000 && sink_get(&t, "dropped") == dropped; i++) {
+        g_usleep(5000);
+    }
+    g_assert_cmpuint(sink_get(&t, "frames"), ==, frames + 1);
+    g_assert_cmpuint(sink_get(&t, "dropped"), ==, dropped + 1);
+}
+
+/* A row length no packing has completes the buffer and plays nothing. */
+static void test_video_out_odd_row(void *obj, void *data,
+                                   QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc, before;
+
+    divo_open(&t, obj, alloc);
+    before = sink_get(&t, "frames");
+    video_setup_bpp(&t, 720, 243, 20, 1);
+    desc = make_buffer(&t, 54, 0x41);
+    play_one(&t, desc, 54);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 1);
+    g_assert_cmpuint(sink_get(&t, "frames"), ==, before);
+}
+
+/* A buffer queued before the start word plays once the stream starts. */
+static void test_video_out_queue_first(void *obj, void *data,
+                                       QGuestAllocator *alloc)
+{
+    Divo t;
+    uint64_t desc;
+
+    divo_open(&t, obj, alloc);
+    video_setup(&t, 720, 243);
+    desc = make_buffer(&t, NTSC_PAGES, 0x15);
+    mb_send(&t, 4, buffer_word(OP_DMA_BUFFER0, NTSC_PAGES, desc));
+    qtest_clock_step(t.qts, 2 * NTSC_FRAME_NS);
+    g_assert_cmpint(find_packet(&t, PKT_DMA_DONE), ==, -1);
+    mb_send(&t, 5, ctl_word(CTL_DMA, 1));
+    qtest_clock_step(t.qts, NTSC_FRAME_NS);
+    g_assert_cmpuint(count_packets(&t, PKT_DMA_DONE), ==, 1);
+}
+
 static void divo_register_nodes(void)
 {
+    g_autofree char *dir = g_dir_make_tmp("sgi-divo-XXXXXX", NULL);
+    g_autofree char *before = NULL;
     QOSGraphEdgeOptions opts = {
-        .extra_device_opts = "addr=02.0",
-        .before_cmd_line = "-device sgi-xio-test-target,id=hub-ram,size=16M",
+        .extra_device_opts = "addr=02.0,out-sink=rec",
     };
+
+    g_assert(dir);
+    sink_path = g_build_filename(dir, "out.y4m", NULL);
+    before = g_strdup_printf("-device sgi-xio-test-target,id=hub-ram,size=16M "
+                             "-device sgi-video-file-sink,id=rec,path=%s",
+                             sink_path);
+    opts.before_cmd_line = g_steal_pointer(&before);
 
     add_qpci_address(&opts,
                      &(QPCIAddress) { .devfn = QPCI_DEVFN(LINC_SLOT, 0) });
@@ -530,6 +940,25 @@ static void divo_register_nodes(void)
                  test_flash_program_erase, NULL);
     qos_add_test("flash-stray", "sgi-divo-linc", test_flash_stray, NULL);
     qos_add_test("narrow-mailbox", "sgi-divo-linc", test_narrow_mailbox,
+                 NULL);
+    qos_add_test("video-out-frame", "sgi-divo-linc", test_video_out_frame,
+                 NULL);
+    qos_add_test("video-out-rhythm", "sgi-divo-linc", test_video_out_rhythm,
+                 NULL);
+    qos_add_test("video-out-rgb24", "sgi-divo-linc", test_video_out_rgb24,
+                 NULL);
+    qos_add_test("video-out-rgba32", "sgi-divo-linc", test_video_out_rgba32,
+                 NULL);
+    qos_add_test("video-out-field", "sgi-divo-linc", test_video_out_field,
+                 NULL);
+    qos_add_test("video-out-odd-row", "sgi-divo-linc", test_video_out_odd_row,
+                 NULL);
+    qos_add_test("video-out-queue-first", "sgi-divo-linc",
+                 test_video_out_queue_first, NULL);
+    qos_add_test("video-out-pal", "sgi-divo-linc", test_video_out_pal, NULL);
+    qos_add_test("video-out-other-buffer", "sgi-divo-linc",
+                 test_video_out_other_buffer, NULL);
+    qos_add_test("video-out-abort", "sgi-divo-linc", test_video_out_abort,
                  NULL);
 }
 

@@ -60,6 +60,7 @@
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/pci-host/sgi-xbridge.h"
 #include "hw/misc/sgi-ioc3.h"
+#include "hw/display/sgi/video-io.h"
 #include "system/system.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
@@ -90,6 +91,8 @@ struct SGIPciExpansionState {
     char *fc_product;
     /* The DIVO board's product, resolved when the board is built. */
     char *divo_product;
+    /* The DIVO board's video outputs, one per pipe, handed to its LINCs. */
+    Object *divo_out_sink[2];
 
     SGIBridgeState *bridge;
     Notifier machine_done;
@@ -531,6 +534,10 @@ static bool divo_board_build_widget(SGIXioBoardState *board, Error **errp)
                                             0), "sgi-divo-linc");
 
         object_property_add_child(OBJECT(board), name, OBJECT(linc));
+        if (s->divo_out_sink[pipe]) {
+            object_property_set_link(OBJECT(linc), "out-sink",
+                                     s->divo_out_sink[pipe], &error_abort);
+        }
         if (!pci_realize_and_unref(linc, bus, errp)) {
             return false;
         }
@@ -543,12 +550,20 @@ static void divo_board_instance_finalize(Object *obj)
     g_free(SGI_PCI_EXPANSION(obj)->divo_product);
 }
 
+static const Property divo_board_properties[] = {
+    DEFINE_PROP_LINK("out-sink", SGIPciExpansionState, divo_out_sink[0],
+                     TYPE_SGI_VIDEO_SINK, Object *),
+    DEFINE_PROP_LINK("out-sink1", SGIPciExpansionState, divo_out_sink[1],
+                     TYPE_SGI_VIDEO_SINK, Object *),
+};
+
 static void divo_board_class_init(ObjectClass *oc, const void *data)
 {
     DeviceClass *dc = DEVICE_CLASS(oc);
     SGIXioBoardClass *bc = SGI_XIO_BOARD_CLASS(oc);
 
     dc->desc = "DIVO video XIO board (two LINC functions)";
+    device_class_set_props(dc, divo_board_properties);
     object_class_property_add_str(oc, "product", divo_get_product,
                                   divo_set_product);
     object_class_property_set_description(oc, "product",

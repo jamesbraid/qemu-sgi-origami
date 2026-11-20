@@ -78,6 +78,31 @@ static void test_1046(void)
     qtest_quit(qts);
 }
 
+/* A sink on each output reaches the LINC of that pipe. */
+static void test_out_sinks(void)
+{
+    g_autofree char *dir = g_dir_make_tmp("sgi-divo-board-XXXXXX", NULL);
+    g_autofree char *out0 = g_build_filename(dir, "out0.y4m", NULL);
+    g_autofree char *out1 = g_build_filename(dir, "out1.y4m", NULL);
+    QTestState *qts = qtest_initf(
+        "-M onyx2 -display none "
+        "-device sgi-video-file-sink,id=rec0,path=%s "
+        "-device sgi-video-file-sink,id=rec1,path=%s "
+        "-device sgi-divo,id=divo,slot=io2,out-sink=rec0,out-sink1=rec1",
+        out0, out1);
+    g_autofree char *sink0 = qom_str(qts, "/machine/module0/divo/linc0",
+                                     "out-sink");
+    g_autofree char *sink1 = qom_str(qts, "/machine/module0/divo/linc1",
+                                     "out-sink");
+
+    g_assert_cmpstr(sink0, ==, "/machine/peripheral/rec0");
+    g_assert_cmpstr(sink1, ==, "/machine/peripheral/rec1");
+    qtest_quit(qts);
+    g_remove(out0);
+    g_remove(out1);
+    g_rmdir(dir);
+}
+
 /* The DIVO-DVC board is not modelled, and an unknown product is refused. */
 static void test_unknown_product(void)
 {
@@ -96,6 +121,7 @@ int main(int argc, char **argv)
 
     qtest_add_func("sgi-divo-board/default", test_default);
     qtest_add_func("sgi-divo-board/1046", test_1046);
+    qtest_add_func("sgi-divo-board/out-sinks", test_out_sinks);
     qtest_add_func("sgi-divo-board/unknown-product", test_unknown_product);
     return g_test_run();
 }

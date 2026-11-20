@@ -30,9 +30,11 @@ QEMU models the board as ``sgi-divo`` (``hw/mips/sgi/board-pci-expansion.c``)
 and each LINC as the PCI device ``sgi-divo-linc`` (``hw/misc/sgi-divo.c``).
 The model is a "present, enumerates, opened by the video daemon" model: the
 two functions, their config space, the window with its few live registers,
-the mailbox, the flash, the packet ring and the interrupt, and a firmware
-*stand-in* that answers the mailbox without running any board code (see
-`Firmware stand-in`_). It moves no video.
+the mailbox, the flash, the packet ring, the status block and the interrupt,
+and a firmware *stand-in* that answers the mailbox without running any board
+code (see `Firmware stand-in`_). It plays video out: a memory-to-video
+transfer completes at the frame rate and its frames go to a file sink (see
+`Video out`_). Video in is not modelled.
 
 Facts are rated as described in :ref:`sgi-ratings`.
 
@@ -45,10 +47,25 @@ public. The register and window facts come from a read of the shipped DIVO
 shows what the shipped software does with the board, not what the chips
 are. The model never runs, and ships, no board firmware.
 
-The status block's place comes from a second read of the 2.4 driver, made for
-this model: in the driver archive ``/usr/cpu/sysgen/IP27boot/divo.a``, the
-mailbox store with its consumer-index wait is at ``+0x29c8`` of its ioctl
-module and the refresh of that index at ``+0x2bec``.
+The video path (the status block, the DMA buffers and the packets that
+complete them, the control words and the frame time) comes from a second
+read of the 2.4 driver and library, made for this model. Each fact below
+names where it was seen: the driver archive ``/usr/cpu/sysgen/IP27boot/divo.a``
+(offsets in its interrupt, DMA and ioctl modules) and the video daemon's
+plug-in ``/usr/lib32/dmedia/video/DIVO.so`` (addresses in its linked image).
+The frame's pixel layout is the exception: no read settled it, and it is
+marked *approximation* where it is used.
+
+Where each fact was seen, as an offset in the driver archive's module or an
+address in the linked plug-in. Interrupt module: the handler that reads the
+ring at ``+0x38``, the dispatch on a packet's type at ``+0x1b0`` and the
+completion of a DMA slot at ``+0x824``. DMA module: the buffer loop that
+builds a descriptor and sends the mailbox words at ``+0x54``. Ioctl module:
+the mailbox store, with its consumer-index wait, at ``+0x29c8`` and the
+refresh of that index at ``+0x2bec``. Plug-in: the control-word builder at
+``0x7d14c0``, the transfer start at ``0x7dab20``, the transfer manager that
+sends a stream's buffers at ``0x7dad80`` and the transfer end at
+``0x7db330``.
 
 - The *DIVO (Digital Video Option) XIO Board Installation Instructions*,
   108-0173-001, for the slots that take the board.
@@ -219,10 +236,21 @@ board's consumer index from the status block before each store
    * - Opcode
      - Use and what the model does
      - Rating
-   * - ``0x00``, ``0x02``, ``0x03``
-     - Board write of a byte or word, and a control word (the event mask
-       uses control index ``0x15``). Accepted and dropped.
+   * - ``0x00``, ``0x02``
+     - Board write of a byte or a word: the board address is bits 57:32 and
+       the data the low bits. Accepted and dropped.
      - *software expectation* for the words, *approximation* for the drop
+   * - ``0x03``
+     - Control word: the control index is bits 57:52 and the value the low
+       16 bits (32 for the event mask). The model keeps the last value of
+       each index and acts on five: 0 (frame width in pixels), 1 (lines in a
+       field), 2 (dwords in a row of memory), 6 (capture type) and ``0x13``
+       (video DMA), all described in `Video out`_. The host also sends
+       ``0x15`` (an event mask) and others; they are stored and have no
+       effect, so no event packet is ever sent. The bits of a ``0x13``
+       word above bit 1 hold stale address bits, which the model ignores.
+     - *software expectation* for the word and the five indexes, *unknown*
+       for the others
    * - ``0x09``
      - Announces the packet ring base in host memory. The shipped
        text describes it both as the second 4 KiB half and, elsewhere, as an
@@ -240,7 +268,7 @@ board's consumer index from the status block before each store
      - Base of the host's 16 KiB packet buffer, which holds the status
        block. The ring base announced by ``0x09`` is 8 KiB above it, as
        the host's own layout says. The model keeps the address and writes
-       the consumer index there (see `Status block`_).
+       the status block there (see `Status block`_).
      - *software expectation*
    * - ``0x0d``
      - The host-to-board clock offset. Accepted.
@@ -251,13 +279,22 @@ board's consumer index from the status block before each store
      - *software expectation*
    * - ``0x20``
      - Block send: a count of command words (at most 127) and a scratch
-       slot 0 to 3, and a DMA address of the block.
+       slot 0 to 3, and a DMA address of the block. The words are the
+       host's other command words, one per 8 bytes, and the model runs
+       each as if it had come alone, so a control word in a block counts.
+       The completion packet follows.
      - *software expectation*
-   * - ``0x23`` to ``0x28``
+   * - ``0x21``, ``0x24``
+     - Video DMA buffer for slot 0 and slot 1: a page count in bits 57:49
+       and the DMA address of the buffer's descriptor (see `Video out`_).
+     - *software expectation*
+   * - ``0x23``, ``0x25``, ``0x27``, ``0x28``
      - Packer or FPGA data block load: a DMA address.
-     - *software expectation* for ``0x23``, ``0x25``, ``0x27`` and ``0x28``;
-       the model also takes ``0x24`` and ``0x26``, an *approximation*,
-       because the shipped text does not say whether they exist
+     - *software expectation*
+   * - ``0x26``
+     - Abort of the video DMA, sent when a transfer fails. The model drops
+       the queued buffers and stops.
+     - *software expectation* for the use, *inferred* for the name
    * - Any other
      - Logged with ``LOG_UNIMP`` and dropped.
      - *approximation*
@@ -290,13 +327,19 @@ the ring 8 KiB above it with ``0x09`` (*software expectation*). Before it
 stores a mailbox word the host compares its next slot with the consumer
 index it last saw and, when they are equal, reads the index again from dword
 ``0x14`` of that buffer, at most 200 times at 5 ms, then gives up with "the
-firmware is not updating" and fails the store (*software expectation*).
+firmware is not updating" and fails the store (*software expectation*). Two
+doublewords at ``0x00`` and ``0x08`` are the board's clock and its frame
+counter, which the host reads twice until both reads agree when a guest asks
+for the time of a frame (*software expectation*).
 
-The model writes the consumer index there with the PCI DMA path, as it writes
-the ring, after every mailbox word. An earlier version of this model answered
-a config dword instead, which the host never reads for this: a guest that
-sent 32 words stalled at the wrap to slot 0 and failed with that message,
-which is what a guest run showed.
+The model writes the status block with the PCI DMA path, as it writes the
+ring: the consumer index after every mailbox word, and the two doublewords at
+each frame time of a running video stream. The clock is the virtual time in
+nanoseconds, the unit being *inferred*: the host adds its own offset and
+converts the sum as a time in nanoseconds. Before this model kept the index
+in the status block it answered a config dword and the host's own wait never
+saw it change; a guest that sent 32 words stalled at the wrap to slot 0 and
+failed with that message, which is what a guest run showed.
 
 Flash
 =====
@@ -354,6 +397,108 @@ after the ring is announced (*inferred*: the host's initial saved index is
 not stated). A packet whose slot is still valid is dropped and logged with
 ``LOG_GUEST_ERROR``.
 
+Video out
+=========
+
+A memory-to-video transfer, as the shipped video library runs it, is a
+stream of buffers. The host starts the stream with control word ``0x13``
+(bit 0 set), sends each buffer in turn and sends bit 0 clear when it has
+sent the last one, without waiting for the buffers to play out. It then
+waits for the completion of each buffer it sent. All of this is *software
+expectation*.
+
+Each buffer is a descriptor in host memory and a mailbox word, opcode
+``0x21`` for the first buffer slot and ``0x24`` for the second, the host
+alternating between them. The word carries the descriptor's DMA address like
+a block (see `Mailbox`_) and the number of 16 KiB pages in bits 57:49. The
+descriptor has a 0x50-byte header, whose first dword is the length in dwords,
+whose dwords at ``0x44`` and ``0x48`` are the descriptor's own address and
+whose dword at ``0x4c`` is a checksum, and then one doubleword for each page: the
+page's bus address as the host's DMA call returned it. A page the host
+reached with a 64-bit address has the hub's top nibble in the doubleword; a
+page it reached through the Bridge's 32-bit direct window comes as that 32-bit
+address sign-extended (*software expectation*). The board completes a buffer
+with a packet of type ``0x8000`` whose word 1 is the slot (0 or 1), words 2 and
+3 the board clock and words 4 and 5 the frame counter, high word first
+(*software expectation* for the fields' use, *inferred* for the units).
+The host's loop stops when it has sent as many buffers as it was asked for and
+waits for each slot's completion before it frees the descriptor, and it does
+not send a third buffer until the first has completed.
+
+The pixels are the pages' bytes in the order they have in host memory. The
+Bridge's DMA window delivers each dword of them reversed, so the model puts
+each dword back (*inferred*; a guest run with a known picture showed it).
+
+What the host tells the board about a frame is four control words, read
+from the plug-in's memory-node control routine (``DIVO.so`` ``0x7d8100``,
+the size routine at ``0x7d63a0``): word 0 is the width in pixels, word 1 the
+lines in a field (243 or 288), word 2 the dwords in a row of memory and
+word 6 the capture type. Word 2 is the packing's dwords for each smallest
+group of pixels times the width over the pixels in a group, which is
+width times bits a pixel over 32: 360 for 720 pixels at 16 bits, 540 at 24
+bits and 720 at 32. Both 360 and 540 were seen from guests, the first from
+``memtovid`` and the second from Inferno 6.2.5 (*software expectation*).
+The capture type is 1 for a frame of both fields, whose word 1 is half the
+buffer's lines, and other values for one field of word 1's lines. The model
+plays a frame of both fields only for type 1 and one field otherwise, and
+a reset sets type 1 (*approximation* for the other values: 4 is the value
+the host writes when it is asked for 0 and for 4, and what it means is
+not established).
+
+The host chooses the packing among the 51 of the plug-in's table, at
+``0x7e4af8``, each named as the packings of the owner's guide, appendix C
+(007-3524-004, tables C-1 and C-2): from 8 to 64 bits a pixel, RGB and YCbCr,
+4:4:4, 4:2:2 and the DV forms, and the reversed ``R`` order of each. It
+does not send the packing to the board. The board learns it only from the
+packer microcode the host loads with opcodes ``0x23``, ``0x25`` and ``0x27``,
+the file named for the packing under ``/usr/dmedia/ucode/DIVO/`` and the
+vendor's. The model keeps no copy and recognises none, so it cannot know the
+packing. It reads it from the row length of control word 2, and plays three:
+
+- 16 bits a pixel as ``VL_PACKING_R242_8``, bytes Cb, Y, Cr, Y, the common 4:2:2
+  packing (guide figure C-6; *established* for the layout, *approximation*
+  for choosing it by the row length);
+- 24 bits a pixel as ``VL_PACKING_444_8``, bytes R, G, B (figure C-11);
+- 32 bits a pixel as ``VL_PACKING_4444_8``, bytes R, G, B, A (figure C-14),
+  the alpha ignored.
+
+The two RGB ones are *approximation*: the model takes the memory to hold
+RGB, as the guide's RGBA colour space, not YCbCr in the same packing, which
+the host chooses with ``VL_COLORSPACE`` and the board never reports. A host
+that sends a 24-bit YCbCr frame gets the wrong picture. The board converts
+the memory's colour space to the video format's, when they differ, with a
+transcoder (the guide, chapter 1 and appendix D, and the plug-in's colour
+set-up at ``0x7dbdc0``, which writes the matrix); the model converts RGB to
+the limited-range BT.601 YCbCr the sinks hold with the matrix of the guide's
+appendix D and the average of each pair's chroma, so the sink's chroma
+is an *approximation* of the board's filter. Any other row length, and any
+other number of pages than the frame needs, is completed and not played,
+with ``LOG_UNIMP``. The other packings, 10-bit and 12-bit ones, the 16-bit
+words with padding and the DV forms, are not modelled.
+
+The frame rhythm is the model's: with the stream started, a frame time
+passes (1001/30000 s for 243 lines, 1/25 s otherwise, *approximation*), the
+first queued buffer, if there is one, is played and completed, and the frame
+counter, which starts at 0 with the stream, goes up by one. The page for a
+buffer is read when its frame time comes, not when the host queued it. A buffer queued before the start word waits and plays from it. A frame
+whose width or line count is not valid is completed and not played, with
+``LOG_UNIMP``. A
+stop lets the queued buffers finish and then ends the stream; the abort
+opcode drops them and ends it at once (*approximation*: the shipped host
+sends the abort only after an error). A third buffer, which the host
+does not send, is dropped.
+
+Where the frames go. A DIVO board has one ``out-sink`` link for each pipe on
+the board and on each LINC: ``-device sgi-video-file-sink,id=rec,path=...``
+and ``-device sgi-divo,slot=io2,id=divo,out-sink=rec`` for LINC 0 (pipe 0) and
+``out-sink1=`` for LINC 1 (pipe 1). The sink is the one the DM2 uses
+(:ref:`sgi-video-io`): a Y4M file, the raster and ``F30000:1001`` in the
+header, one ``FRAME`` for each buffer played. Without a sink the stream still
+completes and the frames are dropped. A guest run played a known picture and
+a 20-frame clip, one frame to a transfer, and the file held the pictures.
+
+Video in is not modelled: a capture transfer completes nothing.
+
 Firmware stand-in
 =================
 
@@ -379,13 +524,16 @@ the host to its wait.
      - Post a packet of type ``0x20000``, same words.
    * - ``0x20``
      - Read the count of command words (8 bytes each) from the DMA address
-       through the PCI DMA path, discard them, and post type
-       ``0x08000000`` with the scratch slot in word 2.
-   * - ``0x23`` to ``0x28``
+       through the PCI DMA path, run each as a command word of its own (the
+       control words matter, see `Mailbox`_), and post type ``0x08000000``
+       with the scratch slot in word 2.
+   * - ``0x23``, ``0x25``, ``0x27``, ``0x28``
      - Read one 128-byte unit from the DMA address, discard it, and post
        ``0x20000000`` (video packer) or, for ``0x28``, ``0x40000000`` (audio
        packer), with the scratch slot in word 1. The slot is taken from bits
        50:49 as for ``0x20``.
+   * - ``0x21``, ``0x24``, ``0x26``
+     - The video DMA (see `Video out`_), which is not a stand-in action.
 
 Limitation. The reply value is 0 for every address, not what the board
 holds, and a board write sent through the mailbox is dropped, so nothing a
@@ -393,8 +541,8 @@ guest wrote that way reads back. Which of the two reply types goes with which op
 of a packer block is carried, and which packer a given opcode loads are not
 established (*unknown*); the model's choices only have to avoid the slot
 fault the host raises for a slot of 4 or more, so the slot is always 0 to 3.
-No frame-time packet, no video descriptor completion and no event is ever
-sent, so no video moves and a guest that starts a transfer waits for frames.
+No event packet is ever sent. The frame-time completions of a video-out
+buffer are not replies; they are in `Video out`_.
 
 Each reply the stand-in sends is a packet type the shipped host
 code accepts, and the host's own text says a read blocks until type
@@ -411,10 +559,11 @@ Model limits
 ============
 
 - The DIVO-DVC board and its codec cards, the VIP, the FPGAs, the video
-  engine, the interrupt packets for frame events and DMA descriptor
-  handling are not modelled. The host's transfer ioctls are accepted by the
-  host driver and reach only the mailbox.
-- A guest that starts a video transfer gets no frames and no events.
+  engine and video in are not modelled. The packers' microcode and the
+  frame format words the host sends are accepted and not run.
+- A video-out transfer plays 16, 24 and 32-bit frames (see `Video out`_)
+  of the width in control word 0, at the model's frame rates, and no event, retrace or sync packet
+  is sent: a guest that asks for one waits.
 - Mailbox board writes are dropped and mailbox board reads return 0.
 - The flash starts erased on every run and completes every program and
   erase at once.
@@ -422,7 +571,14 @@ Model limits
   its own beyond the Bridge's.
 - Whether a real board's PCI window answers the Bridge's byte and halfword
   swap as the model's does, the exact flash part, the PCI class code, the
-  Bridge revision and the ring's initial index are not known.
+  Bridge revision, the ring's initial index and the byte order of the
+  pixels on the board are not known.
+- The Bridge model translates a 32-bit direct-window address into the
+  hub's low 2 GiB. The pages the host reached that way sit at the hub
+  address that has the same value, so the model reads them there, not
+  through the window. That is the model's choice, taken from where a guest
+  run found the picture; the Bridge's direct window for a page above 2 GiB
+  is not settled here.
 
 Tests
 =====
@@ -433,7 +589,13 @@ refusal of an unknown one. It does not read the ID PROM bytes through the
 Bridge: the part and revision reach the Bridge as properties and the
 record layout is the Bridge's. ``tests/qtest/sgi-divo-test.c`` runs one
 function behind the Bridge on the libqos head and checks its identity, the
-BAR size and that dword ``0x14`` is not a BAR, the window storage and the special words (the identification word, bit 6 of the control word, the
+BAR size and that dword ``0x14`` is not a BAR, the window storage and the
+special words (the identification word, bit 6 of the control word, the
 status register), the interrupt with write-1-to-clear, the mailbox with the
-consumer index in the status block, the flash command sequences, and the stand-in's replies and
-completions into the ring.
+consumer index in the status block, the flash command sequences, the
+stand-in's replies and completions into the ring, and the video-out stream:
+a frame in the sink byte for byte (even pages by a 64-bit address, odd ones
+by a 32-bit one), the completions a frame time apart in order with the clock
+and frame counter, the 625-line rate, a buffer that is not a frame, the
+abort and the stop. The board test also checks that each output's sink
+reaches its LINC.
