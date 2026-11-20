@@ -29,7 +29,8 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIDivoLincState, SGI_DIVO_LINC)
 #define LINC_VENDOR_ID          0x10a9
 #define LINC_DEVICE_ID          0x0002
 #define LINC_WINDOW_SIZE        (128 * MiB)
-#define CFG_CONSUMER            0x14
+/* The board's status block, at the start of the host's packet buffer. */
+#define STATUS_CONSUMER         0x14
 
 /* "Window map". */
 #define MAILBOX_BASE            0x4400000
@@ -42,7 +43,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIDivoLincState, SGI_DIVO_LINC)
 #define CTL_SIZE                0x20
 #define CTL_CONTROL             0x00
 #define CTL_CONTROL_BUSY       BIT(6)
-#define CTL_CONTROL_RESET       0xc
 #define CTL_STATUS              0x18
 #define STATUS_INT              BIT(20)
 #define STATUS_PANIC            BIT(21)
@@ -71,7 +71,6 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIDivoLincState, SGI_DIVO_LINC)
 #define OP_BLOCK_SEND           0x20
 #define OP_LOAD_FIRST           0x23
 #define OP_LOAD_AUDIO           0x28
-#define CONSUMER_RESET          (MAILBOX_SLOTS - 1)
 
 /* "Packet ring". */
 #define RING_ENTRIES            64
@@ -110,7 +109,8 @@ struct SGIDivoLincState {
     uint32_t ctl_reg[CTL_SIZE / 4];
     uint32_t vip_reg[VIP_SIZE / 4];
     uint32_t mailbox_hi;
-    uint32_t consumer;
+    uint64_t status_base;
+    bool status_set;
     uint64_t ring_base;
     uint32_t ring_next;
     bool ring_set;
@@ -205,6 +205,22 @@ static uint64_t divo_dma_address(uint64_t word)
            BIT_ULL(63);
 }
 
+/* The consumer index, as the host reads it from the status block. */
+static void divo_status_put(SGIDivoLincState *s, unsigned off, uint32_t val)
+{
+    uint8_t buf[4];
+
+    if (!s->status_set) {
+        return;
+    }
+    stl_le_p(buf, val);
+    if (pci_dma_write(PCI_DEVICE(s), s->status_base + off, buf, 4) !=
+        MEMTX_OK) {
+        qemu_log_mask(LOG_GUEST_ERROR, "sgi-divo: DMA to the status block "
+                      "failed\n");
+    }
+}
+
 static void divo_read_block(SGIDivoLincState *s, uint64_t word, size_t len)
 {
     g_autofree uint8_t *buf = g_malloc(len);
@@ -222,7 +238,7 @@ static void divo_command(SGIDivoLincState *s, unsigned slot, uint64_t word)
     unsigned op = word >> OP_SHIFT;
     unsigned scratch = extract64(word, 49, 2);
 
-    s->consumer = slot;
+    divo_status_put(s, STATUS_CONSUMER, slot);
     /* The host's writer sleeps until the board reports its progress. */
     if (op != OP_RING_BASE && op != OP_RING_CONSUMED) {
         divo_post(s, PKT_CONSUMER, slot, 0);
@@ -232,8 +248,12 @@ static void divo_command(SGIDivoLincState *s, unsigned slot, uint64_t word)
     case OP_WRITE_WORD:
     case OP_CONTROL:
     case OP_RING_COUNT:
-    case OP_BUFFER_BASE:
     case OP_CLOCK_OFFSET:
+        break;
+    case OP_BUFFER_BASE:
+        s->status_base = divo_dma_address(word);
+        s->status_set = true;
+        divo_status_put(s, STATUS_CONSUMER, slot);
         break;
     case OP_RING_BASE:
         s->ring_base = divo_dma_address(word);
@@ -316,10 +336,6 @@ static void ctl_write_word(SGIDivoLincState *s, hwaddr off, uint32_t val)
 
     switch (off) {
     case CTL_CONTROL:
-        /* Bits 3:2 going clear is a release from reset: the ring drains. */
-        if ((*reg & CTL_CONTROL_RESET) && !(val & CTL_CONTROL_RESET)) {
-            s->consumer = CONSUMER_RESET;
-        }
         *reg = val;
         break;
     case CTL_STATUS:
@@ -502,23 +518,6 @@ static const MemoryRegionOps flash_ops = {
     .impl = { .min_access_size = 1, .max_access_size = 8 },
 };
 
-/* "Config space": dword 0x14 is the mailbox consumer index, not a BAR. */
-static uint32_t divo_config_read(PCIDevice *dev, uint32_t addr, int len)
-{
-    SGIDivoLincState *s = SGI_DIVO_LINC(dev);
-    uint32_t val = pci_default_read_config(dev, addr, len);
-    uint32_t reg = s->consumer;
-    int i;
-
-    for (i = 0; i < len; i++) {
-        if (addr + i >= CFG_CONSUMER && addr + i < CFG_CONSUMER + 4) {
-            val = deposit32(val, 8 * i, 8,
-                            reg >> (8 * (addr + i - CFG_CONSUMER)));
-        }
-    }
-    return val;
-}
-
 static void divo_reset_hold(Object *obj, ResetType type)
 {
     SGIDivoLincState *s = SGI_DIVO_LINC(obj);
@@ -526,7 +525,7 @@ static void divo_reset_hold(Object *obj, ResetType type)
     memset(s->ctl_reg, 0, sizeof(s->ctl_reg));
     memset(s->vip_reg, 0, sizeof(s->vip_reg));
     s->mailbox_hi = 0;
-    s->consumer = CONSUMER_RESET;
+    s->status_set = false;
     s->ring_base = 0;
     s->ring_next = 0;
     s->ring_set = false;
@@ -577,14 +576,15 @@ static void divo_exit(PCIDevice *dev)
 
 static const VMStateDescription vmstate_sgi_divo_linc = {
     .name = TYPE_SGI_DIVO_LINC,
-    .version_id = 1,
-    .minimum_version_id = 1,
+    .version_id = 2,
+    .minimum_version_id = 2,
     .fields = (const VMStateField[]) {
         VMSTATE_PCI_DEVICE(parent_obj, SGIDivoLincState),
         VMSTATE_UINT32_ARRAY(ctl_reg, SGIDivoLincState, CTL_SIZE / 4),
         VMSTATE_UINT32_ARRAY(vip_reg, SGIDivoLincState, VIP_SIZE / 4),
         VMSTATE_UINT32(mailbox_hi, SGIDivoLincState),
-        VMSTATE_UINT32(consumer, SGIDivoLincState),
+        VMSTATE_UINT64(status_base, SGIDivoLincState),
+        VMSTATE_BOOL(status_set, SGIDivoLincState),
         VMSTATE_UINT64(ring_base, SGIDivoLincState),
         VMSTATE_UINT32(ring_next, SGIDivoLincState),
         VMSTATE_BOOL(ring_set, SGIDivoLincState),
@@ -611,7 +611,6 @@ static void divo_class_init(ObjectClass *oc, const void *data)
     set_bit(DEVICE_CATEGORY_MISC, dc->categories);
     pc->realize = divo_realize;
     pc->exit = divo_exit;
-    pc->config_read = divo_config_read;
     pc->vendor_id = LINC_VENDOR_ID;
     pc->device_id = LINC_DEVICE_ID;
     pc->class_id = PCI_CLASS_MULTIMEDIA_VIDEO;

@@ -25,7 +25,7 @@
 /* The board's DMA names widget 8, which this head answers with a copy. */
 #define HUB_ALIAS(a)        ((8ULL << 48) | (a))
 
-#define CFG_CONSUMER        0x14
+#define CFG_BAR1            0x14
 #define MAILBOX             0x4400000
 #define VIP_ID_REG          0x4c00800
 #define CTL                 0x7800000
@@ -33,6 +33,7 @@
 #define FLASH               0x7c00000
 
 #define OP_RING_BASE        0x09
+#define OP_BUFFER_BASE      0x0c
 #define OP_RING_CONSUMED    0x0b
 #define OP_READ_WORD        0x10
 #define OP_READ_HALF        0x12
@@ -41,6 +42,8 @@
 #define OP_LOAD_AUDIO       0x28
 #define OP_UNKNOWN          0x3f
 
+#define STATUS_BYTES        0x4000
+#define STATUS_CONSUMER     0x14
 #define RING_ENTRIES        64
 #define ENTRY               0x80
 #define VALID               0x7c
@@ -187,7 +190,7 @@ static void test_identity(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(qpci_config_readb(dev, PCI_INTERRUPT_PIN), ==, 1);
 }
 
-/* Dword 0x10 is a 128 MiB window; dword 0x14 is not a BAR. */
+/* Dword 0x10 is a 128 MiB window; dword 0x14 is not a BAR and holds 0. */
 static void test_config(void *obj, void *data, QGuestAllocator *alloc)
 {
     QDivo *divo = obj;
@@ -195,11 +198,8 @@ static void test_config(void *obj, void *data, QGuestAllocator *alloc)
 
     qpci_config_writel(dev, PCI_BASE_ADDRESS_0, 0xffffffff);
     g_assert_cmphex(qpci_config_readl(dev, PCI_BASE_ADDRESS_0), ==, 0xf8000000);
-    g_assert_cmphex(qpci_config_readl(dev, CFG_CONSUMER), ==, 0x1f);
-    qpci_config_writel(dev, CFG_CONSUMER, 0xffffffff);
-    g_assert_cmphex(qpci_config_readl(dev, CFG_CONSUMER), ==, 0x1f);
-    g_assert_cmphex(qpci_config_readb(dev, CFG_CONSUMER), ==, 0x1f);
-    g_assert_cmphex(qpci_config_readb(dev, CFG_CONSUMER + 1), ==, 0);
+    qpci_config_writel(dev, CFG_BAR1, 0xffffffff);
+    g_assert_cmphex(qpci_config_readl(dev, CFG_BAR1), ==, 0);
 }
 
 /* Everything outside the special words is plain storage, to the last word. */
@@ -264,33 +264,45 @@ static void test_interrupt(void *obj, void *data, QGuestAllocator *alloc)
     g_assert_cmphex(rd(&t, STATUS), ==, 0x01000000);
 }
 
+/* A word of host memory as the host reads it. */
+static uint32_t mem_word(Divo *t, uint64_t addr)
+{
+    uint8_t bytes[4];
+
+    qtest_memread(t->qts, HUB_ALIAS(addr), bytes, 4);
+    return ldl_be_p(bytes);
+}
+
 /*
- * The index follows the last slot written and goes back to the host as a
- * packet; a release from reset resets it. Approximation, as the packet's
- * form is the model's choice.
+ * The board keeps its consumer index in the host's packet buffer, dword
+ * 0x14, and writes it after every word. Established by the shipped host
+ * code, which reads it from there; the packet is the model's choice.
  */
 static void test_consumer(void *obj, void *data, QGuestAllocator *alloc)
 {
     Divo t;
+    uint64_t status;
 
     divo_open(&t, obj, alloc);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 0x1f);
+    status = guest_alloc(alloc, STATUS_BYTES);
+    qtest_memset(t.qts, HUB_ALIAS(status), 0xaa, STATUS_BYTES);
     ring_setup(&t);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 0);
-    g_assert(entry_valid(&t, 0));
-    g_assert_cmphex(entry_word(&t, 0, 0), ==, 0x01000000);
-    g_assert_cmphex(entry_word(&t, 0, 1), ==, 0);
-    mb_send(&t, 7, op_word(0x0a, 0x40));
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 7);
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 0xaaaaaaaa);
+    mb_send(&t, 4, op_word(OP_BUFFER_BASE, dma_field(status)));
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 4);
+    /* The rest of the block is the host's. */
+    g_assert_cmphex(mem_word(&t, status + 0x10), ==, 0xaaaaaaaa);
     g_assert_cmphex(entry_word(&t, 1, 0), ==, 0x01000000);
-    g_assert_cmphex(entry_word(&t, 1, 1), ==, 7);
+    g_assert_cmphex(entry_word(&t, 1, 1), ==, 4);
+    mb_send(&t, 7, op_word(0x0a, 0x40));
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 7);
+    g_assert_cmphex(entry_word(&t, 2, 1), ==, 7);
     /* A half-sent word completes nothing. */
     wr(&t, MAILBOX + 9 * 0x10000, 0);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 7);
-    wr(&t, CTL, 0x0c);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 7);
-    wr(&t, CTL, 0);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 0x1f);
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 7);
+    /* The report of consumed packets moves it too, with no packet. */
+    mb_send(&t, 8, op_word(OP_RING_CONSUMED, 1));
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 8);
 }
 
 /* Approximation: the word reads and halfword reads get their reply types. */
@@ -475,11 +487,13 @@ static void test_flash_stray(void *obj, void *data, QGuestAllocator *alloc)
 static void test_narrow_mailbox(void *obj, void *data, QGuestAllocator *alloc)
 {
     Divo t;
+    uint64_t status;
 
     divo_open(&t, obj, alloc);
-    mb_send(&t, 0, op_word(0x0a, 0x40));
+    status = guest_alloc(alloc, STATUS_BYTES);
+    mb_send(&t, 0, op_word(OP_BUFFER_BASE, dma_field(status)));
     qpci_io_writeb(t.dev, t.bar, MAILBOX + 5 * 0x10000 + 3, 0xff);
-    g_assert_cmphex(qpci_config_readl(t.dev, CFG_CONSUMER), ==, 0);
+    g_assert_cmphex(mem_word(&t, status + STATUS_CONSUMER), ==, 0);
 }
 
 static void divo_register_nodes(void)

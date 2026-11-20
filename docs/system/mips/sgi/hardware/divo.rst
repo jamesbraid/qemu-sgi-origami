@@ -45,6 +45,11 @@ public. The register and window facts come from a read of the shipped DIVO
 shows what the shipped software does with the board, not what the chips
 are. The model never runs, and ships, no board firmware.
 
+The status block's place comes from a second read of the 2.4 driver, made for
+this model: in the driver archive ``/usr/cpu/sysgen/IP27boot/divo.a``, the
+mailbox store with its consumer-index wait is at ``+0x29c8`` of its ioctl
+module and the refresh of that index at ``+0x2bec``.
+
 - The *DIVO (Digital Video Option) XIO Board Installation Instructions*,
   108-0173-001, for the slots that take the board.
 - The DIVO Option and DIVO-DVC Option release notes shipped with the 2.4
@@ -125,9 +130,10 @@ Config space
        a 128 MiB 32-bit memory BAR here; the guest's allocator places it.
      - *software expectation*
    * - ``0x14``
-     - Read as the mailbox consumer index (see `Mailbox`_). The model
-       answers this dword itself and has no BAR there; a write is dropped.
-     - *software expectation* for the use, *inferred* for the meaning
+     - Not a BAR. The model has none there, so it reads 0 and a write is
+       dropped. The consumer index is in the status block, not here (see
+       `Status block`_).
+     - *software expectation*
 
 Window map
 ==========
@@ -203,7 +209,7 @@ Mailbox
 =======
 
 The host sends commands as 64-bit words in a 32-slot ring and reads the
-board's consumer index from config dword ``0x14`` before each store
+board's consumer index from the status block before each store
 (*software expectation*). The opcode is the top six bits of the word.
 
 .. list-table::
@@ -230,8 +236,14 @@ board's consumer index from config dword ``0x14`` before each store
      - Index of the last packet the host consumed. The model sets its next
        entry to the one after it.
      - *software expectation* for the opcode, *inferred* for the use
-   * - ``0x0c``, ``0x0d``
-     - Packet buffer start and the host-to-board clock offset. Accepted.
+   * - ``0x0c``
+     - Base of the host's 16 KiB packet buffer, which holds the status
+       block. The ring base announced by ``0x09`` is 8 KiB above it, as
+       the host's own layout says. The model keeps the address and writes
+       the consumer index there (see `Status block`_).
+     - *software expectation*
+   * - ``0x0d``
+     - The host-to-board clock offset. Accepted.
      - *software expectation*
    * - ``0x10``, ``0x12``
      - Read a word or halfword at a board address. The model replies (see
@@ -259,19 +271,32 @@ carries ``0x10`` there, the low seven bits of the top byte ``0x90`` that the
 same host's other DMA to the :term:`Hub` uses (widget 9).
 Blocks are 128-byte aligned (*software expectation*).
 
-The model keeps a consumer index and answers config dword ``0x14`` with it.
-It resets to 31, so slot 0 is free, and after each word it equals that
-word's slot, as if the board drained the ring at once. The host treats
-the ring as full when its next index equals the register, so a register that
-tracks the last slot written never blocks it (*inferred*). A release from
-reset, seen as bits 3:2 of the control word going from set to clear, sets
-the index back to 31 (*approximation*).
+The model's consumer index after each word is that word's slot, as if the
+board drained the ring at once. The host treats the ring as full when its
+next index equals the index it last read, so an index that tracks the last
+slot written never blocks it (*inferred*).
 
 The same index also arrives as an interrupt packet, type ``0x01000000`` with
 the slot in word 1, which the host copies to a shadow and uses to wake a
 writer that is waiting for room (*software expectation*). The model sends
 one after every word except opcode ``0x0b``, whose own packet would
 set off an endless exchange (*approximation*).
+
+Status block
+============
+
+The host zeroes a 16 KiB buffer, announces its base with opcode ``0x0c`` and
+the ring 8 KiB above it with ``0x09`` (*software expectation*). Before it
+stores a mailbox word the host compares its next slot with the consumer
+index it last saw and, when they are equal, reads the index again from dword
+``0x14`` of that buffer, at most 200 times at 5 ms, then gives up with "the
+firmware is not updating" and fails the store (*software expectation*).
+
+The model writes the consumer index there with the PCI DMA path, as it writes
+the ring, after every mailbox word. An earlier version of this model answered
+a config dword instead, which the host never reads for this: a guest that
+sent 32 words stalled at the wrap to slot 0 and failed with that message,
+which is what a guest run showed.
 
 Flash
 =====
@@ -408,7 +433,7 @@ refusal of an unknown one. It does not read the ID PROM bytes through the
 Bridge: the part and revision reach the Bridge as properties and the
 record layout is the Bridge's. ``tests/qtest/sgi-divo-test.c`` runs one
 function behind the Bridge on the libqos head and checks its identity, the
-BAR size and the ``0x14`` dword, the window storage and the special words (the identification word, bit 6 of the control word, the
+BAR size and that dword ``0x14`` is not a BAR, the window storage and the special words (the identification word, bit 6 of the control word, the
 status register), the interrupt with write-1-to-clear, the mailbox with the
-consumer index, the flash command sequences, and the stand-in's replies and
+consumer index in the status block, the flash command sequences, and the stand-in's replies and
 completions into the ring.
