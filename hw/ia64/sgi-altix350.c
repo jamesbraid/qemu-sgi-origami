@@ -15,6 +15,7 @@
 #include "hw/core/boards.h"
 #include "system/blockdev.h"
 #include "net/net.h"
+#include "net/util.h"
 #include "hw/core/qdev-properties.h"
 #include "system/system.h"
 #include "chardev/char-fe.h"
@@ -33,6 +34,7 @@
 #include "hw/scsi/qlogic-isp.h"
 #include "hw/pci/pci.h"
 #include "migration/vmstate.h"
+#include "hw/mips/sgi/sgi-board-mac.h"
 
 #define TYPE_ALTIX350_MACHINE MACHINE_TYPE_NAME("altix350")
 OBJECT_DECLARE_SIMPLE_TYPE(Altix350State, ALTIX350_MACHINE)
@@ -61,6 +63,9 @@ struct Altix350State {
     DeviceState *uart;
     SGIXioLink pic_link;
     DeviceState *pic;
+    /* mac= and emu-id=: the NIC's station address when -nic gives none. */
+    char *mac;
+    SGIBoardIdentityInputs identity;
 };
 
 static const VMStateDescription vmstate_altix350_tod = {
@@ -180,6 +185,9 @@ static void altix350_add_pic(Altix350State *s)
     SGIPICState *pic;
     PCIDevice *isp, *ioc4, *nic;
     DeviceState *head;
+    NICInfo *nd;
+    g_autofree char *text = NULL;
+    MACAddr address;
 
     s->pic = qdev_new(TYPE_SGI_PIC);
     pic = SGI_PIC(s->pic);
@@ -227,7 +235,17 @@ static void altix350_add_pic(Altix350State *s)
         qdev_prop_set_bit(DEVICE(nic), "link-change-status", true);
         /* Linux's tg3 needs a power-management capability to probe. */
         qdev_prop_set_bit(DEVICE(nic), "pm-cap", true);
+        nd = qemu_find_nic_info("bcm570x", true, NULL);
+        text = sgi_board_mac(s->mac, &s->identity.id, 0, &error_fatal);
+        net_parse_macaddr(address.a, text);
+        if (nd && !nd->mac_generated &&
+            memcmp(nd->macaddr.a, address.a, sizeof(address.a))) {
+            error_setg(&error_fatal, "altix350: -nic mac= conflicts with the "
+                       "machine's address %s; set the machine's mac= instead",
+                       text);
+        }
         qemu_configure_nic_device(DEVICE(nic), true, NULL);
+        qdev_prop_set_macaddr(DEVICE(nic), "mac", address.a);
         pci_realize_and_unref(nic, sgi_pic_pci_bus(pic, 0), &error_fatal);
     }
     /*
@@ -277,6 +295,10 @@ static void altix350_init(MachineState *machine)
         error_setg(&error_fatal,
                    "altix350: an Itanium 2 CPU model is required");
     }
+
+    /* The family only picks the rule's carry check; no serial is modelled. */
+    sgi_board_identity_resolve(&s->identity, SGI_BOARD_FAMILY_TEXT, s->mac,
+                               &error_fatal);
 
     memory_region_init_io(&s->hole, OBJECT(machine), &altix350_hole_ops, s,
                           "altix350.compat-hole", 7ULL << 32);
@@ -391,6 +413,11 @@ static void altix350_class_init(ObjectClass *oc, const void *data)
     mc->no_cdrom = true;
     mc->no_parallel = true;
     mc->no_serial = true;
+    sgi_board_mac_class_add_property(oc, offsetof(Altix350State, mac),
+        "The IO9 NIC's station address when -nic gives none (default derived "
+        "from emu-id)");
+    sgi_board_identity_class_add_properties(oc,
+        offsetof(Altix350State, identity), NULL);
 }
 
 static const TypeInfo altix350_type = {

@@ -1242,6 +1242,50 @@ static void test_bcm5701_absent_without_nic(void)
     qtest_quit(qts);
 }
 
+/* The NIC's station address as "info network" prints it. */
+static void assert_nic_mac(const char *machine_opts, const char *nic_opts,
+                           const char *mac)
+{
+    g_autofree char *extra = g_strdup_printf("%s -nic user,model=bcm570x%s",
+                                             machine_opts, nic_opts);
+    g_autofree char *want = g_strdup_printf("macaddr=%s", mac);
+    QTestState *qts = altix350_start_with(extra);
+    g_autofree char *info = qtest_hmp(qts, "info network");
+
+    g_assert_nonnull(strstr(info, want));
+    qtest_quit(qts);
+}
+
+/* emu-id picks the address by the project's rule; mac= overrides it. */
+static void test_nic_address_identity(void)
+{
+    assert_nic_mac("", "", "08:00:69:e1:00:00");
+    assert_nic_mac("-machine altix350,emu-id=42", "", "08:00:69:e1:02:a0");
+    assert_nic_mac("-machine altix350,emu-id=42,mac=08:00:69:aa:bb:cc", "",
+                   "08:00:69:aa:bb:cc");
+    assert_nic_mac("-machine altix350,emu-id=42", ",mac=08:00:69:e1:02:a0",
+                   "08:00:69:e1:02:a0");
+}
+
+/* The machine models no serial or hostid, and emu-id stops at 4095. */
+static void test_nic_identity_refusals(void)
+{
+    expect_startup_error("-machine altix350,serial=X", "serial");
+    expect_startup_error("-machine altix350,hostid=69000000", "hostid");
+    expect_startup_error("-machine altix350,emu-id=4096",
+                         "emu-id must be 0 to 4095");
+}
+
+/* A -nic mac= other than the machine's address is refused, as on the IO9. */
+static void test_nic_mac_conflict(void)
+{
+    g_autofree char *args = g_strdup_printf(
+        "-machine altix350,emu-id=42 -bios %s -nic "
+        "user,model=bcm570x,mac=52:54:00:12:34:56", image_path);
+
+    expect_startup_error(args, "conflicts with the machine's address");
+}
+
 /* A disk on the IOC4's ATA channel: IDENTIFY by programmed I/O. */
 static void test_ioc4_ata_identify(void)
 {
@@ -2775,6 +2819,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-altix350/nic/bcm5701", test_bcm5701_present);
     qtest_add_func("/sgi-altix350/nic/absent-without-nic",
                    test_bcm5701_absent_without_nic);
+    qtest_add_func("/sgi-altix350/nic/address-identity",
+                   test_nic_address_identity);
+    qtest_add_func("/sgi-altix350/nic/identity-refusals",
+                   test_nic_identity_refusals);
+    qtest_add_func("/sgi-altix350/nic/mac-conflict", test_nic_mac_conflict);
     qtest_add_func("/sgi-altix350/ioc4/ata-identify", test_ioc4_ata_identify);
     qtest_add_func("/sgi-altix350/ioc4/atapi-identify",
                    test_ioc4_atapi_identify);
