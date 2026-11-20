@@ -16,12 +16,14 @@
 #include "hw/core/irq.h"
 #include "hw/mips/sgi/sgi-synthetic-serial.h"
 #include "hw/mips/sgi/xio-board.h"
+#include "hw/display/sgi/video-io.h"
 #include "hw/misc/sgi-mgras.h"
 #include "hw/pci-host/sgi-bridge.h"
 #include "migration/vmstate.h"
 #include "qapi/error.h"
 #include "qemu/log.h"
 #include "qemu/module.h"
+#include "qemu/bswap.h"
 #include "qemu/timer.h"
 #include "qom/object.h"
 #include "trace.h"
@@ -43,7 +45,6 @@ OBJECT_DECLARE_TYPE(GalState, GalClass,
 #define GIO_ID_OFFSET           0x4
 #define GIO_MODE                0x10
 #define GIO_CHIP_ID             0x20
-#define GIO_CHANNEL1_SETUP      0x1000
 #define GIO_SLOT_STRIDE_1       0x400000
 #define GIO_SLOT_STRIDE_2       0x500000
 #define GIO_SLOT_STRIDE_3       0x600000
@@ -88,6 +89,46 @@ static const uint16_t blk_last[BLK_COUNT] = { 38, 80, 39, 5 };
 /* No field event is modelled: these bits never read set. */
 #define CONTROL_TIMER_PENDING    0x51
 
+/* "VGI1 channel registers": byte offsets within a channel's 0x1000 block. */
+#define CH_SETUP        0x000
+#define CH_INT_ENABLE   0x010
+#define CH_HORIZONTAL   0x020
+#define CH_VERTICAL     0x030
+#define CH_STRIDE       0x040
+#define CH_REG_100      0x100
+#define CH_TRIGGER      0x200
+#define CH_START_OFFSET 0x210
+#define CH_PAGE_LIST    0x220
+#define CH_STATUS       0x300
+#define CH_REGS         (0x400 / 8)
+#define CH_R(ch, off)   ((ch)->reg[(off) / 8])
+#define CH_ST_FIELD     BIT(0)
+#define CH_ST_CONSUMED  BIT(1)
+#define CH_ST_DONE      BIT(3)
+#define CH_ST_TRIGGER   BIT(4)
+#define CH_ST_START     BIT(5)
+#define CH_ST_ERROR     BIT(8)
+#define CH_ST_EVENTS    0xffff
+#define CH_ST_LINE_SHIFT 16
+#define CH_ST_COUNT_SHIFT 33
+#define CH_ST_COUNT_MASK  0x7fff
+#define GAL_PAGE        16384
+#define GAL_LIST_ENTRIES 2048
+#define GAL_GIO_MASK    0xffffffffffULL
+/* Approximation: the setup bits that stay set from set-up to abort. */
+#define CH_SETUP_ACTIVE 0x0c
+
+typedef struct GalReq {
+    uint64_t start_offset, page_list;
+} GalReq;
+
+typedef struct GalChan {
+    uint64_t reg[CH_REGS];
+    GalReq next, cur;
+    bool queued, active;
+    bool ending;
+} GalChan;
+
 struct GalClass {
     SGIXioBoardClass parent_class;
 
@@ -100,12 +141,19 @@ struct GalState {
 
     MemoryRegion *fabric;
     uint32_t field_period_ns;
+    Object *out_sink;
 
     SGIBridgeState *bridge;
     SGIMgrasState *graphics;
     MemoryRegion gio;
     QEMUTimer *field_timer;
 
+    GalChan ch[2];
+    QEMUTimer *dma_timer;
+    QEMUTimer *end_timer;
+    uint32_t field_count, event_count;
+    bool dma_irq;
+    AddressSpace fabric_as;
     uint8_t direct[BLK_COUNT][8];
     uint8_t ind[BLK_COUNT][256];
     uint8_t tmi[TMI_LAST + 1];
@@ -146,12 +194,19 @@ static bool gal_ind_valid(unsigned blk, unsigned idx)
             idx <= CONTROL_CROSSPOINT_LAST);
 }
 
+/* Fields sit on a fixed grid of virtual time; a late callback keeps it. */
+static int64_t gal_next_field(GalState *s)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+
+    return (now / s->field_period_ns + 1) * s->field_period_ns;
+}
+
 static void gal_field_update(GalState *s)
 {
     if (s->ind[BLK_CC1][CC1_FIELD_CONTROL] & CC1_FIELD_ENABLES) {
         if (!timer_pending(s->field_timer)) {
-            timer_mod(s->field_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                                      s->field_period_ns);
+            timer_mod(s->field_timer, gal_next_field(s));
         }
     } else {
         timer_del(s->field_timer);
@@ -164,8 +219,7 @@ static void gal_field_tick(void *opaque)
     GalState *s = opaque;
 
     qemu_irq_pulse(qdev_get_gpio_in(DEVICE(s->bridge), GIO_LINE_CC1));
-    timer_mod(s->field_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
-                              s->field_period_ns);
+    timer_mod(s->field_timer, gal_next_field(s));
 }
 
 static uint8_t gal_ind_read(GalState *s, unsigned blk, unsigned idx)
@@ -319,8 +373,262 @@ static const SGIMgrasOptionWindowOps gal_option_window_ops = {
 
 /* ---- The GIO window ---- */
 
-static uint64_t gal_gio_read_reg(hwaddr addr, unsigned size)
+/* Bytes the Bridge's GIO translation reaches, one page at a time. */
+static bool gal_dma_read(GalState *s, uint64_t gio, void *buf, size_t len)
 {
+    IOMMUMemoryRegion *iommu = &s->bridge->dma[0].iommu;
+    IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu);
+    uint8_t *dst = buf;
+
+    while (len) {
+        IOMMUTLBEntry e = imrc->translate(iommu, gio, IOMMU_RO, 0);
+        size_t n = MIN(len, e.addr_mask + 1 - (gio & e.addr_mask));
+
+        if (e.perm == IOMMU_NONE ||
+            address_space_read(&s->fabric_as,
+                               e.translated_addr | (gio & e.addr_mask),
+                               MEMTXATTRS_UNSPECIFIED, dst, n) != MEMTX_OK) {
+            return false;
+        }
+        gio += n;
+        dst += n;
+        len -= n;
+    }
+    return true;
+}
+
+/*
+ * Pixels are B G R, three bytes, lines back to back; stride counts four.
+ * Studio-range BT.601 out; other formats are not read.
+ */
+static void gal_put_frame(GalState *s, const uint8_t *buf, size_t stride,
+                          unsigned lines)
+{
+    SGIVideoFormat fmt = {
+        .width = stride / 4, .height = lines, .rate_num = 30000,
+        .rate_den = 1001, .fields = SGI_VIDEO_BFF, .depth = 8,
+    };
+    SGIVideoFrame *f;
+
+    if (!s->out_sink || !sgi_video_format_valid(&fmt)) {
+        return;
+    }
+    f = sgi_video_frame_new(&fmt);
+    for (unsigned y = 0; y < lines; y++) {
+        const uint8_t *row = buf + y * fmt.width * 3;
+
+        for (unsigned x = 0; x < fmt.width; x++) {
+            int r = row[x * 3 + 2], g = row[x * 3 + 1], b = row[x * 3];
+
+            f->y[y * fmt.width + x] =
+                16 + ((66 * r + 129 * g + 25 * b + 128) >> 8);
+            if (!(x & 1)) {
+                unsigned c = y * fmt.width / 2 + x / 2;
+
+                f->cb[c] = 128 + ((-38 * r - 74 * g + 112 * b + 128) >> 8);
+                f->cr[c] = 128 + ((112 * r - 94 * g - 18 * b + 128) >> 8);
+            }
+        }
+    }
+    sgi_video_sink_put_frame(s->out_sink, f);
+    sgi_video_frame_free(f);
+}
+
+/* One request: the page list's entries name 16 KiB GIO pages by number. */
+static bool gal_request_run(GalState *s, unsigned c, const GalReq *rq)
+{
+    GalChan *ch = &s->ch[c];
+    uint64_t vparam = CH_R(ch, CH_VERTICAL);
+    uint32_t lines = (vparam >> 48 & 0xffff) + (vparam >> 16 & 0xffff);
+    uint64_t stride = CH_R(ch, CH_STRIDE);
+    g_autofree uint8_t *buf = NULL;
+    uint8_t *dst;
+    uint64_t off = rq->start_offset;
+    size_t bytes, pages;
+
+    if (off >= GAL_PAGE || stride > 4 * SGI_VIDEO_MAX_WIDTH ||
+        lines > SGI_VIDEO_MAX_HEIGHT) {
+        return false;
+    }
+    bytes = lines * (stride / 4) * 3;
+    pages = (off + bytes + GAL_PAGE - 1) / GAL_PAGE;
+    if (pages > GAL_LIST_ENTRIES) {
+        return false;
+    }
+    buf = dst = g_malloc0(bytes);
+    for (size_t i = 0; i < pages; i++) {
+        uint8_t raw[8];
+        uint64_t pfn, gio;
+        size_t n = MIN(bytes - (dst - buf), GAL_PAGE - off);
+
+        if (!gal_dma_read(s, (rq->page_list & GAL_GIO_MASK) + i * 8, raw, 8)) {
+            return false;
+        }
+        pfn = ldq_be_p(raw) & 0xffffffff;
+        gio = (pfn << 14) + off;
+        trace_sgi_galileo_desc(c, i, pfn);
+        if (!gal_dma_read(s, gio, dst, n)) {
+            return false;
+        }
+        dst += n;
+        off = 0;
+    }
+    gal_put_frame(s, buf, stride, lines);
+    return true;
+}
+
+static GalChan *gal_chan(GalState *s, hwaddr addr, unsigned size)
+{
+    unsigned c = addr >> 12;
+
+    if (size != 8 || c < 1 || c > 2 || (addr & 0xfff) >= 0x400 || (addr & 7)) {
+        return NULL;
+    }
+    return &s->ch[c - 1];
+}
+
+static void gal_irq_update(GalState *s)
+{
+    bool level = false;
+
+    for (unsigned c = 0; c < 2; c++) {
+        level |= CH_R(&s->ch[c], CH_STATUS) & CH_R(&s->ch[c], CH_INT_ENABLE);
+    }
+    if (level != s->dma_irq) {
+        s->dma_irq = level;
+        qemu_set_irq(qdev_get_gpio_in(DEVICE(s->bridge), GIO_LINE_DMA), level);
+    }
+}
+
+static bool gal_chan_running(const GalChan *ch)
+{
+    return (CH_R(ch, CH_SETUP) & CH_SETUP_ACTIVE) &&
+           (CH_R(ch, CH_INT_ENABLE) & CH_ST_FIELD);
+}
+
+static void gal_dma_update(GalState *s)
+{
+    if (gal_chan_running(&s->ch[0]) || gal_chan_running(&s->ch[1])) {
+        if (!timer_pending(s->dma_timer)) {
+            timer_mod(s->dma_timer, gal_next_field(s));
+        }
+    } else {
+        timer_del(s->dma_timer);
+    }
+}
+
+/* The status the guest reads: the events, and the field and line at them. */
+static uint64_t gal_status(GalState *s, GalChan *ch)
+{
+    uint64_t events = CH_R(ch, CH_STATUS);
+    uint64_t lines = CH_R(ch, CH_VERTICAL) >> 16 & 0x7ff;
+
+    return events | ((events & CH_ST_DONE) ? lines << CH_ST_LINE_SHIFT : 0) |
+           ((uint64_t)(s->event_count & 1) << 32) |
+           ((uint64_t)(s->event_count & CH_ST_COUNT_MASK) <<
+            CH_ST_COUNT_SHIFT);
+}
+
+/* The end of DMA lands between verticals, never on one. True if any is due. */
+static bool gal_dma_end(GalState *s)
+{
+    bool due = false;
+
+    for (unsigned c = 0; c < 2; c++) {
+        GalChan *ch = &s->ch[c];
+
+        if (!ch->ending) {
+            continue;
+        }
+        due = true;
+        if (CH_R(ch, CH_STATUS) & (CH_R(ch, CH_INT_ENABLE) | CH_ST_FIELD)) {
+            continue;
+        }
+        if (!gal_request_run(s, c, &ch->cur)) {
+            CH_R(ch, CH_STATUS) |= CH_ST_ERROR;
+        }
+        CH_R(ch, CH_STATUS) |= CH_ST_DONE;
+        ch->active = ch->ending = false;
+        s->event_count = s->field_count;
+    }
+    gal_irq_update(s);
+    return due;
+}
+
+static void gal_dma_end_timer(void *opaque)
+{
+    GalState *s = opaque;
+
+    gal_dma_end(s);
+    if (s->ch[0].ending || s->ch[1].ending) {
+        timer_mod(s->end_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                s->field_period_ns / 8);
+    }
+}
+
+/* A request is a start vertical, a plain one, then its end: two fields. */
+static void gal_dma_tick(void *opaque)
+{
+    GalState *s = opaque;
+
+    timer_del(s->end_timer);
+    if (gal_dma_end(s) || (CH_R(&s->ch[0], CH_STATUS) & CH_ST_DONE) ||
+        (CH_R(&s->ch[1], CH_STATUS) & CH_ST_DONE)) {
+        timer_mod(s->dma_timer, gal_next_field(s));
+        return;
+    }
+    if (!gal_chan_running(&s->ch[0]) && !gal_chan_running(&s->ch[1])) {
+        return;
+    }
+    s->field_count++;
+    s->event_count = s->field_count;
+    for (unsigned c = 0; c < 2; c++) {
+        GalChan *ch = &s->ch[c];
+
+        if (!gal_chan_running(ch)) {
+            continue;
+        }
+        CH_R(ch, CH_STATUS) |= CH_ST_FIELD;
+        if (ch->active) {
+            ch->ending = true;
+            timer_mod(s->end_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                    s->field_period_ns / 2);
+        } else if (ch->queued) {
+            ch->cur = ch->next;
+            ch->queued = false;
+            ch->active = true;
+            CH_R(ch, CH_STATUS) |= CH_ST_START | CH_ST_CONSUMED;
+            if (CH_R(ch, CH_TRIGGER) == 1) {
+                CH_R(ch, CH_STATUS) |= CH_ST_TRIGGER;
+            }
+        }
+    }
+    gal_irq_update(s);
+    timer_mod(s->dma_timer, gal_next_field(s));
+}
+
+static uint64_t gal_gio_read_reg(GalState *s, hwaddr addr, unsigned size)
+{
+    GalChan *ch = gal_chan(s, addr, size);
+
+    if (ch) {
+        switch (addr & 0xfff) {
+        case CH_SETUP:
+        case CH_INT_ENABLE:
+        case CH_HORIZONTAL:
+        case CH_VERTICAL:
+        case CH_STRIDE:
+        case CH_REG_100:
+        case CH_TRIGGER:
+        case CH_START_OFFSET:
+        case CH_PAGE_LIST:
+        case CH_STATUS:
+            return (addr & 0xfff) == CH_STATUS ? gal_status(s, ch) :
+                   CH_R(ch, addr & 0xfff);
+        }
+        gal_unimp("GIO channel register", addr, false);
+        return 0;
+    }
     /* The 64-bit identification register; its low word is the slot probe. */
     if ((addr == GIO_ID_OFFSET && size == 4) || (!addr && size == 8)) {
         return GAL_PRODUCT_ID;
@@ -343,7 +651,7 @@ static uint64_t gal_gio_read_reg(hwaddr addr, unsigned size)
 
 static uint64_t gal_gio_read(void *opaque, hwaddr addr, unsigned size)
 {
-    uint64_t value = gal_gio_read_reg(addr, size);
+    uint64_t value = gal_gio_read_reg(opaque, addr, size);
 
     trace_sgi_galileo_gio(addr, value, size, false);
     return value;
@@ -352,9 +660,51 @@ static uint64_t gal_gio_read(void *opaque, hwaddr addr, unsigned size)
 static void gal_gio_write(void *opaque, hwaddr addr, uint64_t value,
                           unsigned size)
 {
+    GalState *s = opaque;
+    GalChan *ch = gal_chan(s, addr, size);
+
     trace_sgi_galileo_gio(addr, value, size, true);
-    /* The driver's presence path stores the system mode and channel setup. */
-    if (size == 8 && (addr == GIO_MODE || addr == GIO_CHANNEL1_SETUP)) {
+    if (ch) {
+        unsigned off = addr & 0xfff;
+
+        switch (off) {
+        case CH_SETUP:
+        case CH_INT_ENABLE:
+        case CH_HORIZONTAL:
+        case CH_VERTICAL:
+        case CH_STRIDE:
+        case CH_REG_100:
+        case CH_START_OFFSET:
+            CH_R(ch, off) = value;
+            break;
+        case CH_TRIGGER:
+            CH_R(ch, off) = value;
+            if (value == 2) {
+                ch->queued = ch->active = ch->ending = false;
+            }
+            break;
+        case CH_PAGE_LIST:
+            CH_R(ch, off) = value;
+            if (ch->queued) {
+                qemu_log_mask(LOG_GUEST_ERROR, "sgi-galileo: request queued "
+                              "over an unstarted one\n");
+            }
+            ch->next = (GalReq){ .start_offset = CH_R(ch, CH_START_OFFSET),
+                                 .page_list = value };
+            ch->queued = true;
+            break;
+        case CH_STATUS:
+            CH_R(ch, off) &= ~(value & CH_ST_EVENTS);
+            break;
+        default:
+            gal_unimp("GIO channel register", addr, true);
+        }
+        gal_irq_update(s);
+        gal_dma_update(s);
+        return;
+    }
+    /* The driver's presence path stores the system mode. */
+    if (size == 8 && addr == GIO_MODE) {
         return;
     }
     gal_unimp("GIO window", addr, true);
@@ -425,6 +775,9 @@ static bool gal_build_widget(SGIXioBoardState *board, Error **errp)
         return false;
     }
     s->field_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, gal_field_tick, s);
+    s->dma_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, gal_dma_tick, s);
+    s->end_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL, gal_dma_end_timer, s);
+    address_space_init(&s->fabric_as, s->fabric, "sgi-galileo-fabric");
 
     board->cpu_face = sysbus_mmio_get_region(SYS_BUS_DEVICE(bridge), 0);
     board->packet_face = sgi_bridge_packet_face(s->bridge);
@@ -444,6 +797,13 @@ static void gal_unrealize(DeviceState *dev)
     }
     timer_free(s->field_timer);
     s->field_timer = NULL;
+    if (s->dma_timer) {
+        address_space_destroy(&s->fabric_as);
+    }
+    timer_free(s->dma_timer);
+    s->dma_timer = NULL;
+    timer_free(s->end_timer);
+    s->end_timer = NULL;
 }
 
 /* A reset returns the registers to the model's zero state and stops fields. */
@@ -462,16 +822,67 @@ static void gal_reset_hold(Object *obj, ResetType type)
     s->tmi_start = false;
     s->tmi[TMI_REVISION_REG] = GAL_TMI_REVISION;
     s->direct[BLK_CSC][CSC_DIRECT_REVISION] = GAL_CSC_REVISION;
+    memset(s->ch, 0, sizeof(s->ch));
     if (s->field_timer) {
         timer_del(s->field_timer);
+    }
+    if (s->end_timer) {
+        timer_del(s->end_timer);
+    }
+    s->field_count = s->event_count = 0;
+    if (s->dma_timer) {
+        timer_del(s->dma_timer);
+    }
+    s->dma_irq = false;
+    if (s->bridge) {
+        qemu_set_irq(qdev_get_gpio_in(DEVICE(s->bridge), GIO_LINE_DMA), 0);
     }
 }
 
 static int gal_post_load(void *opaque, int version_id)
 {
-    gal_field_update(opaque);
+    GalState *s = opaque;
+
+    gal_field_update(s);
+    /* The Bridge restores the pin; only the model's view of it is set. */
+    s->dma_irq = false;
+    for (unsigned c = 0; c < 2; c++) {
+        s->dma_irq |= !!(CH_R(&s->ch[c], CH_STATUS) &
+                         CH_R(&s->ch[c], CH_INT_ENABLE));
+    }
+    gal_dma_update(s);
+    if (s->ch[0].ending || s->ch[1].ending) {
+        timer_mod(s->end_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+                                s->field_period_ns / 2);
+    }
     return 0;
 }
+
+static const VMStateDescription vmstate_gal_req = {
+    .name = TYPE_SGI_GALILEO ".request",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64(start_offset, GalReq),
+        VMSTATE_UINT64(page_list, GalReq),
+        VMSTATE_END_OF_LIST()
+    },
+};
+
+static const VMStateDescription vmstate_gal_chan = {
+    .name = TYPE_SGI_GALILEO ".channel",
+    .version_id = 1,
+    .minimum_version_id = 1,
+    .fields = (const VMStateField[]) {
+        VMSTATE_UINT64_ARRAY(reg, GalChan, CH_REGS),
+        VMSTATE_STRUCT(next, GalChan, 1, vmstate_gal_req, GalReq),
+        VMSTATE_STRUCT(cur, GalChan, 1, vmstate_gal_req, GalReq),
+        VMSTATE_BOOL(queued, GalChan),
+        VMSTATE_BOOL(active, GalChan),
+        VMSTATE_BOOL(ending, GalChan),
+        VMSTATE_END_OF_LIST()
+    },
+};
 
 static const VMStateDescription vmstate_gal = {
     .name = TYPE_SGI_GALILEO,
@@ -484,6 +895,9 @@ static const VMStateDescription vmstate_gal = {
         VMSTATE_UINT8_ARRAY(tmi, GalState, TMI_LAST + 1),
         VMSTATE_UINT8_ARRAY(blend2, GalState, BLEND_LAST2 + 1),
         VMSTATE_BOOL(tmi_start, GalState),
+        VMSTATE_UINT32(field_count, GalState),
+        VMSTATE_UINT32(event_count, GalState),
+        VMSTATE_STRUCT_ARRAY(ch, GalState, 2, 0, vmstate_gal_chan, GalChan),
         VMSTATE_END_OF_LIST()
     },
 };
@@ -493,6 +907,8 @@ static const Property gal_properties[] = {
                      MemoryRegion *),
     DEFINE_PROP_LINK("graphics", GalState, graphics, TYPE_SGI_MGRAS,
                      SGIMgrasState *),
+    DEFINE_PROP_LINK("out-sink", GalState, out_sink, TYPE_SGI_VIDEO_SINK,
+                     Object *),
     /* The CC1 field interrupt period: an NTSC field by default. */
     DEFINE_PROP_UINT32("field-period-ns", GalState, field_period_ns,
                        16683333),

@@ -8,7 +8,9 @@ Video outputs as displays and files
 
 A board's video output is its own QEMU console, and can also be recorded to
 a file. Today the DMediaPro DM2 (:ref:`sgi-xt-digvid`) is the only board
-that has one; its input side is not wired yet.
+with the console; its input side is not wired yet. The Octane Digital Video
+option (:ref:`sgi-galileo`) takes the file sink and has no
+console.
 
 The console
 ===========

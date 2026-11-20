@@ -16,6 +16,7 @@ sgi_mgras_control_mmio(uint64_t sequence, uint64_t offset, uint64_t value, unsig
 
 # sgi-galileo.c
 sgi_galileo_option(uint64_t offset, uint64_t value, bool write) "offset 0x%" PRIx64 " value 0x%" PRIx64 " write=%d"
+sgi_galileo_desc(unsigned chan, size_t index, uint64_t pfn) "chan %u index %zu pfn 0x%" PRIx64
 sgi_galileo_gio(uint64_t offset, uint64_t value, unsigned size, bool write) "offset 0x%" PRIx64 " value 0x%" PRIx64 " size %u write=%d"
 
 # sgi-kona.c
