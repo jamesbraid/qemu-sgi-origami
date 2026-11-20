@@ -37,6 +37,7 @@ class IA64CatalogueTests(unittest.TestCase):
         for offering in offerings:
             self.assertEqual(offering["target"], "ia64")
             self.assertEqual(offering["machine-options"], "altix350")
+            self.assertEqual(offering["prom-dialogue"], "efi-shell")
             self.assertEqual(offering["default-cpu-model"], "madison-1600-3m")
             self.assertEqual(offering["memory-per-node-mib"],
                              {"default": 2048, "accepted": [2048]})

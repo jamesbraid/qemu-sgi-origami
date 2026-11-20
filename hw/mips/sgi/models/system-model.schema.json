@@ -936,7 +936,7 @@
               "items": { "enum": ["ioc3-serial-a", "ioc3-serial-b"] },
               "description": "IOC3 serial ports an IP35 launch places after the L1 line, in the machine's serial-line order. Omitted means only the console port when that is IOC3 serial A."
             },
-            "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, or the IP35 L1 system controller's prompt in front of it." },
+            "prom_dialogue": { "enum": ["ip27-menu", "ip35-l1-prompt", "efi-shell", "none"], "description": "Which stock-firmware dialogue a launcher drives: the IP27 command monitor, the IP35 L1 system controller's prompt in front of it, or the EFI shell and boot loader of an IA-64 PROM." },
             "netboot_adapter": { "type": "string", "minLength": 1, "description": "Adapter kind the stock PROM's netboot command has been confirmed to drive." },
             "default_topology": { "type": "string", "minLength": 1, "description": "Stable harness label for this product's one wiring shape today; not a selectable property." },
             "timekeeper_nvram": { "type": "boolean", "description": "Whether the selected board exposes a Timekeeper NVRAM store. Omitted means the documented base I/O board default applies." },

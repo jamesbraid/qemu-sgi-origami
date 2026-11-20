@@ -43,7 +43,7 @@ layer:
       harness:
         console: l1-uart
         launch_recipe: ia64
-        prom_dialogue: none
+        prom_dialogue: efi-shell
         default_cpu_model: madison-1600-3m
         netboot_adapter: none
         default_topology: altix350

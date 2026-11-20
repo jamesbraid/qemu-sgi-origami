@@ -762,9 +762,10 @@ PROM dialogue
 
 ``ip27-menu`` is the IP27 PROM's maintenance menu and command monitor.
 ``ip35-l1-prompt`` is the L1 prompt in front of the IP35 PROM, which a
-launcher passes through before the PROM's own menu. ``none`` means no
-launcher-driven dialogue is defined. These name what a launcher scripts,
-not a hardware behaviour.
+launcher passes through before the PROM's own menu. ``efi-shell`` is the
+EFI shell (prompt ``Shell> ``) an IA-64 PROM drops to, followed by the
+disk's boot loader. ``none`` means no launcher-driven dialogue is
+defined. These name what a launcher scripts, not a hardware behaviour.
 
 .. _sgi-sn-launch-disk-bus:
 

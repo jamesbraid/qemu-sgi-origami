@@ -83,7 +83,7 @@
         "part": "MADISON"
       },
       "product": "altix350",
-      "prom-dialogue": "none",
+      "prom-dialogue": "efi-shell",
       "resources": [],
       "scsi-adapters": [
         {
@@ -216,7 +216,7 @@
         "part": "MADISON"
       },
       "product": "altix350",
-      "prom-dialogue": "none",
+      "prom-dialogue": "efi-shell",
       "resources": [],
       "scsi-adapters": [
         {

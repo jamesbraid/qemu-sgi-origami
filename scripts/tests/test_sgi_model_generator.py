@@ -24,7 +24,7 @@ L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p",
                   "origin3800-128p", "origin3800-256p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "4a1338b71ae950ad50bdb58e2c51a2676f9fd537e924683b235b4049b5fe4a56"
+    "aa8cc7bacda0a1273adcdf952faa7c2b3becebd5e969e43f1846de7b4b6ec0fa"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
