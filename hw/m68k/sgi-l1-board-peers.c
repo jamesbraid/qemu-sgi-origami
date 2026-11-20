@@ -40,6 +40,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(Display, SGI_L1_DISPLAY)
 #define TYPE_SGI_L1_CBRICK_SIGNALS "sgi-l1-cbrick-signals"
 OBJECT_DECLARE_SIMPLE_TYPE(CBrickSignals, SGI_L1_CBRICK_SIGNALS)
 
+#define TYPE_SGI_L1_SCAN_TAP "sgi-l1-scan-tap"
+OBJECT_DECLARE_SIMPLE_TYPE(ScanTap, SGI_L1_SCAN_TAP)
+
 #define SELECT_ADDR7        0x27    /* wire address 0x4e */
 #define SELECT_OFF          0xff    /* every segment off */
 
@@ -509,6 +512,182 @@ static void signals_class_init(ObjectClass *oc, const void *data)
     RESETTABLE_CLASS(oc)->phases.hold = signals_reset_hold;
 }
 
+/* The scan master's pins on the parallel port, and the only input. */
+#define PP_PSI      0x08
+#define PP_TRST     0x10    /* active low */
+#define PP_TMS      0x20
+#define PP_TCK      0x40
+#define PP_TDI      0x80
+#define PP_TDO      0x01
+#define TAP_IR_BITS 12
+
+enum {
+    TAP_TLR, TAP_RTI, TAP_SELDR, TAP_CAPDR, TAP_SHDR, TAP_EX1DR, TAP_PAUDR,
+    TAP_EX2DR, TAP_UPDR, TAP_SELIR, TAP_CAPIR, TAP_SHIR, TAP_EX1IR,
+    TAP_PAUIR, TAP_EX2IR, TAP_UPIR,
+};
+
+static const char *const tap_state_names[] = {
+    "Test-Logic-Reset", "Run-Test/Idle", "Select-DR", "Capture-DR",
+    "Shift-DR", "Exit1-DR", "Pause-DR", "Exit2-DR", "Update-DR", "Select-IR",
+    "Capture-IR", "Shift-IR", "Exit1-IR", "Pause-IR", "Exit2-IR", "Update-IR",
+};
+
+/* The IEEE 1149.1 state machine: the next state for TMS low and high. */
+static const uint8_t tap_next[16][2] = {
+    [TAP_TLR] = { TAP_RTI, TAP_TLR },
+    [TAP_RTI] = { TAP_RTI, TAP_SELDR },
+    [TAP_SELDR] = { TAP_CAPDR, TAP_SELIR },
+    [TAP_CAPDR] = { TAP_SHDR, TAP_EX1DR },
+    [TAP_SHDR] = { TAP_SHDR, TAP_EX1DR },
+    [TAP_EX1DR] = { TAP_PAUDR, TAP_UPDR },
+    [TAP_PAUDR] = { TAP_PAUDR, TAP_EX2DR },
+    [TAP_EX2DR] = { TAP_SHDR, TAP_UPDR },
+    [TAP_UPDR] = { TAP_RTI, TAP_SELDR },
+    [TAP_SELIR] = { TAP_CAPIR, TAP_TLR },
+    [TAP_CAPIR] = { TAP_SHIR, TAP_EX1IR },
+    [TAP_SHIR] = { TAP_SHIR, TAP_EX1IR },
+    [TAP_EX1IR] = { TAP_PAUIR, TAP_UPIR },
+    [TAP_PAUIR] = { TAP_PAUIR, TAP_EX2IR },
+    [TAP_EX2IR] = { TAP_SHIR, TAP_UPIR },
+    [TAP_UPIR] = { TAP_RTI, TAP_SELDR },
+};
+
+/*
+ * A 12-bit instruction register and a 1-bit bypass every instruction selects.
+ * A sysbus device for the machine reset; not migrated, as the board refuses.
+ */
+struct ScanTap {
+    SysBusDevice parent_obj;
+
+    qemu_irq pins_out;      /* PPDAT's input byte: only TDO is driven */
+    uint8_t pins;           /* the last output byte seen */
+    uint8_t state;
+    uint16_t ir_shift;
+    uint16_t ir;
+    bool bypass;
+    bool tdo;
+    /* The data of the scan in progress, in time order. */
+    uint64_t din, dout;
+    unsigned nbits;
+};
+
+static void tap_set_tdo(ScanTap *t, bool tdo)
+{
+    t->tdo = tdo;
+    qemu_set_irq(t->pins_out, 0xfe | tdo);
+}
+
+static void tap_enter(ScanTap *t, unsigned state)
+{
+    if (state != t->state) {
+        trace_sgi_l1_tap_state(tap_state_names[t->state],
+                                 tap_state_names[state]);
+    }
+    t->state = state;
+    switch (state) {
+    case TAP_TLR:
+        t->ir = (1u << TAP_IR_BITS) - 1;
+        break;
+    case TAP_CAPIR:
+        t->ir_shift = 1;
+        break;
+    case TAP_CAPDR:
+        t->bypass = false;
+        break;
+    case TAP_UPIR:
+        t->ir = t->ir_shift;
+        /* fall through */
+    case TAP_UPDR:
+        trace_sgi_l1_tap_scan(state == TAP_UPIR, t->nbits, t->din, t->dout);
+        t->nbits = 0;
+        t->din = t->dout = 0;
+        break;
+    default:
+        break;
+    }
+}
+
+/* TDI and TMS are taken on the rising TCK edge. */
+static void tap_clock(ScanTap *t, bool tms, bool tdi)
+{
+    if (t->state == TAP_SHIR || t->state == TAP_SHDR) {
+        t->din = t->din << 1 | tdi;
+        t->dout = t->dout << 1 | t->tdo;
+        t->nbits++;
+        if (t->state == TAP_SHIR) {
+            t->ir_shift = (t->ir_shift >> 1) | tdi << (TAP_IR_BITS - 1);
+        } else {
+            t->bypass = tdi;
+        }
+    }
+    tap_enter(t, tap_next[t->state][tms]);
+}
+
+/*
+ * With TCK low TDO shows the low bit the next rising edge shifts out, so a
+ * read before that edge sees it.
+ */
+static void tap_settle(ScanTap *t)
+{
+    bool tdo = false;
+
+    if (t->state == TAP_SHIR) {
+        tdo = t->ir_shift & 1;
+    } else if (t->state == TAP_SHDR) {
+        tdo = t->bypass;
+    }
+    tap_set_tdo(t, tdo);
+}
+
+static void tap_pins_in(void *opaque, int n, int level)
+{
+    ScanTap *t = opaque;
+    uint8_t old = t->pins;
+
+    t->pins = level;
+    if ((old ^ level) & ~PP_TCK) {
+        trace_sgi_l1_tap_pins(level);
+    }
+    if (!(level & PP_TRST)) {
+        tap_enter(t, TAP_TLR);
+    } else if (!(old & PP_TCK) && (level & PP_TCK)) {
+        tap_clock(t, level & PP_TMS, level & PP_TDI);
+    }
+    if (old & PP_TCK && !(level & PP_TCK)) {
+        tap_settle(t);
+    }
+}
+
+static void tap_init(Object *obj)
+{
+    ScanTap *t = SGI_L1_SCAN_TAP(obj);
+    DeviceState *dev = DEVICE(obj);
+
+    qdev_init_gpio_in_named(dev, tap_pins_in, "pins", 1);
+    qdev_init_gpio_out_named(dev, &t->pins_out, "tdo", 1);
+}
+
+static void tap_reset_hold(Object *obj, ResetType type)
+{
+    ScanTap *t = SGI_L1_SCAN_TAP(obj);
+
+    t->pins = 0;
+    t->state = TAP_TLR;
+    t->ir = t->ir_shift = (1u << TAP_IR_BITS) - 1;
+    t->bypass = false;
+    t->nbits = 0;
+    t->din = t->dout = 0;
+    tap_set_tdo(t, false);
+}
+
+static void tap_class_init(ObjectClass *oc, const void *data)
+{
+    DEVICE_CLASS(oc)->desc = "SGI L1 board C-brick scan chain";
+    DEVICE_CLASS(oc)->user_creatable = false;
+    RESETTABLE_CLASS(oc)->phases.hold = tap_reset_hold;
+}
+
 /* Chip select 3: the probe's registers and the activity bit. */
 #define USB_WINDOW_SIZE     (64 * KiB)
 #define USB_REVISION_REG    0x18
@@ -660,6 +839,13 @@ static const TypeInfo peer_types[] = {
         .class_init    = signals_class_init,
     },
     {
+        .name          = TYPE_SGI_L1_SCAN_TAP,
+        .parent        = TYPE_SYS_BUS_DEVICE,
+        .instance_size = sizeof(ScanTap),
+        .instance_init = tap_init,
+        .class_init    = tap_class_init,
+    },
+    {
         .name          = TYPE_SGI_L1_USB_WINDOW,
         .parent        = TYPE_SYS_BUS_DEVICE,
         .instance_size = sizeof(USBWindow),
@@ -709,10 +895,12 @@ static const struct {
     { 0x5c, 4 }, { 0x5e, 4 },               /* processor module 0 A and B */
 };
 
-void sgi_l1_cbrick_peers_fit(I2CBus *bus, DeviceState *signals)
+void sgi_l1_cbrick_peers_fit(I2CBus *bus, DeviceState *signals,
+                             DeviceState *parallel_port)
 {
     I2CSlave *sel = i2c_slave_new(TYPE_SGI_L1_BUS_SELECT, SELECT_ADDR7);
     DeviceState *decode = NULL;
+    DeviceState *tap;
     I2CSlave *d;
     int i;
 
@@ -724,6 +912,14 @@ void sgi_l1_cbrick_peers_fit(I2CBus *bus, DeviceState *signals)
         }
         sysbus_realize_and_unref(SYS_BUS_DEVICE(decode), &error_abort);
     }
+
+    /* A pin has a path to link by only once its device is realized. */
+    tap = qdev_new(TYPE_SGI_L1_SCAN_TAP);
+    sysbus_realize_and_unref(SYS_BUS_DEVICE(tap), &error_abort);
+    qdev_connect_gpio_out_named(parallel_port, "pp-out", 0,
+                                qdev_get_gpio_in_named(tap, "pins", 0));
+    qdev_connect_gpio_out_named(tap, "tdo", 0,
+        qdev_get_gpio_in_named(parallel_port, "pp-in", 0));
 
     qdev_set_id(DEVICE(sel), g_strdup("l1-bus-select"), &error_abort);
     i2c_slave_realize_and_unref(sel, bus, &error_abort);

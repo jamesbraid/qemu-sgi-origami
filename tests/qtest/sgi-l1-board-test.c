@@ -2943,6 +2943,176 @@ static void test_parallel_port_regs(void)
     quit_all(qts, &f);
 }
 
+/* The scan master's pins in PPDAT; ctl is the PSI and TRST bits alone. */
+#define PP_TRST     0x10
+#define PP_PSI      0x08
+#define PP_TMS      0x20
+#define PP_TCK      0x40
+#define PP_TDI      0x80
+
+/* One clock as the firmware does it: set pins, read TDO, TCK up, TCK down. */
+static unsigned tap_clk(QTestState *qts, uint8_t ctl, int tms, int tdi)
+{
+    uint8_t pins = ctl | (tms ? PP_TMS : 0) | (tdi ? PP_TDI : 0);
+    unsigned tdo;
+
+    qtest_writeb(qts, PPDAT, pins);
+    tdo = qtest_readb(qts, PPDAT) & 1;
+    qtest_writeb(qts, PPDAT, pins | PP_TCK);
+    qtest_writeb(qts, PPDAT, pins);
+    return tdo;
+}
+
+static void tap_tms(QTestState *qts, uint8_t ctl, const char *tms)
+{
+    for (; *tms; tms++) {
+        tap_clk(qts, ctl, *tms == '1', 0);
+    }
+}
+
+/* Shift @bits of @val, most significant bit first, ending via Update. */
+static uint64_t tap_scan(QTestState *qts, uint8_t ctl, const char *entry,
+                         unsigned bits, uint64_t val)
+{
+    uint64_t out = 0;
+
+    tap_tms(qts, ctl, entry);
+    for (unsigned i = bits; i--;) {
+        out = out << 1 | tap_clk(qts, ctl, i == 0, val >> i & 1);
+    }
+    tap_tms(qts, ctl, "10");
+    return out;
+}
+
+#define ENTER_IR_FROM_TLR   "01100"
+#define ENTER_IR            "1100"
+#define ENTER_DR            "100"
+
+static void tap_start(QTestState *qts)
+{
+    /* The firmware's order: data, direction with bit 0 an input. */
+    qtest_writeb(qts, PPDAT, 0x31);
+    qtest_writeb(qts, PPDDR, 0xfe);
+}
+
+/* An IR scan returns 1 then eleven 0s in time order, most significant first. */
+static void tap_check_ir_capture(QTestState *qts, const char *entry,
+                                 unsigned value)
+{
+    uint64_t out = tap_scan(qts, PP_PSI | PP_TRST, entry, 12, value);
+
+    /* Time order puts the first bit in the top place of this word. */
+    g_assert_cmphex(out, ==, 1u << 11);
+}
+
+/* The firmware's whole scan, with every compare it makes. */
+static void test_scan_chain(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t first;
+    unsigned i;
+
+    tap_start(qts);
+    first = qtest_readb(qts, PPDAT);
+    g_assert_cmphex(first, ==, 0x30);
+
+    /* The reset pulse: six writes, the fourth entering reset. */
+    qtest_writeb(qts, PPDAT, first | 0x08);
+    qtest_writeb(qts, PPDAT, first | 0x18);
+    qtest_writeb(qts, PPDAT, 0x38);
+    qtest_writeb(qts, PPDAT, 0x28);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0x28);
+    qtest_writeb(qts, PPDAT, 0x38);
+    qtest_writeb(qts, PPDAT, 0x30);
+
+    for (i = 0; i < 32; i++) {
+        tap_clk(qts, PP_PSI | PP_TRST, 1, 0);
+    }
+    /* 12-bit IR of 4, 8-bit DR of 0: not checked. */
+    tap_scan(qts, PP_PSI | PP_TRST, ENTER_IR_FROM_TLR, 12, 0x200);
+    tap_scan(qts, PP_PSI | PP_TRST, ENTER_DR, 8, 0);
+    /* All ones selects BYPASS, whose 1 bit returns the stream delayed. */
+    tap_check_ir_capture(qts, ENTER_IR, 0xfff);
+    g_assert_cmphex(tap_scan(qts, PP_PSI | PP_TRST, ENTER_DR, 32, 0xa800ffea),
+                    ==, 0x54007ff5);
+    tap_check_ir_capture(qts, ENTER_IR, 0x100);
+    tap_scan(qts, PP_PSI | PP_TRST, ENTER_DR, 8, 0xa5);
+    /* Two resets, with TRST and PSI low, then TRST high. */
+    for (i = 0; i < 32; i++) {
+        tap_clk(qts, 0, 1, 0);
+    }
+    for (i = 0; i < 32; i++) {
+        tap_clk(qts, PP_TRST, 1, 0);
+    }
+    quit_all(qts, &f);
+}
+
+/* The instruction register is 12 bits: past them the stream comes back. */
+static void test_scan_ir_length(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint64_t out;
+
+    tap_start(qts);
+    tap_tms(qts, PP_PSI | PP_TRST, "11111");
+    out = tap_scan(qts, PP_PSI | PP_TRST, ENTER_IR_FROM_TLR, 24, 0xabc123);
+    /* The captured 1 then eleven 0s, then the first 12 data bits. */
+    g_assert_cmphex(out, ==, (1ull << 23) | 0xabc);
+    quit_all(qts, &f);
+}
+
+/* TRST low holds Test-Logic-Reset: no capture, however the TMS moves. */
+static void test_scan_trst(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+
+    tap_start(qts);
+    g_assert_cmphex(tap_scan(qts, PP_PSI, ENTER_IR_FROM_TLR, 12, 0xfff), ==, 0);
+    g_assert_cmphex(tap_scan(qts, PP_PSI, ENTER_IR, 12, 0xfff), ==, 0);
+    /* Released, the same walk captures. */
+    tap_tms(qts, PP_PSI | PP_TRST, "11111");
+    tap_check_ir_capture(qts, ENTER_IR_FROM_TLR, 0xfff);
+    quit_all(qts, &f);
+}
+
+/* TDO changes on the falling TCK edge, not the rising one. */
+static void test_scan_tdo_edge(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+    uint8_t ctl = PP_PSI | PP_TRST;
+
+    tap_start(qts);
+    tap_tms(qts, ctl, "11111");
+    tap_tms(qts, ctl, "0" ENTER_DR);
+    /* In Shift-DR the bypass holds 0; a 1 on TDI reaches TDO a fall later. */
+    qtest_writeb(qts, PPDAT, ctl | PP_TDI);
+    g_assert_cmpuint(qtest_readb(qts, PPDAT) & 1, ==, 0);
+    qtest_writeb(qts, PPDAT, ctl | PP_TDI | PP_TCK);
+    g_assert_cmpuint(qtest_readb(qts, PPDAT) & 1, ==, 0);
+    qtest_writeb(qts, PPDAT, ctl | PP_TDI);
+    g_assert_cmpuint(qtest_readb(qts, PPDAT) & 1, ==, 1);
+    quit_all(qts, &f);
+}
+
+/* Input bit 0 is TDO: a latch write to it changes nothing a read shows. */
+static void test_scan_pins(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, PEERS_CBRICK, "");
+
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0xfe);
+    tap_start(qts);
+    qtest_writeb(qts, PPDAT, 0xff);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0xfe);
+    qtest_writeb(qts, PPDAT, 0x5b);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0x5a);
+    quit_all(qts, &f);
+}
+
 /* A file that is not the window's size is refused, and so is a missing one. */
 static void test_settings_refused(void)
 {
@@ -3110,6 +3280,11 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/settings-loaded", test_settings_loaded);
     qtest_add_func("sgi-l1-board/settings-refused", test_settings_refused);
     qtest_add_func("sgi-l1-board/parallel-port-regs", test_parallel_port_regs);
+    qtest_add_func("sgi-l1-board/scan-chain", test_scan_chain);
+    qtest_add_func("sgi-l1-board/scan-ir-length", test_scan_ir_length);
+    qtest_add_func("sgi-l1-board/scan-trst", test_scan_trst);
+    qtest_add_func("sgi-l1-board/scan-tdo-edge", test_scan_tdo_edge);
+    qtest_add_func("sgi-l1-board/scan-pins", test_scan_pins);
     qtest_add_func("sgi-l1-board/system-serial", test_system_serial);
     qtest_add_func("sgi-l1-board/system-serial-refused",
                    test_system_serial_refused);

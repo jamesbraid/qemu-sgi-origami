@@ -370,6 +370,40 @@ general-purpose I/O (printed p. 10-2); the model ignores ``PAR`` here and
 treats the pins as always general-purpose. Register writes and the input byte
 are traced (``mcf5206e_pp_write``, ``mcf5206e_pp_pins``).
 
+With ``brick-type=cbrick`` and ``board-peers=on`` the lines reach a scan chain
+(``sgi-l1-scan-tap``), the master the firmware drives at each node release:
+before and after a scan it pulses a reset on the port and, between them,
+checks the chain. The pin roles are a *software expectation* from the
+firmware's pin print and the L1 console's ``scan`` commands: ``PPDAT`` bit 3
+is ``PSI``, bit 4 ``TRST`` (active low), bit 5 ``TMS``, bit 6 ``TCK``, bit 7
+``TDI`` and bit 0, the only input, ``TDO``. That ``PSI`` selects a scan
+interface chip and that bit 4 is the chain's reset are *inferred*; the board
+nets are *unknown*.
+
+The chain is one IEEE 1149.1 TAP with the standard sixteen states. It takes
+``TDI`` and ``TMS`` on the rising ``TCK`` edge and settles ``TDO`` on the
+falling edge, so a read before the next rising edge sees the bit that edge
+shifts out, which is what the firmware's order within a clock needs
+(*software expectation*). ``TRST`` low holds Test-Logic-Reset; what ``TDO``
+shows then is not specified, and the model leaves it at its last value until
+the next falling ``TCK`` edge (*unknown*). The instruction
+register is 12 bits and captures 1 followed by eleven 0s, the first bit
+out being the 1. Every instruction selects a 1-bit bypass register that
+captures 0, so a data scan returns its input one bit later. Only all ones is
+a known instruction; the firmware does not use any other, and any other
+value gets the same response rather than hanging (*software expectation* for
+the checks the firmware makes, *inferred* that a 1-bit bypass and a 12-bit
+register are what answers). The node-side chain, its identification codes and
+the meaning of any other instruction are *unknown*, and no ``IDCODE`` is
+read for this brick type. The state changes and each scan's shifted data are
+traced (``sgi_l1_tap_state``, ``sgi_l1_tap_scan``).
+
+Without ``board-peers`` no chain is fitted, a scan then reads the input pin's
+level and fails at its first instruction-register check, as it should; there
+is no setting to skip it. Only the C-brick has a chain here, because
+the firmware's scan is read for that brick type only (package 0); other
+brick types are unchanged.
+
 .. _sgi-l1-board-interrupts:
 
 Interrupt controller
@@ -1215,6 +1249,16 @@ clearing on reset, and any other offset logging and reading zero. The processor
 module 0 monitors are checked on segment 4 for their independence from the node
 monitor at the same wire address, and the display for its write forms, its read
 and its answering under any select byte.
+
+The parallel port registers are checked from the host for their reset values,
+the firmware's data-then-direction order and what an output and an input read.
+With ``board-peers`` the scan chain is driven pin by pin from the host as the
+firmware does: its reset pulse, the 32-clock reset, the 12-bit and all-ones
+instruction scans, the 32-bit data scan that must come back one bit late and
+the two closing resets, with each compare the firmware makes. Further tests
+check that the instruction register is 12 bits long, that ``TRST`` low holds
+the chain in reset and that a write to ``TDO``'s latch bit changes nothing a
+read shows.
 
 The power-bay link is checked by test-owned code that writes three bytes to
 on-chip UART 1 and reads one the peer sent, through a socket chardev as the

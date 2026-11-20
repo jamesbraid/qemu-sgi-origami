@@ -423,7 +423,7 @@ static void l1_board_init(MachineState *machine)
             error_setg(&error_fatal, "board-peers needs brick-type=cbrick");
         }
         sgi_l1_cbrick_peers_fit(mcf5206e_sim_mbus(b->sim),
-                                l1_board_signal_link(lm));
+                                l1_board_signal_link(lm), sim_dev);
     } else if (lm->signals) {
         error_setg(&error_fatal, "signals needs board-peers");
     }

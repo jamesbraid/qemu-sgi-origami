@@ -19,3 +19,6 @@ sgi_l1_display_write(uint8_t value) "write 0x%02x"
 sgi_l1_signal_decode(const char *line, bool level, uint8_t fan, uint8_t bedrock1, uint8_t bedrock2) "line %s level %d (fan 0x%02x bedrock1 0x%02x bedrock2 0x%02x)"
 sgi_l1_usb_read(uint64_t offset, uint8_t value) "offset 0x%" PRIx64 " read 0x%02x"
 sgi_l1_usb_write(uint64_t offset, uint8_t value) "offset 0x%" PRIx64 " write 0x%02x"
+sgi_l1_tap_state(const char *from, const char *to) "scan chain state %s -> %s"
+sgi_l1_tap_pins(uint8_t pins) "scan pins 0x%02x"
+sgi_l1_tap_scan(bool ir, unsigned bits, uint64_t in, uint64_t out) "ir %d: %u bits: in 0x%" PRIx64 " out 0x%" PRIx64
