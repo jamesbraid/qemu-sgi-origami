@@ -76,6 +76,10 @@ struct MCF5206ESIMState {
     uint8_t icr[16];
     uint16_t imr;
     uint16_t par;
+    /* The parallel port: direction, latched data, and the input pins. */
+    uint8_t ppddr;
+    uint8_t ppdat;
+    uint8_t pp_pins;
     uint16_t dmcr;
     uint8_t rsr;
     uint8_t sypcr;
@@ -93,6 +97,8 @@ struct MCF5206ESIMState {
     /* Interrupt sources currently asserted, by IPR bit. */
     uint16_t src_state;
     uint8_t ext_in;
+    /* The whole output byte (latch where the direction says output). */
+    qemu_irq pp_out;
 
     MCF5206ETimer timer[2];
     MCF5206EMBusState *mbus;

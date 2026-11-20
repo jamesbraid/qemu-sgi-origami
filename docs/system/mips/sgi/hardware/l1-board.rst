@@ -343,12 +343,32 @@ core can still let the clock move on toward the next timer deadline in real
 time. Runs that must not depend on host load use ``-icount``; the board's
 functional test runs with ``-icount shift=10,align=off``.
 
-The model implements no register of the DRAM controller, the parallel port
-or the DMA channels: a read returns zero and a write is dropped, and each is
-logged with ``LOG_UNIMP``. The firmware writes the DRAM controller registers
-to clear them and drives the parallel port as a scan chain master, both
-*software expectation*; neither has a modelled effect. The two-wire bus
-controller is modelled, as :ref:`sgi-l1-board-mbus` describes.
+The model implements no register of the DRAM controller or the DMA channels:
+a read returns zero and a write is dropped, and each is logged with
+``LOG_UNIMP``. The firmware writes the DRAM controller registers to clear
+them, a *software expectation* with no modelled effect. The two-wire bus
+controller is modelled, as :ref:`sgi-l1-board-mbus` describes, and so is the
+parallel port, below.
+
+.. _sgi-l1-board-parallel-port:
+
+Parallel port
+-------------
+
+The direction register (``PPDDR``, ``MBAR+0x1c5``) and the data register
+(``PPDAT``, ``MBAR+0x1c9``) are 8 bits wide and reset to 0 (*established*, the
+MCF5206E User's Manual, where the manual calls them ``PADDR`` and ``PADAT``).
+A read of ``PPDAT`` returns the driven level for an output pin and the pin
+level for an input; a write latches the byte, and the latch drives a pin only
+once its direction bit makes it an output (*established*). The model sends the
+whole output byte, the latch where the direction says output, on the
+``pp-out`` line at every write and at reset, and takes the input pins from
+the ``pp-in`` line; with nothing driving it the inputs read high, an
+assumption and an *approximation* because the pin's real pull is *unknown*.
+The manual says a direction bit affects a pin only if ``PAR`` selects
+general-purpose I/O (printed p. 10-2); the model ignores ``PAR`` here and
+treats the pins as always general-purpose. Register writes and the input byte
+are traced (``mcf5206e_pp_write``, ``mcf5206e_pp_pins``).
 
 .. _sgi-l1-board-interrupts:
 
@@ -1125,7 +1145,8 @@ that are not registers.
   unless the board is given one (:ref:`sgi-l1-board-mbus-peers`): a transfer
   to an address nothing answers is not acknowledged, and the firmware reports
   the board identification EEPROMs and the display expander as unreadable.
-- The parallel port, which the firmware drives as a JTAG scan master.
+- The parallel port's pins, except through the scan chain
+  (:ref:`sgi-l1-board-parallel-port`).
 - The DRAM controller registers, the DMA registers and ``DMCR``'s default
   memory behaviour.
 - The output port of the on-chip UARTs, which drives the pin that the firmware

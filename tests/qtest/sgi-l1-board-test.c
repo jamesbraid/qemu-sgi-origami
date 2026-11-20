@@ -1032,7 +1032,7 @@ static void test_unimplemented_logged(void)
     mbar_on(&a);
     cs_setup(&a, 0, 0xffe0, 0x000f0000, 0x1183);
     put_w(&a, MBAR_BASE + 0x46, 0x1234);
-    ld_b(&a, MBAR_BASE + 0x1c5, 1);
+    ld_w(&a, MBAR_BASE + 0x4a, 1);
     st_l(&a, 1, RESULT(0));
     cs_setup(&a, 3, 0x4000, 0, 0x0953);
     ld_b(&a, 0x40000018, 1);
@@ -1053,7 +1053,7 @@ static void test_unimplemented_logged(void)
 
     g_assert_true(g_file_get_contents(log_path, &log, NULL, NULL));
     g_assert_nonnull(strstr(log, "write of DCRR (MBAR+0x46) = 0x1234"));
-    g_assert_nonnull(strstr(log, "read of PPDDR (MBAR+0x1c5)"));
+    g_assert_nonnull(strstr(log, "read of DCTR (MBAR+0x4a)"));
     g_assert_nonnull(strstr(log, "usb-controller-slot0"));
     g_assert_nonnull(strstr(log, "default memory"));
     g_assert_nonnull(strstr(log, "flash command set"));
@@ -2918,6 +2918,31 @@ static void test_system_serial_setter(void)
     quit_all(qts, &f);
 }
 
+#define PPDDR   (MBAR_BASE + 0x1c5)
+#define PPDAT   (MBAR_BASE + 0x1c9)
+
+/* The parallel port: reset, direction, latch and what an input reads. */
+static void test_parallel_port_regs(void)
+{
+    Flash f;
+    QTestState *qts = board_start(&f, "sgi-l1-board", "");
+
+    /* Both reset to 0; with nothing wired the input pins read high. */
+    g_assert_cmphex(qtest_readb(qts, PPDDR), ==, 0);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0xff);
+    /* The firmware's order: data, then direction with bit 0 an input. */
+    qtest_writeb(qts, PPDAT, 0x30);
+    qtest_writeb(qts, PPDDR, 0xfe);
+    g_assert_cmphex(qtest_readb(qts, PPDDR), ==, 0xfe);
+    /* Outputs read their driven level; bit 0 reads its pin, not the latch. */
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0x31);
+    qtest_writeb(qts, PPDAT, 0xa4);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0xa5);
+    qtest_writeb(qts, PPDAT, 0x5a);
+    g_assert_cmphex(qtest_readb(qts, PPDAT), ==, 0x5b);
+    quit_all(qts, &f);
+}
+
 /* A file that is not the window's size is refused, and so is a missing one. */
 static void test_settings_refused(void)
 {
@@ -3084,6 +3109,7 @@ int main(int argc, char **argv)
     qtest_add_func("sgi-l1-board/signals-refused", test_signals_refused);
     qtest_add_func("sgi-l1-board/settings-loaded", test_settings_loaded);
     qtest_add_func("sgi-l1-board/settings-refused", test_settings_refused);
+    qtest_add_func("sgi-l1-board/parallel-port-regs", test_parallel_port_regs);
     qtest_add_func("sgi-l1-board/system-serial", test_system_serial);
     qtest_add_func("sgi-l1-board/system-serial-refused",
                    test_system_serial_refused);

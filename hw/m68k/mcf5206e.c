@@ -27,6 +27,7 @@
 #include "hw/m68k/mcf5206e.h"
 #include "system/address-spaces.h"
 #include "system/runstate.h"
+#include "trace.h"
 
 #define MBAR_V              0x1
 #define RAMBAR_V            0x1
@@ -572,7 +573,7 @@ static void sim_control_write(void *opaque, uint32_t reg, uint32_t val)
 enum {
     R_NONE, R_SIMR, R_MARB, R_ICR, R_IMR, R_IPR, R_RSR, R_SYPCR, R_SWIVR,
     R_SWSR, R_CSAR, R_CSMR, R_CSCR, R_DMCR, R_PAR, R_TIMER, R_UART,
-    R_UIVR, R_UIP, R_UOP1, R_UOP0, R_MBUS, R_UNIMP,
+    R_UIVR, R_UIP, R_UOP1, R_UOP0, R_MBUS, R_PPDDR, R_PPDAT, R_UNIMP,
 };
 
 typedef struct RegSpan {
@@ -629,9 +630,9 @@ static RegSpan sim_reg_at(unsigned off)
     case 0xca ... 0xcb:
         return (RegSpan){ R_PAR, 0xca, 2, 0, "PAR" };
     case 0x1c5:
-        return (RegSpan){ R_UNIMP, 0x1c5, 1, 0, "PPDDR" };
+        return (RegSpan){ R_PPDDR, 0x1c5, 1, 0, "PPDDR" };
     case 0x1c9:
-        return (RegSpan){ R_UNIMP, 0x1c9, 1, 0, "PPDAT" };
+        return (RegSpan){ R_PPDAT, 0x1c9, 1, 0, "PPDAT" };
     case 0x170:
         return (RegSpan){ R_UIVR, 0x170, 1, 0, "UIVR1" };
     case 0x174:
@@ -749,6 +750,11 @@ static uint32_t sim_reg_get(MCF5206ESIMState *s, RegSpan r, bool side_effects)
         return 0;
     case R_MBUS:
         return mcf5206e_mbus_read(s->mbus, r.start, side_effects);
+    case R_PPDDR:
+        return s->ppddr;
+    case R_PPDAT:
+        /* An output reads its driven level, an input its pin. */
+        return (s->ppdat & s->ppddr) | (s->pp_pins & ~s->ppddr);
     case R_UNIMP:
         if (side_effects) {
             qemu_log_mask(LOG_UNIMP, "mcf5206e: read of %s (MBAR+0x%x): "
@@ -770,6 +776,24 @@ static void sim_uop(MCF5206ESIMState *s, RegSpan r, uint8_t val)
     }
     qemu_log_mask(LOG_UNIMP, "mcf5206e: UART %u output port now 0x%02x: "
                   "no pin is connected to it\n", u + 1, s->uop[u]);
+}
+
+/* Drive the whole output byte at the pins; an input pin is not driven. */
+static void sim_pp_drive(MCF5206ESIMState *s)
+{
+    uint8_t out = s->ppdat & s->ppddr;
+
+    trace_mcf5206e_pp_write(s->ppddr, s->ppdat, out);
+    qemu_set_irq(s->pp_out, out);
+}
+
+/* What the pins read back: the input levels the board drives. */
+static void sim_pp_in(void *opaque, int n, int level)
+{
+    MCF5206ESIMState *s = opaque;
+
+    s->pp_pins = level;
+    trace_mcf5206e_pp_pins(s->pp_pins);
 }
 
 static void sim_reg_set(MCF5206ESIMState *s, RegSpan r, uint32_t val)
@@ -865,6 +889,14 @@ static void sim_reg_set(MCF5206ESIMState *s, RegSpan r, uint32_t val)
         break;
     case R_MBUS:
         mcf5206e_mbus_write(s->mbus, r.start, val);
+        break;
+    case R_PPDDR:
+        s->ppddr = val;
+        sim_pp_drive(s);
+        break;
+    case R_PPDAT:
+        s->ppdat = val;
+        sim_pp_drive(s);
         break;
     case R_UNIMP:
         qemu_log_mask(LOG_UNIMP, "mcf5206e: write of %s (MBAR+0x%x) = 0x%x:"
@@ -980,6 +1012,9 @@ static void mcf5206e_sim_reset(DeviceState *dev)
     memcpy(s->icr, icr_reset, sizeof(s->icr));
     s->imr = 0x3ffe;
     s->par = 0;
+    s->ppddr = 0;
+    s->ppdat = 0;
+    sim_pp_drive(s);
     s->dmcr = 0;
     s->sypcr = 0;
     s->sypcr_written = false;
@@ -1088,6 +1123,9 @@ static void mcf5206e_sim_realize(DeviceState *dev, Error **errp)
 
     qdev_init_gpio_in_named(dev, sim_internal_irq, "internal-irq", 16);
     qdev_init_gpio_in_named(dev, sim_ext_irq, "ext-irq", 8);
+    qdev_init_gpio_in_named(dev, sim_pp_in, "pp-in", 1);
+    qdev_init_gpio_out_named(dev, &s->pp_out, "pp-out", 1);
+    s->pp_pins = 0xff;      /* assumed: the real pull is unknown */
     for (i = 0; i < 2; i++) {
         qemu_irq irq = qdev_get_gpio_in_named(dev, "internal-irq",
                                               MCF5206E_SRC_UART1 + i);
