@@ -7,7 +7,7 @@ QEMU SGI machine state creation tool
 Synopsis
 --------
 
-**qemu-sgi-machine-init** **--machine** *OPTIONS* [**--boot-prom** *FILE*] [**--io-prom** *FILE*] *DIR*
+**qemu-sgi-machine-init** **--machine** *OPTIONS* [**--boot-prom** *FILE*] [**--io-prom** *FILE*] [**--prom-variable** *NAME=VALUE*]... *DIR*
 
 **qemu-sgi-machine-init** **--machine help**
 
@@ -49,13 +49,22 @@ Options
   version-6 single-segment container, uncompressed or gzip. An IP35 image
   must decode to exactly the PROM size the machine's ``-bios`` requires.
   An O2 image is the flash array's 524288 bytes as the machine's
-  ``rom-image`` reads them, never decoded.
+  ``rom-image`` reads them, never decoded. An Altix 350 image is the
+  6 MiB firmware as its ``-bios`` reads it, never decoded.
 
 .. option:: -i FILE, --io-prom FILE
 
   The BASEIO or GIGAchannel I/O PROM image. It is stored as supplied,
   container included, because that is the form the IP27 PROM reads from
   the part.
+
+.. option:: -e NAME=VALUE, --prom-variable NAME=VALUE
+
+  Set a PROM variable in an Altix 350 flash, for example ``NoACPIIO=1``.
+  It may be given more than once, and variables are stored in the order
+  given. A name is at most 14 bytes and a value at most 47. A selection
+  whose flash holds no PROM variables refuses it; the catalogue does not
+  list the Altix 350's flash yet, so none takes it today.
 
 .. option:: -h, --help
 
@@ -80,7 +89,10 @@ Each store starts from one of these:
   first PROM position and the blank-media label in its second, with the mode
   word and clock of the processor the selection fits. Octane boot flash
   holds the image followed by erased bytes. The O2's flash array is the
-  image.
+  image. An Altix 350's 8 MiB flash holds the 6 MiB firmware at
+  ``0x200000``, a variable header and the ``--prom-variable`` records
+  below it, and erased bytes elsewhere; the layout is in the Altix 350
+  machine page's *PROM flash* section.
 
 ``io-prom``
   The I/O PROM file as supplied, followed by erased bytes.

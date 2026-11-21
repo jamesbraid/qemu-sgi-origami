@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: BSD-3-Clause */
 /*
- * Initial IP27, IP30, IP35 and I/O PROM flash contents, over synthetic
- * payloads: no SGI firmware bytes appear here. Offsets and values are
- * repeated as literals rather than taken from the header under test.
+ * Initial IP27, IP30, IP35, Altix 350 and I/O PROM flash contents, over
+ * synthetic payloads: no SGI firmware bytes appear here. Offsets and values
+ * are repeated as literals rather than taken from the header under test.
  *
  * Copyright (c) 2026 James Braid
  */
@@ -10,12 +10,15 @@
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
 #include "qemu/units.h"
+#include "qapi/error.h"
 #include "hw/mips/sgi/initial-flash.h"
 
 #define IP27_FLASH_SIZE     (1 * MiB)
 #define IP30_FLASH_SIZE     (1 * MiB)
 #define IP35_FLASH_SIZE     (16 * MiB)
 #define IO6_FLASH_SIZE      (1 * MiB)
+#define ALTIX_FLASH_SIZE    (8 * MiB)
+#define ALTIX_FIRMWARE      (6 * MiB)
 
 #define CONFIG              0x60
 #define CONFIG_SIZE         0x50
@@ -284,6 +287,142 @@ static void test_io6(void)
     }
 }
 
+static void assert_erased(const uint8_t *flash, size_t from, size_t to)
+{
+    size_t i;
+
+    for (i = from; i < to; i++) {
+        g_assert_cmphex(flash[i], ==, 0xff);
+    }
+}
+
+/* One variable: the type byte, the name, the value 16 bytes in, rest erased. */
+static void assert_altix_record(const uint8_t *flash, size_t at,
+                                const char *name, const char *value)
+{
+    size_t name_end = 1 + strlen(name) + 1;
+    size_t value_end = 0x10 + strlen(value) + 1;
+
+    g_assert_cmphex(flash[at], ==, 1);
+    g_assert_cmpstr((const char *)flash + at + 1, ==, name);
+    assert_erased(flash, at + name_end, at + 0x10);
+    g_assert_cmpstr((const char *)flash + at + 0x10, ==, value);
+    assert_erased(flash, at + value_end, at + 0x40);
+}
+
+/* The firmware at 0x200000, the IOLP header at 0x10, records from 0x100. */
+static void test_altix350(void)
+{
+    static const SGIAltix350PromVariable variables[] = {
+        { "NoACPIIO", "1" },
+        { "console", "d" },
+    };
+    g_autofree uint8_t *firmware = make_payload(ALTIX_FIRMWARE);
+    g_autofree uint8_t *flash = g_malloc0(ALTIX_FLASH_SIZE);
+
+    g_assert_true(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE, firmware,
+                                             ALTIX_FIRMWARE, variables,
+                                             G_N_ELEMENTS(variables),
+                                             &error_abort));
+    assert_erased(flash, 0, 0x10);
+    g_assert_cmpmem(flash + 0x10, 12, "IOLP\x01\0\0\0\xff\xff\xff\xff", 12);
+    assert_erased(flash, 0x1c, 0x100);
+    assert_altix_record(flash, 0x100, "NoACPIIO", "1");
+    assert_altix_record(flash, 0x140, "console", "d");
+    assert_erased(flash, 0x180, 0x200000);
+    g_assert_cmpmem(flash + 0x200000, ALTIX_FIRMWARE, firmware, ALTIX_FIRMWARE);
+}
+
+/* No variables: the area below the firmware is the header and erased bytes. */
+static void test_altix350_no_variables(void)
+{
+    g_autofree uint8_t *firmware = make_payload(ALTIX_FIRMWARE);
+    g_autofree uint8_t *flash = g_malloc0(ALTIX_FLASH_SIZE);
+
+    g_assert_true(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE, firmware,
+                                             ALTIX_FIRMWARE, NULL, 0,
+                                             &error_abort));
+    g_assert_cmpmem(flash + 0x10, 4, "IOLP", 4);
+    assert_erased(flash, 0x1c, 0x200000);
+}
+
+/* A bad image or variable is refused and leaves the buffer as it was. */
+static void test_altix350_refused(void)
+{
+    static const SGIAltix350PromVariable long_name = {
+        "FifteenCharsXXX", "1"
+    };
+    static const SGIAltix350PromVariable long_value = {
+        "name", "012345678901234567890123456789012345678901234567"
+    };
+    static const SGIAltix350PromVariable fits[] = {
+        { "FourteenCharsX", "01234567890123456789012345678901234567890123456" },
+    };
+    static const SGIAltix350PromVariable no_name = { "", "1" };
+    /* A block holds 1020 records, from 0x100 to 0xffff. */
+    static SGIAltix350PromVariable many[1021];
+    g_autofree uint8_t *firmware = make_payload(ALTIX_FIRMWARE);
+    g_autofree uint8_t *flash = g_malloc(ALTIX_FLASH_SIZE);
+    g_autofree uint8_t *untouched = g_malloc(ALTIX_FLASH_SIZE);
+    Error *err = NULL;
+
+    for (size_t i = 0; i < G_N_ELEMENTS(many); i++) {
+        many[i] = (SGIAltix350PromVariable){ "a", "b" };
+    }
+    memset(untouched, 0xa5, ALTIX_FLASH_SIZE);
+    memcpy(flash, untouched, ALTIX_FLASH_SIZE);
+
+    /* The firmware must be exactly 6 MiB. */
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE - 1,
+                                              NULL, 0, &err));
+    error_free_or_abort(&err);
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE + 1,
+                                              NULL, 0, &err));
+    error_free_or_abort(&err);
+    /* So must the flash be 8 MiB. */
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE - 1,
+                                              firmware, ALTIX_FIRMWARE,
+                                              NULL, 0, &err));
+    error_free_or_abort(&err);
+    /*
+     * A name past 14 bytes would run into the value, a value past 47 over
+     * the next record.
+     */
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE,
+                                              &long_name, 1, &err));
+    error_free_or_abort(&err);
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE,
+                                              &long_value, 1, &err));
+    error_free_or_abort(&err);
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE,
+                                              &no_name, 1, &err));
+    error_free_or_abort(&err);
+    g_assert_false(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE,
+                                              firmware, ALTIX_FIRMWARE,
+                                              many, G_N_ELEMENTS(many), &err));
+    error_free_or_abort(&err);
+    g_assert_cmpmem(flash, ALTIX_FLASH_SIZE, untouched, ALTIX_FLASH_SIZE);
+
+    /* A full block ends where block 1 begins, and block 1 stays erased. */
+    g_assert_true(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE, firmware,
+                                             ALTIX_FIRMWARE, many,
+                                             G_N_ELEMENTS(many) - 1,
+                                             &error_abort));
+    assert_altix_record(flash, 0xffc0, "a", "b");
+    assert_erased(flash, 0x10000, 0x200000);
+
+    /* The longest name and value that fit are taken. */
+    g_assert_true(sgi_altix350_initial_flash(flash, ALTIX_FLASH_SIZE, firmware,
+                                             ALTIX_FIRMWARE, fits, 1,
+                                             &error_abort));
+    assert_altix_record(flash, 0x100, fits[0].name, fits[0].value);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -294,5 +433,10 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-initial-flash/ip35", test_ip35);
     g_test_add_func("/sgi-initial-flash/ip35-configure", test_ip35_configure);
     g_test_add_func("/sgi-initial-flash/io6", test_io6);
+    g_test_add_func("/sgi-initial-flash/altix350", test_altix350);
+    g_test_add_func("/sgi-initial-flash/altix350-no-variables",
+                    test_altix350_no_variables);
+    g_test_add_func("/sgi-initial-flash/altix350-refused",
+                    test_altix350_refused);
     return g_test_run();
 }

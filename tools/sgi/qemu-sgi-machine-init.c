@@ -31,13 +31,16 @@
 typedef struct InitInputs {
     const char *boot_prom;
     const char *io_prom;
+    SGIAltix350PromVariable *variables;
+    size_t n_variables;
 } InitInputs;
 
 static void usage(FILE *out)
 {
     fprintf(out,
             "Usage: " CMD_NAME " --machine OPTIONS [--boot-prom FILE] "
-            "[--io-prom FILE] DIR\n"
+            "[--io-prom FILE]\n"
+            "                           [--prom-variable NAME=VALUE]... DIR\n"
             "       " CMD_NAME " --machine help\n"
             "\n"
             "Create the directory DIR holding every writable store the SGI\n"
@@ -48,6 +51,9 @@ static void usage(FILE *out)
             "  -M, --machine OPTIONS  the machine selection, or 'help'\n"
             "  -b, --boot-prom FILE   the node boot PROM image\n"
             "  -i, --io-prom FILE     the BASEIO or GIGAchannel I/O PROM image\n"
+            "  -e, --prom-variable NAME=VALUE\n"
+            "                         set a PROM variable in an Altix 350 "
+            "flash; repeatable\n"
             "  -h, --help             print this text\n"
             "  -V, --version          print the version\n");
 }
@@ -147,6 +153,21 @@ static bool check_inputs(const SGIModelOffering *offering,
             return false;
         }
     }
+    if (inputs->n_variables) {
+        const SGIModelInitInput *boot = find_input(offering, "boot-prom");
+
+        if (!boot || boot->kind != SGI_MODEL_INIT_INPUT_KIND_ALTIX350_PROM) {
+            error_setg(errp, "%s takes no --prom-variable",
+                       offering->machine_options);
+            return false;
+        }
+        for (i = 0; i < inputs->n_variables; i++) {
+            if (!sgi_altix350_prom_variable_check(&inputs->variables[i],
+                                                  errp)) {
+                return false;
+            }
+        }
+    }
     for (entry = offering->init_inputs; entry; entry = entry->next) {
         const SGIModelInitInput *input = entry->value;
         bool known = false;
@@ -192,12 +213,11 @@ static SGIIP27FlashValues ip27_flash_values(const SGIModelTopology *t,
 }
 
 /*
- * The O2's PROM is read as the machine's rom-image is: the file's bytes,
- * which are the whole 512 KiB flash array, with no container to decode.
+ * A PROM read as the machine's -bios or rom-image is: the file's bytes,
+ * exactly @expected of them, with no container to decode.
  */
-static SGIPromImage *load_raw_input(const char *path,
-                                    const SGIModelStorageItem *item,
-                                    Error **errp)
+static SGIPromImage *load_raw_input(const char *path, size_t expected,
+                                    const char *holds, Error **errp)
 {
     g_autofree char *contents = NULL;
     g_autoptr(GError) gerr = NULL;
@@ -209,9 +229,9 @@ static SGIPromImage *load_raw_input(const char *path,
                    gerr->message);
         return NULL;
     }
-    if (length != item->size) {
-        error_setg(errp, "PROM image '%s' is %zu bytes; the flash holds "
-                   "exactly %" PRIu64, path, (size_t)length, item->size);
+    if (length != expected) {
+        error_setg(errp, "PROM image '%s' is %zu bytes; %s exactly %zu", path,
+                   (size_t)length, holds, expected);
         return NULL;
     }
     image = g_new0(SGIPromImage, 1);
@@ -240,7 +260,15 @@ static SGIPromImage *load_input(const SGIModelInitInput *input,
         return sgi_prom_image_load(path, item->size / SGI_IP35_FLASH_POSITIONS,
                                    errp);
     case SGI_MODEL_INIT_INPUT_KIND_IP32_PROM:
-        return load_raw_input(path, item, errp);
+        return load_raw_input(path, item->size, "the flash holds", errp);
+    case SGI_MODEL_INIT_INPUT_KIND_ALTIX350_PROM:
+        if (item->size != SGI_ALTIX350_FLASH_SIZE) {
+            error_setg(errp, "%s is no %u-byte Altix 350 PROM flash",
+                       item->name, SGI_ALTIX350_FLASH_SIZE);
+            return NULL;
+        }
+        return load_raw_input(path, SGI_ALTIX350_FIRMWARE_SIZE,
+                              "the firmware is", errp);
     case SGI_MODEL_INIT_INPUT_KIND_IO6_PROM:
         image = sgi_prom_image_load(path, item->size, errp);
         if (image && g_bytes_get_size(image->file) > item->size) {
@@ -287,7 +315,8 @@ static void build_item(const SGIModelStorageItem *item,
                        const SGIModelInitInput *input,
                        const SGIPromImage *image, const SGIModelTopology *t,
                        const SGIModelProcessor *cpu, uint32_t ip35_mode_word,
-                       const struct tm *now, uint8_t *buf)
+                       const InitInputs *inputs, const struct tm *now,
+                       uint8_t *buf)
 {
     const uint8_t *data;
     size_t length;
@@ -349,6 +378,11 @@ static void build_item(const SGIModelStorageItem *item,
     case SGI_MODEL_INIT_INPUT_KIND_IP32_PROM:
         g_assert(length == item->size);
         memcpy(buf, data, length);
+        break;
+    case SGI_MODEL_INIT_INPUT_KIND_ALTIX350_PROM:
+        sgi_altix350_initial_flash(buf, item->size, data, length,
+                                   inputs->variables, inputs->n_variables,
+                                   &error_abort);
         break;
     default:
         g_assert_not_reached();
@@ -617,7 +651,7 @@ static bool create_machine(const SGIModelOffering *offering,
 
         build_item(item, find_input(offering, initial),
                    g_hash_table_lookup(images, initial), t, cpu,
-                   ip35_mode_word, &now, buf);
+                   ip35_mode_word, inputs, &now, buf);
         if (!write_store(tmp, file, buf, item->size, errp)) {
             error_prepend(errp, "%s: ", tmp);
             goto out;
@@ -658,6 +692,7 @@ int main(int argc, char **argv)
         { "machine", required_argument, NULL, 'M' },
         { "boot-prom", required_argument, NULL, 'b' },
         { "io-prom", required_argument, NULL, 'i' },
+        { "prom-variable", required_argument, NULL, 'e' },
         { "help", no_argument, NULL, 'h' },
         { "version", no_argument, NULL, 'V' },
         { NULL, 0, NULL, 0 },
@@ -670,7 +705,7 @@ int main(int argc, char **argv)
     int c;
 
     error_init(argv[0]);
-    while ((c = getopt_long(argc, argv, "+M:b:i:hV", long_options,
+    while ((c = getopt_long(argc, argv, "+M:b:i:e:hV", long_options,
                             NULL)) != -1) {
         switch (c) {
         case 'M':
@@ -682,6 +717,23 @@ int main(int argc, char **argv)
         case 'i':
             inputs.io_prom = optarg;
             break;
+        case 'e': {
+            const char *equals = strchr(optarg, '=');
+
+            if (!equals) {
+                usage_error("--prom-variable takes NAME=VALUE, not '%s'",
+                            optarg);
+            }
+            inputs.variables = g_renew(SGIAltix350PromVariable,
+                                       inputs.variables,
+                                       inputs.n_variables + 1);
+            inputs.variables[inputs.n_variables++] =
+                (SGIAltix350PromVariable) {
+                    .name = g_strndup(optarg, equals - optarg),
+                    .value = g_strdup(equals + 1),
+                };
+            break;
+        }
         case 'h':
             usage(stdout);
             return EXIT_SUCCESS;
@@ -700,7 +752,8 @@ int main(int argc, char **argv)
         usage_error("--machine is required");
     }
     if (g_str_equal(machine, "help")) {
-        if (optind != argc || inputs.boot_prom || inputs.io_prom) {
+        if (optind != argc || inputs.boot_prom || inputs.io_prom ||
+            inputs.n_variables) {
             usage_error("--machine help takes no other arguments");
         }
         list_machines();

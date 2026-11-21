@@ -8,6 +8,7 @@
 
 #include "qemu/osdep.h"
 #include "qemu/bswap.h"
+#include "qapi/error.h"
 #include "hw/mips/sgi/initial-flash.h"
 
 /*
@@ -190,4 +191,82 @@ void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
     stl_be_p(label + 0x10, SGI_IP35_LABEL_MAGIC);
     stl_be_p(label + 0x14, SGI_IP35_LABEL_FORMAT);
     stl_be_p(label + 0x18, SGI_IP35_LABEL_GENERATION);
+}
+
+/* Block 0's header: "IOLP", version 1, generation erased. */
+static const uint8_t sgi_altix350_variables_header[] = {
+    0x49, 0x4f, 0x4c, 0x50, 0x01, 0x00, 0x00, 0x00, 0xff, 0xff, 0xff, 0xff,
+};
+
+/* A name and its NUL end before the value, which with its NUL ends the slot. */
+#define SGI_ALTIX350_NAME_MAX \
+    (SGI_ALTIX350_VARIABLE_VALUE - 1 - 1)
+#define SGI_ALTIX350_VALUE_MAX \
+    (SGI_ALTIX350_VARIABLE_STRIDE - SGI_ALTIX350_VARIABLE_VALUE - 1)
+#define SGI_ALTIX350_VARIABLES_MAX \
+    ((SGI_ALTIX350_VARIABLES_BLOCK - SGI_ALTIX350_VARIABLES_FIRST) / \
+     SGI_ALTIX350_VARIABLE_STRIDE)
+
+bool sgi_altix350_prom_variable_check(const SGIAltix350PromVariable *variable,
+                                      Error **errp)
+{
+    if (!variable->name[0]) {
+        error_setg(errp, "a PROM variable needs a name");
+        return false;
+    }
+    if (strlen(variable->name) > SGI_ALTIX350_NAME_MAX) {
+        error_setg(errp, "PROM variable name '%s' is longer than %d bytes",
+                   variable->name, SGI_ALTIX350_NAME_MAX);
+        return false;
+    }
+    if (strlen(variable->value) > SGI_ALTIX350_VALUE_MAX) {
+        error_setg(errp, "the value of PROM variable '%s' is longer than "
+                   "%d bytes", variable->name, SGI_ALTIX350_VALUE_MAX);
+        return false;
+    }
+    return true;
+}
+
+bool sgi_altix350_initial_flash(uint8_t *flash, size_t flash_size,
+                                const uint8_t *firmware, size_t firmware_size,
+                                const SGIAltix350PromVariable *variables,
+                                size_t n_variables, Error **errp)
+{
+    size_t i;
+
+    if (flash_size != SGI_ALTIX350_FLASH_SIZE) {
+        error_setg(errp, "the Altix 350 PROM flash must be %d bytes, got %zu",
+                   SGI_ALTIX350_FLASH_SIZE, flash_size);
+        return false;
+    }
+    if (firmware_size != SGI_ALTIX350_FIRMWARE_SIZE) {
+        error_setg(errp, "the Altix 350 firmware must be %d bytes, got %zu",
+                   SGI_ALTIX350_FIRMWARE_SIZE, firmware_size);
+        return false;
+    }
+    if (n_variables > SGI_ALTIX350_VARIABLES_MAX) {
+        error_setg(errp, "the PROM flash holds at most %d variables",
+                   SGI_ALTIX350_VARIABLES_MAX);
+        return false;
+    }
+    for (i = 0; i < n_variables; i++) {
+        if (!sgi_altix350_prom_variable_check(&variables[i], errp)) {
+            return false;
+        }
+    }
+
+    memset(flash, 0xff, flash_size);
+    memcpy(flash + SGI_ALTIX350_VARIABLES_HEADER, sgi_altix350_variables_header,
+           sizeof(sgi_altix350_variables_header));
+    for (i = 0; i < n_variables; i++) {
+        uint8_t *record = flash + SGI_ALTIX350_VARIABLES_FIRST +
+                          i * SGI_ALTIX350_VARIABLE_STRIDE;
+
+        record[0] = SGI_ALTIX350_VARIABLE_TYPE;
+        strcpy((char *)record + 1, variables[i].name);
+        strcpy((char *)record + SGI_ALTIX350_VARIABLE_VALUE,
+               variables[i].value);
+    }
+    memcpy(flash + SGI_ALTIX350_FIRMWARE_OFFSET, firmware, firmware_size);
+    return true;
 }

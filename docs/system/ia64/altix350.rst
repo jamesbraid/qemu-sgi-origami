@@ -72,6 +72,55 @@ firmware writes is lost when QEMU exits. ``-drive if=pflash,format=raw,file=...`
 backs it with an 8 MiB file instead, so the firmware's changes persist. The
 file is used as it is and the image is not copied into it.
 
+A flash file therefore needs the firmware and the PROM's variable area built
+into it. The PROM keeps its variables, such as ``NoACPIIO``, in the 2 MiB
+below the firmware. The layout is *inferred* from the PROM's reader (the
+chips repository's ``software/firmware/snprom/efi-boot.md``, commit
+``efef3fe93b11``), not measured except where the text says *observed*: two
+64 KiB blocks, at ``0`` and ``0x10000``, each with a 0x100-byte header, and
+the block with the higher generation word is active. The header is 16 erased
+bytes, the magic ``IOLP`` at ``0x10``, the version word ``1`` at ``0x14`` and
+a generation word at ``0x18``, then erased bytes. The records are fixed
+64-byte entries from ``0x100`` to the end of the block. Byte 0 has the type
+in its low nibble (1 is a live variable, ``0xf`` ends the log), bytes 1 to 14
+hold the name, at most 14 characters and a NUL, and bytes ``0x10`` to
+``0x3f`` the value, at most 47 characters and a NUL, with every other byte
+erased. There is no checksum and no length field. The blank image
+is the firmware at ``0x200000``, block 0 with the generation left erased and
+the variables in order from ``0x100``, and every other byte ``0xff``. The
+``sgi_altix350_initial_flash`` function in ``hw/mips/sgi/initial-flash.c``
+builds exactly this, and ``qemu-sgi-machine-init --prom-variable`` will use it
+once the machine catalogue lists the flash. EFI boot entries are in a separate
+EFI store that this image does not hold.
+
+On the model, with a stock PROM and an image built that way holding
+``NoACPIIO=1``, the DSDT that the XSDT reaches has zero bytes where the AML
+starts, after its 36-byte header (*observed*). The same image without the
+record has the AML there, which opens a ``\_SB`` scope (*observed*). So the
+PROM took the record from block 0 with the generation erased and block 1
+erased (*observed*). The PROM leaves block 0 unchanged during a run to the EFI
+shell (*observed*) and writes about 700 bytes elsewhere between ``0x100000``
+and ``0x1f0000``, which are *unknown*. The console showed no ``NoACPIIO``
+message at the shell. What would settle the layout on real hardware is a
+capture of a real flash's variable area.
+
+The first record's slot is the open question. At the EFI shell, ``pod``
+reaches the PROM's POD prompt (*observed*), where ``setenv NoACPIIO "1"``,
+with the value quoted, makes the PROM write the record itself and takes effect
+on the next boot (*observed*). On a flash holding only the header, that record
+landed at ``0x140`` and left ``0x100`` erased, and a later ``setenv`` of
+``Verbose`` went to ``0x180`` (*observed*: stock PROM
+``snprom-10.54/shub1snprom.bin``, SAL 5.04, one run each). The PROM does read
+a record built at ``0x100``: ``printenv`` lists it and the console omits the
+``SAL ACPI`` generation messages, as for the record at ``0x140`` (*observed*,
+one run each), so an erased slot 0 does not end its search, which the ``0xf``
+end-of-log reading did not predict. Changing ``NoACPIIO`` from ``1`` to ``0``
+rewrote the value in place at ``0x100``, and changing it from ``0`` to ``2``
+set the old record's type byte to ``0`` and appended the new record at
+``0x140`` (*observed*, one run). Why the first write skips ``0x100`` is
+*unknown*, and the builder keeps ``0x100``. Whether the PROM appends correctly
+after two builder-made records is untested (*unknown*).
+
 The firmware's console text goes through the L1 controller to the first
 ``-serial`` device, so ``-serial stdio`` shows the PROM's messages, and typed characters go back
 through the L1 as console input (*inferred* frame format).

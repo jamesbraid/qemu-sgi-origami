@@ -5,10 +5,12 @@
 
 #include "qemu/osdep.h"
 #include "libqtest.h"
+#include "qapi/error.h"
 #include "qemu/bswap.h"
 #include "qobject/qdict.h"
 #include "qobject/qlist.h"
 #include "qemu/units.h"
+#include "hw/mips/sgi/initial-flash.h"
 
 #define FLASH_BASE 0xffa00000ULL
 #define FLASH_SIZE (6 * MiB)
@@ -336,6 +338,51 @@ static void test_flash_drive_boots(void)
     args = g_strdup_printf("-drive if=pflash,format=raw,file=%s", path);
     qts = altix350_start_with(args);
     g_assert_cmphex(qtest_readq(qts, FLASH_BASE), ==, 0x5a5a5a5a5a5a5a5aULL);
+    qtest_quit(qts);
+    g_unlink(path);
+}
+
+/*
+ * A flash file the initial-flash builder makes shows its variable area
+ * through the SHub window and the firmware at the reset window.
+ */
+static void test_flash_drive_variables(void)
+{
+    const uint64_t flash = SHUB_LOCAL_MMR + 0x7ff800000ULL;
+    static const SGIAltix350PromVariable variables[] = {
+        { "NoACPIIO", "1" },
+    };
+    g_autofree char *firmware = NULL;
+    g_autofree uint8_t *file = g_malloc(8 * MiB);
+    g_autofree uint8_t *seen = g_malloc(0x200);
+    g_autofree char *path = NULL;
+    g_autofree char *args = NULL;
+    QTestState *qts;
+    gsize length;
+    int fd = g_file_open_tmp("altix350-vars-XXXXXX", &path, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    g_assert_true(g_file_get_contents(image_path, &firmware, &length, NULL));
+    g_assert_cmpuint(length, ==, FLASH_SIZE);
+    g_assert_true(sgi_altix350_initial_flash(file, 8 * MiB,
+                                             (uint8_t *)firmware, length,
+                                             variables, 1, &error_abort));
+    g_assert_true(g_file_set_contents(path, (char *)file, 8 * MiB, NULL));
+    args = g_strdup_printf("-drive if=pflash,format=raw,file=%s", path);
+    qts = altix350_start_with(args);
+
+    qtest_memread(qts, flash, seen, 0x200);
+    g_assert_cmpmem(seen, 16, "\xff\xff\xff\xff\xff\xff\xff\xff"
+                    "\xff\xff\xff\xff\xff\xff\xff\xff", 16);
+    g_assert_cmpmem(seen + 0x10, 12, "IOLP\x01\0\0\0\xff\xff\xff\xff", 12);
+    g_assert_cmphex(seen[0x100], ==, 1);
+    g_assert_cmpstr((char *)seen + 0x101, ==, "NoACPIIO");
+    g_assert_cmpstr((char *)seen + 0x110, ==, "1");
+    g_assert_cmphex(seen[0x140], ==, 0xff);
+    g_assert_cmphex(qtest_readq(qts, flash + 0x200000), ==,
+                    qtest_readq(qts, FLASH_BASE));
+    g_assert_cmphex(qtest_readq(qts, FLASH_BASE), ==, ldq_le_p(firmware));
     qtest_quit(qts);
     g_unlink(path);
 }
@@ -2883,6 +2930,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-altix350/cacheable-alias", test_cacheable_alias);
     qtest_add_func("/sgi-altix350/flash-write", test_flash_write);
     qtest_add_func("/sgi-altix350/flash-drive-boots", test_flash_drive_boots);
+    qtest_add_func("/sgi-altix350/flash-drive-variables",
+                   test_flash_drive_variables);
     qtest_add_func("/sgi-altix350/fetch-in-flash-command-mode",
                    test_fetch_with_flash_in_command_mode);
     qtest_add_func("/sgi-altix350/flash-program-reaches-running-code",

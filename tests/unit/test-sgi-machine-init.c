@@ -204,6 +204,18 @@ static void test_inputs_checked(void)
     assert_refused(&run, "origin200,topology=origin200,nodes=1 takes no "
                    "--io-prom");
     tool_run_clear(&run);
+
+    run = run_tool("--machine", "origin200,topology=origin200,nodes=1",
+                   "--boot-prom", "prom", "--prom-variable", "NoACPIIO=1",
+                   dir, NULL);
+    assert_refused(&run, "origin200,topology=origin200,nodes=1 takes no "
+                   "--prom-variable");
+    tool_run_clear(&run);
+
+    run = run_tool("--machine", "origin200,topology=origin200,nodes=1",
+                   "--prom-variable", "NoACPIIO", dir, NULL);
+    assert_refused(&run, "--prom-variable takes NAME=VALUE");
+    tool_run_clear(&run);
     g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
 }
 

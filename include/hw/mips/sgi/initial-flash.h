@@ -102,6 +102,42 @@ void sgi_ip35_initial_flash(uint8_t *flash, size_t flash_size,
 void sgi_ip30_initial_flash(uint8_t *flash, size_t flash_size,
                             const uint8_t *payload, size_t payload_size);
 
+/*
+ * Altix 350 PROM flash: firmware at the top, variable blocks below. Inferred;
+ * the PROM's own first record is at 0x140 and it also reads one at 0x100.
+ */
+#define SGI_ALTIX350_FLASH_SIZE         0x800000
+#define SGI_ALTIX350_FIRMWARE_SIZE      0x600000
+#define SGI_ALTIX350_FIRMWARE_OFFSET    0x200000
+#define SGI_ALTIX350_VARIABLES_BLOCK    0x10000
+#define SGI_ALTIX350_VARIABLES_HEADER   0x10        /* the magic */
+#define SGI_ALTIX350_VARIABLES_FIRST    0x100
+#define SGI_ALTIX350_VARIABLE_STRIDE    0x40
+#define SGI_ALTIX350_VARIABLE_TYPE      0x01        /* a live variable */
+#define SGI_ALTIX350_VARIABLE_VALUE     0x10
+
+/* One PROM variable; both strings are NUL-terminated text. */
+typedef struct SGIAltix350PromVariable {
+    const char *name;
+    const char *value;
+} SGIAltix350PromVariable;
+
+/* Whether @variable's name and value fit a record; sets @errp if not. */
+bool sgi_altix350_prom_variable_check(const SGIAltix350PromVariable *variable,
+                                      Error **errp);
+
+/*
+ * Fill @flash (SGI_ALTIX350_FLASH_SIZE bytes) as a new Altix 350 PROM flash:
+ * the 6 MiB @firmware at its offset, block 0's header with the generation
+ * left erased, @variables as records from its first slot, every other byte,
+ * block 1 included, erased. Returns false and sets @errp, leaving @flash
+ * untouched, if any argument is unusable.
+ */
+bool sgi_altix350_initial_flash(uint8_t *flash, size_t flash_size,
+                                const uint8_t *firmware, size_t firmware_size,
+                                const SGIAltix350PromVariable *variables,
+                                size_t n_variables, Error **errp);
+
 /* The BASEIO and GIGAchannel I/O PROM flash part. */
 #define SGI_IO6_FLASH_SIZE  0x100000
 

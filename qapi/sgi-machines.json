@@ -2243,10 +2243,14 @@
 # @io6-prom: a BASEIO PROM, the image an IO6 or GIGAchannel I/O
 #     flash holds
 #
+# @altix350-prom: an Altix 350 PROM, the raw 6 MiB firmware image its
+#     machine takes as -bios
+#
 # Since: 11.2
 ##
 { 'enum': 'SGIModelInitInputKind',
-  'data': ['ip27-prom', 'ip35-prom', 'ip30-prom', 'ip32-prom', 'io6-prom'] }
+  'data': ['ip27-prom', 'ip35-prom', 'ip30-prom', 'ip32-prom', 'io6-prom',
+           'altix350-prom'] }
 
 ##
 # @SGIModelInitInput:
