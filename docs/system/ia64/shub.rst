@@ -314,7 +314,7 @@ core as a bus error. Access is little endian.
      - The register reads the pending bits, reset 0. A write to it ORs the
        bits in, as the PROM does to raise an event. A write of ones to the
        alias clears them. The alias is write-only. Bit 20 latches the
-       rising edge of the junk-bus 16550's interrupt line. The alias clears it even while the line is high, an *approximation*: the chips notes' re-latch rule (the Linux 3.2 console section of ``software/firmware/snprom/l1-requests.md`` in the chips repository, revision 0ad2069 or later) was tried and hangs a RHEL 5.11 guest before ``SGI Altix RTC Timer``, so the model does not re-latch. A message is sent only when the bit goes from clear to set, as
+       rising edge of the junk-bus 16550's interrupt line. The alias clears it even while the line is high and the bit is not set again (an *approximation*): a Linux 2.6.x interrupt entry re-reads the register after the handlers and sends itself a message if bit 20 is set, so a re-latch would loop until something clears the UART source (*inferred*, from public source; the machine page's estimates table has the evidence). A message is sent only when the bit goes from clear to set, as
        its first rule says. When the line rises with the bit clear and ``SH_LOCAL_INT5_ENABLE``
        has bit 13 set, the message in ``SH_LOCAL_INT5_CONFIG`` is delivered, which
        is vector ``0xe9`` for the PROM's value. That enable bit names the
