@@ -16,6 +16,7 @@ config ALTIX350
     select BCM570X
     select QLOGIC_ISP_SCSI_PCI
     select SGI_L1
+    select OR_IRQ
 
 # The PCI bus-master fixture, built into the emulator for test builds only.
 config ALTIX350_TEST_FIXTURES

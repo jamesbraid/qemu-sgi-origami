@@ -1326,6 +1326,54 @@ static void test_slot2_interrupt_reaches_pic(void)
     qtest_quit(qts);
 }
 
+/* INTA/INTC of device d reach PIC input d - 1, INTB/INTD (d + 3) & 7. */
+static void test_slot2_other_pins_reach_pic(void)
+{
+    static const struct { int pin; uint64_t input; } cases[] = {
+        { 2, 1 << 5 }, { 3, 1 << 1 }, { 4, 1 << 5 },
+    };
+    const uint64_t status = 0x800000000ULL + (15ULL << 24) + 0x100;
+
+    for (int i = 0; i < ARRAY_SIZE(cases); i++) {
+        g_autofree char *args = g_strdup_printf(
+            "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,id=dma0,"
+            "interrupt-pin=%d", cases[i].pin);
+        QTestState *qts = altix350_start_with(args);
+
+        qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+        g_assert_cmphex(qtest_readq(qts, status) & 0xff, ==, 0);
+        qtest_set_irq_in(qts, "dma0", "test-irq", 0, 1);
+        g_assert_cmphex(qtest_readq(qts, status) & 0xff, ==, cases[i].input);
+        qtest_set_irq_in(qts, "dma0", "test-irq", 0, 0);
+        assert_running(qts);
+        qtest_quit(qts);
+    }
+}
+
+/* INTA and INTC of device 2 share PIC input 1: high until both drop. */
+static void test_slot2_shared_input_holds_level(void)
+{
+    QTestState *qts = altix350_start_with(
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2.0,"
+        "multifunction=on,id=dma0,interrupt-pin=1 "
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2.1,id=dma1,"
+        "interrupt-pin=3");
+    const uint64_t w15 = 0x800000000ULL + (15ULL << 24);
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    qtest_set_irq_in(qts, "dma0", "test-irq", 0, 1);
+    qtest_set_irq_in(qts, "dma1", "test-irq", 0, 1);
+    qtest_set_irq_in(qts, "dma0", "test-irq", 0, 0);
+    /* A clear write re-latches the status from the input's level. */
+    qtest_writeq(qts, w15 + 0x110, 0xff);
+    g_assert_cmphex(qtest_readq(qts, w15 + 0x100) & 0xff, ==, 2);
+    qtest_set_irq_in(qts, "dma1", "test-irq", 0, 0);
+    qtest_writeq(qts, w15 + 0x110, 0xff);
+    g_assert_cmphex(qtest_readq(qts, w15 + 0x100) & 0xff, ==, 0);
+    assert_running(qts);
+    qtest_quit(qts);
+}
+
 /* The kernel's PIC attach sets control bit 21 (16 KiB translation pages). */
 static void test_pic_control_page_size_bit(void)
 {
@@ -3057,6 +3105,10 @@ int main(int argc, char **argv)
                    test_nic_interrupt_reaches_pic);
     qtest_add_func("/sgi-altix350/slot2/interrupt",
                    test_slot2_interrupt_reaches_pic);
+    qtest_add_func("/sgi-altix350/slot2/other-pins",
+                   test_slot2_other_pins_reach_pic);
+    qtest_add_func("/sgi-altix350/slot2/shared-input-holds-level",
+                   test_slot2_shared_input_holds_level);
     qtest_add_func("/sgi-altix350/pic/inbound-dma-refused",
                    test_pic_inbound_dma_refused);
     qtest_add_func("/sgi-altix350/shub/override-table-reset",

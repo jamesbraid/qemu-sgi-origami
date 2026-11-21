@@ -33,6 +33,7 @@
 #include "hw/misc/sgi-ioc4.h"
 #include "hw/scsi/qlogic-isp.h"
 #include "hw/pci/pci.h"
+#include "hw/core/or-irq.h"
 #include "migration/vmstate.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
 
@@ -249,19 +250,27 @@ static void altix350_add_pic(Altix350State *s)
         pci_realize_and_unref(nic, sgi_pic_pci_bus(pic, 0), &error_fatal);
     }
     /*
-     * Each device's INTA goes to PIC input device - 1, the convention the
-     * Origin 350's IO9 uses. The Altix 350's wiring is unmeasured.
+     * PROM rule: INTA and INTC of device d go to input d - 1, INTB and INTD
+     * to (d + 3) & 7. An OR gate joins the two lines on each input.
      */
     head = sgi_pic_head_device(pic, 0);
-    qdev_connect_gpio_out_named(head, "pci-intx", 1 * PCI_NUM_PINS,
-                                qdev_get_gpio_in(head, 0));
-    /* Device 2 has no card of its own; a card plugged there needs its line. */
-    qdev_connect_gpio_out_named(head, "pci-intx", 2 * PCI_NUM_PINS,
-                                qdev_get_gpio_in(head, 1));
-    qdev_connect_gpio_out_named(head, "pci-intx", 3 * PCI_NUM_PINS,
-                                qdev_get_gpio_in(head, 2));
-    qdev_connect_gpio_out_named(head, "pci-intx", 4 * PCI_NUM_PINS,
-                                qdev_get_gpio_in(head, 3));
+    for (unsigned input = 0; input < 8; input++) {
+        unsigned dev = input < 4 ? input + 1 : input - 3;
+        unsigned first = input < 4 ? 0 : 1;
+        DeviceState *gate = qdev_new(TYPE_OR_IRQ);
+        g_autofree char *name = g_strdup_printf("pic-intx-or[%u]", input);
+
+        object_property_add_child(OBJECT(s), name, OBJECT(gate));
+        object_unref(OBJECT(gate));
+        qdev_prop_set_uint16(gate, "num-lines", 2);
+        qdev_realize(gate, NULL, &error_fatal);
+        qdev_connect_gpio_out(gate, 0, qdev_get_gpio_in(head, input));
+        for (unsigned k = 0; k < 2; k++) {
+            qdev_connect_gpio_out_named(head, "pci-intx",
+                                        dev * PCI_NUM_PINS + first + 2 * k,
+                                        qdev_get_gpio_in(gate, k));
+        }
+    }
 }
 
 static void altix350_init(MachineState *machine)
