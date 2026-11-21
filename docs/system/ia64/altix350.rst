@@ -603,14 +603,39 @@ instrumentation, not a claim about the hardware's error response. Unknown
 registers never return successful zero reads or acknowledge writes as if they
 had implemented hardware effects.
 
-The CPU has no machine-check delivery here: no source says what a bus error
-latches in MSR 1640, 1558 and 1417, and the PAL's handler branches on those
-values. An access the processor cannot complete, such as a failed load or fetch
-or the IA-32 transition, is therefore a checkstop: the CPU logs the cause under
-``-d unimp``, halts, and QEMU reports a guest panic, so
-``-action panic=pause|shutdown|none`` decides what the VM does (the default
-shuts it down). Nothing else stops the VM on guest behaviour: a guest that loops
-on a fault or an MSR is the guest's business.
+A failed processor access is a checkstop, not a machine check. The CPU logs the
+cause under ``-d unimp``, halts, and QEMU reports a guest panic, so
+``-action panic=pause|shutdown|exit-failure|none`` decides what the VM does (the default
+shuts it down); this is an *approximation* (see the estimates table). Nothing
+else stops the VM on guest behaviour: a guest that loops on a fault or an MSR
+is the guest's business.
+
+What the stock PROM does with a machine check is read from its code in the
+chips notes (``software/firmware/snprom/pal-b-halts.md`` and
+``software/firmware/snprom/smp-and-timers.md`` in the chips repository, at
+``efef3fe93b11``); these are *software expectation* from the shipped image and
+the addresses are PROM image addresses. The PALE_CHECK vector (*inferred* to be
+``0xffffff90``) branches through ``0xffff8a80`` to a PAL_B stub at
+``0xffe88080``, which requires bit 56 of MSR 1640 and otherwise takes the error
+exit at ``0xffff8120`` with ``r30`` set to 2. The handler at ``0xffeca570``
+takes the pointer to the processor's minimum state from MSR 1640 bits 49:9; the
+chips notes match the layout it writes to SDM figure 11-2 (p. 2:304); that is
+the notes' reading, not checked against the SDM here. Stage 2 (``0xffe99bc0`` to ``0xffe9b6c0``)
+decodes the error from about ten MSRs: it reads MSR 1558 (bit 13 valid, bits
+20:16 a cause code, bits 25:21 a structure code) and MSR 1417, 1087, 1039, 1537,
+1282, 1279, 1779, 1168 and 1572. The path then calls SAL with function 1
+through the pointer at ``0xffffffe8`` (SAL_A at ``0xffc4e000``). SAL returns to
+the interrupted code through ``PAL_MC_RESUME`` (PAL_B index 26 at
+``0xffe9e3e0``) when its classification returns 4, which needs the processor
+state parameter's uncontained and corrected-error bits clear and the saved
+instruction pointer inside a registered no-fault range; a classification of 2
+reaches the same routine with a different argument (``new_context`` 1 where 4
+uses 0), and the notes do not say what it means.
+The model delivers none of this, because the values a bus error latches are
+*unknown*: the notes list the meaning of MSR 1640 bits 4, 7, 53, 56 and 57, of
+MSR 1558 and of MSR 1417 as not settled, and which combination an empty-slot
+read produces as unknown. A guest that expects to recover from a bus error sees
+a panic instead.
 
 The chips repository's PROM reset-path register list
 (``devices/shub/prom-reset.md``) records the SHub accesses found by reading the calls from reset to the
@@ -873,6 +898,10 @@ rating, the evidence for and against and what would settle it.
      - ``sgi-altix350.c``
      - Approximation. For: the window is a read view of the flash array bytes, so a write has nothing to act on. Against: on a real board a write there may be a flash command cycle, as it is through the SHub window. A flash programmed through the SHub under code the CPU is running from the window takes effect: the ``flash-program-reaches-running-code`` qtest shows the new instructions run under TCG, and fails if the flash model's translation-block flush is removed. Only a program is tested, not a sector erase.
      - A real board's behaviour for a store to the window.
+   * - A processor access that fails (a refused load or store, a failed fetch, the IA-32 transition) is a checkstop of the CPU, not a machine check
+     - ``target/ia64``
+     - *approximation*. For: the PAL's machine-check handler branches on MSR values (1640 bit 56, about ten MSRs) that no source gives for a bus error, so any delivered check would be a guess, and a guest that cannot recover is stopped visibly instead of running on with wrong data. Against: an error a guest could recover from would panic the VM instead. The PROM's own path (PALE_CHECK, SAL function 1, ``PAL_MC_RESUME`` for a contained check in a registered no-fault range) is a *software expectation* from the chips notes, with the entry address *inferred*.
+     - A capture or document of the MSR values (1640, 1558, 1417) a PIO bus error latches, or a trace of the PROM's PALE_CHECK path on a real board.
 
 Tracing SAL calls
 -----------------
