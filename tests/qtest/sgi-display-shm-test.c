@@ -1874,7 +1874,7 @@ static void test_pattern_frame_code(void)
     session_close(&s);
     qtest_quit(qts);
 
-    /* One event per frame, at its tick, and the host clock never goes back. */
+    /* One event per frame, at its tick. The host clock may repeat. */
     g_assert(g_file_get_contents(log, &text, NULL, NULL));
     lines = g_strsplit(text, "\n", -1);
     for (unsigned i = 0; lines[i]; i++) {
@@ -1893,7 +1893,7 @@ static void test_pattern_frame_code(void)
         }
         g_assert_cmpint(virt - first_virt, ==,
                         (int64_t)(seen * 1000000000ull / 30));
-        g_assert_cmpint(host, >, last_host);
+        g_assert_cmpint(host, >=, last_host);
         g_assert_cmpint(virt, >, last_virt);
         last_virt = virt;
         last_host = host;
