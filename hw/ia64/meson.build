@@ -4,7 +4,11 @@ ia64_ss.add(when: 'CONFIG_SGI_SHUB', if_true: files('sgi-shub.c', 'sgi-shub-uart
 # The x-shub1-test machine is a qtest fixture, so it is built with them only.
 ia64_ss.add(when: 'CONFIG_ALTIX350_TEST_FIXTURES',
             if_true: files('sgi-shub-test.c'))
-# The identity properties are the MIPS machines' own, built here too.
+# The identity properties and the flash store are the MIPS machines' own, and
+# the store's check reads the catalogue, so they are built here too.
 ia64_ss.add(when: 'CONFIG_ALTIX350',
-            if_true: files('sgi-altix350.c', '../mips/sgi/board-mac.c'))
+            if_true: [files('sgi-altix350.c', '../mips/sgi/board-mac.c',
+                            '../mips/sgi/machine-storage.c',
+                            '../mips/sgi/sgi-machines.c'),
+                      sgi_machines_embed_c])
 hw_arch += {'ia64': ia64_ss}

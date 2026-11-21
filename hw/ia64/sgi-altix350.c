@@ -14,6 +14,8 @@
 #include "qapi/error.h"
 #include "hw/core/boards.h"
 #include "system/blockdev.h"
+#include "system/block-backend.h"
+#include "block/block.h"
 #include "net/net.h"
 #include "net/util.h"
 #include "hw/core/qdev-properties.h"
@@ -36,6 +38,7 @@
 #include "hw/core/or-irq.h"
 #include "migration/vmstate.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
+#include "hw/mips/sgi/sgi-storage.h"
 
 #define TYPE_ALTIX350_MACHINE MACHINE_TYPE_NAME("altix350")
 OBJECT_DECLARE_SIMPLE_TYPE(Altix350State, ALTIX350_MACHINE)
@@ -67,6 +70,8 @@ struct Altix350State {
     /* mac= and emu-id=: the NIC's station address when -nic gives none. */
     char *mac;
     SGIBoardIdentityInputs identity;
+    /* Catalogue storage item name -> the block node it binds (node0-flash). */
+    GHashTable *storage;
 };
 
 static const VMStateDescription vmstate_altix350_tod = {
@@ -273,6 +278,32 @@ static void altix350_add_pic(Altix350State *s)
     }
 }
 
+/* A bound node0-flash holds the PROM itself, so -bios is refused beside it. */
+static void altix350_check_flash_node(Altix350State *s, bool pflash_drive)
+{
+    const char *name = MACHINE_GET_CLASS(s)->name;
+
+    /* Each call exits through error_fatal on failure. */
+    if (pflash_drive) {
+        error_setg(&error_fatal, "%s: node0-flash and -drive if=pflash both "
+                   "back the flash", name);
+    }
+    sgi_storage_check(s->storage, name, "altix350",
+                      sgi_model_find_topology("altix350"), &error_fatal);
+    sgi_storage_check_boot_prom(name, !!MACHINE(s)->firmware, 1, 1, false,
+                                &error_fatal);
+}
+
+/* A BlockBackend over the bound node; the flash attaches by its node name. */
+static BlockBackend *altix350_flash_node_blk(const char *node)
+{
+    BlockDriverState *bs = bdrv_lookup_bs(node, node, &error_fatal);
+    BlockBackend *blk = blk_new(qemu_get_aio_context(), 0, BLK_PERM_ALL);
+
+    blk_insert_bs(blk, bs, &error_fatal);
+    return blk;
+}
+
 static void altix350_init(MachineState *machine)
 {
     Altix350State *s = ALTIX350_MACHINE(machine);
@@ -280,6 +311,9 @@ static void altix350_init(MachineState *machine)
     g_autofree char *filename = NULL;
     g_autofree char *image = NULL;
     gsize image_len = 0;
+    const char *flash_node;
+    DriveInfo *flash_drive;
+    BlockBackend *flash_blk = NULL;
 
     if (machine->ram_size != 2 * GiB) {
         error_setg(&error_fatal,
@@ -290,18 +324,24 @@ static void altix350_init(MachineState *machine)
         error_setg(&error_fatal,
                    "altix350: direct kernel loading is not supported");
     }
-    if (!machine->firmware) {
-        error_setg(&error_fatal,
-                   "altix350: -bios must name the unmodified SHub 1 PROM");
-    }
-    filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
-    if (!filename) {
-        error_setg(&error_fatal, "altix350: cannot find -bios file '%s'",
-                   machine->firmware);
-    }
-    if (get_image_size(filename, NULL) != ALTIX350_FLASH_SIZE) {
-        error_setg(&error_fatal,
-                   "altix350: -bios requires a 6 MiB SHub 1 PROM image");
+    flash_node = sgi_storage_node(s->storage, "node0-flash");
+    flash_drive = drive_get(IF_PFLASH, 0, 0);
+    if (flash_node) {
+        altix350_check_flash_node(s, flash_drive != NULL);
+    } else {
+        if (!machine->firmware) {
+            error_setg(&error_fatal,
+                       "altix350: -bios must name the unmodified SHub 1 PROM");
+        }
+        filename = qemu_find_file(QEMU_FILE_TYPE_BIOS, machine->firmware);
+        if (!filename) {
+            error_setg(&error_fatal, "altix350: cannot find -bios file '%s'",
+                       machine->firmware);
+        }
+        if (get_image_size(filename, NULL) != ALTIX350_FLASH_SIZE) {
+            error_setg(&error_fatal,
+                       "altix350: -bios requires a 6 MiB SHub 1 PROM image");
+        }
     }
     if (!machine->cpu_type) {
         error_setg(&error_fatal,
@@ -371,16 +411,22 @@ static void altix350_init(MachineState *machine)
                              machine->ram_size);
     memory_region_add_subregion(memory, SGI_SHUB_LOCAL_MEMORY_BASE,
                                 &s->ram_local);
-    if (!g_file_get_contents(filename, &image, &image_len, NULL)) {
+    /* A flash backend holds its own firmware, so -bios is not read then. */
+    if (filename &&
+        !g_file_get_contents(filename, &image, &image_len, NULL)) {
         error_setg(&error_fatal, "altix350: failed to read the PROM image");
     }
+    if (flash_node) {
+        flash_blk = altix350_flash_node_blk(flash_node);
+    } else if (flash_drive) {
+        flash_blk = blk_by_legacy_dinfo(flash_drive);
+    }
     /* One flash: the reset window views its top 6 MiB, not the chip's mode. */
-    {
-        DriveInfo *dinfo = drive_get(IF_PFLASH, 0, 0);
-
-        sgi_shub_add_prom_flash(&s->shub,
-                                dinfo ? blk_by_legacy_dinfo(dinfo) : NULL,
-                                image, image_len, &error_fatal);
+    sgi_shub_add_prom_flash(&s->shub, flash_blk, image, image_len,
+                            &error_fatal);
+    if (flash_node) {
+        /* The flash holds its own reference to the node. */
+        blk_unref(flash_blk);
     }
     memory_region_init_ram_ptr(&s->flash_reset, OBJECT(machine),
                                "altix350.flash.reset", ALTIX350_FLASH_SIZE,
@@ -430,6 +476,8 @@ static void altix350_class_init(ObjectClass *oc, const void *data)
         "from emu-id)");
     sgi_board_identity_class_add_properties(oc,
         offsetof(Altix350State, identity), NULL);
+    sgi_storage_class_add_property(oc, offsetof(Altix350State, storage),
+                                   "node0-flash");
 }
 
 static const TypeInfo altix350_type = {

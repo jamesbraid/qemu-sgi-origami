@@ -63,8 +63,8 @@ Options
   Set a PROM variable in an Altix 350 flash, for example ``NoACPIIO=1``.
   It may be given more than once, and variables are stored in the order
   given. A name is at most 14 bytes and a value at most 47. A selection
-  whose flash holds no PROM variables refuses it; the catalogue does not
-  list the Altix 350's flash yet, so none takes it today.
+  whose flash holds no PROM variables refuses it; only ``altix350`` takes
+  it.
 
 .. option:: -h, --help
 

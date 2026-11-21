@@ -24,7 +24,7 @@ L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p",
                   "origin3800-128p", "origin3800-256p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "aa8cc7bacda0a1273adcdf952faa7c2b3becebd5e969e43f1846de7b4b6ec0fa"
+    "b6a33e311b5fb134e63345ded8bd9eb5e9040e41b39f353efa290c2da623b56d"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -606,8 +606,12 @@ class StorageTests(unittest.TestCase):
                     if len(same_total) > 1 else "")
                 if offering.get("launch-recipe") == "ia64":
                     self.assertEqual(offering["machine-options"], "altix350")
-                    self.assertEqual(offering["storage"], [])
-                    self.assertEqual(offering["init-inputs"], [])
+                    self.assertEqual(offering["storage"], [{
+                        "name": "node0-flash", "size": 8388608,
+                        "read-only": False, "initial": "boot-prom"}])
+                    self.assertEqual(offering["init-inputs"], [{
+                        "name": "boot-prom", "kind": "altix350-prom",
+                        "required": True}])
                     self.assertEqual(offering["firmware"]["kind"], "snprom")
                     continue
                 if offering.get("launch-recipe") == "ip32":

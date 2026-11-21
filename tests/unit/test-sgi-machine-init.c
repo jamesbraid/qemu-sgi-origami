@@ -101,6 +101,7 @@ static void test_machine_help(void)
         "origin300,topology=origin300,nodes=1",
         "fuel,topology=fuel,nodes=1",
         "octane,topology=octane,nodes=1",
+        "altix350",
     };
     ToolRun run = run_tool("--machine", "help", NULL);
     g_auto(GStrv) lines = NULL;
@@ -228,6 +229,10 @@ static void test_inputs_checked(void)
 #define IP35_PROM_SIZE 1476264
 /* The O2's flash array, which its PROM image fills exactly. */
 #define O2_PROM_SIZE (512 * 1024)
+/* The Altix 350's firmware, and its flash: the firmware and 2 MiB below it. */
+#define ALTIX_PROM_SIZE (6 * 1024 * 1024)
+#define ALTIX_FLASH_SIZE (8 * 1024 * 1024)
+#define ALTIX_FIRMWARE_OFFSET 0x200000
 
 typedef struct StoreSize {
     const char *name;
@@ -237,6 +242,7 @@ typedef struct StoreSize {
 static char *boot_prom;
 static char *ip35_prom;
 static char *o2_prom;
+static char *altix_prom;
 static char *io_prom;
 
 static char *make_image(const char *name, size_t size, uint8_t seed)
@@ -317,9 +323,10 @@ static char *create_and_check(const char *stem, const char *machine,
                 g_str_has_prefix(machine, "tezro,") ||
                 g_str_has_prefix(machine, "fuel,");
     bool o2 = g_str_has_prefix(machine, "o2");
+    bool altix = g_str_equal(machine, "altix350");
     const char *args[] = {
         "--machine", machine, "--boot-prom",
-        ip35 ? ip35_prom : o2 ? o2_prom : boot_prom,
+        ip35 ? ip35_prom : o2 ? o2_prom : altix ? altix_prom : boot_prom,
         dir, NULL, NULL, NULL,
     };
     ToolRun run;
@@ -769,6 +776,63 @@ static void test_o2_prom_size(void)
     g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
 }
 
+/*
+ * The Altix 350's 8 MiB flash: firmware at 0x200000, header at 0x10, the first
+ * --prom-variable record at 0x100, the rest erased.
+ */
+static void test_altix350(void)
+{
+    static const StoreSize stores[] = { { "node0-flash", ALTIX_FLASH_SIZE } };
+    g_autofree char *dir = create_and_check("altix", "altix350", false,
+                                            stores, ARRAY_SIZE(stores));
+    g_autofree char *variable_dir = scratch_path("altix-variable");
+    g_autofree char *firmware = NULL;
+    g_autofree uint8_t *flash = NULL;
+    g_autofree uint8_t *with_variable = NULL;
+    gsize size;
+    ToolRun run;
+
+    g_assert_true(g_file_get_contents(altix_prom, &firmware, &size, NULL));
+    g_assert_cmpuint(size, ==, ALTIX_PROM_SIZE);
+    flash = read_store(dir, "node0-flash", &size);
+    g_assert_cmpuint(size, ==, ALTIX_FLASH_SIZE);
+    assert_all(flash, 0, 0x10, 0xff);
+    g_assert_cmpmem(flash + 0x10, 8, "IOLP\x01\0\0\0", 8);
+    assert_all(flash, 0x18, ALTIX_FIRMWARE_OFFSET, 0xff);
+    g_assert_cmpmem(flash + ALTIX_FIRMWARE_OFFSET, ALTIX_PROM_SIZE, firmware,
+                    ALTIX_PROM_SIZE);
+
+    run = run_tool("--machine", "altix350", "--boot-prom", altix_prom,
+                   "--prom-variable", "NoACPIIO=1", variable_dir, NULL);
+    g_assert_true(run_succeeded(&run));
+    tool_run_clear(&run);
+    with_variable = read_store(variable_dir, "node0-flash", &size);
+    g_assert_cmpuint(size, ==, ALTIX_FLASH_SIZE);
+    g_assert_cmpmem(with_variable + 0x10, 8, "IOLP\x01\0\0\0", 8);
+    g_assert_cmphex(with_variable[0x100], ==, 1);
+    g_assert_cmpstr((char *)with_variable + 0x101, ==, "NoACPIIO");
+    g_assert_cmpstr((char *)with_variable + 0x110, ==, "1");
+    g_assert_cmpmem(with_variable + ALTIX_FIRMWARE_OFFSET, ALTIX_PROM_SIZE,
+                    firmware, ALTIX_PROM_SIZE);
+    remove_tree(variable_dir);
+    remove_tree(dir);
+}
+
+/* An Altix 350 firmware of any other size is refused, and nothing is made. */
+static void test_altix350_prom_size(void)
+{
+    g_autofree char *dir = scratch_path("altix-short");
+    ToolRun run = run_tool("--machine", "altix350", "--boot-prom", boot_prom,
+                           dir, NULL);
+    g_autofree char *message = g_strdup_printf(
+        "PROM image '%s' is %d bytes; the firmware is exactly %d", boot_prom,
+        PAYLOAD_SIZE, ALTIX_PROM_SIZE);
+
+    assert_refused(&run, message);
+    tool_run_clear(&run);
+    g_assert_false(g_file_test(dir, G_FILE_TEST_EXISTS));
+}
+
 /* An IP35 PROM the machine would refuse as -bios is refused here too. */
 static void test_ip35_prom_size(void)
 {
@@ -1055,6 +1119,9 @@ int main(int argc, char **argv)
     g_test_add_func("/sgi-machine-init/o2", test_o2);
     g_test_add_func("/sgi-machine-init/o2-prom-size", test_o2_prom_size);
     g_test_add_func("/sgi-machine-init/ip35-prom-size", test_ip35_prom_size);
+    g_test_add_func("/sgi-machine-init/altix350", test_altix350);
+    g_test_add_func("/sgi-machine-init/altix350-prom-size",
+                    test_altix350_prom_size);
     g_test_add_func("/sgi-machine-init/fuel", test_fuel);
     g_test_add_func("/sgi-machine-init/octane", test_octane);
     g_test_add_func("/sgi-machine-init/octane-container",
@@ -1073,15 +1140,18 @@ int main(int argc, char **argv)
     boot_prom = make_image("boot-prom", PAYLOAD_SIZE, 0x27);
     ip35_prom = make_image("ip35-prom", IP35_PROM_SIZE, 0x27);
     o2_prom = make_image("o2-prom", O2_PROM_SIZE, 0x31);
+    altix_prom = make_image("altix-prom", ALTIX_PROM_SIZE, 0x45);
     io_prom = make_image("io-prom", IO_PROM_SIZE, 0x06);
     ret = g_test_run();
     g_assert_cmpint(g_unlink(boot_prom), ==, 0);
     g_assert_cmpint(g_unlink(io_prom), ==, 0);
     g_assert_cmpint(g_unlink(ip35_prom), ==, 0);
     g_assert_cmpint(g_unlink(o2_prom), ==, 0);
+    g_assert_cmpint(g_unlink(altix_prom), ==, 0);
     g_free(boot_prom);
     g_free(ip35_prom);
     g_free(o2_prom);
+    g_free(altix_prom);
     g_free(io_prom);
 
     g_assert_cmpint(g_rmdir(scratch), ==, 0);

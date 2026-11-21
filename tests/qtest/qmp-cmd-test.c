@@ -64,9 +64,10 @@ static int query_error_class(const char *cmd)
         !g_str_has_prefix(qtest_get_arch(), "mips")) {
         return ERROR_CLASS_GENERIC_ERROR;
     }
-    /* Likewise for the compiled SGI machine catalogue. */
+    /* Likewise for the compiled SGI machine catalogue, which ia64 holds too. */
     if (!strcmp(cmd, "query-sgi-machines") &&
-        !g_str_has_prefix(qtest_get_arch(), "mips")) {
+        !g_str_has_prefix(qtest_get_arch(), "mips") &&
+        strcmp(qtest_get_arch(), "ia64")) {
         return ERROR_CLASS_GENERIC_ERROR;
     }
 

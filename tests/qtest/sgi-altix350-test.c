@@ -22,13 +22,28 @@ static unsigned unimp_serial;
 static unsigned unimp_seen;
 
 /* Each machine logs what it refuses to a file; assert_unmodelled() reads it. */
-static QTestState *altix350_start_bios(const char *bios, const char *extra)
+static void unimp_log_new(void)
 {
     g_free(unimp_log);
     unimp_log = g_strdup_printf("%s/unimp-%u.log", tmp_dir, unimp_serial++);
     unimp_seen = 0;
+}
+
+static QTestState *altix350_start_bios(const char *bios, const char *extra)
+{
+    unimp_log_new();
     return qtest_initf("-machine altix350 -bios %s -d unimp -D %s %s", bios,
                        unimp_log, extra);
+}
+
+/* The catalogue's node0-flash bound to @file: the flash is the PROM. */
+static QTestState *altix350_start_bound(const char *file)
+{
+    unimp_log_new();
+    return qtest_initf("-machine altix350,node0-flash=node0-flash "
+                       "-blockdev driver=raw,node-name=node0-flash,"
+                       "file.driver=file,file.filename=%s -d unimp -D %s",
+                       file, unimp_log);
 }
 
 static QTestState *altix350_start_with(const char *extra)
@@ -342,22 +357,15 @@ static void test_flash_drive_boots(void)
     g_unlink(path);
 }
 
-/*
- * A flash file the initial-flash builder makes shows its variable area
- * through the SHub window and the firmware at the reset window.
- */
-static void test_flash_drive_variables(void)
+/* A temporary 8 MiB flash file the builder made with NoACPIIO=1. */
+static char *make_flash_file(void)
 {
-    const uint64_t flash = SHUB_LOCAL_MMR + 0x7ff800000ULL;
     static const SGIAltix350PromVariable variables[] = {
         { "NoACPIIO", "1" },
     };
     g_autofree char *firmware = NULL;
     g_autofree uint8_t *file = g_malloc(8 * MiB);
-    g_autofree uint8_t *seen = g_malloc(0x200);
-    g_autofree char *path = NULL;
-    g_autofree char *args = NULL;
-    QTestState *qts;
+    char *path = NULL;
     gsize length;
     int fd = g_file_open_tmp("altix350-vars-XXXXXX", &path, NULL);
 
@@ -369,9 +377,20 @@ static void test_flash_drive_variables(void)
                                              (uint8_t *)firmware, length,
                                              variables, 1, &error_abort));
     g_assert_true(g_file_set_contents(path, (char *)file, 8 * MiB, NULL));
-    args = g_strdup_printf("-drive if=pflash,format=raw,file=%s", path);
-    qts = altix350_start_with(args);
+    return path;
+}
 
+/*
+ * The variable area shows through the SHub window and the firmware, the
+ * file's own image, at the reset window.
+ */
+static void assert_variable_flash(QTestState *qts)
+{
+    const uint64_t flash = SHUB_LOCAL_MMR + 0x7ff800000ULL;
+    g_autofree uint8_t *seen = g_malloc(0x200);
+    g_autofree char *firmware = NULL;
+
+    g_assert_true(g_file_get_contents(image_path, &firmware, NULL, NULL));
     qtest_memread(qts, flash, seen, 0x200);
     g_assert_cmpmem(seen, 16, "\xff\xff\xff\xff\xff\xff\xff\xff"
                     "\xff\xff\xff\xff\xff\xff\xff\xff", 16);
@@ -383,8 +402,81 @@ static void test_flash_drive_variables(void)
     g_assert_cmphex(qtest_readq(qts, flash + 0x200000), ==,
                     qtest_readq(qts, FLASH_BASE));
     g_assert_cmphex(qtest_readq(qts, FLASH_BASE), ==, ldq_le_p(firmware));
+}
+
+/*
+ * A flash file the initial-flash builder makes shows its variable area
+ * through the SHub window and the firmware at the reset window.
+ */
+static void test_flash_drive_variables(void)
+{
+    g_autofree char *path = make_flash_file();
+    g_autofree char *args = g_strdup_printf(
+        "-drive if=pflash,format=raw,file=%s", path);
+    QTestState *qts = altix350_start_with(args);
+
+    assert_variable_flash(qts);
     qtest_quit(qts);
     g_unlink(path);
+}
+
+/*
+ * A bound node0-flash is the machine's flash with no -bios, and what the
+ * firmware programs reaches the file.
+ */
+static void test_node0_flash_boots(void)
+{
+    const uint64_t flash = SHUB_LOCAL_MMR + 0x7ff800000ULL;
+    g_autofree char *path = make_flash_file();
+    g_autofree char *after = NULL;
+    QTestState *qts = altix350_start_bound(path);
+    gsize length;
+
+    assert_variable_flash(qts);
+    /* Program one word of the erased area through the AMD command cycles. */
+    qtest_writew(qts, flash + 2 * 0x555, 0xaa);
+    qtest_writew(qts, flash + 2 * 0x2aa, 0x55);
+    qtest_writew(qts, flash + 2 * 0x555, 0xa0);
+    qtest_writew(qts, flash + 0x1000, 0x1234);
+    g_assert_cmphex(qtest_readw(qts, flash + 0x1000), ==, 0x1234);
+    qtest_quit(qts);
+    g_assert_true(g_file_get_contents(path, &after, &length, NULL));
+    g_assert_cmpuint(length, ==, 8 * MiB);
+    g_assert_cmphex(lduw_le_p(after + 0x1000), ==, 0x1234);
+    g_unlink(path);
+}
+
+/* The machine boots on the state qemu-sgi-machine-init creates. */
+static void test_node0_flash_from_tool(void)
+{
+    const char *tool = g_getenv("QTEST_QEMU_SGI_MACHINE_INIT");
+    g_autofree char *dir = g_build_filename(tmp_dir, "state", NULL);
+    g_autofree char *file = g_build_filename(dir, "node0-flash.raw", NULL);
+    g_autofree char *firmware = NULL;
+    g_autofree char *window = g_malloc(FLASH_SIZE);
+    g_autofree char *err = NULL;
+    const char *argv[] = { tool, "--machine", "altix350", "--boot-prom",
+                           image_path, "--prom-variable", "NoACPIIO=1", dir,
+                           NULL };
+    QTestState *qts;
+    int status;
+
+    g_assert_nonnull(tool);
+    g_assert_true(g_spawn_sync(NULL, (char **)argv, NULL, G_SPAWN_DEFAULT,
+                               NULL, NULL, NULL, &err, &status, NULL));
+    if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+        g_printerr("%s", err);
+    }
+    g_assert_true(WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    g_assert_true(g_file_get_contents(image_path, &firmware, NULL, NULL));
+
+    qts = altix350_start_bound(file);
+    assert_variable_flash(qts);
+    qtest_bufread(qts, FLASH_BASE, window, FLASH_SIZE);
+    g_assert_cmpmem(window, FLASH_SIZE, firmware, FLASH_SIZE);
+    qtest_quit(qts);
+    g_assert_cmpint(g_unlink(file), ==, 0);
+    g_assert_cmpint(g_rmdir(dir), ==, 0);
 }
 
 static void test_unknown_read(void)
@@ -450,6 +542,37 @@ static void test_missing_bios(void)
 {
     expect_startup_error("-bios /nonexistent/altix350.bin",
                          "cannot find -bios file");
+}
+
+/* Both stores, -bios beside a bound one and a wrong size are refused. */
+static void test_node0_flash_refusals(void)
+{
+    g_autofree char *path = make_flash_file();
+    g_autofree char *short_path = g_build_filename(tmp_dir, "short.raw", NULL);
+    g_autofree char *bound = g_strdup_printf(
+        "-machine altix350,node0-flash=node0-flash -blockdev "
+        "driver=raw,node-name=node0-flash,file.driver=file,file.filename=%s",
+        path);
+    g_autofree char *args = NULL;
+
+    args = g_strdup_printf("%s -drive if=pflash,format=raw,file=%s", bound,
+                           path);
+    expect_startup_error(args, "node0-flash and -drive if=pflash both back "
+                         "the flash");
+    g_free(args);
+    args = g_strdup_printf("%s -bios %s", bound, image_path);
+    expect_startup_error(args, "-bios has no unbound boot flash to fill");
+    g_free(args);
+    g_assert_true(g_file_set_contents(short_path, "short", 5, NULL));
+    args = g_strdup_printf(
+        "-machine altix350,node0-flash=node0-flash -blockdev "
+        "driver=raw,node-name=node0-flash,file.driver=file,file.filename=%s",
+        short_path);
+    expect_startup_error(args, "node0-flash is 5 bytes; it must be exactly "
+                         "8388608");
+    expect_startup_error("", "-bios must name the unmodified SHub 1 PROM");
+    g_unlink(short_path);
+    g_unlink(path);
 }
 
 static void test_wrong_cpu(void)
@@ -2980,6 +3103,11 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-altix350/flash-drive-boots", test_flash_drive_boots);
     qtest_add_func("/sgi-altix350/flash-drive-variables",
                    test_flash_drive_variables);
+    qtest_add_func("/sgi-altix350/node0-flash-boots", test_node0_flash_boots);
+    qtest_add_func("/sgi-altix350/node0-flash-from-tool",
+                   test_node0_flash_from_tool);
+    qtest_add_func("/sgi-altix350/node0-flash-refusals",
+                   test_node0_flash_refusals);
     qtest_add_func("/sgi-altix350/fetch-in-flash-command-mode",
                    test_fetch_with_flash_in_command_mode);
     qtest_add_func("/sgi-altix350/flash-program-reaches-running-code",

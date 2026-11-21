@@ -42,7 +42,13 @@
       },
       "hostid-source": "address",
       "id": "altix350.1",
-      "init-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "altix350-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
@@ -126,7 +132,14 @@
       "setting-groups": [],
       "settings": [],
       "smp": 1,
-      "storage": [],
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 8388608
+        }
+      ],
       "supported-guests": [
         "linux"
       ],
@@ -175,7 +188,13 @@
       },
       "hostid-source": "address",
       "id": "altix350.2",
-      "init-inputs": [],
+      "init-inputs": [
+        {
+          "kind": "altix350-prom",
+          "name": "boot-prom",
+          "required": true
+        }
+      ],
       "install-media": [
         "disk-image"
       ],
@@ -259,7 +278,14 @@
       "setting-groups": [],
       "settings": [],
       "smp": 2,
-      "storage": [],
+      "storage": [
+        {
+          "initial": "boot-prom",
+          "name": "node0-flash",
+          "read-only": false,
+          "size": 8388608
+        }
+      ],
       "supported-guests": [
         "linux"
       ],

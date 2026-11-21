@@ -528,6 +528,9 @@ _IP32_FLASH_STATE_BYTES = 512
 # The BASEIO PROM flash part (hw/mips/sgi/baseio-flash.c), on the boards
 # that fit one.
 _IO_FLASH_BYTES = 0x100000
+# include/hw/ia64/sgi-shub.h's SGI_SHUB_PROM_FLASH_SIZE: the Altix 350's one
+# flash, the 6 MiB firmware plus the 2 MiB of variables below it.
+_IA64_FLASH_BYTES = 8 * 1024 * 1024
 # include/hw/misc/sgi-bedrock-flash.h's SGI_BEDROCK_FLASH_SIZE.
 _EXPANSION_FLASH_BYTES = 16 * 1024 * 1024
 _IO_FLASH_BOARD_KINDS = {"BASEIO", "BASEIO_G", "GIGACHANNEL"}
@@ -535,6 +538,9 @@ _BOOT_PROM_KINDS = {
     "SN0": "ip27-prom", "SN1": "ip35-prom",
     "IP30": "ip30-prom", "IP32": "ip32-prom", "IA64": "snprom",
 }
+# The init-input kind that builds each generation's boot flash; the Altix
+# 350's differs from its firmware kind because its store holds variables too.
+_INIT_INPUT_KINDS = {**_BOOT_PROM_KINDS, "IA64": "altix350-prom"}
 
 
 def _scsi_adapters_for(topology: dict) -> list[dict]:
@@ -969,7 +975,8 @@ def _storage_for(topology: dict, harness: dict, product: dict,
     """
     generation = topology["generation"]
     if generation == "IA64":
-        return []
+        return [{"name": "node0-flash", "size": _IA64_FLASH_BYTES,
+                 "read-only": False, "initial": "boot-prom"}]
     if generation == "IP32":
         # The O2's boot flash is an AT29C040A array and its state record
         # (include/hw/mips/sgi/o2-rom.h), then the DS1685's RAM and clock
@@ -1056,10 +1063,8 @@ def _storage_for(topology: dict, harness: dict, product: dict,
 def _init_inputs_for(topology: dict, storage: list[dict]) -> list[dict]:
     """The images creating a new machine's storage needs, one per
     `initial` source its `storage` list names."""
-    if topology["generation"] == "IA64":
-        return []
     inputs = [{"name": "boot-prom",
-               "kind": _BOOT_PROM_KINDS[topology["generation"]],
+               "kind": _INIT_INPUT_KINDS[topology["generation"]],
                "required": True}]
     if any(item["initial"] == "io-prom" for item in storage):
         inputs.append({"name": "io-prom", "kind": "io6-prom",

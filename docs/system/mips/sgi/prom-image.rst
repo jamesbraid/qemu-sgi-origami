@@ -227,6 +227,11 @@ identifiers, each an *approximation*.
      - 1 MiB, 16 bits wide, 64 KiB sectors
      - ``0x00b0``/``0x66a8``
      - ``node0-flash``, 1 MiB
+   * - ``altix350`` (:ref:`altix350`)
+     - ``cfi.pflash02``, behind the SHub
+     - 8 MiB, 16 bits wide, 64 KiB sectors
+     - ``0x0001``/``0x227e``, unlock ``0x555``/``0x2aa``
+     - ``node0-flash``, 8 MiB
 
 Every machine applies one binding rule (``machine-storage.c``):
 
@@ -241,6 +246,11 @@ Every machine applies one binding rule (``machine-storage.c``):
   block layer rounds up to a sector.
 - ``-drive if=pflash,unit=N`` still binds node ``N`` on the SN machines.
   Naming both forms for one node is refused.
+
+The Altix 350 applies the first three rules to its one flash. A
+``-drive if=pflash`` file does not count as a bound store there: that
+hand-run form still requires ``-bios``, which it does not use, and it is
+refused beside ``node0-flash``.
 
 The Octane refuses ``-kernel``. The PROM boots the operating system.
 

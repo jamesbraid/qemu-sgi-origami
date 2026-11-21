@@ -127,6 +127,9 @@ slow_qtests = {
   'sgi-identity-props-test': 300,
   # 49 s alone at load average 120 against the 60 s default: three times that.
   'ia64-cpu-test': 150,
+  # 57 to 116 s at load average 120 to 260 against the 60 s default: three
+  # times the slowest.
+  'sgi-altix350-test': 360,
   # 256.6 s in a four-process run of the queue's third qtest share, in the
   # CI container, 2026-11-10; three times that, rounded up.
   'sgi-synthetic-serial-test': 780,

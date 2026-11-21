@@ -62,15 +62,27 @@ from snprom 10.54 build 70399, SAL 5.04. Its SHA256 is
 Product compatibility is vendor intent, not boot proof. No firmware bytes
 are distributed with QEMU.
 
-The model requires ``-bios`` and exactly 2 GiB of RAM. It rejects direct
-kernel loading. Firmware size is checked, but image identity remains the
-caller's responsibility.
+The model requires exactly 2 GiB of RAM and, unless ``node0-flash`` is bound
+(below), ``-bios``. It rejects direct kernel loading. Firmware size is
+checked, but image identity remains the caller's responsibility.
 
 The SHub's 8 MiB PROM flash is RAM-backed by default: it starts erased (all
 ones) with the firmware image copied in at offset ``0x200000``, and what the
-firmware writes is lost when QEMU exits. ``-drive if=pflash,format=raw,file=...``
-backs it with an 8 MiB file instead, so the firmware's changes persist. The
-file is used as it is and the image is not copied into it.
+firmware writes is lost when QEMU exits. Two options back it with an 8 MiB
+file instead, so the firmware's changes persist. Neither copies the image into
+the file, which is used as it is.
+
+``-drive if=pflash,format=raw,file=...`` is the hand-run form. It still
+requires ``-bios``, which the machine reads and checks but does not use.
+
+``node0-flash=NODE`` is the catalogue's store, as on the other SGI machines:
+``NODE`` names a block node of exactly 8 MiB (``query-sgi-machines`` lists the
+store, and ``qemu-sgi-machine-init`` creates it with the firmware and the
+variable area built in). The machine boots from it with no ``-bios``, and
+refuses ``-bios`` beside it, because the bound flash already holds the PROM.
+It also refuses ``node0-flash`` together with ``-drive if=pflash``, and a node
+of any other size. A launcher binds it with ``-M altix350,node0-flash=node0-flash
+-blockdev driver=raw,node-name=node0-flash,file.driver=file,file.filename=...``.
 
 A flash file therefore needs the firmware and the PROM's variable area built
 into it. The PROM keeps its variables, such as ``NoACPIIO``, in the 2 MiB
@@ -89,9 +101,15 @@ erased. There is no checksum and no length field. The blank image
 is the firmware at ``0x200000``, block 0 with the generation left erased and
 the variables in order from ``0x100``, and every other byte ``0xff``. The
 ``sgi_altix350_initial_flash`` function in ``hw/mips/sgi/initial-flash.c``
-builds exactly this, and ``qemu-sgi-machine-init --prom-variable`` will use it
-once the machine catalogue lists the flash. EFI boot entries are in a separate
-EFI store that this image does not hold.
+builds exactly this, and ``qemu-sgi-machine-init`` uses it for ``node0-flash``,
+with each ``--prom-variable`` as a record. An image the tool builds is not what
+the unbacked machine holds: that one leaves the variable area erased. EFI boot
+entries are in a separate EFI store that this image does not hold.
+
+The EFI variable store at ``0x100000`` to ``0x1fffff`` is rewritten on every
+boot, so a persistent flash, bound or ``-drive``, changes under every plain
+boot (*observed*, see below). Keep a copy of the file to start from the same
+state again.
 
 On the model, with a stock PROM and an image built that way holding
 ``NoACPIIO=1``, the DSDT that the XSDT reaches has zero bytes where the AML
@@ -861,6 +879,14 @@ rating, the evidence for and against and what would settle it.
      - ``sgi-shub.c``
      - Approximation. PIO writes complete synchronously, the lock rule follows the header's wording only, no failure is modelled, and the reset value is not sourced.
      - The registers' definitions or a trace of a real SHub.
+   * - A flash file built with the PROM's variable area (the header at ``0x10``, records of 64 bytes from ``0x100``) is read as the PROM's own variables
+     - ``initial-flash.c``
+     - Inferred from the chips repository's reader notes, not measured. The text above has what single runs observed and what stays unknown.
+     - A capture of a real flash's variable area, or the PROM's writes to a blank one.
+   * - The EFI variable store at ``0x100000`` to ``0x1fffff`` of a persistent flash is rewritten on every boot
+     - the PROM
+     - Observed: sixteen 64 KiB blocks, each starting with ``vbrl`` and a block number, with a counter record appended on every boot.
+     - A run that boots the same persistent file twice and compares the store.
    * - The PROM flash reports AMD manufacturer and device ID words ``0x0001`` and ``0x227e``
      - ``sgi-shub.c``
      - Inferred: the PROM keeps but never compares them.
@@ -1012,6 +1038,17 @@ IOC4, a persistent 8 MiB PROM flash image and a BCM5701 network adapter:
        -drive if=pflash,file=flash.img,format=raw \
        -nic user,model=bcm570x
 
+The same flash as a catalogue store, created by the tool and bound by name,
+with no ``-bios``:
+
+.. code-block:: shell
+
+   qemu-sgi-machine-init --machine altix350 --boot-prom shub1snprom.bin \
+       --prom-variable NoACPIIO=1 vm0
+   qemu-system-ia64 -M altix350,node0-flash=node0-flash -m 2G \
+       -blockdev driver=raw,node-name=node0-flash,file.driver=file,file.filename=vm0/node0-flash.raw \
+       -display none -serial stdio
+
 Tests
 -----
 
@@ -1020,6 +1057,10 @@ without executing its test data as firmware. It also covers the machine's
 wiring: the SHub and PIC interrupt routes, the IOC4's serial, IDE and
 time-of-day paths, the ISP12160 and BCM5701 adapters' placement and DMA, and
 that firmware writes and unsupported accesses are refused and logged.
+The same test covers the flash options: a ``-drive if=pflash`` file and a bound
+``node0-flash`` each show a built file's variable area and firmware, a word
+programmed through the bound flash reaches its file, the machine boots on the
+state ``qemu-sgi-machine-init`` creates, and the refusals above hold.
 ``tests/qtest/sgi-shub-test.c`` covers the SHub's junk-bus UART, flash,
 comparator gate, stored cells and two processors on a fixture machine, and the
 machine test above the rest of its registers. ``tests/qtest/ia64-cpu-test.c``

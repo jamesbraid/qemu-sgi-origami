@@ -44,9 +44,15 @@ class IA64CatalogueTests(unittest.TestCase):
             self.assertEqual(offering["clock"], {
                 "icount-shifts": [], "icount-off": True, "rtc": ["host"],
                 "default-rtc": "host", "vm-needs-icount": False})
-            for field in ("init-inputs", "storage", "resources", "settings",
-                          "setting-groups"):
+            for field in ("resources", "settings", "setting-groups"):
                 self.assertEqual(offering[field], [])
+            # The one 8 MiB flash: the 6 MiB firmware and the PROM's variables.
+            self.assertEqual(offering["storage"], [{
+                "name": "node0-flash", "size": 8388608,
+                "read-only": False, "initial": "boot-prom"}])
+            self.assertEqual(offering["init-inputs"], [{
+                "name": "boot-prom", "kind": "altix350-prom",
+                "required": True}])
             self.assertEqual(offering["firmware"]["argument"], "-bios")
             self.assertEqual(offering["firmware"]["size"], 6291456)
             self.assertEqual(
