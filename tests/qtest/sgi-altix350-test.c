@@ -362,18 +362,41 @@ static void test_unknown_write(void)
     qtest_quit(qts);
 }
 
-/* Start the machine expecting a startup failure with this stderr text. */
+/*
+ * Expect a startup failure with this stderr text. A machine that starts
+ * gets "quit" and exits 0, so a regression fails instead of hanging.
+ */
 static void expect_startup_error(const char *args, const char *text)
 {
     g_autofree char *cmd = g_strdup_printf("%s -machine altix350 -display none "
-                                           "-S %s", getenv("QTEST_QEMU_BINARY"),
-                                           args);
-    g_autofree char *err = NULL;
-    gint status = 0;
+                                           "-S -monitor stdio %s",
+                                           getenv("QTEST_QEMU_BINARY"), args);
+    static const char quit[] = "quit\n";
+    g_auto(GStrv) argv = NULL;
+    GSpawnFlags flags = G_SPAWN_DO_NOT_REAP_CHILD | G_SPAWN_STDOUT_TO_DEV_NULL;
+    g_autoptr(GString) err = g_string_new(NULL);
+    char buf[512];
+    GPid pid;
+    int in_fd, err_fd, status;
+    ssize_t n;
 
-    g_assert_true(g_spawn_command_line_sync(cmd, NULL, &err, &status, NULL));
-    g_assert_cmpint(status, !=, 0);
-    g_assert_nonnull(strstr(err, text));
+    g_assert_true(g_shell_parse_argv(cmd, NULL, &argv, NULL));
+    g_assert_true(g_spawn_async_with_pipes(NULL, argv, NULL, flags, NULL, NULL,
+                                           &pid, &in_fd, NULL, &err_fd, NULL));
+    /* A refused start exits first, so a short write is no failure. */
+    signal(SIGPIPE, SIG_IGN);
+    n = qemu_write_full(in_fd, quit, strlen(quit));
+    g_assert_cmpint(n, <=, strlen(quit));
+    close(in_fd);
+    while ((n = read(err_fd, buf, sizeof(buf))) > 0) {
+        g_string_append_len(err, buf, n);
+    }
+    close(err_fd);
+    g_assert_cmpint(waitpid(pid, &status, 0), ==, pid);
+    g_spawn_close_pid(pid);
+    g_assert_true(WIFEXITED(status));
+    g_assert_cmpint(WEXITSTATUS(status), !=, 0);
+    g_assert_nonnull(strstr(err->str, text));
 }
 
 static void test_missing_bios(void)
