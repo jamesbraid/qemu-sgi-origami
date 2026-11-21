@@ -2295,9 +2295,9 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^qemu:docs/system/mips/sgi/(hardware/)?[a-z0-9][a-z0-9-]*\\.rst(#[a-z0-9][a-z0-9-]*)?$"
+            "pattern": "^qemu:docs/system/(mips/sgi/(hardware/)?|ia64/)[a-z0-9][a-z0-9-]*\\.rst(#[a-z0-9][a-z0-9-]*)?$"
           },
-          "description": "Behavior contracts for this hardware component: a page under docs/system/mips/sgi, written qemu:docs/system/mips/sgi/<page>.rst or qemu:docs/system/mips/sgi/hardware/<page>.rst with an optional #label."
+          "description": "Behavior contracts for this hardware component: a page under docs/system/mips/sgi or docs/system/ia64, written qemu:docs/system/mips/sgi/<page>.rst, qemu:docs/system/mips/sgi/hardware/<page>.rst or qemu:docs/system/ia64/<page>.rst with an optional #label."
         },
 
         "identity": {

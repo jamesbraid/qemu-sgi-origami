@@ -71,6 +71,12 @@ class IA64CatalogueTests(unittest.TestCase):
                 "default-address": "08:00:69:e1:00:00",
                 "default-provenance": "approximated"})
 
+    def test_shared_asics_cite_contract_pages(self):
+        components = {c["id"]: c for c in self.model()["components"]}
+        for identifier in ("shub", "pic", "ioc4", "scsi", "ethernet"):
+            with self.subTest(component=identifier):
+                self.assertTrue(components[identifier]["datasheet_contracts"])
+
     def test_fixed_inventory_and_population_are_required(self):
         for identifier in ("shub", "pic", "scsi", "ethernet", "cpu1"):
             model = self.model()

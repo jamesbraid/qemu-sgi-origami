@@ -132,7 +132,8 @@ Regenerate ``references.rst`` from it with
 ``scripts/sgi_model/references_doc.py``. Cite a public driver by tree,
 commit and path.
 
-Model YAML cites pages as ``qemu:docs/system/mips/sgi/<page>.rst#label``.
+Model YAML cites pages as ``qemu:docs/system/mips/sgi/<page>.rst#label``,
+or ``qemu:docs/system/ia64/<page>.rst#label`` for an IA-64 page.
 When content moves, keep its label and repoint the YAML.
 
 Sources
