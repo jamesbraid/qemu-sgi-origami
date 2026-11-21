@@ -28,6 +28,7 @@ typedef struct IA64CacheLine {
 } IA64CacheLine;
 
 static void l3_store(CPUIA64State *env, uint64_t pa);
+static void l3_flush(IA64CPU *cpu, uint64_t pa);
 
 /* Hsiao (39,32) columns: check bit i is the parity of data32 & columns[i]. */
 static const uint32_t hsiao_columns[7] = {
@@ -186,6 +187,7 @@ void ia64_cache_array_flush(CPUIA64State *env, uint64_t pa)
     while (cpu->ca_lines && (hit = tag_hit(cpu, pa, &column))) {
         hit->has_data = false;
     }
+    l3_flush(cpu, pa);
 }
 
 /* An access to a set holding a valid tag with wrong parity logs it. */
@@ -443,6 +445,16 @@ static void l3_store(CPUIA64State *env, uint64_t pa)
 
         line->data[pa >> 3 & 15] = ldq_le_p(buf);
         line->check[g] = l3_granule_check(line->data + 4 * g);
+    }
+}
+
+/* fc drops every matching second-level line's data too; tag and state stay. */
+static void l3_flush(IA64CPU *cpu, uint64_t pa)
+{
+    IA64L3Line *line;
+
+    while (cpu->ca_l3 && (line = l3_hit(cpu, pa))) {
+        line->has_data = false;
     }
 }
 

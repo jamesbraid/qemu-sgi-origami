@@ -2179,6 +2179,49 @@ static void test_madison_cache_array_fc_drops_every_column(void)
     g_assert_cmphex(out[1], ==, 0x1111);
 }
 
+/* fc drops a second-level line's data too; @ways ways hold the same tag. */
+static void l3_fc_case(unsigned ways)
+{
+    CaProgram p;
+    uint64_t out[2];
+
+    ca_begin(&p, "");
+    qtest_writeq(p.s, 0x3000, 0x1111);
+    qtest_writeq(p.s, 0x1c10, 0x3000);
+    for (unsigned way = 0; way < ways; way++) {
+        ca_msr_set(&p, 1544, 0x60 | way << 11);
+        ca_msr_set(&p, 1600, way ? 0xcafe : 0xdeadbeefULL);
+        ca_msr_set(&p, 1546, 0x8c980052c0000000ULL); /* array 4, code made */
+        ca_mword(&p);
+        ca_msr_set(&p, 1545, 3);                     /* tag 0, state 3 */
+        ca_msr_set(&p, 1546, 0x8cc0001800000000ULL); /* array 6 */
+        ca_mword(&p);
+    }
+    step(p.s, &p.at, adds(5, 0x1c10, 0));
+    step(p.s, &p.at, ld8(8, 5));
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    step(p.s, &p.at, (UINT64_C(1) << 37) | (UINT64_C(0x30) << 27) |
+                     (8 << 20));                                    /* fc r8 */
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    ca_finish(&p, 2, out);
+    g_assert_cmphex(out[0], ==, 0xdeadbeefULL);
+    g_assert_cmphex(out[1], ==, 0x1111);
+}
+
+static void test_madison_l3_array_fc_drops_line_data(void)
+{
+    l3_fc_case(1);
+}
+
+static void test_madison_l3_array_fc_drops_every_way(void)
+{
+    l3_fc_case(2);
+}
+
 /*
  * A load from a set holding a valid tag with bad parity logs 0x4005 in MSR 1509
  * (PAL sub-test 6, 0xfff03e80).
@@ -6322,6 +6365,10 @@ int main(int argc, char **argv)
                    test_madison_cache_array_fc_i_keeps_line_data);
     qtest_add_func("ia64/madison-cache-array-fc-drops-every-column",
                    test_madison_cache_array_fc_drops_every_column);
+    qtest_add_func("ia64/madison-l3-array-fc-drops-line-data",
+                   test_madison_l3_array_fc_drops_line_data);
+    qtest_add_func("ia64/madison-l3-array-fc-drops-every-way",
+                   test_madison_l3_array_fc_drops_every_way);
     qtest_add_func("ia64/madison-cache-array-tag",
                    test_madison_cache_array_tag);
     qtest_add_func("ia64/madison-cache-array-tag-hit",
