@@ -73,6 +73,7 @@ void ia64_cache_array_restart(CPUIA64State *env);
 uint64_t ia64_cache_array_load(CPUIA64State *env, uint64_t pa, uint64_t value,
                                unsigned size);
 void ia64_cache_array_store(CPUIA64State *env, uint64_t pa);
+void ia64_cache_array_flush(CPUIA64State *env, uint64_t pa);
 void ia64_cache_array_reset(IA64CPU *cpu);
 void ia64_cpu_drop_l3_ways(IA64CPU *cpu);
 void ia64_cache_array_msr1504(CPUIA64State *env, uint64_t old,

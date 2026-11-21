@@ -436,6 +436,21 @@ replacement mask on that write. All of this is read from sub-test 8
 (``0xfff04730``) and rests on one firmware image and the PAL's own reading of
 the fields.
 
+``fc`` drops the data of every line it hits on the executing CPU, in every
+column that holds the tag, so later loads read RAM; the tag stays
+(*approximation*; the table below has the limits). The Itanium SDM (Rev. 2.3,
+Vol. 3, ``fc``, page 3:61) has ``fc`` invalidate the line from all levels of
+the processor cache hierarchy, broadcast that through the coherence domain and
+write an inconsistent line to memory first (*established*). It leaves ``fc.i``
+free either way (not required to invalidate or write back the line, but may);
+the model's choice, that ``fc.i`` does not drop a modelled line, is an
+*approximation*. That the modelled lines are a level
+``fc`` reaches is *inferred*: the PAL's self-test arrays are test structures,
+not a documented cache level. Without the drop, a line left by the PAL's
+self-test keeps answering loads with test data after a loader has written the
+memory under it, since the model's lines see neither DMA nor virtual-mode
+stores. Second-level lines are not dropped.
+
 A tag is *bad* when it is valid and its four stored parity bits differ from
 the parity of its fields: bit *i* covers tag bits 7:0, 16:8, 25:17 and 34:26
 for *i* = 0 to 3, and bit 0 also covers the valid bit. Any load or store to a
@@ -761,8 +776,12 @@ rating, the evidence for and against and what would settle it.
      - The register's description, or a hardware read on a 3 MiB part.
    * - Cache-array port: array commands run by the reserved M word, check codes, tags, state, replacement and the logs in MSR 1505, 1509 and 1558 (Madison)
      - ``arch/cache-array.c``
-     - Approximation. For: the reading of the PAL and the compares in PAL groups 10 and 11. A physical-mode load sees a modelled line from the first array command until reset, wherever it is fetched from (a throwaway build saw no such load outside firmware code, on the PROM and a SLES 9 kernel boot). Against: one firmware image, and the PAL's own invalidation is the only thing that retires a line, so a stale line could reach a later load (a Debian 7 kernel and a compiler run were not covered). The bit meanings of MSR 1505 to 1512 and MSR 1558 are unknown, and so are tag fields the PAL does not compare, the way index, which of MSR 1509 to 1512 logs and the dword-to-injection mapping.
+     - Approximation. For: the reading of the PAL and the compares in PAL groups 10 and 11. A physical-mode load sees a modelled line from the first array command until reset, wherever it is fetched from (a throwaway build saw no such load outside firmware code, on the PROM and a SLES 9 kernel boot). Against: one firmware image, and only ``fc`` and the PAL's own invalidation retire a line's data, so a stale line could reach a later load (see the ``fc`` row; a Debian 7 kernel and a compiler run were not covered). The bit meanings of MSR 1505 to 1512 and MSR 1558 are unknown, and so are tag fields the PAL does not compare, the way index, which of MSR 1509 to 1512 logs and the dword-to-injection mapping.
      - Read of the helper against hardware behaviour or a part.
+   * - ``fc`` drops the data of every hit first-level cache-array line on the executing CPU and keeps its tag and state; ``fc.i`` leaves the line
+     - ``arch/cache-array.c``, ``arch/mmu.c``
+     - Approximation. For: the SDM (Rev. 2.3, Vol. 3, page 3:61) has ``fc`` invalidate the line from all levels of the processor cache hierarchy (*established*), and a SLES 9 installer kernel livelocked on a leftover line until ``fc`` dropped it. The SDM leaves ``fc.i`` free either way (not required to invalidate or write back the line, but may); the model's choice, that ``fc.i`` does not drop the line, is an *approximation*. That the modelled lines are a level ``fc`` reaches is *inferred*: the PAL's self-test arrays are test structures, not a documented cache level. Against: the manual invalidates the line, tag included, in every processor's caches; the model drops one CPU's data and keeps the tag, which the PAL reads back. A leftover line on another CPU at the same address survives; whether the PAL leaves lines on every CPU is unknown, and no test runs two CPUs. A leftover line whose memory is written without an ``fc`` (DMA, or a CPU store with PSR.dt set, since only physical-mode stores reach the lines) still answers physical-mode doubleword loads with test data. How the SLES 9 kernel's bytes reached its leftover line, by DMA or by a virtual-mode CPU store, is *inferred*: no physical-mode CPU store hit that page.
+     - A PAL data-array read of a line after an ``fc`` on a real board.
    * - Floating-point Software Assist for unnormal operands in the listed instructions
      - ``arch/fp.c``
      - Approximation. For: the PAL's self-test expects it. Against: no public document says which operations Madison sends to SWA.

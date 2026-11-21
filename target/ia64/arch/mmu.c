@@ -15,6 +15,7 @@
 #include "qemu/log.h"
 #include "cpu.h"
 #include "arch/arch.h"
+#include "arch/system.h"
 #include "exec-access.h"
 #include "exec/cpu-common.h"
 #include "exec/cputlb.h"
@@ -348,11 +349,13 @@ void ia64_mmu_fc(CPUIA64State *env, uint64_t addr,
      * time, so use the same line invalidation for both forms.
      */
     ia64_invalidate_alat_phys_range(env, pa & ~(line_size - 1), line_size);
-
     if (instruction_cache_coherent) {
         uint64_t start = pa & ~(line_size - 1);
 
         ia64_exec_invalidate_phys_range(env, start, line_size);
+    } else {
+        /* Only fc must invalidate; fc.i may, and leaves the lines alone. */
+        ia64_cache_array_flush(env, pa);
     }
 }
 

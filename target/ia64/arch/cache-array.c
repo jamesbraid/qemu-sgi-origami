@@ -175,6 +175,19 @@ static IA64CacheLine *tag_hit(IA64CPU *cpu, uint64_t pa, unsigned *column)
     return NULL;
 }
 
+/* fc drops the data of every line that hits; tags and state stay. */
+void ia64_cache_array_flush(CPUIA64State *env, uint64_t pa)
+{
+    IA64CPU *cpu = env_archcpu(env);
+    IA64CacheLine *hit;
+    unsigned column;
+
+    /* A hit needs data, so each pass finds the next matching column. */
+    while (cpu->ca_lines && (hit = tag_hit(cpu, pa, &column))) {
+        hit->has_data = false;
+    }
+}
+
 /* An access to a set holding a valid tag with wrong parity logs it. */
 static void tag_parity_check(CPUIA64State *env, uint64_t pa)
 {

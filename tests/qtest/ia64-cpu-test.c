@@ -2089,6 +2089,97 @@ static void test_madison_cache_array_tag_hit(void)
 }
 
 /*
+ * fc drops the line's data, so a load after it reads the RAM that firmware
+ * or DMA rewrote; fc.i may but need not (SDM), and the model leaves the line.
+ */
+static void ca_fc_case(bool fc_i, uint64_t expect)
+{
+    const uint64_t tag = 9;
+    uint64_t word = 1ULL << 35 | 1ULL << 36 | 0xaULL << 40;
+    CaProgram p;
+    uint64_t out[2];
+
+    for (unsigned i = 0; i < 35; i++) {
+        word |= (tag >> i & 1) << (34 - i);
+    }
+    ca_begin(&p, "");
+    qtest_writeq(p.s, 0x48288, 0x1111);
+    qtest_writeq(p.s, 0x1c10, 0x48288);
+    ca_stage_clear(&p);
+    ca_msr_set(&p, 1544, 0x2105);
+    ca_msr_set(&p, 1601, 0xdeadbeefULL);
+    ca_msr_set(&p, 1546, CA_WRITE_ARRAY8);
+    ca_mword(&p);
+    ca_msr_set(&p, 1600, word);
+    ca_msr_set(&p, 1546, 0x8d40000000000000ULL);
+    ca_mword(&p);
+    step(p.s, &p.at, adds(5, 0x1c10, 0));
+    step(p.s, &p.at, ld8(8, 5));
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    step(p.s, &p.at, (UINT64_C(1) << 37) | (fc_i ? UINT64_C(1) << 36 : 0) |
+                     (UINT64_C(0x30) << 27) | (8 << 20));       /* fc[.i] r8 */
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    ca_finish(&p, 2, out);
+    g_assert_cmphex(out[0], ==, 0xdeadbeefULL);
+    g_assert_cmphex(out[1], ==, expect);
+}
+
+static void test_madison_cache_array_fc_drops_line_data(void)
+{
+    ca_fc_case(false, 0x1111);
+}
+
+static void test_madison_cache_array_fc_i_keeps_line_data(void)
+{
+    ca_fc_case(true, 0xdeadbeefULL);
+}
+
+/* fc drops every column holding the address's tag, not only the first. */
+static void test_madison_cache_array_fc_drops_every_column(void)
+{
+    const uint64_t tag = 9;
+    const uint64_t index[2] = { 0x005, 0x105 };
+    const uint64_t data[2] = { 0xdeadbeef, 0xcafe };
+    uint64_t word = 1ULL << 35 | 1ULL << 36 | 0xaULL << 40;
+    CaProgram p;
+    uint64_t out[2];
+
+    for (unsigned i = 0; i < 35; i++) {
+        word |= (tag >> i & 1) << (34 - i);
+    }
+    ca_begin(&p, "");
+    qtest_writeq(p.s, 0x48288, 0x1111);
+    qtest_writeq(p.s, 0x1c10, 0x48288);
+    for (unsigned col = 0; col < 2; col++) {
+        ca_stage_clear(&p);
+        ca_msr_set(&p, 1544, index[col]);
+        ca_msr_set(&p, 1601, data[col]);
+        ca_msr_set(&p, 1546, CA_WRITE_ARRAY8);
+        ca_mword(&p);
+        ca_msr_set(&p, 1600, word);
+        ca_msr_set(&p, 1546, 0x8d40000000000000ULL);
+        ca_mword(&p);
+    }
+    step(p.s, &p.at, adds(5, 0x1c10, 0));
+    step(p.s, &p.at, ld8(8, 5));
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    step(p.s, &p.at, (UINT64_C(1) << 37) | (UINT64_C(0x30) << 27) |
+                     (8 << 20));                                    /* fc r8 */
+    step(p.s, &p.at, ld8(9, 8));
+    bundle(p.s, p.at, 1, st8(10, 9), adds(10, 8, 10), NOP);
+    p.at += 16;
+    ca_finish(&p, 2, out);
+    g_assert_cmphex(out[0], ==, 0xdeadbeefULL);
+    g_assert_cmphex(out[1], ==, 0x1111);
+}
+
+/*
  * A load from a set holding a valid tag with bad parity logs 0x4005 in MSR 1509
  * (PAL sub-test 6, 0xfff03e80).
  */
@@ -6225,6 +6316,12 @@ int main(int argc, char **argv)
                    test_madison_cache_array_log);
     qtest_add_func("ia64/madison-cache-array-stored-lines",
                    test_madison_cache_array_reads_stored_lines);
+    qtest_add_func("ia64/madison-cache-array-fc-drops-line-data",
+                   test_madison_cache_array_fc_drops_line_data);
+    qtest_add_func("ia64/madison-cache-array-fc-i-keeps-line-data",
+                   test_madison_cache_array_fc_i_keeps_line_data);
+    qtest_add_func("ia64/madison-cache-array-fc-drops-every-column",
+                   test_madison_cache_array_fc_drops_every_column);
     qtest_add_func("ia64/madison-cache-array-tag",
                    test_madison_cache_array_tag);
     qtest_add_func("ia64/madison-cache-array-tag-hit",

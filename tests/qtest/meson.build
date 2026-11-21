@@ -125,6 +125,8 @@ slow_qtests = {
   # a quiet host; budget three times that, rounded up. The earlier figure
   # of 64.77s was before the serial cases.
   'sgi-identity-props-test': 300,
+  # 49 s alone at load average 120 against the 60 s default: three times that.
+  'ia64-cpu-test': 150,
   # 256.6 s in a four-process run of the queue's third qtest share, in the
   # CI container, 2026-11-10; three times that, rounded up.
   'sgi-synthetic-serial-test': 780,
@@ -1207,11 +1209,12 @@ foreach dir : target_dirs
     endif
 
     # A slow_qtests entry is a timeout budget. It puts an upstream test in
-    # the slow suite, which the quick setup leaves out, but not an SGI one:
-    # those stay in the quick setup and register their exhaustive cases
-    # only under g_test_slow().
+    # the slow suite, which the quick setup leaves out, but not an SGI or
+    # ia64 one: those stay in the quick setup and register their exhaustive
+    # cases only under g_test_slow().
     test_suites = ['qtest', 'qtest-' + target_base] + \
-                  (slow_qtests.has_key(test) and test not in sgi_qtests ?
+                  (slow_qtests.has_key(test) and test not in sgi_qtests and
+                   test not in qtests_ia64 ?
                     ['slow'] : []) + \
                   (target_base == 'mips64' and test in sgi_qtests ?
                     ['sgi', 'sgi-qtest'] : [])
