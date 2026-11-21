@@ -255,6 +255,9 @@ static void altix350_add_pic(Altix350State *s)
     head = sgi_pic_head_device(pic, 0);
     qdev_connect_gpio_out_named(head, "pci-intx", 1 * PCI_NUM_PINS,
                                 qdev_get_gpio_in(head, 0));
+    /* Device 2 has no card of its own; a card plugged there needs its line. */
+    qdev_connect_gpio_out_named(head, "pci-intx", 2 * PCI_NUM_PINS,
+                                qdev_get_gpio_in(head, 1));
     qdev_connect_gpio_out_named(head, "pci-intx", 3 * PCI_NUM_PINS,
                                 qdev_get_gpio_in(head, 2));
     qdev_connect_gpio_out_named(head, "pci-intx", 4 * PCI_NUM_PINS,

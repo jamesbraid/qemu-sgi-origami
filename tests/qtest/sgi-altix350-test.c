@@ -1263,6 +1263,22 @@ static void test_nic_interrupt_reaches_pic(void)
     qtest_quit(qts);
 }
 
+/* A card in slot 2 has its INTA on PIC input 1 (device - 1). */
+static void test_slot2_interrupt_reaches_pic(void)
+{
+    QTestState *qts = altix350_start_with(
+        "-device sgi-bridge-dma-test,bus=pic-head-0.0,addr=2,id=dma0");
+    const uint64_t status = 0x800000000ULL + (15ULL << 24) + 0x100;
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    g_assert_cmphex(qtest_readq(qts, status) & 0xff, ==, 0);
+    qtest_set_irq_in(qts, "dma0", "test-irq", 0, 1);
+    g_assert_cmphex(qtest_readq(qts, status) & 0xff, ==, 2);
+    qtest_set_irq_in(qts, "dma0", "test-irq", 0, 0);
+    assert_running(qts);
+    qtest_quit(qts);
+}
+
 /* The kernel's PIC attach sets control bit 21 (16 KiB translation pages). */
 static void test_pic_control_page_size_bit(void)
 {
@@ -2990,6 +3006,8 @@ int main(int argc, char **argv)
                    test_isp12160_interrupt_reaches_pic);
     qtest_add_func("/sgi-altix350/nic/interrupt",
                    test_nic_interrupt_reaches_pic);
+    qtest_add_func("/sgi-altix350/slot2/interrupt",
+                   test_slot2_interrupt_reaches_pic);
     qtest_add_func("/sgi-altix350/pic/inbound-dma-refused",
                    test_pic_inbound_dma_refused);
     qtest_add_func("/sgi-altix350/shub/override-table-reset",
