@@ -265,6 +265,61 @@ static void test_fetch_with_flash_in_command_mode(void)
     unlink(image);
 }
 
+static void poll_ram_word(QTestState *qts, uint64_t addr, uint64_t want)
+{
+    int64_t deadline = g_get_monotonic_time() + 10 * G_TIME_SPAN_SECOND;
+
+    while (qtest_readq(qts, addr) != want &&
+           g_get_monotonic_time() < deadline) {
+        g_usleep(1000);
+    }
+    g_assert_cmphex(qtest_readq(qts, addr), ==, want);
+}
+
+/* A program only clears bits: the spin bundle's immediate goes 0x7f to 0x43. */
+static void test_flash_program_reaches_running_code(void)
+{
+    const uint64_t flash = SHUB_LOCAL_MMR + 0x7ff800000ULL;
+    g_autofree uint8_t *data = g_malloc0(FLASH_SIZE);
+    g_autofree char *dir = g_path_get_dirname(image_path);
+    g_autofree char *image = g_build_filename(dir, "program.bin", NULL);
+    uint8_t *entry = data + FLASH_SIZE - 0x50;      /* the CPU's reset ip */
+    uint8_t spin[16];
+    QTestState *qts;
+
+    /* Spin on a bundle that stores r14 at 4096 and reloads it with 0x7f. */
+    put_bundle(entry, 1, adds(11, 4096), NOP, NOP);
+    put_bundle(entry + 16, 0x11, st8(11, 14), adds(14, 0x7f),
+               UINT64_C(4) << 37);
+    g_assert_true(g_file_set_contents(image, (char *)data, FLASH_SIZE, NULL));
+    qts = altix350_start_bios(image, "-accel tcg -S");
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    poll_ram_word(qts, 0x1000, 0x7f);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+
+    put_bundle(spin, 0x11, st8(11, 14), adds(14, 0x43), UINT64_C(4) << 37);
+    for (unsigned i = 0; i < sizeof(spin); i += 2) {
+        uint16_t old = lduw_le_p(entry + 16 + i);
+        uint16_t new = lduw_le_p(spin + i);
+
+        g_assert_cmphex(old & new, ==, new);
+        if (old == new) {
+            continue;
+        }
+        qtest_writew(qts, flash + 2 * 0x555, 0xaa);
+        qtest_writew(qts, flash + 2 * 0x2aa, 0x55);
+        qtest_writew(qts, flash + 2 * 0x555, 0xa0);
+        qtest_writew(qts, flash + 0x200000 + FLASH_SIZE - 0x40 + i, new);
+    }
+    g_assert_cmphex(qtest_readq(qts, FLASH_BASE + FLASH_SIZE - 0x40), ==,
+                    ldq_le_p(spin));
+
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    poll_ram_word(qts, 0x1000, 0x43);
+    qtest_quit(qts);
+    unlink(image);
+}
+
 /* A -drive if=pflash file is what boots: it shows at the reset vector. */
 static void test_flash_drive_boots(void)
 {
@@ -2791,6 +2846,8 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-altix350/flash-drive-boots", test_flash_drive_boots);
     qtest_add_func("/sgi-altix350/fetch-in-flash-command-mode",
                    test_fetch_with_flash_in_command_mode);
+    qtest_add_func("/sgi-altix350/flash-program-reaches-running-code",
+                   test_flash_program_reaches_running_code);
     qtest_add_func("/sgi-altix350/unknown-read", test_unknown_read);
     qtest_add_func("/sgi-altix350/prom-flash", test_prom_flash);
     qtest_add_func("/sgi-altix350/pic-ate-reset", test_pic_ate_reset);

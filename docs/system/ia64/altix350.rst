@@ -869,8 +869,8 @@ rating, the evidence for and against and what would settle it.
      - A SHub specification, or a trace of a refused inbound request.
    * - A CPU write to the reset window at ``0xffa00000`` is refused
      - ``sgi-altix350.c``
-     - Approximation. For: the window is a read view of the flash array bytes, so a write has nothing to act on. Against: on a real board a write there may be a flash command cycle, as it is through the SHub window. A flash reprogrammed through the SHub while the CPU runs code from the window may also execute a stale translation block, which no test checks (*unknown*).
-     - A real board's behaviour for a store to the window, and a test that reprograms the flash under running code.
+     - Approximation. For: the window is a read view of the flash array bytes, so a write has nothing to act on. Against: on a real board a write there may be a flash command cycle, as it is through the SHub window. A flash programmed through the SHub under code the CPU is running from the window takes effect: the ``flash-program-reaches-running-code`` qtest shows the new instructions run under TCG, and fails if the flash model's translation-block flush is removed. Only a program is tested, not a sector erase.
+     - A real board's behaviour for a store to the window.
 
 Tracing SAL calls
 -----------------
