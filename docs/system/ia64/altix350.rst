@@ -50,9 +50,11 @@ The base I/O card is modelled as far as the firmware needs: head 0 carries the
 IOC4 at PCI device 1 and a QLogic ISP12160 SCSI adapter at device 3, the
 windows the firmware scans for them. The other slots of both heads are empty.
 The ISP's two buses are ``scsi.0`` and ``scsi.1``, and a disk goes on one with
-``-device scsi-hd,drive=...,bus=scsi.0,scsi-id=1``. The id must be 1: the EFI
-driver makes its own id 0 and probes targets from 1 up, so a disk at id 0 is
-never seen.
+``-device scsi-hd,drive=...,bus=scsi.0,scsi-id=1``. The model accepts ids 0
+to 15 and reserves none for the adapter; without ``scsi-id`` the lowest free
+id, 0, is taken. The EFI shell booted from a disk at id 1 and at id 3 and
+listed a CD-ROM at id 2 (*observed*). A disk at id 0 has not been tried and
+the id the EFI driver gives the adapter is *unknown*, so use an id from 1 up.
 
 The qualified input is the unmodified 6,291,456-byte ``shub1snprom.bin``
 from snprom 10.54 build 70399, SAL 5.04. Its SHA256 is
