@@ -105,6 +105,14 @@ slow_qtests = {
   # with the DMA group at 54 s in another; twice the default.
   'sgi-o2-rom-test': 120,
   'sgi-o2-test-dma': 120,
+  # All but memory were killed at 60 s in loaded CI full runs, 2026-11-21 and
+  # 22. Three times the slowest of three runs at load 80 to 110: board 99.5 s,
+  # memory 55.8 s, storage 59.4 s, galileo 87.4 s, l1-o3k 66.2 s.
+  'sgi-o2-test-board': 300,
+  'sgi-o2-test-memory': 170,
+  'sgi-o2-test-storage': 180,
+  'galileo-test': 270,
+  'sgi-l1-o3k-test': 200,
   'sgi-pci-expansion-ni-test': 2050,
   # The expanded PIC suite passed in 86s locally; CI reached 80/85 at 60s.
   'sgi-pic-test': 300,
@@ -1249,8 +1257,10 @@ foreach dir : target_dirs
                       test != 'sgi-replay-test',
          protocol: 'tap',
          # The expanded 246-case AIC suite took 83-85s in completed runs.
-         timeout: test == 'aic7880-test' ? 300 :
-                  slow_qtests.get(test, 60),
+         # Not in slow_qtests, which would move it to the slow suite. Three
+         # times its 105.8 s at load 80 to 110.
+         timeout: {'aic7880-test': 300, 'sgi-vice-msp-test': 330}.get(
+                    test, slow_qtests.get(test, 60)),
          priority: test == 'sgi-replay-test' ? 1100 :
                    slow_qtests.get(test, 60),
          suite: groups.keys().length() > 0 ? [] : test_suites)
