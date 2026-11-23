@@ -65,11 +65,15 @@ jobs:
         run: |
           # A hang fails in minutes, with whatever the test printed.
           $env:QTEST_QEMU_BINARY = "$PWD\win-stage\qemu-system-mips64.exe"
-          $out = "$env:RUNNER_TEMP\qtest-out.txt"
-          $p = Start-Process -FilePath "$PWD\win-stage\display-shm-test.exe" -ArgumentList "--tap" `
-            -PassThru -NoNewWindow -RedirectStandardOutput $out -RedirectStandardError "$out.err"
-          # Without the handle held, ExitCode reads empty and a failure exits 0.
-          $null = $p.Handle
+          # Pipes, not files: on one runner a write to a redirected file
+          # stalls QEMU's main loop for seconds, past the test's waits.
+          $psi = New-Object Diagnostics.ProcessStartInfo "$PWD\win-stage\display-shm-test.exe", '--tap'
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError = $true
+          $p = [Diagnostics.Process]::Start($psi)
+          $so = $p.StandardOutput.ReadToEndAsync()
+          $se = $p.StandardError.ReadToEndAsync()
           if (-not $p.WaitForExit(600000)) {
             $p.Kill()
             Get-Process qemu-system-mips64 -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -78,5 +82,6 @@ jobs:
           } else {
             $code = $p.ExitCode
           }
-          Get-Content $out, "$out.err"
+          $so.Result
+          $se.Result
           exit $code
