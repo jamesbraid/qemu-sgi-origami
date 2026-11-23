@@ -80,6 +80,11 @@
 #define LB_NODES_ABSENT_MASK 0x80ff80ff80ff80ffULL
 #define LB_RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
                            (1ULL << 28) | (1ULL << 32))
+/* The control's clock-source bit and the bit that drives the global clock. */
+#define LB_RTC_LOCAL_USE_INTERNAL (1ULL << 32)
+#define LB_RTC_LOCAL_GCLK_ENABLE  1ULL
+/* Use-internal, and maximum count 100 in bits 13:4. */
+#define LB_RTC_LOCAL_RESET        0x100000640ULL
 #define LB_RTC_FILTER_MASK (0x1fULL | (0xfffULL << 8) | (1ULL << 20) | \
                             (0x3ffULL << 24) | (0x3ffULL << 36) | \
                             (0x3ffULL << 48))
@@ -530,6 +535,9 @@ static void lb_write(void *opaque, hwaddr offset, uint64_t value,
         return;
     case LB_RTC_LOCAL:
         s->rtc_local = value & LB_RTC_LOCAL_MASK;
+        if (s->bedrock) {
+            sgi_bedrock_rt_clocks_update(s->bedrock);
+        }
         return;
     case LB_RTC_FILTER:
         s->rtc_filter = value & LB_RTC_FILTER_MASK;
@@ -623,13 +631,11 @@ static void lb_reset_enter(Object *obj, ResetType type)
     s->error_data = 0;
     s->debug_select = 0;
     /*
-     * Zero is the model's value; neither register has a published power-on
-     * value. The local block's maximum-count field feeds the PROM's own
-     * real-time conversion, so a wrong reset value here does not
-     * misbehave loudly; it just makes every duration the firmware derives
-     * from the counter come out short.
+     * The local control resets to use-internal with maximum count 100; the
+     * filter control resets to zero. The firmware derives its durations
+     * from the maximum count, so a wrong value shows as wrong delays.
     */
-    s->rtc_local = 0;
+    s->rtc_local = LB_RTC_LOCAL_RESET;
     s->rtc_filter = 0;
     s->scratch[0] = 0;
     s->scratch[3] = 0;
@@ -649,6 +655,23 @@ static void lb_reset_hold(Object *obj, ResetType type)
     lb_update_irq(s);
     /* The enter phase restored the realized number; decode follows it. */
     lb_node_changed(s);
+    /* The control is back to its power-on state; so are the counters. */
+    if (s->bedrock) {
+        sgi_bedrock_rt_clocks_update(s->bedrock);
+    }
+}
+
+/* Whether this node's own clock feeds its counters: use-internal set. */
+bool sgi_bedrock_lb_rt_own_clock(SGIBedrockLBState *s)
+{
+    return s->rtc_local & LB_RTC_LOCAL_USE_INTERNAL;
+}
+
+/* Whether this node drives the global clock the other nodes may follow. */
+bool sgi_bedrock_lb_rt_drives_global(SGIBedrockLBState *s)
+{
+    return (s->rtc_local & LB_RTC_LOCAL_USE_INTERNAL) &&
+           (s->rtc_local & LB_RTC_LOCAL_GCLK_ENABLE);
 }
 
 static int lb_post_load(void *opaque, int version_id)

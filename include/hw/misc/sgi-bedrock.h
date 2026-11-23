@@ -318,6 +318,15 @@ SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
  * also store it.
  */
 void sgi_bedrock_hold_reset(SGIBedrockState *s);
+
+/*
+ * Re-evaluate every node's real-time counters after a local block clock
+ * control changed (a store or a reset): a node's counters run while its own
+ * control selects its own clock, or while another node in the machine
+ * drives the global clock. All of a node's counters stop and restart at
+ * the one virtual time of the change.
+ */
+void sgi_bedrock_rt_clocks_update(SGIBedrockState *s);
 void sgi_bedrock_hold_scratch1_write(SGIBedrockState *s, uint64_t value);
 
 /*

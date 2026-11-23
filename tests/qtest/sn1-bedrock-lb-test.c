@@ -53,6 +53,8 @@
 /* The two-bit request type distinguishes unsupported commands. */
 #define VECTOR_PARAMS_MASK (3ULL | (0x1fffffULL << 3) | (0xffULL << 32) | \
                             (0x7ffULL << 40))
+/* Use-internal, maximum count 100. */
+#define RTC_LOCAL_RESET 0x100000640ULL
 #define RTC_LOCAL_MASK (1ULL | (0x3ffULL << 4) | (0x3ffULL << 16) | \
                         (1ULL << 28) | (1ULL << 32))
 #define RTC_FILTER_MASK (0x1fULL | (0xfffULL << 8) | (1ULL << 20) | \
@@ -279,12 +281,12 @@ static void test_rtc_reset(void)
 {
     QTestState *s = lb_start("");
 
-    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, RTC_LOCAL_RESET);
     g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, 0);
     qtest_writeq(s, LB_BASE + RTC_LOCAL, RTC_LOCAL_MASK);
     qtest_writeq(s, LB_BASE + RTC_FILTER, RTC_FILTER_MASK);
     qtest_writeq(s, LB_BASE + SOFT_RESET, 1);
-    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, 0);
+    g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_LOCAL), ==, RTC_LOCAL_RESET);
     g_assert_cmphex(qtest_readq(s, LB_BASE + RTC_FILTER), ==, 0);
     qtest_quit(s);
 }

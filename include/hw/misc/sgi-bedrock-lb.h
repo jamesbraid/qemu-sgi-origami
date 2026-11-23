@@ -88,6 +88,10 @@ struct SGIBedrockLBState {
     bool vector_in_flight;
 };
 
+/* What the clock control says about the real-time counters, as above. */
+bool sgi_bedrock_lb_rt_own_clock(SGIBedrockLBState *s);
+bool sgi_bedrock_lb_rt_drives_global(SGIBedrockLBState *s);
+
 /* The node number the revision word currently carries. */
 uint8_t sgi_bedrock_lb_node_number(SGIBedrockLBState *s);
 

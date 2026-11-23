@@ -86,6 +86,8 @@ struct SGIBedrockPIState {
     uint64_t spurious_header[2];
     uint64_t rt_base;
     int64_t rt_base_ns;
+    /* Stopped by the local block: rt_base is then the count it holds. */
+    bool rt_held;
     uint64_t rt_migrate_count;
     uint16_t rt_migrate_phase_ns;
     uint64_t rt_compare[2];
@@ -123,6 +125,12 @@ struct SGIBedrockPIState {
     struct SGIBedrockState *bedrock;
 };
 
+/*
+ * Stop or restart the real-time counter, as the local block's clock control
+ * does. A stopped counter keeps its count, stores set that count only, and
+ * the compares and the profile compare match nothing.
+ */
+void sgi_bedrock_pi_set_rt_running(SGIBedrockPIState *s, bool running);
 void sgi_bedrock_pi_set_lb_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_ni_error(SGIBedrockPIState *s, bool level);
 void sgi_bedrock_pi_set_xb_error(SGIBedrockPIState *s, bool level);

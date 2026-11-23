@@ -26,6 +26,9 @@
 
 #define LB(base, reg)       ((base) + UINT64_C(0x600000) + (reg))
 #define NI(base, reg)       ((base) + UINT64_C(0x680000) + (reg))
+#define RTC_LOCAL           0x4200
+#define RT_COUNTER(base)    ((base) + UINT64_C(0x30100))
+#define RT_TICK_NS          800
 #define REVISION            0x0000
 #define SCRATCH(n)          (0x8000 + (n) * 8)
 #define VECTOR_PARAMS       0xc000
@@ -200,6 +203,52 @@ static void test_unwired_port_has_no_link(void)
     g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 1);
     qtest_writeq(s, NI(A_BASE, PORT_STATUS), 0xffffffffffffffffULL);
     g_assert_cmphex(qtest_readq(s, NI(A_BASE, PORT_STATUS)), ==, 1);
+    qtest_quit(s);
+}
+
+/*
+ * A node counts its own clock while its control has use-internal set, or
+ * another node drives the global clock (use-internal and bit 0). The
+ * kernel's sequence: every node to 0x4f0, a count into every interface,
+ * node 0 alone to 0x1000004f1.
+ */
+static void test_global_clock_follows_the_driving_node(void)
+{
+    QTestState *s = pair_start("");
+    uint64_t a = RT_COUNTER(A_BASE), b = RT_COUNTER(B_BASE);
+
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, a, 0);
+    qtest_writeq(s, b, 0);
+    qtest_clock_step(s, 20 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, a), ==, 20);
+    g_assert_cmphex(qtest_readq(s, b), ==, 20);
+
+    /* Node B still has its reset control, use-internal set, and counts on. */
+    qtest_writeq(s, LB(A_BASE, RTC_LOCAL), 0x4f0);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, a), ==, 20);
+    g_assert_cmphex(qtest_readq(s, b), ==, 30);
+
+    qtest_writeq(s, LB(B_BASE, RTC_LOCAL), 0x4f0);
+    qtest_writeq(s, a, 100);
+    qtest_writeq(s, b, 100);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, a), ==, 100);
+    g_assert_cmphex(qtest_readq(s, b), ==, 100);
+
+    /* Node A drives; node B follows it. */
+    qtest_writeq(s, LB(A_BASE, RTC_LOCAL), 0x1000004f1);
+    qtest_clock_step(s, 8 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, a), ==, 108);
+    g_assert_cmphex(qtest_readq(s, b), ==, 108);
+
+    /* Node A stops driving: both hold together. */
+    qtest_writeq(s, LB(A_BASE, RTC_LOCAL), 0x4f0);
+    qtest_clock_step(s, 8 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, a), ==, 108);
+    g_assert_cmphex(qtest_readq(s, b), ==, 108);
     qtest_quit(s);
 }
 
@@ -921,6 +970,8 @@ int main(int argc, char **argv)
     g_test_init(&argc, &argv, NULL);
     qtest_add_func("sn1/bedrock-link/link-follows-the-cable",
                    test_link_follows_the_cable);
+    qtest_add_func("sn1/bedrock-link/global-clock-follows-the-driver",
+                   test_global_clock_follows_the_driving_node);
     qtest_add_func("sn1/bedrock-link/unwired-port-has-no-link",
                    test_unwired_port_has_no_link);
     qtest_add_func("sn1/bedrock-link/router-table-vector-words",

@@ -851,6 +851,43 @@ void sgi_bedrock_rt_compare_written(SGIBedrockState *s,
     bedrock_park_start(s, (unsigned int)cslot, SGI_BEDROCK_HOLD_LIVENESS);
 }
 
+static int bedrock_rt_collect(Object *obj, void *opaque)
+{
+    GPtrArray *nodes = opaque;
+
+    if (object_dynamic_cast(obj, TYPE_SGI_BEDROCK) &&
+        DEVICE(obj)->realized) {
+        g_ptr_array_add(nodes, obj);
+    }
+    return 0;
+}
+
+void sgi_bedrock_rt_clocks_update(SGIBedrockState *s)
+{
+    g_autoptr(GPtrArray) nodes = g_ptr_array_new();
+    bool drive = false;
+
+    object_child_foreach_recursive(object_get_root(), bedrock_rt_collect,
+                                   nodes);
+    /* A node built outside the machine tree still gets its own say. */
+    if (!g_ptr_array_find(nodes, s, NULL)) {
+        g_ptr_array_add(nodes, s);
+    }
+    for (guint i = 0; i < nodes->len; i++) {
+        SGIBedrockState *n = g_ptr_array_index(nodes, i);
+
+        drive |= sgi_bedrock_lb_rt_drives_global(&n->lb);
+    }
+    for (guint i = 0; i < nodes->len; i++) {
+        SGIBedrockState *n = g_ptr_array_index(nodes, i);
+        /* A driver selects its own clock, so it never counts itself out. */
+        bool run = drive || sgi_bedrock_lb_rt_own_clock(&n->lb);
+
+        sgi_bedrock_pi_set_rt_running(&n->pi[0], run);
+        sgi_bedrock_pi_set_rt_running(&n->pi[1], run);
+    }
+}
+
 void sgi_bedrock_rt_counter_read(SGIBedrockState *s)
 {
     int cslot = bedrock_park_slot(s);

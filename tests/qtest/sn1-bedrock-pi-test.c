@@ -83,6 +83,8 @@
 #define SPURIOUS_HEADER_0 0x4c8
 #define SPURIOUS_HEADER_1 0x4d0
 #define RT_COUNTER 0x30100
+#define RTC_LOCAL 0x4200
+#define SOFT_RESET 0x4018
 #define RT_MASK ((1ULL << 55) - 1)
 #define RT_TICK_NS 800
 #define GFX_CREDIT(slot) (0x308 + 0x28 * (slot))
@@ -1001,6 +1003,108 @@ static void test_real_time_compare_stored_equal_matches_at_once(void)
     qtest_quit(s);
 }
 
+/* The local block's control stops the node's counters and restarts them. */
+static void test_local_control_stops_and_restarts_counters(void)
+{
+    const uint64_t stop = 0x4f0, run = 0x1000004f1;
+    QTestState *s = start_clock("");
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, PI(0, RT_COUNTER), 20);
+    qtest_writeq(s, PI(1, RT_COUNTER), 20);
+    qtest_clock_step(s, 2 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 22);
+
+    /* Both interfaces hold; the control still reads back as stored. */
+    qtest_writeq(s, LB(RTC_LOCAL), stop);
+    g_assert_cmphex(qtest_readq(s, LB(RTC_LOCAL)), ==, stop);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 22);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, 22);
+
+    /* A store while held sets the held count only. */
+    qtest_writeq(s, PI(0, RT_COUNTER), 100);
+    qtest_writeq(s, PI(1, RT_COUNTER), 100);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 100);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, 100);
+
+    qtest_writeq(s, LB(RTC_LOCAL), run);
+    qtest_clock_step(s, 8 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 108);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, 108);
+    qtest_quit(s);
+}
+
+/* A held counter matches nothing, and one stopped on the tick still does. */
+static void test_held_counter_compares_match_after_the_restart(void)
+{
+    QTestState *s = start_clock("");
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, PI(0, RT_COUNTER), 0);
+    qtest_writeq(s, PI(0, RT_COMPARE_A), 5);
+    qtest_writeq(s, PI(0, PROFILE_COMPARE), 6);
+    qtest_clock_step(s, 2 * RT_TICK_NS);
+    qtest_writeq(s, LB(RTC_LOCAL), 0x4f0);
+    qtest_clock_step(s, 100 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 2);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, PROFILE_PENDING_A)), ==, 0);
+
+    /* Equal to the held count is no tick: nothing latches. */
+    qtest_writeq(s, PI(0, RT_COMPARE_B), 2);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_B)), ==, 0);
+
+    qtest_writeq(s, LB(RTC_LOCAL), 0x1000004f1);
+    qtest_clock_step(s, 2 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 0);
+    qtest_clock_step(s, 2 * RT_TICK_NS + 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 6);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, PROFILE_PENDING_A)), ==, 1);
+    qtest_quit(s);
+}
+
+/* The local block's own reset puts its control back, and the counters run. */
+static void test_local_block_reset_restarts_held_counters(void)
+{
+    QTestState *s = start_clock("");
+    uint64_t held, held1;
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, LB(RTC_LOCAL), 0x4f0);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    held = qtest_readq(s, PI(0, RT_COUNTER));
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, held);
+
+    qtest_writeq(s, LB(SOFT_RESET), 1);
+    g_assert_cmphex(qtest_readq(s, LB(RTC_LOCAL)), ==, 0x100000640);
+    held = qtest_readq(s, PI(0, RT_COUNTER));
+    held1 = qtest_readq(s, PI(1, RT_COUNTER));
+    qtest_clock_step(s, 3 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, held + 3);
+    g_assert_cmphex(qtest_readq(s, PI(1, RT_COUNTER)), ==, held1 + 3);
+    qtest_quit(s);
+}
+
+/* A reset of the node returns the counters to running. */
+static void test_reset_returns_held_counters_to_running(void)
+{
+    QTestState *s = start_clock("");
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, LB(RTC_LOCAL), 0x4f0);
+    qtest_clock_step(s, 10 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 0);
+    qtest_system_reset(s);
+    qtest_qmp_assert_success(s, "{'execute':'cont'}");
+    qtest_clock_step(s, 3 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_COUNTER)), ==, 3);
+    qtest_quit(s);
+}
+
 static void test_profile_and_counter_wrap(void)
 {
     QTestState *s = start_clock("");
@@ -1484,6 +1588,14 @@ int main(int argc, char **argv)
                    test_real_time_comparators);
     qtest_add_func("sn1/bedrock-pi/real-time-compare-stored-equal",
                    test_real_time_compare_stored_equal_matches_at_once);
+    qtest_add_func("sn1/bedrock-pi/local-control-stops-counters",
+                   test_local_control_stops_and_restarts_counters);
+    qtest_add_func("sn1/bedrock-pi/held-counter-compares",
+                   test_held_counter_compares_match_after_the_restart);
+    qtest_add_func("sn1/bedrock-pi/local-block-reset-restarts-counters",
+                   test_local_block_reset_restarts_held_counters);
+    qtest_add_func("sn1/bedrock-pi/reset-returns-counters-to-running",
+                   test_reset_returns_held_counters_to_running);
     qtest_add_func("sn1/bedrock-pi/rt-counter-access-width",
                    test_rt_counter_access_width);
     qtest_add_func("sn1/bedrock-pi/profile-counter-wrap",

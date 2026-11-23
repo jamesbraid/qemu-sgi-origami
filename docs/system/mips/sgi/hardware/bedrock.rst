@@ -571,8 +571,9 @@ The counter is 55 bits, wraps to zero and counts the clock the local
 block supplies (``hubpi.h``), a *software expectation*. Linux SN1
 gives that clock as 1,250 kHz (``sn1/ip27config.h``), and every
 MIPS consumer assumes 1,250,000 Hz, a *software expectation*. The model
-counts at that fixed rate on QEMU's virtual clock. Writes to the local
-block's clock controls do not change it. A write to the counter sets the
+counts at that fixed rate on QEMU's virtual clock, an *approximation*.
+The local block's clock controls stop and restart it but never change
+the rate (:ref:`sgi-bedrock-lb-rtc`). A write to the counter sets the
 count. Each interface keeps its own counter.
 
 When the counter equals a slot's real-time compare, that slot's
@@ -1534,7 +1535,7 @@ reset, and the error bits survive reset. Every other reset value is
    * - ``0x604200``, ``0x604208``
      - real-time clock local and filter control
      - masked
-     - ``0``
+     - ``0x100000640``, ``0``
      - read/write
      - :ref:`sgi-bedrock-lb-rtc`.
    * - ``0x608000``-``0x608020``
@@ -1645,19 +1646,63 @@ request applies no permission check.
 Real-time clock controls
 ------------------------
 
-The local block supplies the clock both processor interfaces count. With
-use-internal set it divides the Bedrock clock by a maximum count; with
-it clear it filters an incoming global clock (``hublb.h``), a *software expectation*. No public source gives the resulting frequency
-or the firmware's setting. The stock PROM converts the counter to
-microseconds as ``counter * (((control & 0x3ff0) >> 3) + 2) / 200``,
-reading the maximum count back from local control, a *software
-expectation*. For that to agree with the 1,250,000 Hz every consumer
-assumes, the field would have to read 79, *inferred*.
+The local block supplies the clock both processor interfaces count.
+With use-internal set it divides the Bedrock clock by a maximum count;
+with it clear it filters an incoming global clock (``hublb.h``), a
+*software expectation*. No public source gives the resulting frequency.
+The stock PROM converts the counter to microseconds as
+``counter * (((control & 0x3ff0) >> 3) + 2) / 200``, reading the maximum
+count back from local control, a *software expectation*. For that to
+agree with the 1,250,000 Hz every consumer assumes, the field would have
+to read 79, *inferred*.
 
-The model resets both registers to zero, an *approximation*, and keeps
-written values to their defined fields. Nothing feeds them into the
-counter rate. With the field at zero the PROM's own conversion runs
-about eighty times short of real time.
+The stock PROM's register description table lists the local control
+with use-internal set and a maximum count of 100, that is ``0x100000640``
+(:src:`ip35-prom-6.210 0x1fd60578`, its use-internal and maximum-count
+fields at :src:`ip35-prom-6.210 0x1fd5d170` and
+:src:`ip35-prom-6.210 0x1fd5d1d0`), and the filter control as zero. The
+model resets the controls to those values, a *software expectation*.
+Whether the chip itself resets to them is *inferred*: the table is data
+that the PROM describes registers with, and the code that reads its
+defaults is not traced. The PROM does not write that value. At start
+(:src:`ip35-prom-6.210 0x1fc6b600`, called from
+:src:`ip35-prom-6.210 0x1fc00a2c`) it writes use-internal, global-clock
+enable and a maximum count it computes from two words it reads from the
+boot header, and it zeroes interface 0's counter. On the model that
+leaves ``0x1000004f1`` on every node by the time the PROM menu appears.
+
+The PROM's own conversion gives a tick of (maximum count + 1) times
+10 ns (:src:`ip35-prom-6.210 0x1fc6b73c`), a *software expectation*. A
+maximum count of 79 gives 800 ns, the 1,250,000 Hz every consumer
+assumes. The 79 the PROM leaves in the control comes from boot-header
+words the model supplies, so it is no evidence of its own. The IRIX
+6.5.30 kernel's ``0x4f0``, seen on another emulator, also carries a
+field of 79. That the field divides a 200 MHz clock into the counter's
+rate is therefore *inferred*, from the formula and that IRIX value. At
+the table's default of 100 the tick would be 1.01 microseconds. The
+model's counter keeps a fixed 1,250,000 Hz whatever the field holds, an
+*approximation*; a counter whose rate follows the field is a separate
+change.
+
+The model keeps written values to their defined fields.
+
+A processor interface's counter runs while its node's control has
+use-internal (bit 32) set, or while another node in the machine drives
+the global clock with use-internal and global-clock enable (bit 0) both
+set, an *inferred* rule: the field names are a *software expectation*
+(``hublb.h``), and what a node with use-internal clear counts is
+*unknown*. The IRIX 6.5.30 kernel writes ``0x4f0`` (use-internal clear)
+to every node's control, stores one count into every interface, then
+writes ``0x1000004f1`` to node 0 alone. The sequence is *inferred*: the
+kernel routine is not located in an image. Every interface then counts
+one clock from one count.
+
+The model holds a counter while neither rule applies. A held counter
+reads the count it held, a store to it changes only that count, and its
+compares and the profile compare match nothing, an *approximation*.
+Restarting resumes from the held count at the time of the control
+store. A reset of the node or of its local block returns the control and
+the counters to their running state.
 
 .. _sgi-bedrock-lb-microlan:
 
@@ -2268,8 +2313,8 @@ Measurements
 No Bedrock register has been read on a physical machine for this model.
 Every value above comes from SGI's headers, published captures, the
 stock firmware or the model itself. Reads at PROM hand-off on an Origin
-300 or Fuel of the two identity words, the local block's clock controls,
-the I/O interface's access registers and miscellaneous error mask, and
+300 or Fuel of the two identity words, the I/O interface's access
+registers and miscellaneous error mask, and
 the processor interfaces' CPU enable would settle most of the *unknown*
 reset values here.
 
@@ -2289,8 +2334,8 @@ Model limits
   interrupt writes and the current-cell check on the L1 UART windows.
 - CPU enable does not stop a processor. The processor interface's
   remap and error-forward fields route nothing.
-- The real-time counter runs at a fixed 1,250,000 Hz, independent of
-  the local block's clock controls.
+- The real-time counter runs at a fixed 1,250,000 Hz. The local block's
+  clock controls stop and restart it; no field changes its rate.
 - The graphics write stall and the interrupt counter are not
   modelled.
 - Block transfers finish inside the starting write; nothing can be
@@ -2323,7 +2368,9 @@ Register-contract qtests, one per unit:
   processor, presence and enable on sparse populations, pending
   reflection and modify, coherency pending, masks, power-on and local
   reset values, error capture, the NMI predicate, the comparators, a
-  compare stored equal to the counter and profile wrap, 32-bit counter reads, lines held low without main
+  compare stored equal to the counter, the local block's clock control
+  stopping and restarting the counters and profile wrap, 32-bit counter
+  reads, lines held low without main
   power, and migration of outputs, counter phase and enables.
 - ``tests/qtest/sn1-bedrock-md-test.c``: the register contract, bank
   decode, fitted populations and bank-select remapping, the self-test
@@ -2356,7 +2403,9 @@ Composition and machine tests:
 - ``tests/qtest/sn1-bedrock-link-test.c``: link-up from the cable,
   route-0 vector reads and writes to the peer, refused offsets, port
   reset across the link, held scratch 1 writes against a peer's
-  vector write, an unpowered peer reading link down
+  vector write, a node following the global clock another node drives
+  (``sn1/bedrock-link/global-clock-follows-the-driver``), an unpowered
+  peer reading link down
   (``sn1/bedrock-link/unpowered-peer-reads-link-down``), a router port
   clearing its link bit for an unpowered node
   (``sn1/bedrock-link/unpowered-node-clears-the-router-port``) and a

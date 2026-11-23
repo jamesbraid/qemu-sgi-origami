@@ -106,14 +106,20 @@
 #define PI_RT_HZ 1250000
 #define PI_RT_TICK_NS (NANOSECONDS_PER_SECOND / PI_RT_HZ)
 
-static uint64_t pi_rt_count(SGIBedrockPIState *s)
+static uint64_t pi_rt_count_at(SGIBedrockPIState *s, int64_t now)
 {
-    int64_t delta = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) - s->rt_base_ns;
+    int64_t delta = now - s->rt_base_ns;
 
-    if (delta < 0) {
+    /* A held counter's count is rt_base. */
+    if (s->rt_held || delta < 0) {
         return s->rt_base;
     }
     return (s->rt_base + delta / PI_RT_TICK_NS) & PI_RT_MASK;
+}
+
+static uint64_t pi_rt_count(SGIBedrockPIState *s)
+{
+    return pi_rt_count_at(s, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL));
 }
 
 static void pi_arm_rt(SGIBedrockPIState *s, unsigned cpu)
@@ -127,6 +133,12 @@ static void pi_arm_rt(SGIBedrockPIState *s, unsigned cpu)
                          PI_RT_TICK_NS;
     uint64_t chunk;
 
+    /* A stopped counter reaches no compare. */
+    if (s->rt_held) {
+        s->rt_timer_match[cpu] = false;
+        timer_del(s->rt_timer[cpu]);
+        return;
+    }
     /*
      * A full 55-bit revolution exceeds an int64 nanosecond deadline. Wake at
      * the largest safe intermediate point and recompute.
@@ -152,6 +164,10 @@ static void pi_arm_profile(SGIBedrockPIState *s)
     uint64_t max_ticks = ((uint64_t)(INT64_MAX - now) + phase) /
                          PI_RT_TICK_NS;
 
+    if (s->rt_held) {
+        timer_del(s->profile_timer);
+        return;
+    }
     if (ticks == 0) {
         ticks = UINT64_C(1) << 32;
     }
@@ -260,6 +276,42 @@ static void pi_rearm_timers(SGIBedrockPIState *s)
     pi_arm_rt(s, 0);
     pi_arm_rt(s, 1);
     pi_arm_profile(s);
+}
+
+void sgi_bedrock_pi_set_rt_running(SGIBedrockPIState *s, bool running)
+{
+    int64_t now = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
+    bool is_running = !s->rt_held;
+
+    if (running == is_running) {
+        return;
+    }
+    if (running) {
+        /* rt_base holds the count it stopped at. */
+        s->rt_held = false;
+        s->rt_base_ns = now;
+        pi_rearm_timers(s);
+        return;
+    }
+    /*
+     * A match that came due before the stop has happened. No qtest reaches
+     * this: its clock runs every timer that is due before it returns.
+     */
+    for (unsigned cpu = 0; cpu < 2; cpu++) {
+        if (s->rt_timer_match[cpu] && timer_pending(s->rt_timer[cpu]) &&
+            timer_expire_time_ns(s->rt_timer[cpu]) <= now) {
+            s->rt_pending[cpu] = 1;
+        }
+    }
+    if (timer_pending(s->profile_timer) &&
+        timer_expire_time_ns(s->profile_timer) <= now) {
+        s->profile_pending[0] = 1;
+        s->profile_pending[1] = 1;
+    }
+    s->rt_base = pi_rt_count_at(s, now);
+    s->rt_held = true;
+    pi_rearm_timers(s);
+    sgi_bedrock_pi_recompute(s);
 }
 
 static void pi_drive_cpu_enable(SGIBedrockPIState *s)
@@ -929,7 +981,7 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
 
         s->rt_compare[slot] = value & PI_RT_MASK;
         /* Equal to the counter matches now; pi_arm_rt() waits the wrap. */
-        if (s->rt_compare[slot] == pi_rt_count(s)) {
+        if (!s->rt_held && s->rt_compare[slot] == pi_rt_count(s)) {
             s->rt_pending[slot] = 1;
             sgi_bedrock_pi_recompute(s);
         }
@@ -1160,6 +1212,7 @@ static void pi_reset_enter(Object *obj, ResetType type)
     s->err_check_enable = 0;
     s->rq_timeout_max = 0;
     s->rq_timeout_scale = 0;
+    s->rt_held = false;
     s->rt_base = 0;
     s->rt_base_ns = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL);
     memset(s->rt_compare, 0, sizeof(s->rt_compare));
@@ -1271,6 +1324,7 @@ static const VMStateDescription vmstate_pi = {
         VMSTATE_INT64(rt_base_ns, SGIBedrockPIState),
         VMSTATE_UINT64(rt_migrate_count, SGIBedrockPIState),
         VMSTATE_UINT16(rt_migrate_phase_ns, SGIBedrockPIState),
+        VMSTATE_BOOL(rt_held, SGIBedrockPIState),
         VMSTATE_UINT64_ARRAY(rt_compare, SGIBedrockPIState, 2),
         VMSTATE_UINT32(profile_compare, SGIBedrockPIState),
         VMSTATE_UINT8_ARRAY(rt_pending, SGIBedrockPIState, 2),
