@@ -1088,6 +1088,7 @@ tests/qtest/sn0-qlogic-isp-test.c
 tests/qtest/sn0-qtest-cpu-test.c
 tests/qtest/sn0-r10k-perf-migration-test.c
 tests/qtest/sn0-r10k-test.c
+tests/qtest/sn0-restart-le-test.c
 tests/qtest/sn0-router-test.c
 tests/qtest/sn0-snapshot-test.c
 tests/qtest/sn0-tigon-test.c

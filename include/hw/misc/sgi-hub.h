@@ -570,6 +570,8 @@ bool sgi_hub_first_turn(const SGIHubState *s, uint32_t destination,
  */
 bool sgi_hub_route(SGIHubState *s, uint32_t destination, uint64_t *vector);
 MemoryRegion *sgi_hub_processor_io(SGIHubState *s, unsigned int slice);
+/* Re-drive the held lines and halts of processors reset outside a Hub reset. */
+void sgi_hub_resync_cpus(SGIHubState *s);
 /*
  * Set a processor's enable. A processor that is paused changes at once when
  * @synchronous is set (a system reset pauses them all); a running one is

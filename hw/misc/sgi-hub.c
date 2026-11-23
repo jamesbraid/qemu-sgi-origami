@@ -11,6 +11,7 @@
 #include "qemu/error-report.h"
 #include "qemu/log.h"
 #include "qemu/main-loop.h"
+#include "exec/tb-flush.h"
 #include "qemu/units.h"
 #include "hw/1wire/crc.h"
 #include "hw/1wire/ds2505.h"
@@ -1240,6 +1241,22 @@ static void sgi_hub_queue_cpu_enable(SGIHubState *s, unsigned int cpu,
     }
 }
 
+/*
+ * Processors reset outside a Hub reset lost the lines the Hub holds and
+ * every halt: drive the lines again and halt the disabled ones. BQL held.
+ */
+void sgi_hub_resync_cpus(SGIHubState *s)
+{
+    sgi_hub_update_irq(s);
+    for (unsigned int cpu = 0; cpu < SGI_HUB_PROCESSORS; cpu++) {
+        CPUState *cs = sgi_hub_cpu(s, cpu);
+
+        if (cs && !s->pi_cpu_enable[cpu]) {
+            cpu_interrupt(cs, CPU_INTERRUPT_HALT);
+        }
+    }
+}
+
 void sgi_hub_set_cpu_enable(SGIHubState *s, unsigned int cpu, bool enabled,
                             bool synchronous)
 {
@@ -1260,6 +1277,8 @@ static void sgi_hub_cpu_power_off(CPUState *cs, run_on_cpu_data data)
 {
     if (sgi_hub_cpu_enable_stands(cs, data, false)) {
         cpu_reset(cs);
+        /* The reset may have changed the byte order the blocks were made in. */
+        queue_tb_flush(cs);
         cs->halted = 1;
         cs->exception_index = EXCP_HLT;
     }

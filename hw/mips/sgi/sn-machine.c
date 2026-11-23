@@ -25,6 +25,7 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/main-loop.h"
 #include "qemu/cutils.h"
 #include "qemu/units.h"
 #include "qemu/host-utils.h"
@@ -83,6 +84,7 @@
 #include "system/system.h"
 #include "trace/control.h"
 #include "cpu.h"
+#include "exec/tb-flush.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-graphics.h"
 #include "hw/core/hotplug.h"
@@ -364,6 +366,9 @@ struct SGIMachineState {
 
     bool debug_leds;
     bool junk_uart_present;
+    /* x-restart-entry, and the byte order x-cpu-byte-order is restarting to. */
+    uint64_t restart_entry;
+    bool restart_big;
     bool origin300_l1cmd_compat;
     /* The topology's IP53 runtime profile applies to this machine. */
     bool ip53_runtime_enabled;
@@ -11758,6 +11763,11 @@ static void sgi_machine_reset(MachineState *machine, ResetType type)
         cpu_reset(cs);
     }
     /*
+     * Translated blocks are not keyed on Config0.BE, which a restart or a
+     * snapshot load (a reset first) moves.
+     */
+    queue_tb_flush(first_cpu);
+    /*
      * The processors of a module whose controller has its power off stay
      * stopped, through the Hub's processor enable, while the rest of the
      * machine and the clock run on.
@@ -11958,6 +11968,110 @@ static bool sgi_machine_get_junk_uart(Object *obj, Error **errp)
 static void sgi_machine_set_junk_uart(Object *obj, bool value, Error **errp)
 {
     SGI_MACHINE(obj)->junk_uart_present = value;
+}
+
+/* One exclusive section restarts every CPU and flushes, so none runs mixed. */
+static void sgi_machine_restart_work(CPUState *cs, run_on_cpu_data data)
+{
+    SGIMachineState *s = data.host_ptr;
+
+    /* The reset and the Hub's lines are the main loop's to touch. */
+    bql_lock();
+    for (unsigned int n = 0; n < s->num_nodes; n++) {
+        for (unsigned int i = 0; i < SN0_MAX_CPUS_PER_NODE; i++) {
+            MIPSCPU *cpu = s->nodes[n]->cpu[i];
+
+            if (!cpu) {
+                continue;
+            }
+            cpu->is_big_endian = s->restart_big;
+            cpu_reset(CPU(cpu));
+            /* A later machine reset comes back big-endian. */
+            cpu->is_big_endian = true;
+            if (s->restart_entry) {
+                cpu_set_pc(CPU(cpu), (uint64_t)(int32_t)0x80000000 +
+                           s->restart_entry);
+            }
+        }
+        /* The reset dropped the held lines and every processor's halt. */
+        sgi_hub_resync_cpus(&s->nodes[n]->hub);
+    }
+    bql_unlock();
+    /* Translated blocks are not keyed on Config0.BE. */
+    tb_flush__exclusive_or_serial();
+}
+
+static MIPSCPU *sgi_machine_first_cpu(SGIMachineState *s)
+{
+    for (unsigned int i = 0; s->nodes && i < SN0_MAX_CPUS_PER_NODE; i++) {
+        if (s->nodes[0]->cpu[i]) {
+            return s->nodes[0]->cpu[i];
+        }
+    }
+    return NULL;
+}
+
+/* The CPUs' own byte order, so a machine reset or a load shows through. */
+static char *sgi_machine_get_x_cpu_byte_order(Object *obj, Error **errp)
+{
+    MIPSCPU *cpu = sgi_machine_first_cpu(SGI_MACHINE(obj));
+    bool big = !cpu || extract32(cpu->env.CP0_Config0, CP0C0_BE, 1);
+
+    return g_strdup(big ? "big" : "little");
+}
+
+static void sgi_machine_set_x_cpu_byte_order(Object *obj, const char *value,
+                                             Error **errp)
+{
+    SGIMachineState *s = SGI_MACHINE(obj);
+    MIPSCPU *first = sgi_machine_first_cpu(s);
+    bool big;
+
+    if (!first || !phase_check(PHASE_MACHINE_READY)) {
+        error_setg(errp, "x-cpu-byte-order needs a running IP27 machine "
+                   "(origin200, origin2000 or onyx2)");
+        return;
+    }
+    if (!strcmp(value, "big")) {
+        big = true;
+    } else if (!strcmp(value, "little")) {
+        big = false;
+    } else {
+        error_setg(errp, "x-cpu-byte-order takes big or little");
+        return;
+    }
+    if (big == extract32(first->env.CP0_Config0, CP0C0_BE, 1)) {
+        return;
+    }
+    s->restart_big = big;
+    async_safe_run_on_cpu(CPU(first), sgi_machine_restart_work,
+                          RUN_ON_CPU_HOST_PTR(s));
+}
+
+static void sgi_machine_get_x_restart_entry(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    uint64_t value = SGI_MACHINE(obj)->restart_entry;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void sgi_machine_set_x_restart_entry(Object *obj, Visitor *v,
+                                            const char *name, void *opaque,
+                                            Error **errp)
+{
+    uint64_t value;
+
+    if (!visit_type_uint64(v, name, &value, errp)) {
+        return;
+    }
+    if ((value & 3) || value >= 512 * MiB) {
+        error_setg(errp, "x-restart-entry must be a word-aligned physical "
+                   "address below 512 MiB, or 0 for the reset vector");
+        return;
+    }
+    SGI_MACHINE(obj)->restart_entry = value;
 }
 
 static bool sgi_machine_get_origin300_l1cmd_compat(Object *obj, Error **errp)
@@ -12629,6 +12743,23 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Fit the junk-bus UART, a manufacturing/bring-up serial port a "
         "shipped machine does not have. Off by default; on, it takes the "
         "fourth character device (serial_hd index 3).");
+
+    object_class_property_add_str(oc, "x-cpu-byte-order",
+                                  sgi_machine_get_x_cpu_byte_order,
+                                  sgi_machine_set_x_cpu_byte_order);
+    object_class_property_set_description(oc, "x-cpu-byte-order",
+        "Not hardware: big or little, the CPUs' byte order. Setting the "
+        "other one with qom-set, running or stopped, resets only the CPUs, "
+        "which come up in it a moment later, at "
+        "x-restart-entry; Hub, Bridge and RAM keep their state. No guest "
+        "register triggers it. It reads big again after a machine reset.");
+    object_class_property_add(oc, "x-restart-entry", "uint64", NULL,
+                              sgi_machine_get_x_restart_entry,
+                              sgi_machine_set_x_restart_entry, NULL, NULL);
+    object_class_property_set_description(oc, "x-restart-entry",
+        "Not hardware: the physical RAM address (word-aligned, below 512 MiB) "
+        "where an x-cpu-byte-order change starts the CPUs, through KSEG0. 0, "
+        "the default, starts them at the reset vector.");
 
     object_class_property_add_bool(oc, "origin300-l1cmd-compat",
                                    sgi_machine_get_origin300_l1cmd_compat,

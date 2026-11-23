@@ -1661,6 +1661,57 @@ name (:ref:`sgi-sn-storage`):
 - ``module<N>-nvram``, the 2048-byte NVRAM of each module's system
   controller (:ref:`sgi-elsc-nvram`).
 
+.. _sgi-ip27-cpu-byte-order:
+
+Changing the processors' byte order
+-----------------------------------
+
+An R10000 takes its byte order from bit 15 of the mode bits it loads at
+power-on or cold reset, and a soft reset preserves them, so a running
+processor cannot change it (*established*,
+:src:`r10000-users-manual-2.0 p. 160-165`,
+:src:`r10000-users-manual-2.0 p. 256`). The stock PROM runs big-endian,
+which leaves a guest that needs little-endian processors, such as Windows
+NT for MIPS, without a way in. Two machine properties give the emulator
+one. Neither is hardware, and no register, memory window or device of the
+guest can set them.
+
+``x-cpu-byte-order`` reads ``big`` or ``little``, the byte order the
+processors run in now, taken from Config bit 15. Setting the other value
+with ``qom-set`` on ``/machine``, with the machine running or stopped,
+restarts every processor of every node at once in that order, and the
+property reads the new value once they have, a moment after the set
+returns. Setting the value it already has does nothing. The restart flushes the translated
+blocks, which are not keyed on byte order. The Hub, the Bridge, the
+Crossbow and RAM keep their state, and so does the PROM's work in them.
+The Hub's lines are driven again, and a processor the Hub has disabled
+stays halted until its enable is set. Restarting the processors alone is
+an *approximation*: hardware loads the mode bits only at power-on or cold
+reset, which restarts more than the processors. The restart is the CPU
+model's cold reset, so the TLB, Cause and the timer start afresh. Only
+Origin 200, Origin 2000 and Onyx2 machines accept the property, once built.
+
+``x-restart-entry`` is the physical address where the restarted
+processors start, word-aligned and below 512 MiB, taken through KSEG0. Each
+starts there instead of at the reset vector in node flash, so a stage in
+RAM runs without patching the PROM image; the choice of entry is an
+*approximation* with no hardware counterpart. With the default, 0, the
+processors take the reset vector and run the flash image in the new order.
+
+A machine reset or a Hub port reset brings the processors back big-endian,
+as the mode bits set them. Both flush the translated blocks. A restarted
+machine can be saved: the byte order travels in Config, so a loaded
+snapshot runs in the order it saved, and a load starts with a machine reset.
+
+The discriminating test is ``tests/qtest/sn0-restart-le-test.c``. A
+big-endian stub in flash reads Config bit 15 as set and stores a
+non-palindromic word. After the restart the stub at the entry reads it
+clear and stores the same word with its bytes reversed in RAM. A second
+processor the Hub has disabled stays halted until enabled, a machine reset
+or a Hub port reset after a restart at the reset vector runs the
+big-endian stub again, and a little-endian snapshot loads into a process
+that has run big-endian at the same address.
+
 .. _sgi-ip27-running:
 
 Running
@@ -1898,6 +1949,9 @@ qtests:
   port resets and migration of a pending start.
 - ``tests/qtest/sn0-address-map-test.c``: the node address map and back
   doors, and the per-node bank layouts, including the 512 MiB bank 0.
+- ``tests/qtest/sn0-restart-le-test.c``: the emulator-only byte-order
+  change of the processors, its entry address, its refusals and the
+  resets that undo it.
 - ``tests/qtest/sgi-graphics-pipes-test.c``: the graphics-pipe placement
   and refusals.
 

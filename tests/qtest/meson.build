@@ -598,6 +598,7 @@ sn0_machine_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_SN0') ? ['sn0-mttcg-test',
                                                    'sn0-forward-progress-test',
                                                    'sn0-r10k-test',
+                                                   'sn0-restart-le-test',
                                                    'sn0-r10k-perf-migration-test',
                                                    'sn0-address-map-test',
                                                    'sn0-bridge-test',
