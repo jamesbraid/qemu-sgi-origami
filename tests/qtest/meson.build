@@ -624,6 +624,7 @@ sn0_machine_qtests = \
                                                    'sn0-bridge-invalid-addr-test',
                                                    'sn0-bridge-master-timeout-test',
                                                    'sgi-bridge-bus-test',
+                                                   'sgi-bridge-little-endian-test',
                                                    'sn0-bridge-flash-test',
                                                    'sn0-origin2000-test',
                                                    'sn0-baseio-test',

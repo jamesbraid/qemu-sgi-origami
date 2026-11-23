@@ -607,6 +607,18 @@ static hwaddr sgi_bridge_window_correct(hwaddr offset, unsigned int size)
     return (offset & ~(hwaddr)3) | ((offset & 3u) ^ (4u - size));
 }
 
+/* Control bit 9: the system's byte order, which picks the placement tables. */
+static bool sgi_bridge_big_endian(SGIBridgeState *s)
+{
+    return s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_BIG_ENDIAN;
+}
+
+/* Bytes stay in address order when a swap bit equals control bit 9. */
+static bool sgi_bridge_in_order(SGIBridgeState *s, bool swap)
+{
+    return swap == sgi_bridge_big_endian(s);
+}
+
 
 static void sgi_bridge_pci_error(SGIBridgeState *s, uint32_t bit,
                                  unsigned int device, uint64_t pci_address);
@@ -698,18 +710,18 @@ static SGIPioForward *sgi_bridge_forward(SGIBridgeState *s,
 }
 
 /*
- * Programmed-I/O byte placement, from the Bridge specification's big-endian
- * tables (revision 4.0, Appendix A, Tables 65 to 80). Host byte k of an
- * aligned unit lands on PCI byte k with the swap set; with it clear, on
- * k ^ 3 within a 32-bit device's word (Tables 73 to 76) and on 7 - k within
- * a 64-bit device's doubleword (Tables 77 to 80). An access narrower than
- * the device moves to offset ^ (width - size) and its bytes reverse; the
- * swap keeps both. A doubleword to a 32-bit device is two word cycles,
- * lower address first, carrying host bytes 0 to 3 and then 4 to 7.
+ * Programmed-I/O byte placement, from the Bridge specification's tables
+ * (revision 4.0, Appendix A: Tables 65 to 80 big-endian, 81 to 96
+ * little-endian). Host byte k of an aligned unit lands on PCI byte k when
+ * in order, else on k ^ 3 within a 32-bit device's word and on 7 - k
+ * within a 64-bit device's doubleword. An access narrower than the device
+ * moves to offset ^ (width - size) and its bytes reverse, unless in order.
+ * A doubleword to a 32-bit device is two word cycles, lower address first,
+ * carrying host bytes 0 to 3 and then 4 to 7.
  *
- * The windows are DEVICE_LITTLE_ENDIAN on a big-endian processor, so the
- * handler's value is the access in little-endian order: its bytes, least
- * significant first, are the host bytes at offsets 0 upward.
+ * The windows are DEVICE_LITTLE_ENDIAN for either order of processor, so
+ * the handler's value is the access in little-endian order: its bytes,
+ * least significant first, are the host bytes at offsets 0 upward.
  */
 typedef struct SGIBridgePio {
     SGIBridgeState *s;
@@ -717,7 +729,7 @@ typedef struct SGIBridgePio {
     hwaddr base;            /* PCI address of window offset zero */
     unsigned int device;    /* the number a failure records */
     unsigned int width;     /* device bus width in bytes, 4 or 8 */
-    bool swap;
+    bool in_order;
 } SGIBridgePio;
 
 /* One PCI cycle of @size bytes at window offset @addr, at most bus width. */
@@ -725,7 +737,8 @@ static MemTxResult sgi_bridge_pio_cycle(const SGIBridgePio *p, hwaddr addr,
                                         uint8_t *host, unsigned int size,
                                         bool write)
 {
-    hwaddr target = p->base + (p->swap ? addr : addr ^ (p->width - size));
+    hwaddr target = p->base +
+                    (p->in_order ? addr : addr ^ (p->width - size));
     SGIPioForward *forward = sgi_bridge_forward(p->s, p->space);
     uint8_t pci[8];
     MemTxResult result;
@@ -734,7 +747,7 @@ static MemTxResult sgi_bridge_pio_cycle(const SGIBridgePio *p, hwaddr addr,
     assert(size <= p->width && size <= sizeof(pci));
     if (write) {
         for (i = 0; i < size; i++) {
-            pci[i] = host[p->swap ? i : size - 1 - i];
+            pci[i] = host[p->in_order ? i : size - 1 - i];
         }
         result = sgi_pio_forward_write(forward, target,
                                        MEMTXATTRS_UNSPECIFIED, pci, size);
@@ -743,7 +756,7 @@ static MemTxResult sgi_bridge_pio_cycle(const SGIBridgePio *p, hwaddr addr,
         result = sgi_pio_forward_read(forward, target,
                                       MEMTXATTRS_UNSPECIFIED, pci, size);
         for (i = 0; i < size; i++) {
-            host[i] = pci[p->swap ? i : size - 1 - i];
+            host[i] = pci[p->in_order ? i : size - 1 - i];
         }
     }
     return sgi_bridge_window_failed(p->s, p->device, p->space, target, result);
@@ -799,7 +812,7 @@ static SGIBridgePio sgi_bridge_window_pio(SGIBridgeState *s,
         .base = s->device_window_base[slot],
         .device = slot,
         .width = dev & DEV_64BIT_DEVICE ? 8 : 4,
-        .swap = dev & DEV_SWAP_PROGRAMMED,
+        .in_order = sgi_bridge_in_order(s, dev & DEV_SWAP_PROGRAMMED),
     };
 }
 
@@ -893,7 +906,8 @@ static SGIBridgePio sgi_bridge_pio_xlate_pio(SGIBridgeState *s)
         .base = 0,
         .device = 0,
         .width = 4,
-        .swap = s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_MEM_SWAP,
+        .in_order = sgi_bridge_in_order(
+            s, s->reg[SGI_BRIDGE_SLOT(BRIDGE_CONTROL)] & CONTROL_MEM_SWAP),
     };
 }
 

@@ -560,7 +560,8 @@ Control register
    * - 9
      - System big-endian
      - 1
-     - Stored; the model always places bytes for a big-endian system.
+     - Picks the byte-placement tables
+       (:ref:`sgi-bridge-little-endian`).
    * - 8:4
      - Maximum outstanding transactions
      - ``0x1f``
@@ -756,9 +757,11 @@ based on an odd megabyte reaches into the next one, *inferred*. I/O
 windows reach the full 32-bit PCI I/O space; the Bridge does not narrow it
 to 64 KB.
 
-The windows take accesses of 1 to 8 bytes. Placement follows the
-specification's big-endian tables (:src:`bridge-asic-spec-4.0 p. 132-140`,
-Appendix A, Tables 65 to 80). Below, *k* is the offset of a host byte in
+The windows take accesses of 1 to 8 bytes. With control bit 9 set,
+placement follows the specification's big-endian tables
+(:src:`bridge-asic-spec-4.0 p. 132-140`, Appendix A, Tables 65 to 80);
+with it clear, the little-endian tables (:ref:`sgi-bridge-little-endian`).
+Below, *k* is the offset of a host byte in
 its aligned unit and *o* the offset of a naturally aligned access of *w*
 bytes:
 
@@ -994,6 +997,86 @@ the IOC3. OpenBSD sets bits 19 and 20 on every device except the IOC3,
 :term:`IOC4` and RAD1 and confines DMA to the direct window. The IRIX 6.5.30
 kernel sets a window's swap bit for a byte-stream mapping and clears it
 for a word-values mapping. Each of the three is a *software expectation*.
+
+.. _sgi-bridge-little-endian:
+
+Little-endian host mode
+=======================
+
+Control bit 9 is the system's byte order, one for big-endian and zero for
+little-endian, and resets set, *established*
+(:src:`bridge-asic-spec-4.0 p. 22`, Table 11). Appendix A gives one set of
+placement tables for each order (:src:`bridge-asic-spec-4.0 p. 131-148`).
+That the bit chooses between the sets is *inferred*: the specification names
+no other control and does not say what the bit does. The model reads the bit
+on each access and keeps no state of its own for it, so clearing it changes
+placement from the next access. A guest that clears the bit is declaring its
+processor little-endian: the model does not look at the processor's own
+mode.
+
+A big-endian guest that never clears the bit sees no change. Writes to the
+control register were traced in the model while the Origin 200 stock PROM
+6.156 ran to its System Maintenance Menu and while an IRIX 6.5.22 disk
+booted to a root shell. Neither wrote it with bit 9 clear, a *software
+expectation* (:src:`ip27-prom-6.156`). No Octane, Origin 2000 or Onyx2 guest
+was traced.
+
+The little-endian tables are the big-endian ones with the swap bit's sense
+reversed. With the swap bit clear, bytes stay in address order. With it set,
+they reverse within the device's word or doubleword. Below, *k*, *o* and *w*
+are as in :ref:`sgi-bridge-pio`'s table:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Device(*n*) bit 22
+     - Device(*n*) bit 13
+     - Host byte *k* lands on PCI byte
+     - Access at *o* reaches PCI offset
+     - Tables
+   * - clear, 32-bit device
+     - clear
+     - *k*
+     - *o*
+     - 89 to 92
+   * - clear, 32-bit device
+     - set
+     - *k* XOR 3, within the aligned word
+     - *o* XOR (4 − *w*)
+     - 81 to 84
+   * - set, 64-bit device
+     - clear
+     - *k*
+     - *o*
+     - 93 to 96
+   * - set, 64-bit device
+     - set
+     - 7 − *k*, within the aligned doubleword
+     - *o* XOR (8 − *w*)
+     - 85 to 88
+
+Every row is *established* for naturally aligned accesses
+(:src:`bridge-asic-spec-4.0 p. 140-148`). A doubleword to a 32-bit device is
+two word cycles, lower address first, carrying host bytes 0 to 3 and then 4
+to 7, as with control bit 9 set. A little-endian processor's access at *o*
+is the same access a big-endian processor makes at *o*: the model places
+bytes by address, so what differs between the orders is which bytes a value
+occupies, not where an access lands.
+
+What each part of the model does with the bit:
+
+- **Device windows.** Placement follows the table above, from Device(*n*)
+  bit 13, in memory and in I/O space alike, and a window takes its own swap
+  bit, not the card's, *established* (:src:`bridge-asic-spec-4.0 p. 43`). A
+  window reaches whatever PCI address its Device(*n*) space and offset
+  fields aim it at (:src:`bridge-asic-spec-4.0 p. 55-56`), so a slot's
+  window can reach a card in another slot, *inferred*. The model hands an
+  endpoint bytes by PCI address and reads no endpoint's declared register
+  order, so that order never combines with control bit 9 or a swap bit. The
+  ``0x40000000`` range follows the 32-bit rows with control bit 22 in place
+  of bit 13, as :ref:`sgi-bridge-pio` says, *inferred*
+  (:src:`bridge-asic-spec-4.0 p. 22, 55`). Control bit 23 still governs
+  nothing.
 
 .. _sgi-bridge-interrupts:
 
@@ -1811,6 +1894,10 @@ Model limits
 - The DMA flush window at ``0x3fff0000`` is not implemented, and local DMA
   below ``0x40000000`` is forwarded to widget 0 at the same address, where
   real hardware does not respond.
+- Little-endian host mode (:ref:`sgi-bridge-little-endian`) places
+  device-window and ``0x40000000`` bytes only. Everything else keeps its
+  big-endian behaviour, and nothing is modelled for the processor's own
+  mode.
 - Swap-clear DMA in a 64-bit slot uses whole-doubleword reversal, which no
   document settles for DMA. Slot width is settled per slot at reset, not
   per transaction or per function.
@@ -1873,7 +1960,11 @@ validation. ``tests/qtest/sn0-widget-decode-test.c`` covers the Origin 200
 Bridge answering at widget 0 and widgets 2 to 15, doubleword window
 accesses split into two word cycles, and widget 1 staying the Hub.
 ``tests/qtest/sgi-bridge-bus-test.c`` drives a standalone Bridge with test
-parts. ``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
+parts.
+``tests/qtest/sgi-bridge-little-endian-test.c`` drives a standalone Bridge
+with control bit 9 clear and set: window and ``0x40000000`` placement at
+every width and an ISP1040's mailboxes.
+``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
 follow a moved BAR. ``tests/qtest/octane-test.c`` covers the Octane flash
 wiring and strap combinations and the status word each machine reads
 across a reset (``/octane2/bridge-status-strap``).

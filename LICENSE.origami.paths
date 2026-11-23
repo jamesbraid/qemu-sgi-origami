@@ -968,6 +968,7 @@ tests/qtest/sgi-altix350-test.c
 tests/qtest/sgi-bic-board-interface-test.c
 tests/qtest/sgi-board-test.c
 tests/qtest/sgi-bridge-bus-test.c
+tests/qtest/sgi-bridge-little-endian-test.c
 tests/qtest/sgi-command-port-test.c
 tests/qtest/sgi-crime-legacy-test-groups.txt
 tests/qtest/sgi-crime-render-test-groups.txt
