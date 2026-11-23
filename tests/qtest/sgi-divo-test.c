@@ -852,6 +852,14 @@ static void test_video_out_field(void *obj, void *data, QGuestAllocator *alloc)
     uint64_t desc, frames, dropped;
 
     divo_open(&t, obj, alloc);
+    /* The sink drops a field whose format differs from the last frame. */
+    video_setup(&t, 720, 243);
+    desc = make_buffer(&t, NTSC_PAGES, 0x15);
+    play_one(&t, desc, NTSC_PAGES);
+    for (int i = 0; i < 2000 && sink_get(&t, "frames") == 0; i++) {
+        g_usleep(5000);
+    }
+    g_assert_cmpuint(sink_get(&t, "frames"), >, 0);
     frames = sink_get(&t, "frames");
     dropped = sink_get(&t, "dropped");
     video_setup_bpp(&t, 720, 243, 16, 4);
