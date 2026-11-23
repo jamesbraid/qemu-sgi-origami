@@ -51,7 +51,8 @@ static Rig rig_start(void)
                        "-device sgi-xio-test-target,id=transfer-ram,size=16M "
                        "-device sgi-bridge,id=bridge,board-part=030-1244-001,"
                        "fabric=/machine/unattached/system[0] "
-                       "-device sgi-bridge-dma-test,bus=pci,addr=3");
+                       "-device sgi-bridge-dma-test,bus=pci,addr=3,"
+                       "vendor-id=0x1234,device-id=0x5678");
     qtest_sysbus_mmio_map(r.qts, "/machine/peripheral/bridge", 0, WIDGET_BASE);
     qtest_sysbus_mmio_map(r.qts, "/machine/peripheral/transfer-ram", 0,
                           TRANSFER_RAM);
@@ -448,6 +449,53 @@ static void test_translated_range(void)
     qtest_quit(r.qts);
 }
 
+/*
+ * A configuration word is its natural value at its own offset, either swap
+ * bit; a big-endian system aims narrow accesses at the other half.
+ */
+static void test_config_reads(void)
+{
+    static const PioRead le_rows[] = {
+        { 4, 0x00, 0x56781234 }, { 2, 0x00, 0x1234 }, { 2, 0x02, 0x5678 },
+        { 1, 0x00, 0x34 }, { 1, 0x01, 0x12 }, { 1, 0x02, 0x78 },
+        { 1, 0x03, 0x56 }, { 4, 0x10, CARD_BAR0 }, { 2, 0x04, 7 },
+    };
+    static const PioRead be_rows[] = {
+        { 4, 0x00, 0x56781234 }, { 2, 0x02, 0x1234 }, { 2, 0x00, 0x5678 },
+        { 1, 0x03, 0x34 }, { 1, 0x02, 0x12 }, { 1, 0x01, 0x78 },
+        { 1, 0x00, 0x56 }, { 4, 0x10, CARD_BAR0 }, { 2, 0x06, 7 },
+    };
+    uint64_t cfg = CFG0_BASE + CARD_SLOT * 0x1000;
+    Rig r = rig_start_with_card();
+
+    for (unsigned swap = 0; swap < 2; swap++) {
+        set_device(&r, CARD_SLOT, DEV_SWAP, swap ? DEV_SWAP : 0);
+        set_system_little_endian(&r, true);
+        check_reads(&r, cfg, le_rows, ARRAY_SIZE(le_rows));
+        set_system_little_endian(&r, false);
+        check_reads(&r, cfg, be_rows, ARRAY_SIZE(be_rows));
+    }
+    qtest_quit(r.qts);
+}
+
+/* Each write is checked from the other order, so a pair of errors cancels. */
+static void test_config_writes(void)
+{
+    uint64_t cfg = CFG0_BASE + CARD_SLOT * 0x1000;
+    Rig r = rig_start_with_card();
+
+    set_system_little_endian(&r, true);
+    cpu_write(&r, cfg + PCI_COMMAND, 2, 0x0006);
+    cpu_write(&r, cfg + PCI_INTERRUPT_LINE, 1, 0x5a);
+    cpu_write(&r, cfg + PCI_BASE_ADDRESS_0, 4, 0x14000000);
+
+    set_system_little_endian(&r, false);
+    g_assert_cmphex(cpu_read(&r, cfg + (PCI_COMMAND ^ 2), 2), ==, 0x0006);
+    g_assert_cmphex(cpu_read(&r, cfg + (PCI_INTERRUPT_LINE ^ 3), 1), ==, 0x5a);
+    g_assert_cmphex(cpu_read(&r, cfg + PCI_BASE_ADDRESS_0, 4), ==, 0x14000000);
+    qtest_quit(r.qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -460,6 +508,9 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-bridge-le/pio/isp1040", test_isp1040);
     qtest_add_func("/sgi-bridge-le/pio/translated-range",
                    test_translated_range);
+
+    qtest_add_func("/sgi-bridge-le/config/reads", test_config_reads);
+    qtest_add_func("/sgi-bridge-le/config/writes", test_config_writes);
 
     return g_test_run();
 }

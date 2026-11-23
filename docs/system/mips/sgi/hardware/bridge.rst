@@ -658,13 +658,15 @@ Type 0 configuration space starts at ``0x020000``: device in address bits
 ``pci-xtalk-bridge.c``). The window takes 1-, 2- and 4-byte accesses; an
 8-byte access fails the transaction.
 
-On this big-endian machine a byte or halfword configuration access aims at
-the address whose byte positions carry the register. Linux computes the
+On a big-endian system (control bit 9 set) a byte or halfword
+configuration access aims at the address whose byte positions carry the
+register. Linux computes the
 register offset exclusive-or (4 − size), and OpenBSD issues only 32-bit
 configuration reads, *software expectation*. The model undoes the
 exclusive-or before it addresses the PCI device, so a byte read of a
 vendor ID returns the vendor's low byte. A 32-bit access needs no
-correction.
+correction. With control bit 9 clear the model applies no correction at
+all (:ref:`sgi-bridge-little-endian`).
 
 A configuration cycle no device claims is a master time-out: the
 specification sets interrupt status bit 11 and records the PCI address and
@@ -1077,6 +1079,14 @@ What each part of the model does with the bit:
   of bit 13, as :ref:`sgi-bridge-pio` says, *inferred*
   (:src:`bridge-asic-spec-4.0 p. 22, 55`). Control bit 23 still governs
   nothing.
+- **Configuration space.** The specification does not say how bytes are
+  placed in a configuration cycle, or whether the system order or the
+  device's swap bit governs them: *unknown*. The model places them as a
+  window with its swap bit clear, whatever Device(*n*) holds. With control
+  bit 9 clear that is address order: a 32-bit access at a register's offset
+  reads its natural value, and a byte at offset *o* is register byte *o*.
+  Each is an *approximation*. A configuration read from a little-endian
+  processor on hardware would settle it.
 
 .. _sgi-bridge-interrupts:
 
@@ -1894,10 +1904,10 @@ Model limits
 - The DMA flush window at ``0x3fff0000`` is not implemented, and local DMA
   below ``0x40000000`` is forwarded to widget 0 at the same address, where
   real hardware does not respond.
-- Little-endian host mode (:ref:`sgi-bridge-little-endian`) places
-  device-window and ``0x40000000`` bytes only. Everything else keeps its
-  big-endian behaviour, and nothing is modelled for the processor's own
-  mode.
+- Little-endian host mode (:ref:`sgi-bridge-little-endian`) covers the
+  device windows, the ``0x40000000`` range and configuration space. The rest
+  keeps its big-endian behaviour, and nothing is modelled for the
+  processor's own mode.
 - Swap-clear DMA in a 64-bit slot uses whole-doubleword reversal, which no
   document settles for DMA. Slot width is settled per slot at reset, not
   per transaction or per function.
@@ -1963,7 +1973,7 @@ accesses split into two word cycles, and widget 1 staying the Hub.
 parts.
 ``tests/qtest/sgi-bridge-little-endian-test.c`` drives a standalone Bridge
 with control bit 9 clear and set: window and ``0x40000000`` placement at
-every width and an ISP1040's mailboxes.
+every width, an ISP1040's mailboxes and configuration space.
 ``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
 follow a moved BAR. ``tests/qtest/octane-test.c`` covers the Octane flash
 wiring and strap combinations and the status word each machine reads

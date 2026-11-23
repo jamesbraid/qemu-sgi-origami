@@ -13,6 +13,7 @@
 #include "qemu/osdep.h"
 #include "qapi/error.h"
 #include "qemu/bitops.h"
+#include "qemu/bswap.h"
 #include "qemu/log.h"
 #include "qemu/timer.h"
 #include "qemu/units.h"
@@ -617,6 +618,26 @@ static bool sgi_bridge_big_endian(SGIBridgeState *s)
 static bool sgi_bridge_in_order(SGIBridgeState *s, bool swap)
 {
     return swap == sgi_bridge_big_endian(s);
+}
+
+/*
+ * A big-endian region reaches a little-endian processor reversed; with
+ * control bit 9 clear, undo that first. Its own inverse.
+ */
+static uint64_t sgi_bridge_le_view(SGIBridgeState *s, uint64_t value,
+                                   unsigned size)
+{
+    if (sgi_bridge_big_endian(s)) {
+        return value;
+    }
+    switch (size) {
+    case 2:
+        return bswap16(value);
+    case 4:
+        return bswap32(value);
+    default:
+        return value;
+    }
 }
 
 
@@ -1685,13 +1706,16 @@ static const MemoryRegionOps sgi_bridge_ate_low_ops = {
  * Undoes the guest's byte-lane aim (offset xor (4 - width)): what makes a
  * byte read of a vendor ID return the vendor's low byte.
  */
-static uint32_t sgi_bridge_config_address(hwaddr addr, unsigned size)
+static uint32_t sgi_bridge_config_address(SGIBridgeState *s, hwaddr addr,
+                                          unsigned size)
 {
     unsigned int reg = addr & BRIDGE_CFG0_REGISTER;
     unsigned int devfn = PCI_DEVFN(BRIDGE_CFG0_DEVICE(addr),
                                    BRIDGE_CFG0_FUNCTION(addr));
 
-    reg = sgi_bridge_window_correct(reg, size);
+    if (sgi_bridge_big_endian(s)) {
+        reg = sgi_bridge_window_correct(reg, size);
+    }
 
     return (devfn << 8) | reg;
 }
@@ -1796,7 +1820,7 @@ static MemTxResult sgi_bridge_config_read(void *opaque, hwaddr addr,
 {
     SGIBridgeState *s = opaque;
     PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
-    uint32_t address = sgi_bridge_config_address(addr, size);
+    uint32_t address = sgi_bridge_config_address(s, addr, size);
 
     trace_sgi_bridge_config_read(addr, size);
     if (!sgi_bridge_config_claimed(s, address)) {
@@ -1804,7 +1828,7 @@ static MemTxResult sgi_bridge_config_read(void *opaque, hwaddr addr,
         *data = MAKE_64BIT_MASK(0, size * 8);
         return MEMTX_ERROR;
     }
-    *data = pci_data_read(phb->bus, address, size);
+    *data = sgi_bridge_le_view(s, pci_data_read(phb->bus, address, size), size);
     return MEMTX_OK;
 }
 
@@ -1815,14 +1839,14 @@ static MemTxResult sgi_bridge_config_write(void *opaque, hwaddr addr,
 {
     SGIBridgeState *s = opaque;
     PCIHostState *phb = PCI_HOST_BRIDGE(opaque);
-    uint32_t address = sgi_bridge_config_address(addr, size);
+    uint32_t address = sgi_bridge_config_address(s, addr, size);
 
     trace_sgi_bridge_config_write(addr, size, val);
     if (!sgi_bridge_config_claimed(s, address)) {
         sgi_bridge_master_timeout(s, address);
         return MEMTX_OK;
     }
-    pci_data_write(phb->bus, address, val, size);
+    pci_data_write(phb->bus, address, sgi_bridge_le_view(s, val, size), size);
     return MEMTX_OK;
 }
 
