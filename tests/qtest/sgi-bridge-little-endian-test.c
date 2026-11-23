@@ -38,21 +38,40 @@
 #define WIDE_FIXED      0x00
 #define WIDE_SCRATCH    0x08
 
+/* The card's DMA engine, in BAR0. */
+#define XFER_ADDRESS    0x00
+#define XFER_LENGTH     0x04
+#define XFER_SEED       0x08
+#define XFER_GO         0x0c
+#define XFER_SOURCE     0x14
+#define XFER_GO_FILL    1
+#define XFER_GO_COPY    2
+
+#define BRIDGE_DIRECT_MAP 0x080
+#define DEV_SWAP_TRANSLATED (1u << 20)
+#define DEV_SWAP_DIRECT (1u << 19)
+#define ATE_BASE        (WIDGET_BASE + 0x10000)
+#define PCI_TRANSLATED  0x40000000u
+#define PCI_DIRECT      0x80000000u
+
 typedef struct Rig {
     QTestState *qts;
     bool le;            /* the system order the test last selected */
 } Rig;
 
-static Rig rig_start(void)
+/* A 64-bit card in a slot the board wires to the 64-bit data path. */
+static Rig rig_start(bool wide)
 {
     Rig r = { 0 };
 
-    r.qts = qtest_init("-M none -cpu R10000 "
-                       "-device sgi-xio-test-target,id=transfer-ram,size=16M "
-                       "-device sgi-bridge,id=bridge,board-part=030-1244-001,"
-                       "fabric=/machine/unattached/system[0] "
-                       "-device sgi-bridge-dma-test,bus=pci,addr=3,"
-                       "vendor-id=0x1234,device-id=0x5678");
+    r.qts = qtest_initf("-M none -cpu R10000 "
+                        "-device sgi-xio-test-target,id=transfer-ram,size=16M "
+                        "-device sgi-bridge,id=bridge,board-part=030-1244-001,"
+                        "fabric=/machine/unattached/system[0],req64-slots=%d "
+                        "-device %s,bus=pci,addr=3,vendor-id=0x1234,"
+                        "device-id=0x5678", wide ? 1 << CARD_SLOT : 0,
+                        wide ? "sgi-bridge-dma-test-64bit" :
+                               "sgi-bridge-dma-test");
     qtest_sysbus_mmio_map(r.qts, "/machine/peripheral/bridge", 0, WIDGET_BASE);
     qtest_sysbus_mmio_map(r.qts, "/machine/peripheral/transfer-ram", 0,
                           TRANSFER_RAM);
@@ -153,9 +172,9 @@ static void set_control(const Rig *r, uint32_t clear, uint32_t set)
 }
 
 /* The card's BARs at fixed PCI addresses, set up as a big-endian system. */
-static Rig rig_start_with_card(void)
+static Rig rig_start_with_card(bool wide)
 {
-    Rig r = rig_start();
+    Rig r = rig_start(wide);
     uint64_t cfg = CFG0_BASE + CARD_SLOT * 0x1000;
 
     qtest_writel(r.qts, cfg + PCI_BASE_ADDRESS_0, CARD_BAR0);
@@ -226,7 +245,7 @@ static void check_reads(const Rig *r, uint64_t window, const PioRead *rows,
 
 static void check_pio_row(bool le, bool swap, bool wide, const PioRead *rows)
 {
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
 
     set_system_little_endian(&r, le);
     select_row(&r, swap, wide);
@@ -311,7 +330,7 @@ static void test_pio_writes(void)
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         const PioWrite *c = &cases[i];
-        Rig r = rig_start_with_card();
+        Rig r = rig_start_with_card(false);
         uint8_t seen[8];
 
         set_system_little_endian(&r, c->le);
@@ -328,7 +347,7 @@ static void test_pio_writes(void)
 /* The I/O window places bytes as the memory windows do. */
 static void test_io_window(void)
 {
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
     uint8_t seen[4];
 
     set_system_little_endian(&r, true);
@@ -354,7 +373,7 @@ static void test_io_window(void)
 static void test_foreign_windows(void)
 {
     const uint64_t other_mem = WIDGET_BASE + 0x900000;
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
 
     set_system_little_endian(&r, true);
     set_device(&r, IO_SLOT, DEV_SWAP | DEV_64BIT, 0);
@@ -427,7 +446,7 @@ static void test_translated_range(void)
     };
     uint64_t range = XLATE_BASE + CARD_BAR1;
     uint64_t window = CARD_WINDOW + CARD_BAR1 - CARD_BAR0;
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
 
     for (unsigned i = 0; i < ARRAY_SIZE(cases); i++) {
         set_system_little_endian(&r, cases[i].le);
@@ -466,7 +485,7 @@ static void test_config_reads(void)
         { 1, 0x00, 0x56 }, { 4, 0x10, CARD_BAR0 }, { 2, 0x06, 7 },
     };
     uint64_t cfg = CFG0_BASE + CARD_SLOT * 0x1000;
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
 
     for (unsigned swap = 0; swap < 2; swap++) {
         set_device(&r, CARD_SLOT, DEV_SWAP, swap ? DEV_SWAP : 0);
@@ -482,7 +501,7 @@ static void test_config_reads(void)
 static void test_config_writes(void)
 {
     uint64_t cfg = CFG0_BASE + CARD_SLOT * 0x1000;
-    Rig r = rig_start_with_card();
+    Rig r = rig_start_with_card(false);
 
     set_system_little_endian(&r, true);
     cpu_write(&r, cfg + PCI_COMMAND, 2, 0x0006);
@@ -493,6 +512,132 @@ static void test_config_writes(void)
     g_assert_cmphex(cpu_read(&r, cfg + (PCI_COMMAND ^ 2), 2), ==, 0x0006);
     g_assert_cmphex(cpu_read(&r, cfg + (PCI_INTERRUPT_LINE ^ 3), 1), ==, 0x5a);
     g_assert_cmphex(cpu_read(&r, cfg + PCI_BASE_ADDRESS_0, 4), ==, 0x14000000);
+    qtest_quit(r.qts);
+}
+
+/*
+ * Sixteen bytes 40 to 4f in PCI order, and where they land: in address
+ * order, word-reversed and doubleword-reversed.
+ */
+static const uint8_t pattern_ordered[16] = {
+    0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+    0x48, 0x49, 0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f,
+};
+static const uint8_t pattern_word[16] = {
+    0x43, 0x42, 0x41, 0x40, 0x47, 0x46, 0x45, 0x44,
+    0x4b, 0x4a, 0x49, 0x48, 0x4f, 0x4e, 0x4d, 0x4c,
+};
+static const uint8_t pattern_double[16] = {
+    0x47, 0x46, 0x45, 0x44, 0x43, 0x42, 0x41, 0x40,
+    0x4f, 0x4e, 0x4d, 0x4c, 0x4b, 0x4a, 0x49, 0x48,
+};
+
+#define SRC_PAGE        (TRANSFER_RAM + 0x1000)
+#define DST_PAGE        (TRANSFER_RAM + 0x3000)
+#define ATE_INDEX       5
+
+static void xfer(const Rig *r, unsigned reg, uint32_t value)
+{
+    cpu_write(r, CARD_WINDOW + reg, 4, value);
+}
+
+/* The card fills sixteen bytes at a PCI address; memory is read raw. */
+static void check_dma_write(const Rig *r, uint64_t pci, const uint8_t *want)
+{
+    uint8_t seen[16];
+
+    qtest_memset(r->qts, SRC_PAGE, 0xee, 16);
+    xfer(r, XFER_ADDRESS, pci);
+    xfer(r, XFER_LENGTH, 16);
+    xfer(r, XFER_SEED, 0x40);
+    xfer(r, XFER_GO, XFER_GO_FILL);
+    qtest_memread(r->qts, SRC_PAGE, seen, 16);
+    g_assert_cmpmem(seen, 16, want, 16);
+}
+
+/* The card reads memory through a route and stores it in local space. */
+static void check_dma_read(const Rig *r, uint64_t pci, const uint8_t *want)
+{
+    uint8_t seen[16];
+
+    qtest_memwrite(r->qts, SRC_PAGE, pattern_ordered, 16);
+    qtest_memset(r->qts, DST_PAGE, 0xee, 16);
+    xfer(r, XFER_SOURCE, pci);
+    xfer(r, XFER_ADDRESS, DST_PAGE);
+    xfer(r, XFER_LENGTH, 16);
+    xfer(r, XFER_GO, XFER_GO_COPY);
+    qtest_memread(r->qts, DST_PAGE, seen, 16);
+    g_assert_cmpmem(seen, 16, want, 16);
+}
+
+static void dma_modes(bool wide)
+{
+    Rig r = rig_start_with_card(wide);
+    const uint8_t *swapped = wide ? pattern_double : pattern_word;
+    uint64_t routes[] = {
+        PCI_DIRECT | SRC_PAGE,
+        PCI_TRANSLATED + ATE_INDEX * 0x1000,
+    };
+
+    reg_write(&r, BRIDGE_DIRECT_MAP, 0);
+    qtest_writeq(r.qts, ATE_BASE + ATE_INDEX * 8, SRC_PAGE | 1);
+
+    for (unsigned le = 0; le < 2; le++) {
+        set_system_little_endian(&r, le);
+        for (unsigned route = 0; route < 2; route++) {
+            for (unsigned set = 0; set < 2; set++) {
+                /* Bytes stay in order when the bit equals control bit 9. */
+                bool ordered = set == !le;
+
+                set_device(&r, CARD_SLOT, DEV_SWAP_TRANSLATED | DEV_SWAP_DIRECT,
+                           set ? (route ? DEV_SWAP_TRANSLATED :
+                                          DEV_SWAP_DIRECT) : 0);
+                g_test_message("le=%u route=%u set=%u", le, route, set);
+                check_dma_write(&r, routes[route],
+                                ordered ? pattern_ordered : swapped);
+                check_dma_read(&r, routes[route],
+                               ordered ? pattern_ordered : swapped);
+            }
+        }
+    }
+    qtest_quit(r.qts);
+}
+
+static void test_dma_32bit_slot(void)
+{
+    dma_modes(false);
+}
+
+static void test_dma_64bit_slot(void)
+{
+    dma_modes(true);
+}
+
+/* Local space has no swapper in either order. */
+static void test_dma_local_space(void)
+{
+    Rig r = rig_start_with_card(false);
+
+    set_system_little_endian(&r, true);
+    set_device(&r, CARD_SLOT, 0, DEV_SWAP_TRANSLATED | DEV_SWAP_DIRECT);
+    check_dma_write(&r, SRC_PAGE, pattern_ordered);
+    qtest_quit(r.qts);
+}
+
+/* The translation table keeps its big-endian arrangement in both modes. */
+static void test_translation_table_stays_big_endian(void)
+{
+    uint64_t entry = 0xabcd000000000000ULL | SRC_PAGE | 1;
+    uint64_t at = ATE_BASE + ATE_INDEX * 8;
+    Rig r = rig_start_with_card(false);
+
+    set_system_little_endian(&r, true);
+    le_write(r.qts, at, 8, entry);
+    g_assert_cmphex(qtest_readl(r.qts, at + 4), ==, bswap32((uint32_t)entry));
+
+    le_write(r.qts, at, 8, bswap64(entry));
+    g_assert_cmphex(qtest_readl(r.qts, at + 4), ==, entry >> 32);
+    check_dma_write(&r, PCI_TRANSLATED + ATE_INDEX * 0x1000, pattern_ordered);
     qtest_quit(r.qts);
 }
 
@@ -511,6 +656,12 @@ int main(int argc, char **argv)
 
     qtest_add_func("/sgi-bridge-le/config/reads", test_config_reads);
     qtest_add_func("/sgi-bridge-le/config/writes", test_config_writes);
+
+    qtest_add_func("/sgi-bridge-le/dma/32bit-slot", test_dma_32bit_slot);
+    qtest_add_func("/sgi-bridge-le/dma/64bit-slot", test_dma_64bit_slot);
+    qtest_add_func("/sgi-bridge-le/dma/local-space", test_dma_local_space);
+    qtest_add_func("/sgi-bridge-le/dma/translation-table",
+                   test_translation_table_stays_big_endian);
 
     return g_test_run();
 }

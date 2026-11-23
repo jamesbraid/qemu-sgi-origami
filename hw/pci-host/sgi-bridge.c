@@ -2016,7 +2016,7 @@ static unsigned int sgi_bridge_page_shift(SGIBridgeState *s)
 /*
  * The placement the requesting slot's swap bit and data-phase width ask
  * for. The window is chosen on the PCI address the device issued, since it
- * selects between the two swap bits.
+ * selects between the two swap bits. Control bit 9 flips their sense.
  */
 static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
                                                 unsigned int slot,
@@ -2029,8 +2029,9 @@ static SGIDMAPlacement sgi_bridge_dma_placement(SGIBridgeState *s,
         return SGI_DMA_PLACEMENT_IDENTITY;
     }
     return sgi_dma_placement_select(
-        dev & (pci_addr < BRIDGE_PCI_DIRECT ? DEV_SWAP_TRANSLATED
-                                            : DEV_SWAP_DIRECT),
+        sgi_bridge_in_order(s, dev & (pci_addr < BRIDGE_PCI_DIRECT
+                                      ? DEV_SWAP_TRANSLATED
+                                      : DEV_SWAP_DIRECT)),
         s->dma_64bit & (1U << slot));
 }
 

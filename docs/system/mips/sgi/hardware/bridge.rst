@@ -954,9 +954,10 @@ Device(*n*) bit 20 controls DMA through the translated window and bit 19
 controls the direct window and 64-bit cycles. Both reset clear, and local
 space has no swapper, *established* (:src:`bridge-asic-spec-4.0 p. 41-43`,
 Table 36). Table 36 applies the Appendix A placement to DMA through those
-windows. Read that way, a set bit gives a byte stream, and a clear bit
-reverses each aligned 32-bit word on a 32-bit data phase (Tables 73 and
-76) and each aligned doubleword on a 64-bit data phase (Tables 77 and 80).
+windows. Read that way, on a big-endian system a set bit gives a byte
+stream, and a clear bit reverses each aligned 32-bit word on a 32-bit data
+phase (Tables 73 and 76) and each aligned doubleword on a 64-bit data
+phase (Tables 77 and 80).
 
 SGI's driver guide defines the two orders IRIX offers for DMA. *Byte
 stream* keeps byte order. *Word values* puts a byte at offset *o* at *o*
@@ -975,10 +976,11 @@ The model takes the specification's width-dependent rule, an
 - The swap bit is chosen from the PCI address the device issued, before
   any translation: bit 20 below ``0x80000000``, bit 19 at and above it.
   Local transfers are never placed.
-- Set: the transfer is a byte stream. Clear: each aligned 32-bit word is
-  byte-reversed, with the words in place; in a 64-bit slot each aligned
-  doubleword is reversed instead, and a shorter transfer lands mirrored
-  within its doubleword.
+- With control bit 9 set, a set bit is a byte stream. A clear bit reverses
+  each aligned 32-bit word, with the words in place; in a 64-bit slot each
+  aligned doubleword is reversed instead, and a shorter transfer lands
+  mirrored within its doubleword. With control bit 9 clear the two
+  meanings trade places (:ref:`sgi-bridge-little-endian`).
 - A slot is 64-bit when the board wires it to the 64-bit data path (the
   ``req64-slots`` property, one bit per slot) and every function in it
   implements ``INTERFACE_PCI_64BIT_DEVICE``. The Bridge settles this at
@@ -1087,6 +1089,22 @@ What each part of the model does with the bit:
   reads its natural value, and a byte at offset *o* is register byte *o*.
   Each is an *approximation*. A configuration read from a little-endian
   processor on hardware would settle it.
+- **DMA.** Device(*n*) bits 19 and 20 (:src:`bridge-asic-spec-4.0 p. 42-43`)
+  mean what they do for a big-endian system with the sense reversed: a clear
+  bit is a byte stream, a set bit reverses each aligned 32-bit word, or each
+  aligned doubleword in a 64-bit slot. Appendix A has no table for DMA, so
+  this follows its PIO tables through Table 36, *inferred*. The
+  specification puts the low-addressed word of a 64-bit transfer in data
+  bits 31:0 for a little-endian system
+  (:src:`bridge-asic-spec-4.0 p. 99-100`), *established*; the model moves
+  bytes by address and holds no word order of its own. The width-dependent
+  doubleword reversal of :ref:`sgi-bridge-dma-byte-order` stays an
+  *approximation*.
+- **Translation table, flash, SSRAM and packet windows.** These keep the
+  big-endian arrangement in both modes, so a little-endian processor stores
+  a translation-table entry as the entry byte-reversed. What the hardware
+  does is *unknown*. The model's choice is an *approximation*. A test pins
+  the table; the flash, SSRAM and packet windows are untested in this mode.
 
 .. _sgi-bridge-interrupts:
 
@@ -1905,8 +1923,9 @@ Model limits
   below ``0x40000000`` is forwarded to widget 0 at the same address, where
   real hardware does not respond.
 - Little-endian host mode (:ref:`sgi-bridge-little-endian`) covers the
-  device windows, the ``0x40000000`` range and configuration space. The rest
-  keeps its big-endian behaviour, and nothing is modelled for the
+  device windows, the ``0x40000000`` range, configuration space and DMA
+  placement. The register slots, translation table, flash, SSRAM and packet
+  windows keep their big-endian behaviour, and nothing is modelled for the
   processor's own mode.
 - Swap-clear DMA in a 64-bit slot uses whole-doubleword reversal, which no
   document settles for DMA. Slot width is settled per slot at reset, not
@@ -1973,7 +1992,8 @@ accesses split into two word cycles, and widget 1 staying the Hub.
 parts.
 ``tests/qtest/sgi-bridge-little-endian-test.c`` drives a standalone Bridge
 with control bit 9 clear and set: window and ``0x40000000`` placement at
-every width, an ISP1040's mailboxes and configuration space.
+every width, an ISP1040's mailboxes, configuration space, and DMA through
+both windows and the translation table.
 ``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
 follow a moved BAR. ``tests/qtest/octane-test.c`` covers the Octane flash
 wiring and strap combinations and the status word each machine reads
