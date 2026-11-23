@@ -577,10 +577,16 @@ count. Each interface keeps its own counter.
 
 When the counter equals a slot's real-time compare, that slot's
 real-time pending bit sets; when the counter's low 32 bits equal the
-profile compare, both profile pending bits set (``hubpi.h``), a *software expectation*. Any store to a pending register
-clears that register's bit, a *software expectation*. SGI Performer reads the
-counter as two 32-bit halves, so the model accepts 32-bit reads at
-``0x30100`` (high half) and ``0x30104`` (low half).
+profile compare, both profile pending bits set (``hubpi.h``), a
+*software expectation*. A real-time compare stored equal to the counter
+sets the pending bit in the store, and one stored behind the counter
+matches after the counter wraps. Both follow from matching on equality,
+*inferred*. That includes a compare of zero stored while the counter is
+zero, as after a reset. The profile compare has no such latch, an
+*approximation*. Any store to a pending register clears that register's
+bit, a *software expectation*. SGI Performer reads the counter as two
+32-bit halves, so the model accepts 32-bit reads at ``0x30100`` (high
+half) and ``0x30104`` (low half).
 
 .. _sgi-bedrock-pi-nmi:
 
@@ -2316,8 +2322,8 @@ Register-contract qtests, one per unit:
 - ``tests/qtest/sn1-bedrock-pi-test.c``: CPU number with and without a
   processor, presence and enable on sparse populations, pending
   reflection and modify, coherency pending, masks, power-on and local
-  reset values, error capture, the NMI predicate, the comparators and
-  profile wrap, 32-bit counter reads, lines held low without main
+  reset values, error capture, the NMI predicate, the comparators, a
+  compare stored equal to the counter and profile wrap, 32-bit counter reads, lines held low without main
   power, and migration of outputs, counter phase and enables.
 - ``tests/qtest/sn1-bedrock-md-test.c``: the register contract, bank
   decode, fitted populations and bank-select remapping, the self-test

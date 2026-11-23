@@ -977,6 +977,30 @@ static void test_real_time_comparators(void)
     qtest_quit(s);
 }
 
+/* The real-time compare matches on equality, so equal to the counter is now. */
+static void test_real_time_compare_stored_equal_matches_at_once(void)
+{
+    QTestState *s = start_clock("");
+
+    qtest_clock_set(s, 0);
+    qtest_writeq(s, PI(0, RT_COUNTER), 0);
+    /* Zero on a counter of zero is equal too, as after a reset. */
+    qtest_writeq(s, PI(0, RT_COMPARE_A), 0);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 1);
+    qtest_writeq(s, PI(0, RT_PENDING_A), 0);
+    qtest_clock_step(s, 2 * RT_TICK_NS);
+    qtest_writeq(s, PI(0, RT_COMPARE_A), 2);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 1);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_B)), ==, 0);
+    qtest_writeq(s, PI(0, RT_PENDING_A), 0);
+
+    /* Behind the counter waits for the wrap. */
+    qtest_writeq(s, PI(0, RT_COMPARE_A), 1);
+    qtest_clock_step(s, 1000 * RT_TICK_NS);
+    g_assert_cmphex(qtest_readq(s, PI(0, RT_PENDING_A)), ==, 0);
+    qtest_quit(s);
+}
+
 static void test_profile_and_counter_wrap(void)
 {
     QTestState *s = start_clock("");
@@ -1458,6 +1482,8 @@ int main(int argc, char **argv)
                    test_error_pending_survives_reset);
     qtest_add_func("sn1/bedrock-pi/real-time-comparators",
                    test_real_time_comparators);
+    qtest_add_func("sn1/bedrock-pi/real-time-compare-stored-equal",
+                   test_real_time_compare_stored_equal_matches_at_once);
     qtest_add_func("sn1/bedrock-pi/rt-counter-access-width",
                    test_rt_counter_access_width);
     qtest_add_func("sn1/bedrock-pi/profile-counter-wrap",

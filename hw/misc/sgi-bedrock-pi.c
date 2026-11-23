@@ -928,6 +928,11 @@ static void pi_write_locked(void *opaque, hwaddr offset, uint64_t value,
         unsigned slot = offset == PI_RT_COMPARE_B;
 
         s->rt_compare[slot] = value & PI_RT_MASK;
+        /* Equal to the counter matches now; pi_arm_rt() waits the wrap. */
+        if (s->rt_compare[slot] == pi_rt_count(s)) {
+            s->rt_pending[slot] = 1;
+            sgi_bedrock_pi_recompute(s);
+        }
         pi_arm_rt(s, slot);
         if (s->bedrock) {
             sgi_bedrock_rt_compare_written(s->bedrock, s->interface, slot);
