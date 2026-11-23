@@ -242,8 +242,10 @@ Every register is 32 bits or narrower and sits in data bits 31:0 of an
 eight-byte slot. The specification allows only an XIO doubleword packet
 with four byte enables, which from a big-endian processor is a 32-bit
 access at the slot's offset plus four, *established*
-(:src:`bridge-asic-spec-4.0 register tables`). Linux ``bridge.h`` names
-that plus-four address; OpenBSD ``xbridgereg.h`` names the slot and adds
+(:src:`bridge-asic-spec-4.0 register tables`). A little-endian
+processor finds the same bits at the slot's offset, which the model answers
+with control bit 9 clear (:ref:`sgi-bridge-little-endian`). Linux ``bridge.h``
+names that plus-four address; OpenBSD ``xbridgereg.h`` names the slot and adds
 four when it accesses it. The table gives slot offsets. A reset marked
 *spec* is *established* from the specification; one marked *model* is the
 model's choice where the specification gives none, an *approximation*.
@@ -560,7 +562,7 @@ Control register
    * - 9
      - System big-endian
      - 1
-     - Picks the byte-placement tables
+     - Picks the byte-placement tables and the register layout
        (:ref:`sgi-bridge-little-endian`).
    * - 8:4
      - Maximum outstanding transactions
@@ -1100,6 +1102,26 @@ What each part of the model does with the bit:
   bytes by address and holds no word order of its own. The width-dependent
   doubleword reversal of :ref:`sgi-bridge-dma-byte-order` stays an
   *approximation*.
+- **Register slots.** Every register sits in data bits 31:0 of an eight-byte
+  slot, *established* (:src:`bridge-asic-spec-4.0 p. 15`). Those bits are
+  the four highest-addressed bytes of the doubleword in a big-endian system
+  and the four lowest-addressed in a little-endian one, *established*
+  (:src:`bridge-asic-spec-4.0 p. 87`, Figure 10). So a little-endian
+  processor finds a register at the slot's offset and reads its natural
+  value, *inferred*: the specification does not describe how a processor of
+  either order reaches a widget. With control bit 9 clear the model answers
+  a 32-bit access at the slot's offset too, in natural order for a
+  little-endian processor. The offset plus four keeps answering as it does
+  with the bit set, so a guest that clears the bit with a whole-word write,
+  or reads the register back at the address it wrote, finds it where it left
+  it. The reserved ``0x19c`` address keeps its behaviour in both modes.
+  Answering at both offsets, and choosing the value order from control bit
+  9, are each an *approximation*: the specification places registers by data
+  bits and never by that bit, and gives no reason to expect the second
+  offset. A little-endian processor's read of the Identification slot at
+  both halves, with control bit 9 clear, would settle both. Dropping the
+  offset-plus-four answer means changing the two ``sn0-bridge-test`` cases
+  that write the control register as zero.
 - **Translation table, flash, SSRAM and packet windows.** These keep the
   big-endian arrangement in both modes, so a little-endian processor stores
   a translation-table entry as the entry byte-reversed. What the hardware
@@ -1923,10 +1945,10 @@ Model limits
   below ``0x40000000`` is forwarded to widget 0 at the same address, where
   real hardware does not respond.
 - Little-endian host mode (:ref:`sgi-bridge-little-endian`) covers the
-  device windows, the ``0x40000000`` range, configuration space and DMA
-  placement. The register slots, translation table, flash, SSRAM and packet
-  windows keep their big-endian behaviour, and nothing is modelled for the
-  processor's own mode.
+  register slots, device windows, configuration space and DMA placement. The
+  translation table and the flash, SSRAM and packet windows keep their
+  big-endian arrangement, and nothing is modelled for the processor's own
+  mode.
 - Swap-clear DMA in a 64-bit slot uses whole-doubleword reversal, which no
   document settles for DMA. Slot width is settled per slot at reset, not
   per transaction or per function.
@@ -1991,9 +2013,9 @@ accesses split into two word cycles, and widget 1 staying the Hub.
 ``tests/qtest/sgi-bridge-bus-test.c`` drives a standalone Bridge with test
 parts.
 ``tests/qtest/sgi-bridge-little-endian-test.c`` drives a standalone Bridge
-with control bit 9 clear and set: window and ``0x40000000`` placement at
-every width, an ISP1040's mailboxes, configuration space, and DMA through
-both windows and the translation table.
+with control bit 9 clear and set: the register layout, window and
+``0x40000000`` placement at every width, an ISP1040's mailboxes,
+configuration space, and DMA through both windows and the translation table.
 ``tests/qtest/sn0-pio-forward-test.c`` checks that window accesses
 follow a moved BAR. ``tests/qtest/octane-test.c`` covers the Octane flash
 wiring and strap combinations and the status word each machine reads

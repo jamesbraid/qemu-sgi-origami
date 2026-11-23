@@ -1334,10 +1334,43 @@ static void sgi_bridge_write(void *opaque, hwaddr addr, uint64_t val,
     g_assert_not_reached();
 }
 
+/*
+ * With control bit 9 clear a register also answers at its slot's own
+ * offset; the offset plus four keeps answering.
+ */
+static bool sgi_bridge_reg_at_slot(SGIBridgeState *s, hwaddr addr)
+{
+    return !sgi_bridge_big_endian(s) && addr % SGI_BRIDGE_REG_SLOT == 0;
+}
+
+static uint64_t sgi_bridge_reg_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    if (sgi_bridge_reg_at_slot(s, addr)) {
+        return sgi_bridge_le_view(
+            s, sgi_bridge_read(s, addr + SGI_BRIDGE_REG_DATA, size), size);
+    }
+    return sgi_bridge_read(s, addr, size);
+}
+
+static void sgi_bridge_reg_write(void *opaque, hwaddr addr, uint64_t val,
+                                 unsigned size)
+{
+    SGIBridgeState *s = opaque;
+
+    if (sgi_bridge_reg_at_slot(s, addr)) {
+        sgi_bridge_write(s, addr + SGI_BRIDGE_REG_DATA,
+                         sgi_bridge_le_view(s, val, size), size);
+        return;
+    }
+    sgi_bridge_write(s, addr, val, size);
+}
+
 /* Both bounds declared so the core rejects instead of reshaping. */
 static const MemoryRegionOps sgi_bridge_reg_ops = {
-    .read = sgi_bridge_read,
-    .write = sgi_bridge_write,
+    .read = sgi_bridge_reg_read,
+    .write = sgi_bridge_reg_write,
     .endianness = DEVICE_BIG_ENDIAN,
     .valid.min_access_size = 4,
     .valid.max_access_size = 4,

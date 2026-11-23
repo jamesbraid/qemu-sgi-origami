@@ -136,15 +136,18 @@ static void cpu_write(const Rig *r, uint64_t addr, unsigned size,
     }
 }
 
-/* A register is the low word of its slot: the slot's offset plus four. */
+/*
+ * A big-endian system finds a register at its slot's offset plus four, a
+ * little-endian one at the slot's offset.
+ */
 static uint32_t reg_read(const Rig *r, unsigned offset)
 {
-    return qtest_readl(r->qts, WIDGET_BASE + offset + 4);
+    return cpu_read(r, WIDGET_BASE + offset + (r->le ? 0 : 4), 4);
 }
 
 static void reg_write(const Rig *r, unsigned offset, uint32_t value)
 {
-    qtest_writel(r->qts, WIDGET_BASE + offset + 4, value);
+    cpu_write(r, WIDGET_BASE + offset + (r->le ? 0 : 4), 4, value);
 }
 
 static void reg_update(const Rig *r, unsigned offset, uint32_t clear,
@@ -624,6 +627,81 @@ static void test_dma_local_space(void)
     qtest_quit(r.qts);
 }
 
+#define BRIDGE_IDENTIFICATION 0x000
+#define BRIDGE_INT_STATUS 0x100
+#define INT_INVALID_ADDR (1u << 24)
+#define BRIDGE_INT_RESET 0x110
+#define INT_RESET_REQ_DSP_GRP (1u << 3)
+
+/*
+ * Registers: with bit 9 clear the slot's lower word answers too, naturally
+ * for a little-endian processor; the upper word answers as before.
+ */
+static void test_register_layout(void)
+{
+    Rig r = rig_start(false);
+    uint32_t id = reg_read(&r, BRIDGE_IDENTIFICATION);
+    uint32_t control = reg_read(&r, BRIDGE_CONTROL);
+
+    g_assert_cmphex(control & CONTROL_BIG_ENDIAN, ==, CONTROL_BIG_ENDIAN);
+    g_assert_cmphex(id & 1, ==, 1);
+    /* The lower word of a slot reads as undefined: all ones, and latched. */
+    g_assert_cmphex(qtest_readl(r.qts, WIDGET_BASE + BRIDGE_IDENTIFICATION),
+                    ==, 0xffffffff);
+    g_assert_cmphex(reg_read(&r, BRIDGE_INT_STATUS) & INT_INVALID_ADDR, ==,
+                    INT_INVALID_ADDR);
+    reg_write(&r, BRIDGE_INT_RESET, INT_RESET_REQ_DSP_GRP);
+
+    set_system_little_endian(&r, true);
+    g_assert_cmphex(reg_read(&r, BRIDGE_IDENTIFICATION), ==, id);
+    g_assert_cmphex(reg_read(&r, BRIDGE_CONTROL), ==,
+                    control & ~CONTROL_BIG_ENDIAN);
+    g_assert_cmphex(reg_read(&r, BRIDGE_INT_STATUS) & INT_INVALID_ADDR, ==, 0);
+
+    /* The upper word keeps its register: a big-endian read is natural. */
+    g_assert_cmphex(qtest_readl(r.qts, WIDGET_BASE + BRIDGE_IDENTIFICATION + 4),
+                    ==, id);
+    g_assert_cmphex(le_read(r.qts, WIDGET_BASE + BRIDGE_IDENTIFICATION + 4, 4),
+                    ==, bswap32(id));
+
+    /* A write at the lower word lands, as the other order sees it. */
+    reg_write(&r, BRIDGE_DEVICE(5), 0x18001234);
+    qtest_writel(r.qts, WIDGET_BASE + BRIDGE_DEVICE(6) + 4, 0x18001235);
+    g_assert_cmphex(reg_read(&r, BRIDGE_DEVICE(6)), ==, 0x18001235);
+    set_system_little_endian(&r, false);
+    g_assert_cmphex(reg_read(&r, BRIDGE_DEVICE(5)), ==, 0x18001234);
+    qtest_quit(r.qts);
+}
+
+/* A little-endian processor reaches the bit at the reset layout, swapped. */
+static void test_processor_clears_the_bit(void)
+{
+    Rig r = rig_start(false);
+    uint32_t control = reg_read(&r, BRIDGE_CONTROL);
+
+    r.le = true;
+    g_assert_cmphex(le_read(r.qts, WIDGET_BASE + BRIDGE_CONTROL + 4, 4), ==,
+                    bswap32(control));
+    le_write(r.qts, WIDGET_BASE + BRIDGE_CONTROL + 4, 4,
+             bswap32(control & ~CONTROL_BIG_ENDIAN));
+    g_assert_cmphex(reg_read(&r, BRIDGE_CONTROL), ==,
+                    control & ~CONTROL_BIG_ENDIAN);
+    qtest_quit(r.qts);
+}
+
+/* A reset puts the system back to big-endian, as the bit's reset value says. */
+static void test_reset_restores_big_endian(void)
+{
+    Rig r = rig_start(false);
+
+    set_system_little_endian(&r, true);
+    qtest_qmp_assert_success(r.qts, "{'execute': 'system_reset'}");
+    r.le = false;
+    g_assert_cmphex(reg_read(&r, BRIDGE_CONTROL) & CONTROL_BIG_ENDIAN, ==,
+                    CONTROL_BIG_ENDIAN);
+    qtest_quit(r.qts);
+}
+
 /* The translation table keeps its big-endian arrangement in both modes. */
 static void test_translation_table_stays_big_endian(void)
 {
@@ -662,6 +740,12 @@ int main(int argc, char **argv)
     qtest_add_func("/sgi-bridge-le/dma/local-space", test_dma_local_space);
     qtest_add_func("/sgi-bridge-le/dma/translation-table",
                    test_translation_table_stays_big_endian);
+
+    qtest_add_func("/sgi-bridge-le/registers/layout", test_register_layout);
+    qtest_add_func("/sgi-bridge-le/registers/processor-clears-the-bit",
+                   test_processor_clears_the_bit);
+    qtest_add_func("/sgi-bridge-le/registers/reset",
+                   test_reset_restores_big_endian);
 
     return g_test_run();
 }
