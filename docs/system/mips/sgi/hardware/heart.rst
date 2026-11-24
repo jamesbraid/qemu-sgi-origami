@@ -754,6 +754,61 @@ reads that value and does not change it. The model stores these writes with no
 electrical effect, except as :ref:`sgi-heart-interrupts` and
 :ref:`sgi-heart-ecc` describe.
 
+.. _sgi-heart-bank-wrap:
+
+Bank base wrap (emulator only)
+------------------------------
+
+A descriptor's base is nine bits in 32 MiB units above ``0x20000000``
+(*software expectation*, above), so its 512 values span exactly 2^34
+bytes, *inferred* from the field width. Whether HEART's bank address
+adder carries past bit 33 or drops the carry is *unknown*. Dropping it
+would place a base of ``0x1f0`` at physical 0 and ``0x1f1`` to ``0x1ff``
+at 32 to 480 MiB. No public source or measurement says either. The PROM's
+only write of a base that high parks bank 0 at ``0x1ff`` with its valid
+bit clear (above), so no capture of a firmware-written wrap exists. The
+34-bit saved ECC address (:ref:`sgi-heart-ecc`) is the model's own
+*approximation* and is no evidence.
+
+Windows NT for MIPS needs RAM at physical 0 and at 6 MiB. The
+``x-heart-bank-wrap`` machine property of ``octane`` and ``octane2``, the
+``x-bank-base-wrap`` property of ``sgi-heart``, is off by default and
+stands in for the wrap.
+It is not hardware, no guest register sets it, and it is an
+*approximation*. With it on, the processor's address for each 32 MiB unit
+of a valid descriptor is ``(0x20000000 + (base + unit) * 32 MiB)`` modulo
+2^34. Bases below ``0x1f0`` map as before. Firmware that writes a valid
+descriptor with base ``0x1f0`` moves that bank, with the bytes it holds,
+to physical 0, and the machine's reset descriptors still map it at
+``0x20000000``. With the property off the same descriptor maps the bank
+above 16 GiB, and nothing answers at ``0x600000``: the processor takes a
+bus error.
+
+On overlap, RAM that wrapped below ``0x20000000`` answers beneath every
+other processor window: HEART's registers at ``0x0ff00000``, the widget
+windows from ``0x10000000`` and the PROM aperture at ``0x1fc00000``. It
+answers above the machine's 16 KiB alias of the first SDRAM bytes at
+physical 0, so a bank wrapped to 0 replaces the alias. What a real HEART
+does where decodes overlap is *unknown*, and both orders are an
+*approximation*. A bank that straddles the wrap maps its units on each
+side.
+
+The packet side keeps the unwrapped address: a bus master reaches the
+bank of a wrapped base ``0x1f0`` at ``2^34`` plus the physical address,
+and for those wrapped bytes reaches the bank's own RAM even where a
+device window covers it for the processor. DMA to a bank below ``2^34``
+behaves with the property on as with it off. Whether a real bank answers
+DMA at its wrapped address is *unknown*, and the model's packet side does
+not. ECC faults on a wrapped bank record the wrapped address
+(:ref:`sgi-heart-ecc`).
+
+The discriminating tests are ``/heart/wrap/off``, ``/heart/wrap/on``,
+``/heart/wrap/straddle``, ``/heart/wrap/dma-under-registers`` and
+``/heart/wrap/ordinary-dma`` in ``tests/qtest/sgi-heart-test.c``, which
+write the same descriptor with the property off and on, and
+``/octane/heart-bank-wrap/*`` in ``tests/qtest/octane-test.c``, which add
+HEART's registers answering over a 256 MiB bank and the alias replaced.
+
 .. _sgi-heart-interrupts:
 
 Interrupts
@@ -1429,6 +1484,7 @@ Model limits
   Level 3 rises only when software or an interrupt packet sets bit 50.
 - The descriptor projection, the modulo wrap and the absent-bank
   responses are functional choices, not HEART's address decoder.
+- ``x-bank-base-wrap`` is not hardware (:ref:`sgi-heart-bank-wrap`).
 - No processor cache coherence protocol; DMA and the processor share
   RAM directly.
 - ECC covers only the subset above: no check-bit injection, no
@@ -1479,6 +1535,11 @@ addresses and processor number for both windows, cause, pending bit 63
 under the error mask, routing to each processor's mask, write-one-to-clear
 and re-arming, the PROM and IRIX clear sequences, reads against writes,
 the three approximations above, reset and migration.
+
+``/heart/wrap/*`` checks the emulator-only bank base wrap
+(:ref:`sgi-heart-bank-wrap`): the same descriptor with the property off
+and on, DMA at the unwrapped address, a bank across the wrap and ECC on
+both sides.
 
 ``tests/qtest/sgi-heart-cpu-test.c`` runs code on R10000 and R12000
 processors: a DMA into RAM the processor then executes, a forced-write

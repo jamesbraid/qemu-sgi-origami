@@ -13,6 +13,9 @@ OBJECT_DECLARE_SIMPLE_TYPE(SGIHeartState, SGI_HEART)
 #define HEART_BANKS 4
 #define HEART_MAX_UNITS 64
 #define HEART_SDRAM_BASE_SIZE 0x4000
+/* x-bank-base-wrap RAM sits under the device windows, the low alias below. */
+#define HEART_LOW_RAM_PRIORITY (-4 * HEART_BANKS)
+#define HEART_SDRAM_BASE_PRIORITY (HEART_LOW_RAM_PRIORITY - 1)
 /* SysBus MMIO indices, in the order heart_init() registers them. */
 #define HEART_MMIO_SDRAM_BASE 3
 /*
@@ -48,6 +51,8 @@ struct SGIHeartState {
     bool sdram_base_mapped[HEART_BANKS];
     bool packet_guard_mapped[HEART_BANKS * 2];
     uint64_t capacity[HEART_BANKS];
+    /* x-bank-base-wrap: not hardware, see docs hardware/heart.rst. */
+    bool bank_base_wrap;
     uint8_t widget_revision;
     uint64_t widget_id_64;
     uint32_t widget_control;

@@ -37,6 +37,11 @@
 #define PROBE_DESC 0x81bf0040U
 #define MODULO_DESC 0x817f0040U
 #define PROBE_RAM (HEART_RAM + 0x40 * UNIT)
+/* x-bank-base-wrap: the base field spans 2^34 bytes, so 0x1f0 lands at 0. */
+#define WRAP_SPAN (1ULL << 34)
+#define WRAP_BASE 0x1f0
+#define WRAP_ON "-global sgi-heart.x-bank-base-wrap=on"
+#define LOW_RAM 0x600000ULL
 
 static uint32_t heart_descriptor(unsigned index)
 {
@@ -1047,6 +1052,126 @@ static void test_prom_probe(gconstpointer data)
                         0x1021324354657687ULL + unit);
     }
     qtest_quit(s);
+}
+
+static uint32_t wrap_descriptor(unsigned base, unsigned units)
+{
+    return 0x80000000U | ((units - 1) << 16) | base;
+}
+
+/* Without the property a base of 0x1f0 puts RAM above 16 GiB, not at 0. */
+static void test_wrap_off(void)
+{
+    QTestState *s = heart_start(64, "");
+    uint32_t word;
+
+    qtest_writel(s, HEART_REGS + 0x20, wrap_descriptor(WRAP_BASE, 2));
+    g_assert_cmpuint(memtx_writel(s, LOW_RAM, 0x11223344), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(s, LOW_RAM, &word), !=, MEMTX_OK);
+    qtest_writel(s, WRAP_SPAN + LOW_RAM, 0x11223344);
+    g_assert_cmphex(qtest_readl(s, WRAP_SPAN + LOW_RAM), ==, 0x11223344);
+    qtest_quit(s);
+}
+
+/*
+ * A descriptor with base 0x1f0 moves a bank to physical 0 with its bytes,
+ * and the bank answers DMA at the unwrapped address.
+ */
+static void test_wrap_on(void)
+{
+    QTestState *s = heart_start(64, WRAP_ON);
+    uint32_t word;
+
+    g_assert_cmpuint(memtx_readl(s, LOW_RAM, &word), !=, MEMTX_OK);
+    qtest_writel(s, HEART_REGS + 0x20, wrap_descriptor(0, 2));
+    qtest_writel(s, HEART_RAM + LOW_RAM, 0x55667788);
+    qtest_writel(s, HEART_REGS + 0x20, wrap_descriptor(WRAP_BASE, 2));
+    g_assert_cmphex(qtest_readl(s, LOW_RAM), ==, 0x55667788);
+    qtest_writel(s, LOW_RAM + UNIT, 0x99aabbcc);
+    g_assert_cmphex(qtest_readl(s, LOW_RAM + UNIT), ==, 0x99aabbcc);
+    g_assert_cmpuint(memtx_readl(s, HEART_RAM + LOW_RAM, &word), !=, MEMTX_OK);
+    g_assert_cmpuint(memtx_readl(s, WRAP_SPAN + LOW_RAM, &word), !=, MEMTX_OK);
+    qtest_writel(s, HEART_PACKET + WRAP_SPAN + LOW_RAM, 0x01020304);
+    g_assert_cmphex(qtest_readl(s, LOW_RAM), ==, 0x01020304);
+    qtest_quit(s);
+}
+
+/* A bank across the wrap maps its first unit high and its second at 0. */
+static void test_wrap_straddle(void)
+{
+    QTestState *s = heart_start(64, WRAP_ON);
+    const uint64_t high = WRAP_SPAN - UNIT;
+    const uint64_t word = LOW_RAM + 0x128;
+    const uint64_t pattern = 0xa5762dcf89013be4ULL;
+    uint8_t edge[8] = { 1, 2, 3, 4, 5, 6, 7, 8 }, seen[8];
+
+    qtest_writel(s, HEART_REGS + 0x20, wrap_descriptor(WRAP_BASE - 1, 2));
+    qtest_writel(s, high, 0x11111111);
+    qtest_writel(s, 0, 0x22222222);
+    g_assert_cmphex(qtest_readl(s, high), ==, 0x11111111);
+    g_assert_cmphex(qtest_readl(s, 0), ==, 0x22222222);
+    /* One eight-byte DMA store across the wrap lands in both units. */
+    qtest_memwrite(s, HEART_PACKET + WRAP_SPAN - 4, edge, 8);
+    qtest_memread(s, WRAP_SPAN - 4, seen, 4);
+    g_assert_cmpmem(seen, 4, edge, 4);
+    qtest_memread(s, 0, seen, 4);
+    g_assert_cmpmem(seen, 4, edge + 4, 4);
+    /* ECC covers the whole bank on both sides of the wrap. */
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE | HEART_ECC_GENERATE);
+    qtest_writeq(s, word, pattern);
+    qtest_writeq(s, high + 0x128, pattern);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_ENABLE);
+    g_assert_cmphex(qtest_readq(s, word), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                    word | (0x13ULL << 34));
+    heart_ecc_clear(s);
+    g_assert_cmphex(qtest_readq(s, high + 0x128), ==, pattern);
+    g_assert_cmphex(qtest_readq(s, HEART_REGS + 0x98), ==,
+                    (high + 0x128) | (0x13ULL << 34));
+    qtest_quit(s);
+}
+
+/*
+ * With forced-write ECC every access takes the checked path, which DMA to a
+ * wrapped bank under HEART's registers must not follow into them.
+ */
+static void test_wrap_dma_under_registers(void)
+{
+    QTestState *s = heart_start(256, WRAP_ON);
+    const uint32_t descriptor = wrap_descriptor(WRAP_BASE, 8);
+    const uint64_t at = WRAP_SPAN + HEART_REGS + 0x20;
+
+    qtest_writel(s, HEART_REGS + 0x20, descriptor);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_FORCE);
+    qtest_writeq(s, HEART_PACKET + at, 0x0123456789abcdefULL);
+    g_assert_cmphex(qtest_readl(s, HEART_REGS + 0x20), ==, descriptor);
+    g_assert_cmphex(qtest_readq(s, HEART_PACKET + at), ==,
+                    0x0123456789abcdefULL);
+    qtest_quit(s);
+}
+
+/* One forced-write DMA store and load on an ordinary bank, then a CPU load. */
+static void wrap_ordinary_dma(const char *extra, uint64_t *dma, uint64_t *cpu)
+{
+    QTestState *s = heart_start(64, extra);
+
+    qtest_writel(s, HEART_REGS + 0x20, 0x80010000);
+    qtest_writeq(s, HEART_REGS, HEART_ECC_FORCE);
+    qtest_writeq(s, HEART_PACKET + HEART_RAM + 0x100, 0x0123456789abcdefULL);
+    *dma = qtest_readq(s, HEART_PACKET + HEART_RAM + 0x100);
+    *cpu = qtest_readq(s, HEART_RAM + 0x100);
+    qtest_quit(s);
+}
+
+/* The wrap leaves DMA to an ordinary bank as it was. */
+static void test_wrap_ordinary_dma(void)
+{
+    uint64_t dma_off, cpu_off, dma_on, cpu_on;
+
+    wrap_ordinary_dma("", &dma_off, &cpu_off);
+    wrap_ordinary_dma(WRAP_ON, &dma_on, &cpu_on);
+    g_assert_cmphex(dma_on, ==, dma_off);
+    g_assert_cmphex(cpu_on, ==, cpu_off);
 }
 
 static void test_two_64m_banks(void)
@@ -2727,6 +2852,12 @@ int main(int argc, char **argv)
     g_test_add_data_func("/heart/descriptor-64m", GUINT_TO_POINTER(64),
                          test_descriptors);
     g_test_add_func("/heart/two-64m-banks", test_two_64m_banks);
+    g_test_add_func("/heart/wrap/off", test_wrap_off);
+    g_test_add_func("/heart/wrap/on", test_wrap_on);
+    g_test_add_func("/heart/wrap/straddle", test_wrap_straddle);
+    g_test_add_func("/heart/wrap/dma-under-registers",
+                    test_wrap_dma_under_registers);
+    g_test_add_func("/heart/wrap/ordinary-dma", test_wrap_ordinary_dma);
     g_test_add_func("/heart/invalid-bank-capacity",
                     test_invalid_bank_capacity);
     g_test_add_data_func("/heart/descriptor-128m", GUINT_TO_POINTER(128),

@@ -26,6 +26,8 @@
 #define HEART_REG_SIZE 0x60008
 #define HEART_RAM_BASE 0x20000000ULL
 #define HEART_UNIT (32 * MiB)
+/* The base field's 512 units of 32 MiB span exactly 2^34 bytes. */
+#define HEART_WRAP_SPAN (1ULL << 34)
 #define HEART_COUNT_MASK ((1ULL << 52) - 1)
 #define HEART_LEVEL0_MASK 0x000000000000ffffULL
 #define HEART_LEVEL1_MASK 0x00000000ffff0000ULL
@@ -110,6 +112,8 @@
 static void heart_ecc_map(SGIHeartState *s);
 static bool heart_ecc_dma_allowed(SGIHeartState *s, hwaddr address,
                                   unsigned size, bool write);
+static uint64_t heart_bank_offset(uint32_t descriptor, uint64_t capacity,
+                                  uint64_t offset);
 
 #define HEART_ONEWIRE_DONE 2
 #define HEART_ONEWIRE_LEVEL 1
@@ -332,6 +336,72 @@ static const MemoryRegionOps heart_widget_ops = {
               .unaligned = true },
 };
 
+/* The CPU's address of a RAM packet address: x-bank-base-wrap keeps 33:0. */
+static hwaddr heart_cpu_address(SGIHeartState *s, hwaddr address)
+{
+    return s->bank_base_wrap ? address & (HEART_WRAP_SPAN - 1) : address;
+}
+
+/* RAM wrapped below 0x20000000 sits under the device windows. */
+static int heart_ram_priority(hwaddr cpu_address, unsigned bank)
+{
+    return cpu_address < HEART_RAM_BASE ? HEART_LOW_RAM_PRIORITY + bank :
+                                          bank + 1;
+}
+
+static int heart_ecc_priority(hwaddr cpu_address)
+{
+    return cpu_address < HEART_RAM_BASE ?
+           HEART_LOW_RAM_PRIORITY + HEART_BANKS : HEART_BANKS + 1;
+}
+
+/*
+ * DMA to RAM at packet address @address; bytes wrapped past 2^34 may lie
+ * under a device window, so they use the bank's own memory.
+ */
+static MemTxResult heart_ram_dma_access(SGIHeartState *s, hwaddr address,
+                                        MemTxAttrs attrs, uint8_t *bytes,
+                                        unsigned size, bool write)
+{
+    unsigned plain = size;
+
+    if (s->bank_base_wrap) {
+        plain = address >= HEART_WRAP_SPAN ? 0 :
+                MIN(size, HEART_WRAP_SPAN - address);
+    }
+    if (plain) {
+        MemTxResult result = address_space_rw(&address_space_memory, address,
+                                              attrs, bytes, plain, write);
+
+        if (result != MEMTX_OK) {
+            return result;
+        }
+    }
+    for (unsigned i = plain; i < size; i++) {
+        hwaddr at = address + i;
+        MemTxResult result = MEMTX_DECODE_ERROR;
+
+        for (int bank = HEART_BANKS - 1; bank >= 0; bank--) {
+            uint32_t d = s->descriptor[bank];
+            hwaddr base = HEART_RAM_BASE + (uint64_t)(d & 0x1ff) * HEART_UNIT;
+            hwaddr span = (uint64_t)((d >> 16 & 0x3f) + 1) * HEART_UNIT;
+
+            if ((d & 0x80000000U) && at >= base && at - base < span) {
+                if (s->capacity[bank]) {
+                    result = address_space_rw(&s->backing_as[bank],
+                        heart_bank_offset(d, s->capacity[bank], at - base),
+                        attrs, bytes + i, 1, write);
+                }
+                break;
+            }
+        }
+        if (result != MEMTX_OK) {
+            return result;
+        }
+    }
+    return MEMTX_OK;
+}
+
 /*
  * Validate one QEMU memory operation before writing any byte. The packet
  * callback sees at most eight bytes; a larger PCI DMA may issue several
@@ -375,8 +445,8 @@ static MemTxResult heart_packet_read(void *opaque, hwaddr offset,
             *value = 0;
             return MEMTX_ERROR;
         }
-        MemTxResult result = address_space_read(&address_space_memory, offset,
-                                                attrs, bytes, size);
+        MemTxResult result = heart_ram_dma_access(s, offset, attrs, bytes,
+                                                  size, false);
 
         if (result == MEMTX_OK) {
             *value = ldn_be_p(bytes, size);
@@ -403,8 +473,7 @@ static MemTxResult heart_packet_write(void *opaque, hwaddr offset,
             return MEMTX_ERROR;
         }
         stn_be_p(bytes, size, value);
-        return address_space_write(&address_space_memory, offset, attrs,
-                                   bytes, size);
+        return heart_ram_dma_access(s, offset, attrs, bytes, size, true);
     }
     if (offset != 0x80 || size != 8 || (value & ~0x1ffULL) || vector >= 64) {
         qemu_log_mask(LOG_UNIMP, "sgi-heart: unsupported packet %u-byte "
@@ -760,6 +829,29 @@ static const MemoryRegionOps heart_ecc_ops = {
               .unaligned = true },
 };
 
+/* Whether @address is where a wrapped packet address starts again. */
+static bool heart_wrap_edge(SGIHeartState *s, hwaddr address)
+{
+    return s->bank_base_wrap && !(address & (HEART_WRAP_SPAN - 1));
+}
+
+/* Add @range, cut at the wrap so each piece is one run of CPU addresses. */
+static void heart_ecc_range_add(SGIHeartState *s, GArray *ranges,
+                                HeartECCRange range)
+{
+    if (s->bank_base_wrap) {
+        hwaddr edge = (range.base | (HEART_WRAP_SPAN - 1)) + 1;
+
+        if (range.end > edge) {
+            HeartECCRange head = { range.base, edge };
+
+            g_array_append_val(ranges, head);
+            range.base = edge;
+        }
+    }
+    g_array_append_val(ranges, range);
+}
+
 static int heart_ecc_range_compare(const void *a, const void *b)
 {
     const HeartECCRange *left = a, *right = b;
@@ -824,7 +916,7 @@ static void heart_ecc_map(SGIHeartState *s)
         if (s->mode & (HEART_ECC_GENERATION | HEART_ECC_FORCE_WRITE)) {
             HeartECCRange range = { base, base + units * HEART_UNIT };
 
-            g_array_append_val(ranges, range);
+            heart_ecc_range_add(s, ranges, range);
             continue;
         }
         for (unsigned unit = 0; unit < units; unit++) {
@@ -849,7 +941,7 @@ static void heart_ecc_map(SGIHeartState *s)
                     HeartECCRange range = { MAX(HEART_RAM_BASE, address - 8),
                                             address + 16 };
 
-                    g_array_append_val(ranges, range);
+                    heart_ecc_range_add(s, ranges, range);
                 }
                 index++;
             }
@@ -859,8 +951,9 @@ static void heart_ecc_map(SGIHeartState *s)
     for (unsigned i = 0; i < ranges->len;) {
         HeartECCRange range = g_array_index(ranges, HeartECCRange, i++);
         HeartECCRegion *region;
+        hwaddr at;
 
-        while (i < ranges->len &&
+        while (i < ranges->len && !heart_wrap_edge(s, range.end) &&
                g_array_index(ranges, HeartECCRange, i).base <= range.end) {
             range.end = MAX(range.end,
                            g_array_index(ranges, HeartECCRange, i++).end);
@@ -894,8 +987,9 @@ static void heart_ecc_map(SGIHeartState *s)
             memory_region_set_size(&region->packet_memory,
                                     range.end - range.base);
         }
-        memory_region_add_subregion_overlap(memory, range.base,
-                                             &region->memory, HEART_BANKS + 1);
+        at = heart_cpu_address(s, range.base);
+        memory_region_add_subregion_overlap(memory, at, &region->memory,
+                                            heart_ecc_priority(at));
         /* DMA must reject poison instead of using the CPU ECC response. */
         memory_region_add_subregion_overlap(&s->packet, range.base,
                                              &region->packet_memory,
@@ -943,9 +1037,11 @@ static void heart_map_bank(SGIHeartState *s, unsigned bank)
                 memory_region_set_alias_offset(&s->packet_views[bank][unit],
                     base + (uint64_t)unit * HEART_UNIT - HEART_RAM_BASE);
             }
-            memory_region_add_subregion_overlap(memory,
-                base + (uint64_t)unit * HEART_UNIT,
-                &s->views[bank][unit], bank + 1);
+            hwaddr at = heart_cpu_address(s,
+                base + (uint64_t)unit * HEART_UNIT);
+
+            memory_region_add_subregion_overlap(memory, at,
+                &s->views[bank][unit], heart_ram_priority(at, bank));
             memory_region_add_subregion_overlap(&s->packet,
                 base + (uint64_t)unit * HEART_UNIT,
                 &s->packet_views[bank][unit], bank + 1);
@@ -1368,6 +1464,7 @@ static const Property heart_properties[] = {
     DEFINE_PROP_UINT64("bank1-size", SGIHeartState, capacity[1], 0),
     DEFINE_PROP_UINT64("bank2-size", SGIHeartState, capacity[2], 0),
     DEFINE_PROP_UINT64("bank3-size", SGIHeartState, capacity[3], 0),
+    DEFINE_PROP_BOOL("x-bank-base-wrap", SGIHeartState, bank_base_wrap, false),
     DEFINE_PROP_UINT8("widget-revision", SGIHeartState, widget_revision, 0),
     DEFINE_PROP_UINT64("widget-id-64", SGIHeartState, widget_id_64, 0),
 };
