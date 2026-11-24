@@ -903,6 +903,33 @@ explains all four indices as driver policy. The traces on the modelled
 revision G board are *unknown*. A schematic or an interrupt trace on an
 identified revision G Fuel would settle them.
 
+The option slots on the compute module's head E use one map on
+``origin300``, ``origin300-two-chassis``, ``origin300-pci-expansion`` and
+``origin300-numalink-pci-expansion``, because the riser belongs to the
+compute module, not to the topology (*inferred*: the chips note covers a base
+Origin 300 only). INTA and INTC of device 1 reach head E
+input 1 and INTB and INTD input 5. Device 2 uses inputs 2 and 6.
+
+OpenBSD prints interrupt 1 for the card it finds at device 1 and 2 for the
+one at device 2 on widget 14 (:src:`marc-openbsd-sgi-125897882029839 lines
+55-90`), *observed*. It takes those numbers from its own rule for an odd
+PCI pin, and the log ends in a root-mount panic with no interrupt
+delivered. That rule gives INTA the input of the device number and INTB
+the input with bit 2 flipped (``xbridge.c``, ``xbridge_intr_map``), a
+*software expectation*. Linux ``pci-xtalk-bridge.c`` uses it as the default
+and overrides it per board, so it need not hold for this riser. How the
+riser wires each connector's INTx to the bridge is *unknown*, so the whole
+map, INTB and INTD at inputs 5 and 6 included, is an *approximation*.
+Which of the guide's slot labels is device 1 is *unknown*. A riser
+schematic, or an owner's log with a dual-function card in an option slot
+and its interrupt counts, would settle both.
+
+In ``tests/qtest/sn1-io8-scsi-test.c``,
+``origin300/head-e/option-card-raises-its-pin`` raises device 1 INTA and
+``origin300/head-e/device2-inta`` and ``origin300/head-e/device2-intb``
+raise device 2 INTA and INTB, each checking the one input of the map. They
+check the model against the map, not the map against a board.
+
 Past the head F inputs the XBridge sends the interrupt write the guest
 programmed, and the crossbar routes it to the Bedrock host port, widget
 ``0xa`` in the model. ``tests/qtest/sn1-fuel-test.c`` raises each source

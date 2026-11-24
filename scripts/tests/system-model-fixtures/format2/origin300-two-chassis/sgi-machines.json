@@ -2178,6 +2178,16 @@
             "widget-revision": 2
           },
           "module-index": 0,
+          "option-intx-map": [
+            1,
+            5,
+            1,
+            5,
+            2,
+            6,
+            2,
+            6
+          ],
           "slave-role": false,
           "slot": 0
         },
@@ -2273,6 +2283,16 @@
             "widget-revision": 2
           },
           "module-index": 1,
+          "option-intx-map": [
+            1,
+            5,
+            1,
+            5,
+            2,
+            6,
+            2,
+            6
+          ],
           "slave-role": true,
           "slot": 0
         }

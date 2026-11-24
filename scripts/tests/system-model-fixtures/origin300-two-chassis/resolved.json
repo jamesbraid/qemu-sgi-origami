@@ -2847,6 +2847,28 @@
       },
       "lifecycle": "implemented",
       "machine_name": "origin300",
+      "option_intx_maps": {
+        "master-bedrock": [
+          1,
+          5,
+          1,
+          5,
+          2,
+          6,
+          2,
+          6
+        ],
+        "slave-bedrock": [
+          1,
+          5,
+          1,
+          5,
+          2,
+          6,
+          2,
+          6
+        ]
+      },
       "profile": "two-chassis",
       "synthetic_identities": [
         {
@@ -2919,8 +2941,8 @@
       ],
       "candidates": [
         {
-          "answer": "Record only device 1 to XBridge interrupt number 1 and device 2 to interrupt number 2.",
-          "notes": "Current model position; no PCI INTx source or unsupported swizzle is invented.",
+          "answer": "Wire the bridge's software rule on every Origin 300 topology, with device 1 INTA and INTC to input 1, INTB and INTD to input 5, and device 2 to inputs 2 and 6.",
+          "notes": "Current model position, rated an approximation; the riser's real swizzle is unknown.",
           "source": "The retained 2009 Origin 300 OpenBSD capture observes those associations but does not report either card's PCI Interrupt Pin field."
         },
         {
@@ -2929,7 +2951,7 @@
           "source": "A generic PCI convention would suggest it, but no board source read for this handoff establishes the IO-8 trace."
         }
       ],
-      "consequence": "Empty slots and their observed device numbers are represented. No option card interrupt source can be wired from this observation alone because the asserted PCI INTx input and riser swizzle are unknown.",
+      "consequence": "Empty slots and their observed device numbers are represented. Option card INTx inputs follow the bridge's software rule on all four Origin 300 topologies, an approximation until the asserted input and riser swizzle are observed.",
       "id": "master-option-slot-intx-swizzle",
       "question": "Which PCI INTx source and riser swizzle produce each observed head-E device-to-XBridge interrupt number?",
       "settled_by": "An IO-8 riser schematic or a public hardware capture that identifies the occupied slot, asserted INTx input and resulting head-E physical pin."
@@ -3061,8 +3083,8 @@
       ],
       "candidates": [
         {
-          "answer": "Record only device 1 to XBridge interrupt number 1 and device 2 to interrupt number 2.",
-          "notes": "Current model position; no PCI INTx source or unsupported swizzle is invented.",
+          "answer": "Wire the bridge's software rule on every Origin 300 topology, with device 1 INTA and INTC to input 1, INTB and INTD to input 5, and device 2 to inputs 2 and 6.",
+          "notes": "Current model position, rated an approximation; the riser's real swizzle is unknown.",
           "source": "The retained 2009 Origin 300 OpenBSD capture observes those associations but does not report either card's PCI Interrupt Pin field."
         },
         {
@@ -3071,7 +3093,7 @@
           "source": "A generic PCI convention would suggest it, but no board source read for this handoff establishes the IO-8 trace."
         }
       ],
-      "consequence": "Empty slots and their observed device numbers are represented. No option card interrupt source can be wired from this observation alone because the asserted PCI INTx input and riser swizzle are unknown.",
+      "consequence": "Empty slots and their observed device numbers are represented. Option card INTx inputs follow the bridge's software rule on all four Origin 300 topologies, an approximation until the asserted input and riser swizzle are observed.",
       "id": "slave-option-slot-intx-swizzle",
       "question": "Which PCI INTx source and riser swizzle produce each observed head-E device-to-XBridge interrupt number?",
       "settled_by": "An IO-8 riser schematic or a public hardware capture that identifies the occupied slot, asserted INTx input and resulting head-E physical pin."

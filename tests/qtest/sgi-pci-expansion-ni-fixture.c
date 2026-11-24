@@ -238,7 +238,7 @@ static void card_class_init(ObjectClass *oc, const void *data)
     pc->device_id = 0x0010;
     pc->class_id = PCI_CLASS_OTHERS;
     dc->vmsd = &card_vmstate;
-    dc->user_creatable = false;
+    dc->user_creatable = true;
     rc->phases.hold = card_reset_hold;
     device_class_set_props(dc, card_properties);
 }

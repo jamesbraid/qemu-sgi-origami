@@ -663,16 +663,17 @@ layer:
         question: Which PCI INTx source and riser swizzle produce each observed head-E device-to-XBridge interrupt number?
         about: [xbridge-bridge-e, pci-option-slot-1, pci-option-slot-2]
         candidates:
-          - answer: Record only device 1 to XBridge interrupt number 1 and device 2 to interrupt number 2.
+          - answer: Wire the bridge's software rule on every Origin 300 topology, with device 1 INTA and INTC to input 1, INTB and INTD to input 5, and device 2 to inputs 2 and 6.
             source: The retained 2009 Origin 300 OpenBSD capture observes those associations but does not report either card's PCI Interrupt Pin field.
-            notes: Current model position; no PCI INTx source or unsupported swizzle is invented.
+            notes: Current model position, rated an approximation; the riser's real swizzle is unknown.
           - answer: Apply the conventional rotating PCI swizzle for all four INTx inputs.
             source: A generic PCI convention would suggest it, but no board source read for this handoff establishes the IO-8 trace.
             notes: Rejected until this exact riser wiring is observed or documented.
         consequence: >-
-          Empty slots and their observed device numbers are represented. No option
-          card interrupt source can be wired from this observation alone because
-          the asserted PCI INTx input and riser swizzle are unknown.
+          Empty slots and their observed device numbers are represented. Option
+          card INTx inputs follow the bridge's software rule on all four Origin 300
+          topologies, an approximation until the asserted input and riser swizzle
+          are observed.
         settled_by: An IO-8 riser schematic or a public hardware capture that identifies the occupied slot, asserted INTx input and resulting head-E physical pin.
       - id: io8-pci-subsystem-identities
         question: What subsystem vendor and device values do the IP45 ISP12160, IOC3 and OHCI functions expose?

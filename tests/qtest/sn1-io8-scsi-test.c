@@ -1135,6 +1135,91 @@ static void test_completion_raises_head_f_pin(const void *data)
 }
 
 
+/* Head E's option slots reach the Bedrock through the catalogue's INTx map. */
+#define HEAD_E_WIDGET 0xe
+#define HEAD_E_CFG(dev) (IO_WIDGET(HEAD_E_WIDGET) + 0x20000 + (dev) * 0x1000)
+#define HEAD_E_WINDOW(dev) (IO_WIDGET(HEAD_E_WIDGET) + \
+                            ((dev) == 1 ? 0x400000 : 0x600000))
+#define NI_CARD_PIN_REG 32
+
+/* Map the card's BAR and route head E input @pin to the Bedrock. */
+static void head_e_route_card(QTestState *qts, unsigned device, unsigned bar,
+                              unsigned pin)
+{
+    qtest_writel(qts, HEAD_E_CFG(device) + bar, ADAPTER_MMIO);
+    qtest_writel(qts, HEAD_E_CFG(device) + PCI_COMMAND,
+                 PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+    widget_reg_write(qts, HEAD_E_WIDGET, XBRIDGE_DEVICE(device),
+                     XBRIDGE_DEVICE_MEMORY | (ADAPTER_MMIO >> 20));
+    widget_reg_write(qts, HEAD_E_WIDGET, XBRIDGE_INT_UPPER,
+                     XBRIDGE_HOST_PORT << 16);
+    widget_reg_write(qts, HEAD_E_WIDGET, XBRIDGE_INT_LOWER,
+                     PI_REMOTE_WINDOW + PI_PENDING_MODIFY);
+    widget_reg_write(qts, HEAD_E_WIDGET, XBRIDGE_INT_HOST(pin),
+                     (1U << 17) | PI_TEST_PENDING_BIT);
+    widget_reg_write(qts, HEAD_E_WIDGET, XBRIDGE_INT_ENABLE,
+                     1U << pin);
+}
+
+static unsigned head_e_pin_status(QTestState *qts, unsigned pin)
+{
+    return (widget_reg_read(qts, HEAD_E_WIDGET, XBRIDGE_INT_STATUS) >> pin) & 1;
+}
+
+/* An ISP1040 at device 1 raises INTA, which reaches head E input 1. */
+static void test_head_e_option_card_raises_its_pin(const void *data)
+{
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s"
+                                  " -device qlogic-isp1040,bus=head-e.0,"
+                                  "addr=1", prom);
+
+    head_e_route_card(qts, 1, PCI_BAR1, 1);
+    qtest_writew(qts, HEAD_E_WINDOW(1) + GUEST_HALFWORD(ISP_REG_BUS_CTRL),
+                 ISP_BUS_CTRL_INT_ENABLE | ISP_BUS_CTRL_RISC_INT_ENABLE);
+    g_assert_cmpuint(head_e_pin_status(qts, 1), ==, 0);
+
+    qtest_writew(qts, HEAD_E_WINDOW(1) + GUEST_HALFWORD(ISP_MAILBOX(0)),
+                 ISP_MBOX_CMD_MAILBOX_REG_TEST);
+    qtest_writew(qts, HEAD_E_WINDOW(1) + GUEST_HALFWORD(ISP_REG_HOST_CMD),
+                 ISP_HOST_CMD_SET_HOST_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmpuint(head_e_pin_status(qts, 1), ==, 1);
+
+    qtest_writew(qts, HEAD_E_WINDOW(1) + GUEST_HALFWORD(ISP_REG_SEMAPHORE), 0);
+    qtest_writew(qts, HEAD_E_WINDOW(1) + GUEST_HALFWORD(ISP_REG_HOST_CMD),
+                 ISP_HOST_CMD_CLEAR_RISC_INT << ISP_HOST_CMD_SHIFT);
+    g_assert_cmpuint(head_e_pin_status(qts, 1), ==, 0);
+
+    qtest_quit(qts);
+}
+
+typedef struct HeadEIntxCase {
+    unsigned device;
+    unsigned card_pin;      /* PCI_INTERRUPT_PIN: 1 is INTA, 2 is INTB */
+    unsigned head_input;
+} HeadEIntxCase;
+
+/* A test card at device 2 on INTA and INTB reaches inputs 2 and 6. */
+static void test_head_e_option_card_intx(const void *data)
+{
+    const HeadEIntxCase *c = data;
+    g_autofree char *prom = g_shell_quote(prom_path);
+    QTestState *qts = qtest_initf(MACHINE_ARGS " -bios %s -device "
+                                  "sgi-pci-expansion-ni-card,bus=head-e.0,"
+                                  "addr=%u,interrupt-pin=%u",
+                                  prom, c->device, c->card_pin);
+
+    head_e_route_card(qts, c->device, PCI_BAR0, c->head_input);
+    qtest_writel(qts, HEAD_E_WINDOW(c->device) + NI_CARD_PIN_REG, 1);
+    g_assert_cmpuint(head_e_pin_status(qts, c->head_input), ==, 1);
+    g_assert_cmpuint(widget_reg_read(qts, HEAD_E_WIDGET, XBRIDGE_INT_STATUS) &
+                     0xff, ==, 1U << c->head_input);
+    qtest_writel(qts, HEAD_E_WINDOW(c->device) + NI_CARD_PIN_REG, 0);
+    g_assert_cmpuint(head_e_pin_status(qts, c->head_input), ==, 0);
+
+    qtest_quit(qts);
+}
+
 /* Backend errors have returned; these requests wait for VM resume to retry. */
 typedef struct RetryEvents {
     bool error[2];
@@ -1505,12 +1590,22 @@ int main(int argc, char **argv)
         { &fuel, UINT64_C(1) << 14, false },
         { &fuel, 0, true },
     };
+    static const HeadEIntxCase head_e_inta = { 2, 1, 2 };
+    static const HeadEIntxCase head_e_intb = { 2, 2, 6 };
     int result;
 
     g_test_init(&argc, &argv, NULL);
     prom_path = create_prom();
 
     qtest_add_data_func("origin300/io8-scsi/identity", NULL, test_identity);
+    qtest_add_data_func("origin300/head-e/option-card-raises-its-pin", NULL,
+                        test_head_e_option_card_raises_its_pin);
+    if (qtest_has_device("sgi-pci-expansion-ni-card")) {
+        qtest_add_data_func("origin300/head-e/device2-inta", &head_e_inta,
+                            test_head_e_option_card_intx);
+        qtest_add_data_func("origin300/head-e/device2-intb", &head_e_intb,
+                            test_head_e_option_card_intx);
+    }
     qtest_add_data_func("origin300/io8-scsi/io8bt-command-register", NULL,
                         test_io8bt_command_register);
     qtest_add_data_func("origin300/io8-scsi/io8bt-latency-timer", NULL,

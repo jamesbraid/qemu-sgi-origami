@@ -55,6 +55,8 @@ layer:
           - component: expansion-enclosure
             number: 2
             reason: Synthetic expansion controller bay for distinct concrete L1 routing.
+        option_intx_maps:
+          compute-bedrock: [1, 5, 1, 5, 2, 6, 2, 6]
         bedrock_nodes:
           compute-bedrock:
             board_id_word: 32769

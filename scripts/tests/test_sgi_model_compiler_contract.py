@@ -528,12 +528,13 @@ class ComputeOptionIntxTests(unittest.TestCase):
         self.assertEqual(nodes[1].get("option_intx_map"),
                          [2, 6, 2, 6, 1, 5, 1, 5])
 
-    def test_ordinary_origin300_has_no_option_map(self):
+    def test_origin300_carries_the_default_option_map(self):
         for node in compile_model(_resolved("origin300"))["nodes"]:
-            self.assertNotIn("option_intx_map", node)
+            self.assertEqual(node.get("option_intx_map"),
+                             [1, 5, 1, 5, 2, 6, 2, 6])
 
-    def test_unselected_compute_option_map_is_refused(self):
-        model = _resolved("origin300")
+    def test_option_map_on_another_product_is_refused(self):
+        model = _resolved("origin350")
         model["machine"]["emulation"]["option_intx_maps"] = {
             "bedrock": [1, 5, 1, 5, 2, 6, 2, 6],
         }
@@ -817,6 +818,7 @@ class BedrockConfigurationTests(unittest.TestCase):
 
     def test_smdk_recipe_follows_selected_configuration(self):
         model = _resolved("origin300")
+        model["machine"]["emulation"].pop("option_intx_maps")
         model["composition"]["product"] = "origin300-requested"
         model["machine"]["harness"]["smdk"] = {
             "package_path": "assets/boot/smdk-variant",
@@ -1121,6 +1123,7 @@ class PicIo9DescriptorTests(unittest.TestCase):
 
     def model_with_pic_io9(self, *, crossbar=False):
         model = _resolved("origin300")
+        model["machine"]["emulation"].pop("option_intx_maps")
         model["composition"]["product"] = "synthetic-pic-io9"
         model["machine"]["name"] = "Synthetic PIC and IO9 fixture"
         model["machine"]["model_role"] = "emulation-target"
@@ -2774,7 +2777,7 @@ class RecordShapeTests(unittest.TestCase):
             set(node), {"id", "module_index", "slot", "hub_slot_bits",
                         "asic_kind", "identity", "cpu_slots", "bank_mib",
                         "accepted_memory_mib", "flash", "slave_role",
-                        "bedrock"})
+                        "option_intx_map", "bedrock"})
         self.assertEqual(len(node["bank_mib"]), 8)
         # The Hub's own embedded system controller fields are unset for a
         # Bedrock node (its controller role belongs to the chassis L1).

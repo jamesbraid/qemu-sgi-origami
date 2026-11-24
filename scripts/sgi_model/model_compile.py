@@ -1930,6 +1930,10 @@ def _bedrock_io_configuration(model: dict, board: dict) -> dict:
     return configured
 
 
+_ORIGIN300_OPTION_SLOT_PRODUCTS = frozenset({
+    "origin300", "origin300-two-chassis", "origin300-pci-expansion",
+    "origin300-numalink-pci-expansion"})
+
 _BEDROCK_BOARD_KINDS = {"ip45", "ip34", "ip53", "ip53-cx"}
 
 # Boards whose Bedrock has no XBridge of its own and reaches I/O over an
@@ -3761,10 +3765,10 @@ def compile_model(model: dict) -> dict:
     option_maps = machine.get("emulation", {}).get("option_intx_maps", {})
     if not isinstance(option_maps, dict):
         raise CompileError("compute option INTx maps must be a node map")
-    if (option_maps and model["composition"]["product"] !=
-            "origin300-numalink-pci-expansion"):
+    if (option_maps and model["composition"]["product"] not in
+            _ORIGIN300_OPTION_SLOT_PRODUCTS):
         raise CompileError("compute option INTx map requires selection of "
-                           "the Origin 300 routed NUMAlink and PCI expansion")
+                           "an Origin 300 product")
     known_nodes = {entry["component"]["id"] for entry in graph["nodes"]}
     if set(option_maps) - known_nodes:
         raise CompileError("compute option INTx map has no node owner")
