@@ -1121,6 +1121,7 @@ tests/qtest/sn1-pci-expansion-module-test.c
 tests/qtest/sn1-pi-gfx-test.c
 tests/qtest/sn1-rad1-pci-test.c
 tests/qtest/sn1-xbridge-chip-test.c
+tests/qtest/sn1-xbridge-little-endian-test.c
 tests/qtest/sn1-xbridge-test.c
 tests/qtest/sn1-xbridge-xbow-test.c
 tests/qtest/tigon-test.c

@@ -144,7 +144,9 @@ Head register map
 
 Each register is 32 bits wide in the low half of an eight-byte slot and
 is reached by a 32-bit access at the slot offset plus 4
-:src:`xbridge-asic-spec-0.5 p. 123`, *established*. Every other width
+:src:`xbridge-asic-spec-0.5 p. 123`, *established*. With control bit 9
+clear it also answers at the slot offset
+(:ref:`sgi-xbridge-little-endian`). Every other width
 or alignment, and any slot below ``0x300`` the map does not define, is
 an invalid-address error (:ref:`sgi-xbridge-errors`). Names follow
 OpenBSD ``xbridgereg.h``. "Storage" means the model keeps the written
@@ -467,8 +469,9 @@ Configuration
 Type 0 configuration space is ``0x2_0000`` plus device times ``0x1000``
 plus function times ``0x100``; type 1 is ``0x2_8000`` with bus and device
 from register ``0xc8`` :src:`xbridge-asic-spec-0.5 p. 179`,
-*established*. A narrow access is placed big-endian within its word, at
-the register offset XOR (4 minus size). A configuration read of an empty
+*established*. With control bit 9 set, as at reset, a narrow access is
+placed big-endian within its word, at the register offset XOR (4 minus
+size); with it clear, :ref:`sgi-xbridge-little-endian` applies. A configuration read of an empty
 device returns all ones and sets bit 11, PCI master timeout, in the
 error-interrupt view only. The SN1 driver probes with a guarded read and
 then reads the view for that bit, a *software expectation*. The model
@@ -497,9 +500,10 @@ specification does not state, an *approximation*.
 Device bit 22 gives the target's width, 4 or 8 bytes. A doubleword to a
 32-bit target is two word cycles, lower address first, carrying the more
 significant half first. Device bit 13 selects the byte placement. With
-it clear, a narrow access lands at offset XOR (width minus size) with its
-value unchanged. With it set, the address is kept and the bytes travel
-in address order. These rows follow the Bridge's appendix, which the
+control bit 9 set, as at reset: with it clear, a narrow access lands at
+offset XOR (width minus size) with its value unchanged; with it set, the
+address is kept and the bytes travel in address order. Control bit 9
+clear reverses that sense (:ref:`sgi-xbridge-little-endian`). These rows follow the Bridge's appendix, which the
 XBridge appendix repeats table for table
 (:src:`xbridge-asic-spec-0.5 p. 229, 233`), *established* for 32-bit
 data phases. :doc:`bridge` tabulates every width.
@@ -629,8 +633,8 @@ Origin 300 would settle the hardware rule.
 Byte placement
 --------------
 
-The swap control for each path is device bit 19 for the 32-bit direct
-window, address bit 55 for 64-bit direct, and entry bit 5 or PCI bit 29
+The swap control for each path, with control bit 9 set as at reset, is
+device bit 19 for the 32-bit direct window, address bit 55 for 64-bit direct, and entry bit 5 or PCI bit 29
 for page-mapped DMA. With swap set the transfer is a byte stream. With
 swap clear the model reverses each aligned 32-bit word for a slot that
 runs 32-bit data phases and each aligned doubleword for a slot that runs
@@ -682,6 +686,122 @@ revision 2's placement on a wide slot, and repeated test patterns do not
 fix every byte. A PCI transaction capture on an Origin 300 that records
 ``ACK64#`` and the delivered lanes would settle it. :doc:`pci-expansion`
 describes the topology.
+
+.. _sgi-xbridge-little-endian:
+
+Little-endian system mode
+=========================
+
+Control bit 9, ``SYS_END``, is the system's byte order, one for big-endian
+and zero for little-endian, and resets set, *established*
+(:src:`xbridge-asic-spec-0.5 p. 135`, Table 42). Appendix A gives one set
+of placement tables for each order, Tables 101 to 116 for a big-endian
+system and 117 to 132 for a little-endian one
+(:src:`xbridge-asic-spec-0.5 p. 228-244`). That the bit chooses between
+the sets is *inferred*: the specification names no other control and does
+not say what the bit does. The model reads the bit on each access and
+keeps no state of its own for it, so clearing it changes placement from the
+next access. A guest that clears the bit is declaring its processor
+little-endian: the model does not look at the processor's own mode. A
+big-endian guest that never clears the bit sees no change.
+
+The little-endian tables are the big-endian ones with the swap bit's sense
+reversed. With the swap bit clear, bytes stay in address order. With it set,
+they reverse within the device's word or doubleword. Below, *k*, *o* and *w*
+are the host byte's offset, the access's offset and its width:
+
+.. list-table::
+   :header-rows: 1
+
+   * - Device(*n*) bit 22
+     - Device(*n*) bit 13
+     - Host byte *k* lands on PCI byte
+     - Access at *o* reaches PCI offset
+     - Tables
+   * - clear, 32-bit device
+     - clear
+     - *k*
+     - *o*
+     - 125 to 128
+   * - clear, 32-bit device
+     - set
+     - *k* XOR 3, within the aligned word
+     - *o* XOR (4 − *w*)
+     - 117 to 120
+   * - set, 64-bit device
+     - clear
+     - *k*
+     - *o*
+     - 129 to 132
+   * - set, 64-bit device
+     - set
+     - 7 − *k*, within the aligned doubleword
+     - *o* XOR (8 − *w*)
+     - 121 to 124
+
+Every row is *established* for naturally aligned accesses, read from the
+page images (:src:`xbridge-asic-spec-0.5 p. 236-244`). A doubleword to a
+32-bit device is two word cycles, lower address first, carrying host bytes
+0 to 3 and then 4 to 7, *established* (the note under Tables 119, 120, 126
+and 128). A little-endian processor's access at *o* is the same access a
+big-endian processor makes at *o*: the model places bytes by address, so
+what differs between the orders is which bytes a value occupies, not where
+an access lands.
+
+What each part of the model does with the bit:
+
+- **Device windows.** Placement follows the table above from
+  Device(*n*) bit 13, in memory and in I/O space alike. A window takes its
+  own swap bit, not the card's.
+- **The ranges above the face.** The two memory ranges follow the 32-bit
+  rows with control bit 22 in place of bit 13, and the I/O range the same
+  with bit 23, *inferred*: the specification names the bits for a
+  big-endian system and gives no separate rule for the other order.
+- **Configuration space.** The specification does not say how bytes are
+  placed in a configuration cycle, or whether the system order or the
+  device's swap bit governs them: *unknown*. The model places them as a
+  window with its swap bit clear, whatever Device(*n*) holds. With control
+  bit 9 clear that is address order: a 32-bit access at a register's offset
+  reads its natural value, and a byte at offset *o* is register byte *o*.
+  A doubleword access carries the lower address's word in data bits 31:0.
+  Each is an *approximation*. A configuration read from a little-endian
+  processor on hardware would settle it.
+- **DMA.** Device(*n*) bit 19, translation-table entry bit 5, PCI address
+  bit 29 on revision 2, and bit 55 of a 64-bit address mean what they do for
+  a big-endian system with the sense reversed: a clear bit is a byte
+  stream, a set bit reverses each aligned 32-bit word, or each aligned
+  doubleword in a slot that runs 64-bit data phases. Appendix A has no table
+  for DMA, so this follows its programmed-I/O tables through the same
+  register bits, *inferred*. The specification puts the low-addressed word of
+  a transfer in data bits 31:0 for a little-endian system
+  (:src:`xbridge-asic-spec-0.5 p. 201-202`), *established*; the model moves
+  bytes by address and holds no word order of its own. That a 64-bit slot
+  uses the 64-bit tables is *inferred*, the same reading as for a big-endian
+  system. The Origin 300 expansion placement rules
+  (:ref:`sgi-xbridge-dma-placement`) rest on captures of a big-endian
+  system and apply only with control bit 9 set; what a little-endian system
+  does in that topology is *unknown*, and the model gives it the base
+  placement.
+- **Register slots.** Every register sits in data bits 31:0 of an eight-byte
+  slot, *established* (:src:`xbridge-asic-spec-0.5 p. 123`). A little-endian
+  processor finds those bits at the slot's offset and reads its natural
+  value, *inferred* from the word order above: the specification does not
+  describe how a processor reaches a widget. With control bit 9 clear the
+  model answers a 32-bit access at the slot's offset too, in natural order
+  for a little-endian processor. The offset plus four keeps answering, so a
+  guest that clears the bit with a whole-word write, or reads the register
+  back at the address it wrote, finds it where it left it. Answering at both
+  offsets, and choosing the value order from control bit 9, are each an
+  *approximation*: the specification places registers by data bits and never
+  by that bit. A little-endian processor's read of the identification slot
+  at both halves, with control bit 9 clear, would settle both. The crossbar
+  half's registers (:ref:`sgi-xbridge-crossbar`) keep the big-endian
+  placement in both modes: what the Crossbow does for a little-endian system
+  is *unknown*.
+- **Translation table.** It keeps its big-endian arrangement in both modes,
+  so a little-endian processor stores a translation-table entry as the entry
+  byte-reversed. What the hardware does is *unknown*. The model's choice is
+  an *approximation*, and a test pins it.
 
 .. _sgi-xbridge-interrupts:
 
@@ -1164,6 +1284,12 @@ Model limits
   counting, buffer flushing with traffic and widget 0's one-wire pulse
   are not modelled.
 - The head NIC record is a placeholder, not IO-8 data.
+- Little-endian system mode (:ref:`sgi-xbridge-little-endian`) is
+  untested with the 64-bit memory alias, PCI address bit 29, 16 KB pages
+  and the Origin 300 expansion placement rules, which apply only with
+  control bit 9 set.
+- A 64-bit configuration write in little-endian system mode is untested;
+  the read is.
 - No register of this chip has been read on a physical machine for the
   model.
 
@@ -1180,6 +1306,12 @@ Tests
   swap controls, interrupt packets and force registers, unmasking an
   asserted pin, raw INTx outputs, the NIC placeholder, Origin 300
   ``REQ64#`` wiring and revisions, and migration.
+- ``tests/qtest/sn1-xbridge-little-endian-test.c``: little-endian system
+  mode. Non-palindromic patterns at every width through a memory and an I/O
+  window, the ranges above the face, configuration reads and writes, the
+  register slots, DMA through the direct, page-mapped and 64-bit routes on
+  a 32-bit and a 64-bit slot, and the translation table, each checked
+  against the other order or raw bytes with literal expected values.
 - ``tests/qtest/sn1-xbridge-xbow-test.c``: crossbar identity, reset
   values, the source-port field, control and destination, the lock,
   fences, link registers and eight-bit mode, access errors, interrupt

@@ -206,6 +206,39 @@ static MemTxResult xbridge_source_send(void *opaque, hwaddr address,
     return result;
 }
 
+/* Control bit 9: the system's byte order, which picks the placement tables. */
+#define CONTROL_BIG_ENDIAN (1U << 9)
+
+static bool xbridge_big_endian(SGIXBridgeHeadState *s)
+{
+    return REG(s, 0x20) & CONTROL_BIG_ENDIAN;
+}
+
+/* Bytes stay in address order when a swap bit equals control bit 9. */
+static bool xbridge_in_order(SGIXBridgeHeadState *s, bool swap)
+{
+    return swap == xbridge_big_endian(s);
+}
+
+/* Undo the big-endian region's reversal for a little-endian processor. */
+static uint64_t xbridge_le_view(SGIXBridgeHeadState *s, uint64_t value,
+                                unsigned size)
+{
+    if (xbridge_big_endian(s)) {
+        return value;
+    }
+    switch (size) {
+    case 2:
+        return bswap16(value);
+    case 4:
+        return bswap32(value);
+    case 8:
+        return (uint64_t)bswap32(value >> 32) << 32 | bswap32(value);
+    default:
+        return value;
+    }
+}
+
 /* On success the entry's target is the placement the request selects. */
 static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
                                            IOMMUAccessFlags flag)
@@ -223,6 +256,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
     bool direct_window = false;
     bool page_window = false;
     bool wide_64bit = false;
+    bool big;
     SGIDMAPlacement placement;
 
     if (addr >= 0x3fff0000 && addr < 0x40000000) {
@@ -282,15 +316,17 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
                       "sgi-xbridge: DMA target %x is absent\n", widget);
         goto out;
     }
+    /* The rules below follow a big-endian system's captures only. */
+    big = xbridge_big_endian(s);
     placement = sgi_dma_placement_select(
-        swap, s->dma_64bit & (1U << dma->slot));
+        xbridge_in_order(s, swap), s->dma_64bit & (1U << dma->slot));
     /* Select read exchange only for the reviewed address classes. */
     bool device_swap = REG(s, 0x200 + dma->slot * 8) & (1U << 19);
     bool wide64_read = wide_64bit &&
                        (s->dma_64bit & BIT(dma->slot)) && device_swap;
     bool page_alias_read = page_window && (addr & (1U << 29));
 
-    if (s->packet_sender && rev2 && swap &&
+    if (big && s->packet_sender && rev2 && swap &&
         (s->wide_slot_mask & BIT(dma->slot)) &&
         ((flag != IOMMU_RO &&
           (direct_window || page_window ||
@@ -300,7 +336,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         placement = SGI_DMA_PLACEMENT_HALF_WRITE;
     }
     if (s->origin300_dma_placement_experiment && s->packet_sender &&
-        rev2 && direct_window && !device_swap &&
+        rev2 && big && direct_window && !device_swap &&
         (s->wide_slot_mask & BIT(dma->slot)) &&
         (s->dma_64bit & BIT(dma->slot))) {
         if (flag == IOMMU_RO) {
@@ -310,7 +346,7 @@ static IOMMUTLBEntry xbridge_dma_translate(struct XBridgeDMA *dma, hwaddr addr,
         }
     }
     if (s->origin300_dma_placement_experiment && s->packet_sender && rev2 &&
-        (s->wide_slot_mask & BIT(dma->slot)) &&
+        big && (s->wide_slot_mask & BIT(dma->slot)) &&
         (s->dma_64bit & BIT(dma->slot)) && !swap &&
         (flag == IOMMU_RO || flag == IOMMU_WO) &&
         ((wide_64bit && !device_swap) ||
@@ -528,7 +564,9 @@ static uint32_t xbridge_config_address(SGIXBridgeHeadState *s,
         devfn = (REG(s, 0xc8) >> 8) & 0xf8;
         devfn |= (addr >> 8) & 7;
     }
-    reg ^= 4 - size;
+    if (xbridge_big_endian(s)) {
+        reg ^= 4 - size;
+    }
     return (bus << 16) | (devfn << 8) | reg;
 }
 
@@ -649,7 +687,8 @@ static unsigned xbridge_range_width(struct XBridgeRange *range, hwaddr addr,
 static MemTxResult xbridge_range_rw(struct XBridgeRange *range, hwaddr addr,
                                     uint8_t *bytes, unsigned size, bool write)
 {
-    bool swap = REG(range->head, 0x20) & range->swap;
+    bool swap = xbridge_in_order(range->head,
+                                 REG(range->head, 0x20) & range->swap);
     unsigned width = xbridge_range_width(range, addr, size, write);
     MemTxResult result;
 
@@ -759,9 +798,9 @@ static MemTxResult xbridge_pio(SGIXBridgeHeadState *s, hwaddr addr,
     }
     base <<= 20;
     as = dev & (1U << 12) ? &s->pci_mem_as : &s->pci_io_as;
-    /* Bit 13 selects address placement or byte-stream conversion. */
-    swizzle = !(dev & (1U << 13));
-    stream = dev & (1U << 13);
+    /* Bit 13, against control bit 9, picks address placement or bytes. */
+    stream = xbridge_in_order(s, dev & (1U << 13));
+    swizzle = !stream;
     if (swizzle) {
         offset ^= width - size;
     }
@@ -788,22 +827,37 @@ static uint64_t xbridge_config_read(SGIXBridgeHeadState *s, hwaddr addr,
     return pci_data_read(bus, cfg, size);
 }
 
+/* With control bit 9 clear a register also answers at its slot's offset. */
+static bool xbridge_reg_at_slot(SGIXBridgeHeadState *s, hwaddr addr,
+                                unsigned size)
+{
+    return size == 4 && !(addr & 7) && addr < 0x300 &&
+           !xbridge_big_endian(s);
+}
+
+static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
+                          unsigned size);
+
 static uint64_t xbridge_read(void *opaque, hwaddr addr, unsigned size)
 {
     SGIXBridgeHeadState *s = opaque;
     uint8_t bytes[8] = { 0 };
 
+    if (xbridge_reg_at_slot(s, addr, size)) {
+        return xbridge_le_view(s, xbridge_read(s, addr + 4, size), size);
+    }
     if (addr >= 0x20000 && addr < 0x29000) {
         if (size <= 4) {
-            return xbridge_config_read(s, addr, size);
+            return xbridge_le_view(s, xbridge_config_read(s, addr, size),
+                                   size);
         }
         /*
          * A doubleword is two configuration words, the lower address in the
          * upper half: what the Origin 300's io8bt reads a header as and
          * compares with the two word reads.
          */
-        return xbridge_config_read(s, addr, 4) << 32 |
-               xbridge_config_read(s, addr + 4, 4);
+        return xbridge_le_view(s, xbridge_config_read(s, addr, 4) << 32 |
+                                  xbridge_config_read(s, addr + 4, 4), size);
     }
     if (addr >= 0x200000 && addr < 0xc00000) {
         xbridge_pio(s, addr, bytes, size, false);
@@ -838,7 +892,12 @@ static void xbridge_write(void *opaque, hwaddr addr, uint64_t value,
     uint32_t mask;
     uint8_t bytes[8];
 
+    if (xbridge_reg_at_slot(s, addr, size)) {
+        xbridge_write(s, addr + 4, xbridge_le_view(s, value, size), size);
+        return;
+    }
     if (addr >= 0x20000 && addr < 0x29000) {
+        value = xbridge_le_view(s, value, size);
         if (size <= 4) {
             pci_data_write(PCI_HOST_BRIDGE(s)->bus,
                            xbridge_config_address(s, addr, size), value,

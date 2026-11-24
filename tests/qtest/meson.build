@@ -458,7 +458,8 @@ endif
 # its other cases' bare test-only head; gate that name on CONFIG_SGI_SN1 too.
 sn1_xbridge_qtests = \
   (config_all_devices.has_key('CONFIG_SGI_XBRIDGE') ?
-    ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test'] : []) + \
+    ['sn1-xbridge-chip-test', 'sn1-xbridge-xbow-test',
+     'sn1-xbridge-little-endian-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_SN1') ?
     ['sn1-xbridge-test'] : [])
 if not config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES')
@@ -468,7 +469,8 @@ elif not config_all_devices.has_key('CONFIG_PCI')
 elif not config_all_devices.has_key('CONFIG_PCI_BRIDGE') or \
      not config_all_devices.has_key('CONFIG_IOMMU_TESTDEV')
   sn1_xbridge_qtests = ['sn1-xbridge-chip-test',
-                        'sn1-xbridge-xbow-test']
+                        'sn1-xbridge-xbow-test',
+                        'sn1-xbridge-little-endian-test']
 endif
 
 sn1_pci_expansion_qtests = \
