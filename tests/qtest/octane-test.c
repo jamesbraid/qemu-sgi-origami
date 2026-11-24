@@ -29,6 +29,7 @@
 #define RAM 0x20000000ULL
 #define LOW_RAM_SIZE 0x4000
 #define LOW_RAM_HALF 0x2000
+#define LOW_RAM_TEST 0x600000ULL
 #define HIGH_GUARD RAM
 #define HIGH_RAM (RAM + 0x4000)
 #define ATTR0 (1ULL << 40)
@@ -217,6 +218,61 @@ static void test_octane2_population(void)
     g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, OCTANE2_BANK0);
     g_assert_cmphex(qtest_readq(qts, RAM + 8 * UNIT - 8), ==,
                     0xfedcba9876543210ULL);
+    qtest_quit(qts);
+}
+
+/*
+ * x-heart-bank-wrap: base 0x1f0 decodes at 0 and HEART still answers over
+ * the bank; off, nothing answers at 0x600000.
+ */
+static void test_heart_bank_wrap(gconstpointer data)
+{
+    bool wrap = GPOINTER_TO_INT(data);
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE "-vga none -M octane%s "
+        "-m 256M -cpu R10000 -bios %s -S", wrap ? ",x-heart-bank-wrap=on" : "",
+        quoted);
+    const uint32_t descriptor = OCTANE2_BANK0 | 0x1f0;
+    uint32_t word;
+
+    g_assert_cmpuint(memtx_readl(qts, LOW_RAM_TEST, &word), !=, MEMTX_OK);
+    qtest_writel(qts, RAM + LOW_RAM_TEST, 0x01234567);
+    qtest_writel(qts, HEART + 0x20, descriptor);
+    g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, descriptor);
+    if (wrap) {
+        g_assert_cmphex(qtest_readl(qts, LOW_RAM_TEST), ==, 0x01234567);
+        qtest_writel(qts, LOW_RAM_TEST, 0x89abcdef);
+        g_assert_cmphex(qtest_readl(qts, LOW_RAM_TEST), ==, 0x89abcdef);
+        g_assert_cmpuint(memtx_readl(qts, RAM + LOW_RAM_TEST, &word), !=,
+                         MEMTX_OK);
+        /* HEART, not the bank, answers where the two overlap. */
+        g_assert_cmphex(qtest_readl(qts, HEART + 0x20), ==, descriptor);
+    } else {
+        g_assert_cmpuint(memtx_readl(qts, LOW_RAM_TEST, &word), !=, MEMTX_OK);
+        g_assert_cmpuint(memtx_writel(qts, LOW_RAM_TEST, 1), !=, MEMTX_OK);
+        g_assert_cmphex(qtest_readl(qts, (1ULL << 34) + LOW_RAM_TEST), ==,
+                        0x01234567);
+    }
+    qtest_quit(qts);
+}
+
+/*
+ * A bank wrapped to 0 replaces the 16 KiB alias of the bank at 0x20000000,
+ * even when the alias belongs to a higher bank than the wrapped one.
+ */
+static void test_heart_bank_wrap_alias(void)
+{
+    g_autofree char *quoted = g_shell_quote(flash_path);
+    QTestState *qts = qtest_initf(MEMTX_TEST_DEVICE "-vga none -M octane,"
+        "x-heart-bank-wrap=on,bank0-size=134217728,bank1-size=134217728 "
+        "-m 256M -cpu R10000 -bios %s -S", quoted);
+
+    qtest_writel(qts, 0x100, 0x11111111);
+    qtest_writel(qts, HEART + 0x20, BANK0 | 0x1f0);
+    qtest_writel(qts, HEART + 0x24, BANK0);
+    g_assert_cmphex(qtest_readl(qts, 0x100), ==, 0x11111111);
+    qtest_writel(qts, HEART + 0x20, BANK0 | 4);
+    g_assert_cmphex(qtest_readl(qts, 0x100), ==, 0);
     qtest_quit(qts);
 }
 
@@ -7004,6 +7060,11 @@ int main(int argc, char **argv)
     g_assert_cmpint(write(fd, bytes, sizeof(bytes)), ==, sizeof(bytes));
     close(fd);
     qtest_add_func("/octane/widgets-and-memory", test_widgets_and_memory);
+    qtest_add_data_func("/octane/heart-bank-wrap/off", GINT_TO_POINTER(0),
+                        test_heart_bank_wrap);
+    qtest_add_data_func("/octane/heart-bank-wrap/on", GINT_TO_POINTER(1),
+                        test_heart_bank_wrap);
+    qtest_add_func("/octane/heart-bank-wrap/alias", test_heart_bank_wrap_alias);
     qtest_add_func("/octane/bridge-identity", test_octane_bridge_identity);
     qtest_add_func("/octane/bridge-link-reset", test_octane_bridge_link_reset);
     qtest_add_func("/octane/xbow-fence-lock-errors",

@@ -382,6 +382,12 @@ widget windows and the memory offset:
 
    * - Physical address
      - Contents
+   * - ``0``
+     - the first 16 KiB of SDRAM, an alias of the bank at
+       ``0x20000000``, an *approximation* (:ref:`sgi-heart-memory`). With
+       ``x-heart-bank-wrap=on``, RAM a bank descriptor wraps below
+       ``0x20000000`` replaces it and fills up to 480 MiB, for Windows NT
+       for MIPS; not hardware (:ref:`sgi-heart-bank-wrap`)
    * - ``0x10000000 + (widget << 24)``
      - 16 MiB small window for each widget
    * - ``2^35 + (widget << 31)``
@@ -859,6 +865,8 @@ Open questions
   smaller bank, the reset values of the bank descriptors, and the
   bank-number to descriptor-index mapping (:ref:`sgi-ip30-memory`,
   :doc:`hardware/heart`).
+- Whether HEART's bank addresses wrap at 2^34, which would put a bank
+  with descriptor base ``0x1f0`` at physical 0 (:ref:`sgi-heart-bank-wrap`).
 - The PCI module's and the adapter's Bridge revisions, which no Octane
   listing prints (:ref:`sgi-pci-expansion-octane`). The reference Octane2
   has no PCI module fitted.

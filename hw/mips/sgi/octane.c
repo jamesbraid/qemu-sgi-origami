@@ -116,6 +116,8 @@ typedef struct OctaneMachineState {
     MemoryRegion xio_long[OCTANE_XIO_WIDGETS];
     MemoryRegion xio_mid[OCTANE_XIO_WIDGETS];
     bool uncatalogued_graphics;
+    /* x-heart-bank-wrap: see docs hardware/heart.rst. */
+    bool heart_bank_wrap;
     SGIGraphicsPipes pipes;
     Notifier machine_done;
     /* Catalogue storage item name -> the block node or drive it binds. */
@@ -751,6 +753,7 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
 
         qdev_prop_set_uint64(heart, name, s->bank_size[bank]);
     }
+    qdev_prop_set_bit(heart, "x-bank-base-wrap", s->heart_bank_wrap);
     qdev_prop_set_uint8(heart, "widget-revision",
                          s->node->heart->widget_revision);
     qdev_prop_set_uint64(heart, "widget-id-64",
@@ -779,9 +782,10 @@ static bool octane_realize(MachineState *machine, bool octane2, Error **errp)
      * from the bank views, so it follows the bank descriptors and is RAM
      * for TCG. Reset leaves it alone and it adds no migration state.
      */
-    memory_region_add_subregion(
+    memory_region_add_subregion_overlap(
         physical, 0,
-        sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), HEART_MMIO_SDRAM_BASE));
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), HEART_MMIO_SDRAM_BASE),
+        HEART_SDRAM_BASE_PRIORITY);
     memory_region_add_subregion(
         physical, OCTANE_HEART_REGS,
         sysbus_mmio_get_region(SYS_BUS_DEVICE(heart), 0));
@@ -1006,6 +1010,21 @@ static void octane_set_uncatalogued_graphics(Object *obj, bool value,
         return;
     }
     ((OctaneMachineState *)obj)->uncatalogued_graphics = value;
+}
+
+static bool octane_get_heart_bank_wrap(Object *obj, Error **errp)
+{
+    return ((OctaneMachineState *)obj)->heart_bank_wrap;
+}
+
+static void octane_set_heart_bank_wrap(Object *obj, bool value, Error **errp)
+{
+    if (phase_check(PHASE_MACHINE_INITIALIZED)) {
+        error_setg(errp, "x-heart-bank-wrap cannot change once the machine "
+                   "is built");
+        return;
+    }
+    ((OctaneMachineState *)obj)->heart_bank_wrap = value;
 }
 
 static const HotplugHandler *octane_get_hotplug_handler(MachineState *machine,
@@ -1256,6 +1275,14 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
         "Skip the graphics catalogue: fit no default pipe, accept any -vga "
         "and check no graphics -device against the topology. For "
         "register-contract tests that use the machine to carry a board.");
+    object_class_property_add_bool(oc, "x-heart-bank-wrap",
+                                   octane_get_heart_bank_wrap,
+                                   octane_set_heart_bank_wrap);
+    object_class_property_set_description(oc, "x-heart-bank-wrap",
+        "Not hardware: HEART forms a bank's address modulo 2^34, so a "
+        "descriptor base of 0x1f0 to 0x1ff places RAM at 0 to 480 MiB, "
+        "where Windows NT for MIPS needs it. Off by default; off, such a "
+        "bank lands above 16 GiB and nothing answers at 0x600000.");
     for (uintptr_t bank = 0; bank < HEART_BANKS; bank++) {
         g_autofree char *name = g_strdup_printf("bank%u-size",
                                                 (unsigned)bank);
