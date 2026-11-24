@@ -85,6 +85,7 @@
 #include "trace/control.h"
 #include "cpu.h"
 #include "exec/tb-flush.h"
+#include "hw/mips/sgi/sgi-cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
 #include "hw/mips/sgi/sgi-graphics.h"
 #include "hw/core/hotplug.h"
@@ -366,9 +367,8 @@ struct SGIMachineState {
 
     bool debug_leds;
     bool junk_uart_present;
-    /* x-restart-entry, and the byte order x-cpu-byte-order is restarting to. */
+    /* x-restart-entry: where an x-cpu-byte-order change starts the CPUs. */
     uint64_t restart_entry;
-    bool restart_big;
     bool origin300_l1cmd_compat;
     /* The topology's IP53 runtime profile applies to this machine. */
     bool ip53_runtime_enabled;
@@ -11982,39 +11982,18 @@ static MIPSCPU *sgi_machine_node_cpu(SGIMachineState *s, unsigned int n,
     return i < SN0_MAX_CPUS_PER_NODE ? s->nodes[n]->cpu[i] : NULL;
 }
 
-/* One exclusive section restarts every CPU and flushes, so none runs mixed. */
-static void sgi_machine_restart_work(CPUState *cs, run_on_cpu_data data)
+/* The reset dropped each node's held lines and every processor's halt. */
+static void sgi_machine_restart_resync(void *opaque)
 {
-    SGIMachineState *s = data.host_ptr;
+    SGIMachineState *s = opaque;
 
-    /* The reset and the node's lines are the main loop's to touch. */
-    bql_lock();
     for (unsigned int n = 0; n < s->num_nodes; n++) {
-        for (unsigned int i = 0; i < SGI_SN1_NODE_MAX_CPUS; i++) {
-            MIPSCPU *cpu = sgi_machine_node_cpu(s, n, i);
-
-            if (!cpu) {
-                continue;
-            }
-            cpu->is_big_endian = s->restart_big;
-            cpu_reset(CPU(cpu));
-            /* A later machine reset comes back big-endian. */
-            cpu->is_big_endian = true;
-            if (s->restart_entry) {
-                cpu_set_pc(CPU(cpu), (uint64_t)(int32_t)0x80000000 +
-                           s->restart_entry);
-            }
-        }
-        /* The reset dropped the held lines and every processor's halt. */
         if (s->bedrock_nodes) {
             sn1_node_resync_cpus(SN1_NODE(s->bedrock_nodes[n]));
         } else {
             sgi_hub_resync_cpus(&s->nodes[n]->hub);
         }
     }
-    bql_unlock();
-    /* Translated blocks are not keyed on Config0.BE. */
-    tb_flush__exclusive_or_serial();
 }
 
 static MIPSCPU *sgi_machine_first_cpu(SGIMachineState *s)
@@ -12033,9 +12012,8 @@ static MIPSCPU *sgi_machine_first_cpu(SGIMachineState *s)
 static char *sgi_machine_get_x_cpu_byte_order(Object *obj, Error **errp)
 {
     MIPSCPU *cpu = sgi_machine_first_cpu(SGI_MACHINE(obj));
-    bool big = !cpu || extract32(cpu->env.CP0_Config0, CP0C0_BE, 1);
 
-    return g_strdup(big ? "big" : "little");
+    return g_strdup(sgi_cpu_byte_order(cpu ? CPU(cpu) : NULL));
 }
 
 static void sgi_machine_set_x_cpu_byte_order(Object *obj, const char *value,
@@ -12043,27 +12021,14 @@ static void sgi_machine_set_x_cpu_byte_order(Object *obj, const char *value,
 {
     SGIMachineState *s = SGI_MACHINE(obj);
     MIPSCPU *first = sgi_machine_first_cpu(s);
-    bool big;
 
     if (!first || !phase_check(PHASE_MACHINE_READY)) {
         error_setg(errp, "x-cpu-byte-order needs a running machine with "
                    "processors");
         return;
     }
-    if (!strcmp(value, "big")) {
-        big = true;
-    } else if (!strcmp(value, "little")) {
-        big = false;
-    } else {
-        error_setg(errp, "x-cpu-byte-order takes big or little");
-        return;
-    }
-    if (big == extract32(first->env.CP0_Config0, CP0C0_BE, 1)) {
-        return;
-    }
-    s->restart_big = big;
-    async_safe_run_on_cpu(CPU(first), sgi_machine_restart_work,
-                          RUN_ON_CPU_HOST_PTR(s));
+    sgi_cpu_restart(CPU(first), value, s->restart_entry,
+                    sgi_machine_restart_resync, s, errp);
 }
 
 static void sgi_machine_get_x_restart_entry(Object *obj, Visitor *v,
@@ -12084,12 +12049,9 @@ static void sgi_machine_set_x_restart_entry(Object *obj, Visitor *v,
     if (!visit_type_uint64(v, name, &value, errp)) {
         return;
     }
-    if ((value & 3) || value >= 512 * MiB) {
-        error_setg(errp, "x-restart-entry must be a word-aligned physical "
-                   "address below 512 MiB, or 0 for the reset vector");
-        return;
+    if (sgi_cpu_restart_entry_valid(value, errp)) {
+        SGI_MACHINE(obj)->restart_entry = value;
     }
-    SGI_MACHINE(obj)->restart_entry = value;
 }
 
 static bool sgi_machine_get_origin300_l1cmd_compat(Object *obj, Error **errp)

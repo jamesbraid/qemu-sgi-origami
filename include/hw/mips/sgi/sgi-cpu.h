@@ -12,6 +12,7 @@
 #ifndef HW_MIPS_SGI_SGI_CPU_H
 #define HW_MIPS_SGI_SGI_CPU_H
 
+#include "hw/core/cpu.h"
 #include "hw/mips/sgi/sgi-machines.h"
 
 /*
@@ -35,5 +36,21 @@ bool sgi_cpu_set_reset_mode(DeviceState *dev, uint32_t mode, Error **errp);
 bool sgi_cpu_apply_processor(DeviceState *dev,
                              const SGIModelProcessor *processor,
                              Error **errp);
+
+/* The emulator-only restart behind x-cpu-byte-order and x-restart-entry. */
+
+/* "big" or "little", from @cpu's Config0.BE; "big" with no CPU yet. */
+const char *sgi_cpu_byte_order(CPUState *cpu);
+
+/* Check an x-restart-entry value: word-aligned, below 512 MiB. */
+bool sgi_cpu_restart_entry_valid(uint64_t entry, Error **errp);
+
+/*
+ * Restart every CPU in @order at KSEG0 + @entry (0: the reset vector), then
+ * run @resync under the BQL to re-drive the lines the reset dropped.
+ */
+bool sgi_cpu_restart(CPUState *first, const char *order, uint64_t entry,
+                     void (*resync)(void *opaque), void *opaque,
+                     Error **errp);
 
 #endif /* HW_MIPS_SGI_SGI_CPU_H */

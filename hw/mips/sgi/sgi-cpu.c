@@ -5,12 +5,16 @@
  */
 
 #include "qemu/osdep.h"
+#include "qemu/bitops.h"
+#include "qemu/main-loop.h"
 #include "qemu/units.h"
 #include "qapi/error.h"
 #include "qom/object.h"
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sgi/sgi-cpu.h"
+#include "cpu.h"
+#include "exec/tb-flush.h"
 
 /* Set @name on @dev to @value unless -cpu or -global already named it. */
 static bool sgi_cpu_default(DeviceState *dev, const char *name,
@@ -94,4 +98,82 @@ bool sgi_cpu_apply_processor(DeviceState *dev,
     }
     return !processor->has_prid ||
            sgi_cpu_set_prid(dev, processor->prid, errp);
+}
+
+typedef struct SGICpuRestart {
+    bool big;
+    uint64_t entry;
+    void (*resync)(void *opaque);
+    void *opaque;
+} SGICpuRestart;
+
+const char *sgi_cpu_byte_order(CPUState *cpu)
+{
+    return !cpu || extract32(MIPS_CPU(cpu)->env.CP0_Config0, CP0C0_BE, 1) ?
+           "big" : "little";
+}
+
+bool sgi_cpu_restart_entry_valid(uint64_t entry, Error **errp)
+{
+    if ((entry & 3) || entry >= 512 * MiB) {
+        error_setg(errp, "x-restart-entry must be a word-aligned physical "
+                   "address below 512 MiB, or 0 for the reset vector");
+        return false;
+    }
+    return true;
+}
+
+/* One exclusive section restarts every CPU and flushes, so none runs mixed. */
+static void sgi_cpu_restart_work(CPUState *first, run_on_cpu_data data)
+{
+    SGICpuRestart *r = data.host_ptr;
+    CPUState *cs;
+
+    /* The reset and the machine's lines are the main loop's to touch. */
+    bql_lock();
+    CPU_FOREACH(cs) {
+        MIPSCPU *cpu = MIPS_CPU(cs);
+
+        cpu->is_big_endian = r->big;
+        cpu_reset(cs);
+        /* A later machine reset comes back big-endian. */
+        cpu->is_big_endian = true;
+        if (r->entry) {
+            cpu_set_pc(cs, (uint64_t)(int32_t)0x80000000 + r->entry);
+        }
+    }
+    if (r->resync) {
+        r->resync(r->opaque);
+    }
+    bql_unlock();
+    /* Translated blocks are not keyed on Config0.BE. */
+    tb_flush__exclusive_or_serial();
+    g_free(r);
+}
+
+bool sgi_cpu_restart(CPUState *first, const char *order, uint64_t entry,
+                     void (*resync)(void *opaque), void *opaque,
+                     Error **errp)
+{
+    SGICpuRestart *r;
+    bool big;
+
+    if (!strcmp(order, "big")) {
+        big = true;
+    } else if (!strcmp(order, "little")) {
+        big = false;
+    } else {
+        error_setg(errp, "x-cpu-byte-order takes big or little");
+        return false;
+    }
+    if (big == extract32(MIPS_CPU(first)->env.CP0_Config0, CP0C0_BE, 1)) {
+        return true;
+    }
+    r = g_new0(SGICpuRestart, 1);
+    r->big = big;
+    r->entry = entry;
+    r->resync = resync;
+    r->opaque = opaque;
+    async_safe_run_on_cpu(first, sgi_cpu_restart_work, RUN_ON_CPU_HOST_PTR(r));
+    return true;
 }
