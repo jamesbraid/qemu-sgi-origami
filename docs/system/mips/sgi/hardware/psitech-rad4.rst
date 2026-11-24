@@ -925,6 +925,14 @@ Its ``/psitech-rad4-km/`` cases cover the RAD4-KM identity, the shared BAR0 and
 BAR2 layout, channel status, the aggregate interrupt reaching PCI and a PS/2
 reset round trip on each channel.
 
+``tests/qtest/sn0-pio-forward-test.c`` reaches BAR2 on the Origin 200,
+through a Hub big window aimed at the Bridge's large PCI memory range, at
+the first and last framebuffer words, with Bridge control bit 9 set and
+clear. ``tests/qtest/sn0-pci-carrier-test.c`` does the same for a card in
+an Origin 2000 PCI Carrier Assembly at IO2 (Crossbow widget 12). The
+carrier placement works under ``x-uncatalogued-graphics=on``; the graphics
+catalogue does not offer it.
+
 ``tests/qtest/sgi-graphics-pipes-test.c`` checks the Origin 200 slots the
 card may occupy and the refusals for others.
 ``tests/functional/mips64/test_graphics_matrix_thorough.py`` runs the

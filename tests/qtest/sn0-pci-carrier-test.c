@@ -142,6 +142,45 @@ static void test_fourth_slot_refused(void)
     assert_launch_rejected(args, "reserved");
 }
 
+/*
+ * RAD4's 16 MiB BAR2 fits no device window; a big window at slice 3 reaches
+ * it through the Bridge's large PCI range.
+ */
+#define RAD4_DEVICE         2
+#define RAD4_WINDOW         0x600000
+#define RAD4_BAR0_PCI       0x20000000u
+#define RAD4_BAR2_PCI       0x30000000u
+#define IO_BWIN_ENTRY(n)    (HUB_LOCAL + 0x400160 + (n) * 8)
+#define BIG_WINDOW(n)       (SPACE_IO + 0x20000000ULL + (n) * 0x20000000ULL)
+#define BAR2_LAST_WORD      0x7ffffcu
+
+static void test_rad4_bar2_through_big_window(void)
+{
+    QTestState *qts = qtest_init("-M origin2000,x-uncatalogued-graphics=on "
+        "-display none -device sgi-pci-carrier,slot=io2 "
+        "-device psitech-rad4,bus=" CARRIER_BUS ",addr=2");
+    uint64_t big = BIG_WINDOW(1) + (RAD4_BAR2_PCI - 0x20000000u);
+
+    carrier_write(qts, CFG0(RAD4_DEVICE) + PCI_BAR0, RAD4_BAR0_PCI);
+    carrier_write(qts, CFG0(RAD4_DEVICE) + 0x18, RAD4_BAR2_PCI);
+    carrier_write(qts, CFG0(RAD4_DEVICE) + PCI_COMMAND, PCI_COMMAND_MEMORY);
+    qtest_writeq(qts, IO_BWIN_ENTRY(1), ((uint64_t)CARRIER_WIDGET << 8) | 3);
+
+    carrier_write(qts, big, 0x00112233u);
+    carrier_write(qts, big + BAR2_LAST_WORD, 0x00445566u);
+
+    carrier_write(qts, WIDGET_BASE + 0x200 + 8 * RAD4_DEVICE + 4,
+                  DEV_MEMORY_SPACE | (RAD4_BAR2_PCI >> 20));
+    g_assert_cmphex(carrier_read(qts, RAD4_WINDOW), ==, 0x00112233u);
+    carrier_write(qts, WIDGET_BASE + 0x200 + 8 * RAD4_DEVICE + 4,
+                  DEV_MEMORY_SPACE |
+                  ((RAD4_BAR2_PCI + BAR2_LAST_WORD) >> 20));
+    g_assert_cmphex(carrier_read(qts, RAD4_WINDOW +
+                                 (BAR2_LAST_WORD & 0xfffff)),
+                    ==, 0x00445566u);
+    qtest_quit(qts);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -154,5 +193,7 @@ int main(int argc, char **argv)
                    test_card_enumerates_in_each_slot);
     qtest_add_func("sn0/pci-carrier/fourth-slot-refused",
                    test_fourth_slot_refused);
+    qtest_add_func("sn0/pci-carrier/rad4-bar2-through-big-window",
+                   test_rad4_bar2_through_big_window);
     return g_test_run();
 }

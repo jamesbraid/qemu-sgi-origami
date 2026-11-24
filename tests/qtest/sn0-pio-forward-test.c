@@ -4,7 +4,8 @@
  * These tests remap the target between two accesses to the same address
  * and expect the second to follow the new mapping: a Bridge cycle after the
  * device's base address register moves, and a processor store after the
- * Hub's big window is re-aimed.
+ * Hub's big window is re-aimed. They also check that a big window reaches
+ * all of BAR2, which no device window can hold.
  *
  * A PsiTech RAD4's BAR2 is the target: plain readable words, so where a
  * store landed can be read back.
@@ -224,6 +225,56 @@ static void test_hub_follows_a_reaimed_big_window(void)
     qtest_quit(qts);
 }
 
+/*
+ * BAR2 is 16 MiB, too big for a device window; slice 3 of a big window maps
+ * PCI memory from 0x20000000 through the Bridge's large range.
+ */
+#define BAR2_FB_LAST        0x7ffffcu
+
+#define BRIDGE_CONTROL      0x20
+#define CONTROL_BIG_ENDIAN  (1u << 9)
+
+static void check_big_window_reaches_bar2(bool little_endian)
+{
+    QTestState *qts = qtest_init("-M origin200,x-uncatalogued-graphics=on "
+                                 RAD4);
+    uint64_t big = SPACE_IO + BIG_WINDOW(TEST_WINDOW) +
+                   (RAD4_BAR2_PCI - 0x20000000u);
+
+    configure_rad4(qts, RAD4_BAR2_PCI);
+    if (little_endian) {
+        qtest_writel(qts, REG(BRIDGE_CONTROL),
+                     qtest_readl(qts, REG(BRIDGE_CONTROL)) &
+                     ~CONTROL_BIG_ENDIAN);
+    }
+    aim_big_window(qts, IO_BWIN_WIDGET(BRIDGE_WIDGET) | 3);
+
+    qtest_writel(qts, big, 0x00112233u);
+    qtest_writel(qts, big + BAR2_FB_LAST, 0x00445566u);
+    g_assert_cmphex(qtest_readl(qts, big), ==, 0x00112233u);
+    g_assert_cmphex(qtest_readl(qts, big + BAR2_FB_LAST), ==, 0x00445566u);
+
+    window_to(qts, RAD4_BAR2_PCI);
+    g_assert_cmphex(qtest_readl(qts, window(RAD4_BAR2_PCI)), ==,
+                    0x00112233u);
+    window_to(qts, RAD4_BAR2_PCI + BAR2_FB_LAST);
+    g_assert_cmphex(qtest_readl(qts, window(RAD4_BAR2_PCI + BAR2_FB_LAST)),
+                    ==, 0x00445566u);
+
+    qtest_quit(qts);
+}
+
+static void test_big_window_reaches_bar2_through_pci_range(void)
+{
+    check_big_window_reaches_bar2(false);
+}
+
+/* The view of a little-endian CPU's driver: Bridge control bit 9 clear. */
+static void test_big_window_reaches_bar2_in_little_endian_mode(void)
+{
+    check_big_window_reaches_bar2(true);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -231,5 +282,9 @@ int main(int argc, char **argv)
                    test_bridge_follows_a_moved_bar);
     qtest_add_func("/sn0-pio-forward/hub-follows-a-reaimed-big-window",
                    test_hub_follows_a_reaimed_big_window);
+    qtest_add_func("/sn0-pio-forward/big-window-bar2",
+                   test_big_window_reaches_bar2_through_pci_range);
+    qtest_add_func("/sn0-pio-forward/big-window-bar2-little-endian",
+                   test_big_window_reaches_bar2_in_little_endian_mode);
     return g_test_run();
 }
