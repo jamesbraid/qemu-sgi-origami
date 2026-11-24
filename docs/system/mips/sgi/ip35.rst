@@ -1185,6 +1185,60 @@ Origin 300 and Fuel the next serial lines are IOC3 ports A and B; on the
 IP53 products they are the four :term:`IOC4` ports (:ref:`sgi-ip53-firmware`). The PROM keeps its console
 choice in the boot flash, so it is firmware state, not a board property.
 
+.. _sgi-ip35-cpu-byte-order:
+
+Changing the processors' byte order
+===================================
+
+The mode words of the Origin 300, Fuel and Origin 3000 processor boards come
+from the stock PROM's table, with bit 15 set, so the processors start
+big-endian (*software expectation*). The IP53 boards' words carry bit 15
+set by the same reading, *inferred*, since no capture of them is held. What
+drives the mode bits at reset is *unknown*, so no route from the stock PROM
+to a little-endian processor is known. The two machine properties of
+:ref:`sgi-ip27-cpu-byte-order`, ``x-cpu-byte-order`` and
+``x-restart-entry``, give the emulator one on every machine of this page
+and of :doc:`ip53`. Neither is hardware, and no register, memory window or
+device of the guest can set them. The IP27 page describes what they do;
+the parts specific to the Bedrock follow.
+
+Setting ``x-cpu-byte-order`` restarts every processor of every node at once
+with the CPU model's cold reset, in one exclusive section, and flushes the
+translated blocks. The Bedrocks, the bridges and RAM keep their state, so
+the memory configuration the firmware wrote still maps RAM. Restarting the
+processors alone is an *approximation*: hardware loads the mode bits only
+at power-on or cold reset, which restarts more than the processors. The
+reset leaves every processor halted, as a node's supply restart does, so the
+restart releases those of a node that has power and drives that node's
+interrupt lines again; a node without power keeps its processors halted.
+Processors that held an interrupt line before the restart see it again
+after. A start still owed to a node is replaced by the restart's. A node
+restart still in flight when the property is set resets the processors
+again, back to big-endian. The Bedrock's park state
+(:ref:`sgi-bedrock-reset`) is left alone, an *approximation*: a restart
+while the PROM is still passing the reset-barrier handshake is untested.
+
+A little-endian processor reads and writes a Bedrock register of eight bytes
+byte-reversed, because the registers are big-endian doublewords, and the
+restart does not change that. That is the model's choice, an
+*approximation*. What hardware does is *unknown*. A guest that stores a
+small value to such a register from a little-endian processor stores the
+reversed doubleword.
+
+A machine reset, a Bedrock port reset or soft reset that resets every
+powered node, and the restart of a single node by a port reset
+(:ref:`sgi-bedrock-node-restart`) all bring the processors back
+big-endian, as the mode bits set them, and flush the translated blocks. A
+node's power loss and return do the same. The discriminating test is
+``tests/qtest/sn1-restart-le-test.c``. A big-endian stub in flash and a
+little-endian stub at the entry or the reset vector each record Config bit
+15, the Cause register and a non-palindromic word read back as raw RAM
+bytes, and count the processors that ran. It restarts an Origin 300 and an
+Origin 350, checks that the interrupt line held before the restart reaches
+Cause after it, that a machine reset and a node's port reset both return
+the processors to big-endian, and that a restart of one node of a two-node
+machine does too.
+
 .. _sgi-ip35-running:
 
 Running

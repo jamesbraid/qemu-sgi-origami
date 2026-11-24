@@ -350,6 +350,8 @@ bool sn1_node_set_ip53_pic_widget(SN1NodeState *node, unsigned int widget,
  */
 void sn1_node_reset_cpus(SN1NodeState *node);
 void sn1_node_release_cpus(SN1NodeState *node);
+/* Re-drive the lines and the halts of processors reset on their own. */
+void sn1_node_resync_cpus(SN1NodeState *node);
 
 /* Whether the node's supply is on (its Bedrock's level once it exists). */
 bool sn1_node_powered(SN1NodeState *node);

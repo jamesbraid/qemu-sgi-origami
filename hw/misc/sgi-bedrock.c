@@ -1300,6 +1300,13 @@ static void bedrock_power_rederive(SGIBedrockState *s)
     memory_region_transaction_commit();
 }
 
+/* Re-drive the interrupt lines of processors reset without the Bedrock. */
+void sgi_bedrock_resync_cpus(SGIBedrockState *s)
+{
+    sgi_bedrock_pi_recompute(&s->pi[0]);
+    sgi_bedrock_pi_recompute(&s->pi[1]);
+}
+
 /*
  * The node's switched supply comes or goes. While it is off the Bedrock
  * answers nothing: every register access that arrives through the fabric

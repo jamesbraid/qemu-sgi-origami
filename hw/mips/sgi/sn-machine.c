@@ -11970,16 +11970,28 @@ static void sgi_machine_set_junk_uart(Object *obj, bool value, Error **errp)
     SGI_MACHINE(obj)->junk_uart_present = value;
 }
 
+/* A node's CPU @i, or NULL: the Hub's two slots or a Bedrock's nr_cpus. */
+static MIPSCPU *sgi_machine_node_cpu(SGIMachineState *s, unsigned int n,
+                                     unsigned int i)
+{
+    if (s->bedrock_nodes) {
+        SN1NodeState *node = SN1_NODE(s->bedrock_nodes[n]);
+
+        return i < node->nr_cpus ? node->cpu[i] : NULL;
+    }
+    return i < SN0_MAX_CPUS_PER_NODE ? s->nodes[n]->cpu[i] : NULL;
+}
+
 /* One exclusive section restarts every CPU and flushes, so none runs mixed. */
 static void sgi_machine_restart_work(CPUState *cs, run_on_cpu_data data)
 {
     SGIMachineState *s = data.host_ptr;
 
-    /* The reset and the Hub's lines are the main loop's to touch. */
+    /* The reset and the node's lines are the main loop's to touch. */
     bql_lock();
     for (unsigned int n = 0; n < s->num_nodes; n++) {
-        for (unsigned int i = 0; i < SN0_MAX_CPUS_PER_NODE; i++) {
-            MIPSCPU *cpu = s->nodes[n]->cpu[i];
+        for (unsigned int i = 0; i < SGI_SN1_NODE_MAX_CPUS; i++) {
+            MIPSCPU *cpu = sgi_machine_node_cpu(s, n, i);
 
             if (!cpu) {
                 continue;
@@ -11994,7 +12006,11 @@ static void sgi_machine_restart_work(CPUState *cs, run_on_cpu_data data)
             }
         }
         /* The reset dropped the held lines and every processor's halt. */
-        sgi_hub_resync_cpus(&s->nodes[n]->hub);
+        if (s->bedrock_nodes) {
+            sn1_node_resync_cpus(SN1_NODE(s->bedrock_nodes[n]));
+        } else {
+            sgi_hub_resync_cpus(&s->nodes[n]->hub);
+        }
     }
     bql_unlock();
     /* Translated blocks are not keyed on Config0.BE. */
@@ -12003,9 +12019,11 @@ static void sgi_machine_restart_work(CPUState *cs, run_on_cpu_data data)
 
 static MIPSCPU *sgi_machine_first_cpu(SGIMachineState *s)
 {
-    for (unsigned int i = 0; s->nodes && i < SN0_MAX_CPUS_PER_NODE; i++) {
-        if (s->nodes[0]->cpu[i]) {
-            return s->nodes[0]->cpu[i];
+    for (unsigned int i = 0; s->num_nodes && i < SGI_SN1_NODE_MAX_CPUS; i++) {
+        MIPSCPU *cpu = sgi_machine_node_cpu(s, 0, i);
+
+        if (cpu) {
+            return cpu;
         }
     }
     return NULL;
@@ -12028,8 +12046,8 @@ static void sgi_machine_set_x_cpu_byte_order(Object *obj, const char *value,
     bool big;
 
     if (!first || !phase_check(PHASE_MACHINE_READY)) {
-        error_setg(errp, "x-cpu-byte-order needs a running IP27 machine "
-                   "(origin200, origin2000 or onyx2)");
+        error_setg(errp, "x-cpu-byte-order needs a running machine with "
+                   "processors");
         return;
     }
     if (!strcmp(value, "big")) {
@@ -12751,7 +12769,8 @@ static void sgi_machine_class_init(ObjectClass *oc, const void *data)
         "Not hardware: big or little, the CPUs' byte order. Setting the "
         "other one with qom-set, running or stopped, resets only the CPUs, "
         "which come up in it a moment later, at "
-        "x-restart-entry; Hub, Bridge and RAM keep their state. No guest "
+        "x-restart-entry; the Hub or Bedrock, the bridges and RAM keep "
+        "their state. No guest "
         "register triggers it. It reads big again after a machine reset.");
     object_class_property_add(oc, "x-restart-entry", "uint64", NULL,
                               sgi_machine_get_x_restart_entry,

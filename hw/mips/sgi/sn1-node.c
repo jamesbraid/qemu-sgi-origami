@@ -42,6 +42,7 @@
 #include "hw/core/cpu.h"
 #include "exec/cpu-common.h"
 #include "exec/cpu-interrupt.h"
+#include "exec/tb-flush.h"
 #include "hw/core/qdev-clock.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/core/split-irq.h"
@@ -1020,6 +1021,28 @@ void sn1_node_reset_cpus(SN1NodeState *node)
     for (i = 0; i < node->nr_cpus; i++) {
         cpu_reset(CPU(node->cpu[i]));
     }
+    /* A reset may have changed the byte order the blocks were made in. */
+    if (node->nr_cpus) {
+        queue_tb_flush(CPU(node->cpu[0]));
+    }
+}
+
+/* Release processors reset on their own and re-drive their lines. BQL held. */
+void sn1_node_resync_cpus(SN1NodeState *node)
+{
+    if (sn1_node_powered(node)) {
+        /* This start replaces one still owed, which would reset them again. */
+        node->start_owed = 0;
+    }
+    for (unsigned int i = 0; i < node->nr_cpus && sn1_node_powered(node);
+         i++) {
+        CPUState *cs = CPU(node->cpu[i]);
+
+        cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
+        cs->halted = false;
+        qemu_cpu_kick(cs);
+    }
+    sgi_bedrock_resync_cpus(SGI_BEDROCK(node->bedrock));
 }
 
 /* What a processor needs before it fetches its reset vector. */
@@ -1114,6 +1137,7 @@ static void sn1_node_cpu_power_off(CPUState *cs, run_on_cpu_data data)
     sn1_node_test_stop_delay(node);
     if (!sn1_node_powered(node)) {
         cpu_reset(cs);
+        queue_tb_flush(cs);
         cs->halted = 1;
         cs->exception_index = EXCP_HLT;
     }
@@ -1225,6 +1249,7 @@ static void sn1_node_cpu_power_on(CPUState *cs, run_on_cpu_data data)
     node->start_owed &= ~bit;
     if (sn1_node_powered(node)) {
         cpu_reset(cs);
+        queue_tb_flush(cs);
         cpu_reset_interrupt(cs, CPU_INTERRUPT_HALT);
         cs->halted = 0;
     }
@@ -2657,6 +2682,7 @@ static void sn1_node_cpu_restart_stop(CPUState *cs, run_on_cpu_data data)
         return;
     }
     cpu_reset(cs);
+    queue_tb_flush(cs);
     cs->halted = 1;
     cs->exception_index = EXCP_HLT;
     if (node->stop_pending && !--node->stop_pending) {

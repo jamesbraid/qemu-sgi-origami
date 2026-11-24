@@ -318,6 +318,8 @@ SGINetPacketResult sgi_bedrock_vector_send(SGIBedrockState *s,
  * also store it.
  */
 void sgi_bedrock_hold_reset(SGIBedrockState *s);
+/* Re-drive the interrupt lines of processors reset without the Bedrock. */
+void sgi_bedrock_resync_cpus(SGIBedrockState *s);
 
 /*
  * Re-evaluate every node's real-time counters after a local block clock

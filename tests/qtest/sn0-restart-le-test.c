@@ -333,24 +333,6 @@ static void test_refusals(void)
     qtest_quit(qts);
 }
 
-/* Only the IP27 machines have the option; an Origin 300 refuses it. */
-static void test_not_ip27(void)
-{
-    g_autofree char *image = NULL;
-    QTestState *qts;
-    int fd = g_file_open_tmp("sn0-restart-le-XXXXXX", &image, NULL);
-
-    g_assert_cmpint(fd, >=, 0);
-    g_assert_cmpint(ftruncate(fd, PROM_SIZE), ==, 0);
-    close(fd);
-    qts = qtest_initf("-M origin300 -cpu R14000 -bios %s -accel tcg", image);
-    unlink(image);
-    qobject_unref(qtest_qmp_assert_failure_ref(
-        qts, "{'execute': 'qom-set', 'arguments': {'path': '/machine', "
-        "'property': 'x-cpu-byte-order', 'value': 'little'}}"));
-    qtest_quit(qts);
-}
-
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -361,6 +343,5 @@ int main(int argc, char **argv)
     qtest_add_func("/mips64/sn0/restart-le/reset-vector", test_reset_vector);
     qtest_add_func("/mips64/sn0/restart-le/snapshot-load", test_snapshot_load);
     qtest_add_func("/mips64/sn0/restart-le/refusals", test_refusals);
-    qtest_add_func("/mips64/sn0/restart-le/not-ip27", test_not_ip27);
     return g_test_run();
 }

@@ -1381,6 +1381,7 @@ tests/qtest/sn1-option-intx-fixture.c
 tests/qtest/sn1-option-tigon-test.c
 tests/qtest/sn1-pi-polled-read-test.c
 tests/qtest/sn1-pio-forward-test.c
+tests/qtest/sn1-restart-le-test.c
 tests/unit/test-sgi-egl-display.c
 tests/unit/test-sgi-head-guard.c
 tests/unit/test-sgi-machine-init.c

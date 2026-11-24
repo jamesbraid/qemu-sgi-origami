@@ -918,6 +918,14 @@ Every machine boots the stock IP35 PROM, :src:`ip35-prom-6.210`, from the
 line, the first ``-serial``. The next four serial lines are the IOC4
 ports.
 
+.. _sgi-ip53-cpu-byte-order:
+
+Changing the processors' byte order
+===================================
+
+The IP53 machines take ``x-cpu-byte-order`` and ``x-restart-entry`` as the
+other Bedrock machines do; :ref:`sgi-ip35-cpu-byte-order` describes them.
+
 .. _sgi-ip53-running:
 
 Running
