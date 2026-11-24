@@ -786,6 +786,48 @@ These are emulator choices for launchers, not hardware facts.
   this board. Supported guest ``irix``; default CPU model R10000 or
   R12000.
 
+.. _sgi-ip30-cpu-byte-order:
+
+Changing the processor's byte order
+-----------------------------------
+
+An R10000 or R12000 takes its byte order from bit 15 of the mode bits it
+loads at power-on or cold reset, and a soft reset keeps them, so a
+running processor cannot change it (*established*,
+:src:`r10000-users-manual-2.0 p. 160-165`,
+:src:`r10000-users-manual-2.0 p. 256`). Which agent drives the mode word
+on IP30, and where it takes the byte order from, is *unknown*; HEART's
+status bit 8, which Linux names big-endian, reads set
+(:ref:`sgi-heart-identity`). The stock PROM runs big-endian, which leaves
+a guest that needs a little-endian processor, such as Windows NT for MIPS,
+without a way in.
+
+``octane`` and ``octane2`` take the same two emulator-only properties as
+the Origin machines, with the same meaning and the same *approximation*,
+described in :ref:`sgi-ip27-cpu-byte-order`. ``x-cpu-byte-order`` reads
+``big`` or ``little`` from Config bit 15 and restarts the processor in the
+other order when set with ``qom-set``, running or stopped.
+``x-restart-entry``, a word-aligned physical address below 512 MiB, is
+where it starts, through KSEG0; with 0 it takes the reset vector in the
+flash. HEART, the Bridge and RAM keep their state, and the restart drives
+HEART's held interrupt lines into the processor again. HEART's status bit
+8 stays set after a restart; what hardware would show is *unknown*. A
+machine reset brings the processor back big-endian. A restarted machine
+can be saved: the byte order travels in Config, so a loaded snapshot runs
+in the order it saved. The entry address is
+in RAM, which on an Octane below 512 MiB means the 16 KiB alias or the
+bank wrap (:ref:`sgi-heart-bank-wrap`), also an *approximation*.
+
+The discriminating test is ``tests/qtest/octane-restart-le-test.c``. A
+big-endian stub in flash reads Config bit 15 as set, Cause and a stored
+word. After a restart into a stub the harness put in wrapped RAM at
+``0x600000``, the stub reads Config bit 15 clear, HEART's pending
+interrupt in Cause, and stores the same word with its bytes reversed. A
+restart without an entry runs the flash stub in the new order, a machine
+reset runs the big-endian stub again, a little-endian snapshot loads into
+a process that ran big-endian at the same address, and bad values are
+refused.
+
 .. _sgi-ip30-graphics:
 
 Graphics

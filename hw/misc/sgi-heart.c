@@ -202,6 +202,11 @@ static void heart_update_irq(SGIHeartState *s)
     }
 }
 
+void sgi_heart_resync_cpu(SGIHeartState *s)
+{
+    heart_update_irq(s);
+}
+
 static MemTxResult heart_widget_read(void *opaque, hwaddr offset,
                                      uint64_t *value, unsigned size,
                                      MemTxAttrs attrs)

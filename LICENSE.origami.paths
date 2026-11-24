@@ -1018,6 +1018,7 @@ tests/qtest/sgi-pic-test.c
 tests/qtest/sgi-prom-container.h
 tests/qtest/sgi-rad1-pci-test.c
 tests/qtest/sgi-replay-test.c
+tests/qtest/sgi-restart-le.h
 tests/qtest/sgi-scsi-inquiry-test.h
 tests/qtest/sgi-shub-test.c
 tests/qtest/sgi-sonic-hdsp-image.h
@@ -1347,6 +1348,7 @@ tests/qtest/fixtures/sgi-mace-audio.c
 tests/qtest/fixtures/sgi-mace-i2c.c
 tests/qtest/fixtures/sgi-mace-video.c
 tests/qtest/fixtures/sgi-xio-test-target.c
+tests/qtest/octane-restart-le-test.c
 tests/qtest/octane-timer-test.c
 tests/qtest/sgi-catalogue-launch-test.c
 tests/qtest/sgi-crime-error-test.c

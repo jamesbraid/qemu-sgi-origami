@@ -1689,7 +1689,8 @@ stays halted until its enable is set. Restarting the processors alone is
 an *approximation*: hardware loads the mode bits only at power-on or cold
 reset, which restarts more than the processors. The restart is the CPU
 model's cold reset, so the TLB, Cause and the timer start afresh. The
-machines of :ref:`sgi-ip35-cpu-byte-order` accept the property too.
+machines of :ref:`sgi-ip35-cpu-byte-order` and the Octane
+(:ref:`sgi-ip30-cpu-byte-order`) accept the properties too.
 
 ``x-restart-entry`` is the physical address where the restarted
 processors start, word-aligned and below 512 MiB, taken through KSEG0. Each

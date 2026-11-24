@@ -692,7 +692,7 @@ sgi_qtests = \
     ['sgi-heart-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') ?
     ['sgi-heart-cpu-test', 'r10000-identity-test', 'ics1890-test',
-     'octane-timer-test'] : []) + \
+     'octane-timer-test', 'octane-restart-le-test'] : []) + \
   (config_all_devices.has_key('CONFIG_SGI_OCTANE') and
    config_all_devices.has_key('CONFIG_MEMORY_TRANSACTION_TEST') ?
     ['octane-test', 'octane-mgras-test', 'octane-pci-boards-test',

@@ -41,6 +41,7 @@
 #include "system/blockdev.h"
 #include "hw/block/flash.h"
 #include "target/mips/cpu.h"
+#include "exec/tb-flush.h"
 #include "hw/mips/sgi/initial-flash.h"
 #include "hw/mips/sgi/sgi-board-cdrom.h"
 #include "hw/mips/sgi/sgi-board-mac.h"
@@ -116,8 +117,9 @@ typedef struct OctaneMachineState {
     MemoryRegion xio_long[OCTANE_XIO_WIDGETS];
     MemoryRegion xio_mid[OCTANE_XIO_WIDGETS];
     bool uncatalogued_graphics;
-    /* x-heart-bank-wrap: see docs hardware/heart.rst. */
+    /* x-heart-bank-wrap, and x-restart-entry (see sgi_cpu_restart()). */
     bool heart_bank_wrap;
+    uint64_t restart_entry;
     SGIGraphicsPipes pipes;
     Notifier machine_done;
     /* Catalogue storage item name -> the block node or drive it binds. */
@@ -396,6 +398,8 @@ static void octane_reset(MachineState *machine, ResetType type)
     CPU_FOREACH(cpu) {
         cpu_reset(cpu);
     }
+    /* A restart or a snapshot load (a reset first) moves Config0.BE. */
+    queue_tb_flush(first_cpu);
 }
 
 /* IRIX takes the host id from the last four bytes of the station address. */
@@ -1027,6 +1031,53 @@ static void octane_set_heart_bank_wrap(Object *obj, bool value, Error **errp)
     ((OctaneMachineState *)obj)->heart_bank_wrap = value;
 }
 
+/* The CPU reset dropped the lines HEART holds into it. */
+static void octane_restart_resync(void *opaque)
+{
+    sgi_heart_resync_cpu(SGI_HEART(object_resolve_path_component(
+        OBJECT(opaque), "heart")));
+}
+
+static char *octane_get_x_cpu_byte_order(Object *obj, Error **errp)
+{
+    return g_strdup(sgi_cpu_byte_order(first_cpu));
+}
+
+static void octane_set_x_cpu_byte_order(Object *obj, const char *value,
+                                        Error **errp)
+{
+    OctaneMachineState *s = (OctaneMachineState *)obj;
+
+    if (!first_cpu || !phase_check(PHASE_MACHINE_READY)) {
+        error_setg(errp, "x-cpu-byte-order needs a running octane or "
+                   "octane2");
+        return;
+    }
+    sgi_cpu_restart(first_cpu, value, s->restart_entry,
+                    octane_restart_resync, s, errp);
+}
+
+static void octane_get_x_restart_entry(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    uint64_t value = ((OctaneMachineState *)obj)->restart_entry;
+
+    visit_type_uint64(v, name, &value, errp);
+}
+
+static void octane_set_x_restart_entry(Object *obj, Visitor *v,
+                                       const char *name, void *opaque,
+                                       Error **errp)
+{
+    uint64_t value;
+
+    if (visit_type_uint64(v, name, &value, errp) &&
+        sgi_cpu_restart_entry_valid(value, errp)) {
+        ((OctaneMachineState *)obj)->restart_entry = value;
+    }
+}
+
 static const HotplugHandler *octane_get_hotplug_handler(MachineState *machine,
                                                         DeviceState *dev)
 {
@@ -1283,6 +1334,22 @@ static void octane_class_add_properties(ObjectClass *oc, const char *product)
         "descriptor base of 0x1f0 to 0x1ff places RAM at 0 to 480 MiB, "
         "where Windows NT for MIPS needs it. Off by default; off, such a "
         "bank lands above 16 GiB and nothing answers at 0x600000.");
+    object_class_property_add_str(oc, "x-cpu-byte-order",
+                                  octane_get_x_cpu_byte_order,
+                                  octane_set_x_cpu_byte_order);
+    object_class_property_set_description(oc, "x-cpu-byte-order",
+        "Not hardware: big or little, the CPU's byte order. Setting the "
+        "other one with qom-set, running or stopped, resets only the CPU, "
+        "which comes up in it a moment later, at x-restart-entry; HEART, "
+        "the Bridge and RAM keep their state. No guest register triggers "
+        "it. It reads big again after a machine reset.");
+    object_class_property_add(oc, "x-restart-entry", "uint64", NULL,
+                              octane_get_x_restart_entry,
+                              octane_set_x_restart_entry, NULL, NULL);
+    object_class_property_set_description(oc, "x-restart-entry",
+        "Not hardware: the physical RAM address (word-aligned, below "
+        "512 MiB) where an x-cpu-byte-order change starts the CPU, through "
+        "KSEG0. 0, the default, starts it at the reset vector.");
     for (uintptr_t bank = 0; bank < HEART_BANKS; bank++) {
         g_autofree char *name = g_strdup_printf("bank%u-size",
                                                 (unsigned)bank);

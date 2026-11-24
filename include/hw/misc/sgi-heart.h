@@ -98,4 +98,7 @@ struct SGIHeartState {
     bool onewire_busy;
 };
 
+/* Drive the processor lines again, after a CPU reset dropped them. */
+void sgi_heart_resync_cpu(SGIHeartState *s);
+
 #endif

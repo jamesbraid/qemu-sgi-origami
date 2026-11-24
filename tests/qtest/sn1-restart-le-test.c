@@ -6,14 +6,12 @@
  */
 
 #include "qemu/osdep.h"
-#include "qemu/bswap.h"
 #include "libqtest.h"
-#include "sgi-mips-emit.h"
 #include "sgi-test.h"
-#include "sgi-wait.h"
 
 #define IP53_PROM_SIZE  (16 * 1024 * 1024)
 #define MAILBOX_PHYS    0x200c00u
+#define MAILBOX_KSEG_HI 0x8020
 #define LE_RAM_ENTRY    0x300000u
 #define BE_ENTRY        0x4000
 #define LE_FLASH_ENTRY  0x400
@@ -32,53 +30,10 @@
 #define MD_ORIGIN300    UINT64_C(0x33)
 #define MD_IP53         UINT64_C(0x53)
 
-#define R_ZERO          0
-#define R_T0            8
-#define R_T1            9
-#define R_T2            10
+#include "sgi-restart-le.h"
+
 #define R_T3            11
 #define R_T4            12
-#define R_S6            22
-#define OP_LL           0x30
-#define OP_SC           0x38
-
-/* Each stub owns a block of mailbox words at MAILBOX_PHYS. */
-#define BE_BASE         0x00
-#define LE_BASE         0x20
-#define W_CONFIG0       0x00
-#define W_STORED        0x04
-#define W_LOADED        0x08
-#define W_MARKER        0x0c
-#define W_COUNT         0x10
-#define W_CAUSE         0x14
-
-#define BE_DONE         0xbe5b1001u
-#define LE_DONE         0x1e5b2002u
-#define CONFIG0_BE      (1u << 15)
-#define WORD            0x11223344u
-
-typedef struct Code {
-    uint8_t *b;
-    unsigned int pos;
-    bool be;
-    uint64_t md_config;
-} Code;
-
-static void emit(Code *c, uint32_t w)
-{
-    if (c->be) {
-        stl_be_p(c->b + c->pos, w);
-    } else {
-        stl_le_p(c->b + c->pos, w);
-    }
-    c->pos += 4;
-}
-
-static void li32(Code *c, int rt, uint32_t v)
-{
-    emit(c, mips_lui(rt, v >> 16));
-    emit(c, mips_ori(rt, rt, v & 0xffff));
-}
 
 static void emit_configure_memory(Code *c)
 {
@@ -118,58 +73,22 @@ static const Machine origin350 = {
     true
 };
 
-/*
- * Record Config0, Cause and a stored word, count with ll/sc, set a marker. A
- * big-endian stub enables the banks first; a reversed Bedrock write kills them.
- */
-static void emit_stub(Code *c, unsigned int base, uint32_t done, bool count)
-{
-    unsigned int retry;
-
-    if (c->be) {
-        emit_configure_memory(c);
-    }
-
-    emit(c, mips_lui(R_S6, 0x8020));
-    emit(c, mips_mfc0(R_T0, 16));
-    emit(c, mips_sw(R_T0, R_S6, 0xc00 + base + W_CONFIG0));
-    emit(c, mips_mfc0(R_T0, 13));
-    emit(c, mips_sw(R_T0, R_S6, 0xc00 + base + W_CAUSE));
-    li32(c, R_T1, WORD);
-    emit(c, mips_sw(R_T1, R_S6, 0xc00 + base + W_STORED));
-    emit(c, mips_lw(R_T2, R_S6, 0xc00 + base + W_STORED));
-    emit(c, mips_sw(R_T2, R_S6, 0xc00 + base + W_LOADED));
-    if (count) {
-        retry = c->pos;
-        emit(c, mips_itype(OP_LL, R_S6, R_T0, 0xc00 + base + W_COUNT));
-        emit(c, mips_addiu(R_T0, R_T0, 1));
-        emit(c, mips_itype(OP_SC, R_S6, R_T0, 0xc00 + base + W_COUNT));
-        emit(c, mips_branch(MIPS_OPC_BEQ, R_T0, R_ZERO,
-                            ((int)retry - (int)(c->pos + 4)) / 4));
-        emit(c, mips_nop());
-    }
-    li32(c, R_T0, done);
-    emit(c, mips_sw(R_T0, R_S6, 0xc00 + base + W_MARKER));
-    emit(c, mips_branch(MIPS_OPC_BEQ, R_ZERO, R_ZERO, -1));
-    emit(c, mips_nop());
-}
-
 /* Word 0 branches to a different stub in each byte order. */
 static void build_image(uint8_t *img, const Machine *m, bool le_in_flash)
 {
     Code c = { .b = img, .pos = BE_ENTRY, .be = true,
-               .md_config = m->md_config };
+               .prologue = emit_configure_memory, .md_config = m->md_config };
 
     memset(img, 0, m->prom_size);
     stl_be_p(img, 0x10210010);
     stl_be_p(img + 0x44, 0x10000000 | (uint16_t)((BE_ENTRY - 0x44 - 4) / 4));
     stl_le_p(img + LE_DISPATCH, 0x10000000 |
              (uint16_t)((LE_FLASH_ENTRY - LE_DISPATCH - 4) / 4));
-    emit_stub(&c, BE_BASE, BE_DONE, false);
+    emit_stub(&c, BE_BASE, BE_DONE, STUB_CAUSE);
     if (le_in_flash) {
         c.pos = LE_FLASH_ENTRY;
         c.be = false;
-        emit_stub(&c, LE_BASE, LE_DONE, true);
+        emit_stub(&c, LE_BASE, LE_DONE, STUB_CAUSE | STUB_COUNT);
     }
 }
 
@@ -224,80 +143,6 @@ static void cont(QTestState *qts)
     qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
 }
 
-static uint32_t mailbox(QTestState *qts, unsigned int off, bool be)
-{
-    uint8_t raw[4];
-
-    qtest_memread(qts, MAILBOX_PHYS + off, raw, 4);
-    return be ? ldl_be_p(raw) : ldl_le_p(raw);
-}
-
-static void wait_mailbox(QTestState *qts, unsigned int off, uint32_t want,
-                         bool be)
-{
-    SgiWait w;
-
-    sgi_wait_start(&w, "mailbox 0x%x", off);
-    while (mailbox(qts, off, be) != want && sgi_wait_continue(&w, 5000)) {
-        /* poll */
-    }
-    g_assert_cmphex(mailbox(qts, off, be), ==, want);
-}
-
-static void set_order(QTestState *qts, const char *order)
-{
-    qtest_qmp_assert_success(qts, "{'execute': 'qom-set', 'arguments': "
-                             "{'path': '/machine', 'property': "
-                             "'x-cpu-byte-order', 'value': %s}}", order);
-}
-
-/* Stop, change the byte order and resume, as the harness does. */
-static void restart(QTestState *qts, bool with_entry)
-{
-    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
-    if (with_entry) {
-        qtest_qmp_assert_success(qts, "{'execute': 'qom-set', 'arguments': "
-                                 "{'path': '/machine', 'property': "
-                                 "'x-restart-entry', 'value': %u}}",
-                                 LE_RAM_ENTRY);
-    }
-    set_order(qts, "little");
-    cont(qts);
-}
-
-static bool order_is(QTestState *qts, const char *want)
-{
-    QDict *rsp = qtest_qmp(
-        qts, "{'execute': 'qom-get', 'arguments': {'path': '/machine', "
-        "'property': 'x-cpu-byte-order'}}");
-    bool same = !strcmp(qdict_get_str(rsp, "return"), want);
-
-    qobject_unref(rsp);
-    return same;
-}
-
-/* A stub ran in this order: Config0.BE, and the word's bytes in RAM. */
-static void check_order(QTestState *qts, bool be, unsigned int cpus)
-{
-    unsigned int base = be ? BE_BASE : LE_BASE;
-    uint8_t raw[4], want[4];
-
-    if (cpus) {
-        wait_mailbox(qts, base + W_COUNT, cpus, false);
-    }
-    wait_mailbox(qts, base + W_MARKER, be ? BE_DONE : LE_DONE, be);
-    g_assert_cmphex(mailbox(qts, base + W_CONFIG0, be) & CONFIG0_BE, ==,
-                    be ? CONFIG0_BE : 0);
-    if (be) {
-        stl_be_p(want, WORD);
-    } else {
-        stl_le_p(want, WORD);
-    }
-    qtest_memread(qts, MAILBOX_PHYS + base + W_STORED, raw, 4);
-    g_assert_cmpmem(raw, 4, want, 4);
-    g_assert_cmphex(mailbox(qts, base + W_LOADED, be), ==, WORD);
-}
-
 /* Config0.BE of CPU @cpu, from the monitor's register dump. */
 static bool cpu_is_big(QTestState *qts, unsigned int cpu)
 {
@@ -317,9 +162,9 @@ static bool cpu_is_big(QTestState *qts, unsigned int cpu)
 static void put_le_stub(QTestState *qts)
 {
     uint8_t stub[0x100] = { };
-    Code c = { .b = stub, .md_config = 0 };
+    Code c = { .b = stub };
 
-    emit_stub(&c, LE_BASE, LE_DONE, true);
+    emit_stub(&c, LE_BASE, LE_DONE, STUB_CAUSE | STUB_COUNT);
     qtest_memwrite(qts, LE_RAM_ENTRY, stub, c.pos);
 }
 
@@ -346,7 +191,7 @@ static void test_entry(const void *data)
     cause = mailbox(qts, BE_BASE + W_CAUSE, true) & CAUSE_IP_MASK;
     g_assert_cmphex(cause, !=, 0);
 
-    restart(qts, true);
+    restart(qts, LE_RAM_ENTRY);
     check_little_endian(qts, m->cpus);
     g_assert_true(order_is(qts, "little"));
     g_assert_cmphex(mailbox(qts, LE_BASE + W_CAUSE, false) & CAUSE_IP_MASK,
@@ -374,10 +219,10 @@ static void test_reset_vector(void)
 
     cont(qts);
     check_big_endian(qts);
-    restart(qts, false);
+    restart(qts, 0);
     check_little_endian(qts, 2);
     reset_to_big(qts, true);
-    restart(qts, false);
+    restart(qts, 0);
     check_little_endian(qts, 2);
     reset_to_big(qts, false);
     qtest_quit(qts);
@@ -390,7 +235,7 @@ static void test_node_restart(void)
 
     cont(qts);
     check_big_endian(qts);
-    restart(qts, false);
+    restart(qts, 0);
     check_little_endian(qts, 2);
     for (unsigned int cpu = 0; cpu < 4; cpu++) {
         g_assert_false(cpu_is_big(qts, cpu));
