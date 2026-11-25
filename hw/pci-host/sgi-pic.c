@@ -333,6 +333,9 @@ static const PropertyInfo qdev_prop_sgi_pic_profile = {
 
 #define REG(s, off) ((s)->reg[(off) / 8])
 
+/* Pin word: vector in bits 55:48, address in 47:0, bits 63:56 unused. */
+#define PIC_PIN_VECTOR(word) (((word) >> 48) & 0xff)
+
 static uint32_t pic_widget_identity(const SGIPICHead *s)
 {
     uint32_t part = s->head ? 0xd112 : 0xd102;
@@ -1242,7 +1245,7 @@ static bool pic_access_valid(void *opaque, hwaddr addr, unsigned size,
 static bool pic_packet(SGIPICHead *s, unsigned pin, bool set)
 {
     uint64_t destination = REG(s, 0x130 + pin * 8);
-    uint16_t level = destination >> 48;
+    unsigned level = PIC_PIN_VECTOR(destination);
     hwaddr address = destination & ((1ULL << 48) - 1);
     unsigned widget = (destination >> 44) & 15;
     hwaddr offset = destination & ((1ULL << 44) - 1);
@@ -1316,7 +1319,7 @@ static void pic_update_level_source(SGIPICHead *s, unsigned pin,
                                     bool packet_delivered)
 {
     uint64_t destination = REG(s, 0x130 + pin * 8);
-    unsigned level = destination >> 48;
+    unsigned level = PIC_PIN_VECTOR(destination);
     unsigned pi_index = (destination & (UINT64_C(1) << 21)) ? 1 : 0;
     bool active = packet_delivered && (s->pins & (1U << pin)) &&
                   (REG(s, 0x108) & (1U << pin)) &&
@@ -1936,7 +1939,7 @@ static bool pic_error_destination(SGIPICHead *head, hwaddr *address)
     uint64_t upper = REG(head, 0x30);
     uint64_t upper_addr = upper & 0xffff;
     uint64_t lower = REG(head, 0x38);
-    uint64_t lower_hi = lower >> 32;
+    uint64_t lower_hi = (lower >> 32) & 0xffff;
 
     if (upper >> 32) {
         qemu_log_mask(LOG_GUEST_ERROR,
@@ -1945,10 +1948,11 @@ static bool pic_error_destination(SGIPICHead *head, hwaddr *address)
                       head->head, upper);
         return false;
     }
-    if (lower >> 48) {
+    /* Bits 51:48 are the target widget; routing uses the address alone. */
+    if (lower >> 52) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u error destination lower 0x%016"
-                      PRIx64 " exceeds 48 bits\n", head->head, lower);
+                      PRIx64 " has reserved high bits\n", head->head, lower);
         return false;
     }
     if (upper_addr && lower_hi && upper_addr != lower_hi) {
@@ -1959,7 +1963,8 @@ static bool pic_error_destination(SGIPICHead *head, hwaddr *address)
                       head->head, upper_addr, lower);
         return false;
     }
-    *address = lower_hi ? lower : (upper_addr << 32) | (uint32_t)lower;
+    *address = lower_hi ? lower & (BIT_ULL(48) - 1) :
+                          (upper_addr << 32) | (uint32_t)lower;
     if (!*address) {
         qemu_log_mask(LOG_GUEST_ERROR,
                       "sgi-pic: head %u error destination is zero\n",

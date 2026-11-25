@@ -1091,7 +1091,7 @@ PIO, DMA and interrupt packet crosses the crossbar: no PIC has a direct
 Bedrock peer. Each packet enters at its PIC's port and reaches the
 Bedrock as a packet from that widget, so the Bedrock's inbound access
 register governs it per PIC. Interrupt packets go to the host port the
-cable meets, with the level in destination bits 63:48.
+cable meets, with the vector in destination bits 55:48.
 
 All six heads run ``pic-rev3-enclosure-experimental``: the PIC register
 layout at revision 3, configuration device 0 reserved, the direct 32-bit

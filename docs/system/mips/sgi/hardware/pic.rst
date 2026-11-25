@@ -236,13 +236,15 @@ processor view's 32-bit word view also reaches the slot.
      - 64, +4
      - ``0``
      - read/write
-     - Used only by the link-error interrupt.
+     - Used only by the link-error interrupt. See
+       :ref:`sgi-pic-error-interrupt`.
    * - ``0x038``
      - Interrupt destination, lower
      - 64, +4
      - ``0``
      - read/write
-     - Used only by the link-error interrupt.
+     - Used only by the link-error interrupt. Target widget in bits 51:48,
+       address in bits 47:0.
    * - ``0x050``
      - Widget flush
      - 64
@@ -308,7 +310,8 @@ processor view's 32-bit word view also reaches the slot.
      - 64, +4
      - ``0``
      - read/write
-     - Level in bits 63:48, address in bits 47:0.
+     - Vector (Bedrock level) in bits 55:48, address in bits 47:0.
+       Bits 63:56 are stored and ignored.
    * - ``0x180``-``0x1b8``
      - Force always 0-7
      - 64, +4
@@ -772,9 +775,13 @@ and pending sends one set packet. Changing mode or destination sends
 nothing. OpenBSD clears PIC error bits by writing them to ``0x110``, a
 *software expectation* that agrees.
 
-A destination register holds the Bedrock interrupt level in bits 63:48
-and the target address in bits 47:0, following the Linux IP35 port, a
-*software expectation*. The head writes an eight-byte big-endian packet
+A destination register holds the Bedrock interrupt level (the vector) in
+bits 55:48 and the target address in bits 47:0, a *software expectation*.
+IRIX 6.5.30 sets the two fields with separate read-modify-writes and
+never writes bits 63:56. SGI's Linux 2.4 stores the whole word with bits
+63:56 zero. SGI's Linux 5.3 retargets only bits 47:0. No software that
+we hold reads bits 63:56, so the model stores them and ignores them;
+what the chip does with them is *unknown*. The head writes an eight-byte big-endian packet
 to that address: ``0x100 | level`` to set, ``level`` to clear. Levels
 outside 7 to 127 are refused with ``LOG_GUEST_ERROR`` before any packet
 is sent. The Linux IP35 port allocates levels above 6, a *software
@@ -855,20 +862,31 @@ sends one set packet, even while the status bit stays set. Enabling bit
 24 later does not replay an earlier error; writing bit 24 to ``0x110``
 clears it. The packet carries ``0x100 | n``, where *n* is the host-error
 field at ``0x128``; values above 127 are refused and logged. The
-destination comes from the widget destination pair, upper at ``0x30``
-and lower at ``0x38``:
+destination comes from the widget destination registers at ``0x30`` and
+``0x38``. Software disagrees on their layout. The stock IP35 PROM and
+SGI's Linux 2.4 treat them as a pair of 32-bit registers: upper at
+``0x30`` (stores land at ``+0x34``) with address bits 47:32 in bits 15:0,
+and lower at ``0x38`` (stores land at ``+0x3c``) with address bits 31:0.
+IRIX 6.5.30 treats ``0x38`` as one 64-bit register with the target widget
+in bits 51:48 and the address in bits 47:0. Which one the chip implements
+is *unknown*. The model follows IRIX for the target field, a *software
+expectation*, and still accepts the pair form because the stock PROM
+uses it:
 
-- If the lower word uses bits 47:32, the address is the lower word, when
-  the upper word's bits 15:0 are zero or equal to those bits.
-- If the lower word uses only bits 31:0, the address is the upper word's
-  bits 15:0 above the lower 32 bits.
-- Conflicting high fields, lower-word bits above 47, upper-word bits
-  above 31 and a zero address are refused with ``LOG_GUEST_ERROR``. The
-  status bit stays set.
+- If the lower word's bits 47:32 are nonzero, the address is its bits
+  47:0, when the upper word's bits 15:0 are zero or equal to those bits.
+- If the lower word's bits 47:32 are zero, the address is the upper
+  word's bits 15:0 above the lower 32 bits.
+- Lower-word bits 51:48 hold the target widget. The model stores them and
+  routes by the address alone, an *approximation*.
+- Conflicting high fields, lower-word bits 63:52, upper-word bits above 31
+  and a zero address are refused with ``LOG_GUEST_ERROR``. The status bit
+  stays set.
 
-All of this is an *approximation* chosen for the stock PROM. Upper-word
-bits 31:16 are stored and ignored. OpenBSD puts the target widget in
-lower-word bits 63:48; the model refuses that form. Every other access at
+The pair form and the address selection are an *approximation* chosen for
+the stock PROM. Upper-word bits 31:16 are stored and ignored. OpenBSD puts
+the target widget in lower-word bits 63:48; the model accepts that form
+only for widgets 0 to 15, which fit bits 51:48. Every other access at
 ``0x78`` and ``+0x7c`` is unsupported.
 
 .. _sgi-pic-pxbow:
