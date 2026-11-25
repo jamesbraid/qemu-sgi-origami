@@ -331,6 +331,23 @@ class RunConcurrently(unittest.TestCase):
         self.assertIn('finish bad: exit 3', out.getvalue())
 
 
+class RunScriptsTests(unittest.TestCase):
+    def test_a_failure_names_its_label_and_skips_nothing(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), \
+                self.assertRaises(SystemExit) as raised:
+            sgi_check.run_scripts(
+                [('bad', [sys.executable, '-c', 'raise SystemExit(3)']),
+                 ('ok', [sys.executable, '-c', 'print("ran")'])])
+        self.assertEqual(raised.exception.code, 'failed: bad')
+        self.assertIn('ran\n', out.getvalue())
+
+    def test_all_passing_returns(self):
+        with contextlib.redirect_stdout(io.StringIO()):
+            sgi_check.run_scripts(
+                [('ok', [sys.executable, '-c', 'pass'])])
+
+
 class FakeBuild(sgi_check.Build):
     """A Build whose Meson runs are Python one-liners."""
 

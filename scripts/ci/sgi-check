@@ -137,6 +137,10 @@ BUILD_SCRIPT_SUITES = [
 # timing assertions failed at eight.
 QTEST_PROCESSES = 4
 
+# How many script suites run at once. They start beside the QEMU build,
+# so four leave most of the builders' eight CPUs to the compiler.
+SCRIPT_PROCESSES = 4
+
 # How many functional Meson invocations the full run's functional part runs
 # at once. Each boots a guest that mostly uses one CPU, and the longest
 # takes about three minutes, so four fit the eight-CPU builders without the
@@ -458,9 +462,20 @@ def rom_suite(build, logbase):
                      rom_expected(build, logbase))
 
 
+def run_scripts(commands):
+    """Run (label, command) pairs SCRIPT_PROCESSES at a time, none skipped
+    when one fails, and exit with the labels that failed."""
+    with tempfile.TemporaryDirectory() as logdir:
+        codes = run_concurrently(commands, SCRIPT_PROCESSES, logdir)
+    failed = [label for label, code in codes.items() if code]
+    if failed:
+        sys.exit('failed: ' + ', '.join(failed))
+
+
 def script_suites(suites, python):
-    for suite in suites:
-        run([python or sys.executable, '-B', SOURCE / suite])
+    run_scripts([(Path(suite).stem, [python or sys.executable, '-B',
+                                     SOURCE / suite])
+                 for suite in suites])
 
 
 def model(args):
@@ -494,9 +509,18 @@ def rust_licences(args):
 
 
 def scripts(args):
-    script_suites(SCRIPT_SUITES, args.python)
-    docs(args)
-    rust_licences(args)
+    python = args.python or sys.executable
+    # The manual build is the longest after the generator suite, so it
+    # starts second.
+    check = [python, '-B', SOURCE / 'scripts/ci/sgi-check']
+    run_scripts([
+        (Path(SCRIPT_SUITES[0]).stem,
+         [python, '-B', SOURCE / SCRIPT_SUITES[0]]),
+        ('docs', [*check, 'docs', '--python', python]),
+        *((Path(suite).stem, [python, '-B', SOURCE / suite])
+          for suite in SCRIPT_SUITES[1:]),
+        ('rust-licences', [*check, 'rust-licences', '--python', python]),
+    ])
 
 
 QTEST_MESON = 'tests/qtest/meson.build'
