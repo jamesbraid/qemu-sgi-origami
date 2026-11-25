@@ -156,7 +156,7 @@ static void test_fourth_slot_refused(void)
 
 static void test_rad4_bar2_through_big_window(void)
 {
-    QTestState *qts = qtest_init("-M origin2000,x-uncatalogued-graphics=on "
+    QTestState *qts = qtest_init("-M origin2000 "
         "-display none -device sgi-pci-carrier,slot=io2 "
         "-device psitech-rad4,bus=" CARRIER_BUS ",addr=2");
     uint64_t big = BIG_WINDOW(1) + (RAD4_BAR2_PCI - 0x20000000u);

@@ -25,7 +25,7 @@ L2_DEFAULT_OFF = {"origin3400-two-routers", "origin3800",
                   "origin3800-high-bandwidth", "origin3800-64p",
                   "origin3800-128p", "origin3800-256p"}
 EXPECTED_CATALOGUE_SHA256 = (
-    "b6a33e311b5fb134e63345ded8bd9eb5e9040e41b39f353efa290c2da623b56d"
+    "08f2ab51e5a9aeef3fcf512fc9c9496c1222b40cae3baf8bf153bb54e6cb0db4"
 )
 
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -399,6 +399,15 @@ class GraphicsPipeTests(unittest.TestCase):
                  self.topology("origin2000-rack")["graphics"]["slots"]}
         self.assertNotIn("requires", slots["io3"])
         self.assertEqual(slots["io12"]["requires"], {"min-nodes": 2})
+
+    def test_carrier_slots_need_the_carrier(self):
+        for name in ("origin2000-rack", "origin2000-deskside"):
+            slots = {slot["name"]: slot for slot in
+                     self.topology(name)["graphics"]["slots"]}
+            for number in range(3):
+                self.assertEqual(slots[f"io2-pci-{number}"]["requires-board"],
+                                 {"product": "pci-carrier", "slot": "io2"})
+            self.assertNotIn("requires-board", slots["io3"])
 
     def test_requires_board_is_checked(self):
         pci = {"bus": "io2.0", "addr": "0"}

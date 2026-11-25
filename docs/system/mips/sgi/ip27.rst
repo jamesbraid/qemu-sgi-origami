@@ -1828,9 +1828,11 @@ the topology's catalogue record before it realizes
      - every IMPACT product at ``io6``; RAD4 as above
    * - ``origin2000-rack``, ``origin2000-deskside``
      - every empty XIO slot, ``io2`` to ``io12``; ``io7`` up from two
-       nodes
+       nodes. ``io2-pci-0`` to ``io2-pci-2``: ``bus=io2.0,addr=0`` to
+       ``2``, on a PCI Carrier Assembly fitted at ``io2``
      - none
-     - every IMPACT product
+     - every IMPACT product at the XIO slots; RAD4-KM and RAD4 at the
+       carrier
    * - ``onyx2-deskside``
      - ``io4``, widget 8
      - ``ir2``: GE14-4, two RM7, ``dg5-8``

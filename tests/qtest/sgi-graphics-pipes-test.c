@@ -223,6 +223,27 @@ static QDict *product_record(QDict *slot, const char *family,
            NULL;
 }
 
+/* The -device that fits the board @slot's requires-board names, or "". */
+static char *board_for(const char *topology, QDict *slot)
+{
+    QDict *need = qobject_to(QDict, qdict_get(slot, "requires-board"));
+    QDict *board, *product;
+
+    if (!need) {
+        return g_strdup("");
+    }
+    board = find(qdict_get_qlist(topology_record(topology), "board-slots"),
+                 "name", qdict_get_str(need, "slot"));
+    g_assert_nonnull(board);
+    product = find(qdict_get_qlist(board, "products"), "product",
+                   qdict_get_str(need, "product"));
+    g_assert_nonnull(product);
+    return g_strdup_printf("-device %s,slot=%s,id=%s ",
+                           qdict_get_str(product, "device"),
+                           qdict_get_str(need, "slot"),
+                           qdict_get_str(need, "slot"));
+}
+
 /* "slot=io4" or "bus=pci,addr=5": how -device names @slot. */
 static char *placement(QDict *slot)
 {
@@ -502,6 +523,26 @@ static void test_catalogue_records(void)
 
         g_assert_cmpstr(where, ==, "bus=pci,addr=6");
     }
+    /* The Origin 2000's PCI carrier: both are the guide's pairings. */
+    {
+        QDict *carrier = slot_record("origin2000-rack", "io2-pci-1");
+        QDict *need = qdict_get_qdict(carrier, "requires-board");
+        g_autofree char *where = placement(carrier);
+
+        g_assert_cmpstr(where, ==, "bus=io2.0,addr=1");
+        g_assert_cmpstr(qdict_get_str(need, "product"), ==, "pci-carrier");
+        g_assert_cmpstr(qdict_get_str(need, "slot"), ==, "io2");
+        g_assert_false(qdict_haskey(slot_record("origin2000-rack", "io3"),
+                                    "requires-board"));
+        g_assert_false(qdict_haskey(slot_record("origin200", "pci-5"),
+                                    "requires-board"));
+        g_assert_cmpstr(qdict_get_str(product_record(
+            slot_record("origin2000-rack", "io2-pci-1"), "psitech",
+            "rad4-km"), "pairing"), ==, "established");
+        g_assert_cmpstr(qdict_get_str(product_record(
+            slot_record("origin2000-deskside", "io2-pci-2"), "psitech",
+            "rad4"), "pairing"), ==, "established");
+    }
 }
 
 /*
@@ -687,6 +728,16 @@ static void test_refusals(void)
                    "graphics slots of topology 'origin200': pci-5 "
                    "(bus=pci,addr=5), pci-6 (bus=pci,addr=6), pci-7 "
                    "(bus=pci,addr=7)");
+    /* The carrier's slots exist only with the carrier fitted. */
+    assert_refused(launch_for("origin2000-rack"),
+                   "-device psitech-rad4,bus=io2.0,addr=0",
+                   "Bus 'io2.0' not found");
+    /* A carrier anywhere but IO2 is not a graphics slot. */
+    assert_refused(launch_for("origin2000-rack"),
+                   "-device sgi-pci-carrier,slot=io3,id=io3 "
+                   "-device psitech-rad4,bus=io3.0,addr=0",
+                   "topology 'origin2000-rack' has no graphics slot at "
+                   "bus=io3.0,addr=0");
     /* A slot the record does not list. */
     assert_refused(launch_for("origin200"),
                    "-device psitech-rad4,bus=pci,addr=3",
@@ -803,14 +854,16 @@ static void test_offered(const void *data)
                                                        name);
                 QTestState *qts;
                 g_autofree char *base = NULL;
+                g_autofree char *carrier = NULL;
 
                 if (slot_tried && g_hash_table_contains(seen, key)) {
                     continue;
                 }
                 slot_tried = true;
                 g_hash_table_add(seen, g_steal_pointer(&key));
-                base = g_strdup_printf("-device %s,id=pipe,%s,product=%s",
-                                       device, where, name);
+                carrier = board_for(l->topology, slot);
+                base = g_strdup_printf("%s-device %s,id=pipe,%s,product=%s",
+                                       carrier, device, where, name);
                 qts = start(l, base);
                 {
                     g_autofree char *path = pipe_path(qts, device);

@@ -6,8 +6,8 @@
 PsiTech RAD4 and RAD4-KM: PCI graphics heads
 ============================================
 
-Used in :ref:`sgi-ip27` (Origin 200; the RAD4-KM's Origin 2000 placement
-is not offered). The PsiTech RAD4 is a third-party PCI graphics card for
+Used in :ref:`sgi-ip27` (Origin 200, and the Origin 2000's PCI Carrier
+Assembly). The PsiTech RAD4 is a third-party PCI graphics card for
 SGI systems: an 8 MB framebuffer behind a PLX PCI 9060-compatible bus
 interface, with an RGB561-compatible RAMDAC, *inferred* from the driver's
 register use. The RAD4-KM is the same product line with keyboard and mouse
@@ -18,7 +18,13 @@ QEMU models both as one PCI type, ``psitech-rad4`` in
 ``hw/display/psitech-rad4.c``, selected by ``product=rad4`` or
 ``product=rad4-km``. The RAD4-KM keyboard and mouse controller is a child
 device, ``psitech-rad4-km`` in ``hw/input/psitech-rad4-km.c``. QEMU offers
-the card on the Origin 200 topologies only (:ref:`sgi-sn-graphics-pipes`).
+the card on the Origin 200 topologies and, in a PCI Carrier Assembly fitted
+at ``io2``, on the Origin 2000 (:ref:`sgi-sn-graphics-pipes`).
+Both products on the Origin 2000 are *established*: the guide names the
+RAD4-KM as its primary display and the RAD4 as an additional head
+(:src:`psitech-rad4-owners-guide-1.3 Description`). That its "PCI chassis"
+(:src:`psitech-rad4-owners-guide-1.3 Origin 2000 installation`) is the
+carrier is *inferred*; the carrier's device numbers are an *approximation*.
 
 .. seealso::
 
@@ -926,15 +932,14 @@ BAR2 layout, channel status, the aggregate interrupt reaching PCI and a PS/2
 reset round trip on each channel.
 
 ``tests/qtest/sn0-pio-forward-test.c`` reaches BAR2 on the Origin 200,
-through a Hub big window aimed at the Bridge's large PCI memory range, at
+through a :term:`Hub` big window aimed at the Bridge's large PCI memory range, at
 the first and last framebuffer words, with Bridge control bit 9 set and
 clear. ``tests/qtest/sn0-pci-carrier-test.c`` does the same for a card in
-an Origin 2000 PCI Carrier Assembly at IO2 (Crossbow widget 12). The
-carrier placement works under ``x-uncatalogued-graphics=on``; the graphics
-catalogue does not offer it.
+an Origin 2000 PCI Carrier Assembly at IO2 (:term:`Crossbow` widget 12).
 
-``tests/qtest/sgi-graphics-pipes-test.c`` checks the Origin 200 slots the
-card may occupy and the refusals for others.
+``tests/qtest/sgi-graphics-pipes-test.c`` checks the Origin 200 slots and
+the Origin 2000 carrier slots the card may occupy and the refusals for
+others.
 ``tests/functional/mips64/test_graphics_matrix_thorough.py`` runs the
 ``rad4_*`` rows of ``tests/functional/mips64/graphics-matrix``: IRIX
 6.5.30 boots with the card at slot 5 and the login screen, window and

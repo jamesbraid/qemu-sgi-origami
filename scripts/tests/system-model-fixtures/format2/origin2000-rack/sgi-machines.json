@@ -7784,6 +7784,147 @@
             "requires": {
               "min-nodes": 2
             }
+          },
+          {
+            "changeable": false,
+            "description": "PCI Carrier Assembly in XIO slot 2, PCI device 0",
+            "families": [
+              {
+                "device": "psitech-rad4",
+                "family": "psitech",
+                "name": "PsiTech",
+                "products": [
+                  {
+                    "description": "PCI 12d1:0105, keyboard and mouse",
+                    "fidelity": "implemented",
+                    "name": "RAD4-KM",
+                    "pairing": "established",
+                    "product": "rad4-km",
+                    "settings": []
+                  },
+                  {
+                    "description": "PCI 12d1:0104",
+                    "fidelity": "implemented",
+                    "limitations": [
+                      "PsiTech's guide pairs the Origin 2000's primary display with the RAD4-KM and lists the plain RAD4 only as an additional head"
+                    ],
+                    "name": "RAD4",
+                    "pairing": "established",
+                    "product": "rad4",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "io2-pci-0",
+            "placement": [
+              {
+                "name": "bus",
+                "value": "io2.0"
+              },
+              {
+                "name": "addr",
+                "value": "0"
+              }
+            ],
+            "requires-board": {
+              "product": "pci-carrier",
+              "slot": "io2"
+            }
+          },
+          {
+            "changeable": false,
+            "description": "PCI Carrier Assembly in XIO slot 2, PCI device 1",
+            "families": [
+              {
+                "device": "psitech-rad4",
+                "family": "psitech",
+                "name": "PsiTech",
+                "products": [
+                  {
+                    "description": "PCI 12d1:0105, keyboard and mouse",
+                    "fidelity": "implemented",
+                    "name": "RAD4-KM",
+                    "pairing": "established",
+                    "product": "rad4-km",
+                    "settings": []
+                  },
+                  {
+                    "description": "PCI 12d1:0104",
+                    "fidelity": "implemented",
+                    "limitations": [
+                      "PsiTech's guide pairs the Origin 2000's primary display with the RAD4-KM and lists the plain RAD4 only as an additional head"
+                    ],
+                    "name": "RAD4",
+                    "pairing": "established",
+                    "product": "rad4",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "io2-pci-1",
+            "placement": [
+              {
+                "name": "bus",
+                "value": "io2.0"
+              },
+              {
+                "name": "addr",
+                "value": "1"
+              }
+            ],
+            "requires-board": {
+              "product": "pci-carrier",
+              "slot": "io2"
+            }
+          },
+          {
+            "changeable": false,
+            "description": "PCI Carrier Assembly in XIO slot 2, PCI device 2",
+            "families": [
+              {
+                "device": "psitech-rad4",
+                "family": "psitech",
+                "name": "PsiTech",
+                "products": [
+                  {
+                    "description": "PCI 12d1:0105, keyboard and mouse",
+                    "fidelity": "implemented",
+                    "name": "RAD4-KM",
+                    "pairing": "established",
+                    "product": "rad4-km",
+                    "settings": []
+                  },
+                  {
+                    "description": "PCI 12d1:0104",
+                    "fidelity": "implemented",
+                    "limitations": [
+                      "PsiTech's guide pairs the Origin 2000's primary display with the RAD4-KM and lists the plain RAD4 only as an additional head"
+                    ],
+                    "name": "RAD4",
+                    "pairing": "established",
+                    "product": "rad4",
+                    "settings": []
+                  }
+                ]
+              }
+            ],
+            "name": "io2-pci-2",
+            "placement": [
+              {
+                "name": "bus",
+                "value": "io2.0"
+              },
+              {
+                "name": "addr",
+                "value": "2"
+              }
+            ],
+            "requires-board": {
+              "product": "pci-carrier",
+              "slot": "io2"
+            }
           }
         ]
       },

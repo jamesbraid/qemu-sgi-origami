@@ -304,9 +304,11 @@ rules below before it emits the records:
   given as ``requires``;
 * a slot that sits on a removable board names it as ``requires-board``, a
   board ``product`` and the board ``slot`` it is fitted in, and that slot
-  must take that product. A launcher lists such a slot and accepts a pipe
-  in it only with the board fitted, and fits the board first. QEMU refuses
-  the pipe without the board because the board's bus does not exist yet.
+  must take that product. The Origin 2000's ``io2-pci-0`` to ``io2-pci-2``
+  name ``pci-carrier`` at ``io2``. A launcher lists such a slot and accepts
+  a pipe in it only with the board fitted, and fits the board first. QEMU
+  refuses the pipe without the board because the board's bus does not
+  exist yet.
 
 A topology whose own boards do not suit a pipe says so in
 ``machine-properties``: the ``-M`` properties a launch that fits any pipe
