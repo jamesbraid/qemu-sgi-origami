@@ -1807,11 +1807,13 @@ static void sgi_hub_comparator_arm(SGIHubState *s, QEMUTimer *timer,
 }
 
 /*
- * How long a comparator hold may last. Nothing is held during the wait, so
- * this only decides when a partner that never answers stops being waited for;
- * partner lags measured on a loaded host reach tens of milliseconds.
-*/
-#define SGI_HUB_RT_HOLD_MS      2000
+ * A hold gives up once its partner has spent the firmware's poll budget in Hub
+ * accesses without answering; a partner whose thread is not running makes none.
+ * The cap releases a partner that runs without touching the Hub (a fault loop).
+ */
+#define SGI_HUB_RT_HOLD_PARTNER_ACCESSES 200000
+#define SGI_HUB_RT_HOLD_CAP_MS  60000LL
+#define SGI_HUB_RT_HOLD_RECHECK_MS 100
 
 /* What a held processor waits for. */
 typedef enum SGIHubRTHoldKind {
@@ -1824,7 +1826,8 @@ typedef struct SGIHubRTHold {
     SGIHubState *hub;
     unsigned int slice;
     uint64_t id;
-    int64_t start; /* realtime it first ran; a yield keeps the deadline */
+    int64_t start; /* realtime it first ran, for the trace */
+    uint64_t partner_accesses; /* the partner's count when it first ran */
 } SGIHubRTHold;
 
 /* This Hub's slice for the executing processor, or -1 for any other. */
@@ -1965,7 +1968,6 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
     SGIHubState *s = hold->hub;
     unsigned int slice = hold->slice;
     int64_t now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
-    int64_t deadline;
     const char *outcome;
     bool yield = false;
     bool traced_wait = false;
@@ -1975,8 +1977,9 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
 
     if (!hold->start) {
         hold->start = now;
+        hold->partner_accesses =
+            qatomic_read(&s->pi_slice_accesses[slice ^ 1]);
     }
-    deadline = hold->start + SGI_HUB_RT_HOLD_MS * SCALE_MS;
 
     for (;;) {
         now = qemu_clock_get_ns(QEMU_CLOCK_REALTIME);
@@ -1997,7 +2000,10 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             */
             outcome = NULL;
             yield = true;
-        } else if (now >= deadline) {
+        } else if (qatomic_read(&s->pi_slice_accesses[slice ^ 1]) -
+                   hold->partner_accesses >=
+                   SGI_HUB_RT_HOLD_PARTNER_ACCESSES ||
+                   now - hold->start >= SGI_HUB_RT_HOLD_CAP_MS * SCALE_MS) {
             outcome = "timed out";
         } else {
             outcome = NULL;
@@ -2027,7 +2033,7 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
             break;
         }
 
-        wait_ms = (deadline - now) / SCALE_MS + 1;
+        wait_ms = SGI_HUB_RT_HOLD_RECHECK_MS;
         traced_wait =
             trace_event_get_state_backends(TRACE_SGI_HUB_RT_HOLD_WAKE);
         if (traced_wait) {
@@ -2084,7 +2090,9 @@ static void sgi_hub_rt_hold(CPUState *cs, run_on_cpu_data data)
  * after that is the post, so the hold that keeps the post standing sits at
  * the write that takes it back (sgi_hub_rt_withhold). A hold also ends when
  * the partner can no longer run, when the held processor has a stop or a
- * deliverable interrupt, or after SGI_HUB_RT_HOLD_MS. Work queued on the held
+ * deliverable interrupt, once the partner has made
+ * SGI_HUB_RT_HOLD_PARTNER_ACCESSES Hub accesses, or after
+ * SGI_HUB_RT_HOLD_CAP_MS. Work queued on the held
  * processor runs and the hold resumes behind it: a memory map change anywhere
  * in the machine queues such work on every processor, and the stock PROM
  * makes dozens while a node's processors meet. The hold is queued work on the
@@ -4354,6 +4362,17 @@ static void sgi_hub_exit_io(SGIHubState *s)
     DEVICE(s)->mem_reentrancy_guard.engaged_in_io = false;
 }
 
+/* Each slice counts its own accesses, so a hold can see its partner run. */
+static void sgi_hub_count_access(SGIHubState *s)
+{
+    int slice = sgi_hub_current_slice(s);
+
+    if (slice >= 0) {
+        qatomic_set(&s->pi_slice_accesses[slice],
+                    s->pi_slice_accesses[slice] + 1);
+    }
+}
+
 static MemTxResult sgi_hub_read(void *opaque, hwaddr addr, uint64_t *data,
                                 unsigned size, MemTxAttrs attrs)
 {
@@ -4363,6 +4382,7 @@ static MemTxResult sgi_hub_read(void *opaque, hwaddr addr, uint64_t *data,
         *data = 0;
         return MEMTX_DECODE_ERROR;
     }
+    sgi_hub_count_access(s);
     /*
      * Only a processor's own read comes here without the BQL. One made with
      * it held, from qtest or from inside another of this Hub's accesses,
@@ -4491,6 +4511,7 @@ static MemTxResult sgi_hub_write(void *opaque, hwaddr addr, uint64_t val,
     if (s->unpowered) {
         return MEMTX_DECODE_ERROR;
     }
+    sgi_hub_count_access(s);
     BQL_LOCK_GUARD();
     if (!sgi_hub_enter_io(s, addr)) {
         return MEMTX_ACCESS_ERROR;

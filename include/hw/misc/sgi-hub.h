@@ -405,6 +405,8 @@ struct SGIHubState {
     uint64_t pi_rt_hold[SGI_HUB_PROCESSORS];
     uint8_t pi_rt_hold_kind[SGI_HUB_PROCESSORS];
     uint64_t pi_rt_hold_seq;
+    /* Hub accesses by each slice, written only by that slice's thread. */
+    uint64_t pi_slice_accesses[SGI_HUB_PROCESSORS];
     bool pi_rt_withheld_valid[SGI_HUB_PROCESSORS];
     uint64_t pi_rt_withheld[SGI_HUB_PROCESSORS];
 

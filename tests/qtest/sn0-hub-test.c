@@ -2743,8 +2743,8 @@ static int trace_find(char **records, int from, const char *event,
  * a processor writes after the access that holds it can tell the other
  * processor to go on. The tests sequence the two slices from outside
  * instead: they wait until the access is due, allow a few hundred
- * milliseconds (far longer than one instruction but shorter than the
- * two-second deadline) and then write the go word.
+ * milliseconds (far longer than one instruction) and then write the go
+ * word.
  */
 static unsigned int emit_handshake_start(SN0Image *p)
 {
@@ -2839,7 +2839,7 @@ static void wait_for_register(QTestState *qts, uint64_t addr, uint64_t value)
     }
 }
 
-/* Long enough for one instruction under any load, far inside the deadline. */
+/* Long enough for one instruction under any load. */
 #define HANDSHAKE_SETTLE_US     (300 * 1000)
 
 static QTestState *handshake_start(const SN0Image *image, const char *stem,
@@ -2889,6 +2889,71 @@ static void build_first_match_image(SN0Image *p)
     sn0_patch_branch(p, to_b, p->pos);
     sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
     emit_handshake_park(p);
+}
+
+/*
+ * Slice A posts and polls B's comparator a bounded number of times. Slice B
+ * stays off the Hub until the test writes the go word, then posts.
+ */
+static void build_quiet_partner_image(SN0Image *p)
+{
+    unsigned int to_b = emit_handshake_start(p);
+    unsigned int loop;
+    unsigned int branch;
+    unsigned int seen;
+
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_A);
+    sn0_emit_li(p, SN0_R_T0, 100000);
+    loop = p->pos;
+    sn0_emit_i(p, SN0_OPC_LD, SN0_R_K0, SN0_R_T2, PI_RT_COMPARE_B);
+    seen = sn0_emit_branch(p, SN0_OPC_BEQ, SN0_R_T2, SN0_R_T1);
+    sn0_emit_i(p, SN0_OPC_ADDIU, SN0_R_T0, SN0_R_T0, 0xffff);
+    branch = sn0_emit_branch(p, SN0_OPC_BNE, SN0_R_T0, SN0_R_ZERO);
+    sn0_patch_branch(p, branch, loop);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_MISSED);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+    sn0_patch_branch(p, seen, p->pos);
+    sn0_emit_li(p, SN0_R_T2, RENDEZVOUS_SEEN);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K1, SN0_R_T2, 0);
+    emit_handshake_park(p);
+
+    sn0_patch_branch(p, to_b, p->pos);
+    emit_wait_for_go(p);
+    sn0_emit_i(p, SN0_OPC_SD, SN0_R_K0, SN0_R_T1, PI_RT_COMPARE_B);
+    emit_handshake_park(p);
+}
+
+/*
+ * A partner that makes no Hub access is a partner whose host thread is not
+ * running, however long that lasts, so the poller stays held until it posts.
+ */
+static void test_a_hold_outlasts_a_partner_off_the_hub(const void *data)
+{
+    g_autofree SN0Image *image = g_new0(SN0Image, 1);
+    g_autofree char *path = trace_file_create();
+    g_auto(GStrv) records = NULL;
+    QTestState *qts;
+
+    if (!qtest_has_accel("tcg")) {
+        g_test_skip("TCG is unavailable");
+        return;
+    }
+
+    build_quiet_partner_image(image);
+    qts = handshake_start(image, "sn0-hub-rt-quiet-partner", "multi", path);
+    qtest_qmp_assert_success(qts, "{'execute':'cont'}");
+    /* Longer than the two seconds a hold used to give up after. */
+    g_usleep(2500 * 1000);
+    qtest_writeq(qts, SN0_USER_MAILBOX + 32, 1);
+    g_assert_cmphex(wait_for_rendezvous_result(qts, 0), ==, RENDEZVOUS_SEEN);
+    qtest_quit(qts);
+
+    records = trace_file_take(path);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold",
+                                 "cpu 0 post hold: "), ==, 1);
+    g_assert_cmpuint(trace_count(records, "sgi_hub_rt_hold_end",
+                                 " timed out "), ==, 0);
 }
 
 /*
@@ -3415,7 +3480,7 @@ static void test_round_robin_holds_nobody(const void *data)
 
 /*
  * Slice A takes back a post slice B never reads, so A's withdrawal stays
- * withheld for the hold's full two seconds. The hold is host scheduling and
+ * withheld while B makes no Hub access. The hold is host scheduling and
  * does not migrate, but the withdrawal is a write the guest has made: a
  * migration inside that window must arrive with it landed. The source's
  * trace shows the hold did not simply run out first.
@@ -3454,8 +3519,7 @@ static void test_a_withheld_withdrawal_migrates_landed(const void *data)
     qtest_qmp_assert_success(from, "{'execute':'cont'}");
     g_assert_cmphex(wait_for_rendezvous_result(from, 2), ==,
                     RENDEZVOUS_VALUE);
-    /* Well inside the two seconds: A executes a single store after the
-     * mark. */
+    /* A executes a single store after the mark. */
     g_usleep(200 * 1000);
     g_assert_cmphex(cpu_heartbeat(from, 0), ==, 0);
 
@@ -6991,6 +7055,8 @@ int main(int argc, char **argv)
     qtest_add_data_func("sn0/hub/matched-comparator-post-waits-for-partner",
                         NULL,
                         test_a_matched_comparator_post_waits_for_its_partner);
+    qtest_add_data_func("sn0/hub/hold-outlasts-a-partner-off-the-hub", NULL,
+                        test_a_hold_outlasts_a_partner_off_the_hub);
     qtest_add_data_func("sn0/hub/md-indicator-registers", NULL,
                         test_md_indicator_registers);
     qtest_add_data_func("sn0/hub/md-indicator-shown-by-default", NULL,
