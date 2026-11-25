@@ -52,7 +52,8 @@ MULTI_PIPE_SLOTS = 4
 SLOT_NAME_SIZE = 32
 _MACHINE_PROPERTIES_FIELDS = {"properties", "reason"}
 _SLOT_FIELDS = {"name", "names", "description", "placement", "default",
-                "families", "refusals"}
+                "families", "refusals", "requires_board"}
+_BOARD_FIELDS = {"product", "slot"}
 _OFFER_FIELDS = {"family", "products"}
 _OFFERED_PRODUCT_FIELDS = {"product", "fidelity", "limitations", "pairing",
                            "assembly", "settings"}
@@ -350,6 +351,43 @@ def _default(raw: Any, slot: dict, label: str) -> dict:
                          for name, value in resolved.items()]}
 
 
+def _requires_board(raw: Any, slot: dict, label: str) -> dict:
+    """The board a slot needs fitted, by product and board slot. A PCI
+    slot's bus is that board's own, so it must start at the board's slot."""
+    if not isinstance(raw, dict) or set(raw) != _BOARD_FIELDS:
+        raise ResolutionError(f"{label} requires_board needs a product and "
+                              "a slot")
+    product = _string(raw["product"], f"{label} requires_board product")
+    board_slot = _string(raw["slot"], f"{label} requires_board slot")
+    if not _NAME.match(product) or not _SLOT_NAME.match(board_slot):
+        raise ResolutionError(f"{label} requires_board names an invalid "
+                              f"board {product}@{board_slot}")
+    for item in slot["placement"]:
+        if item["name"] == "bus" and item["value"].split(".")[0] != board_slot:
+            raise ResolutionError(
+                f"{label} requires_board slot {board_slot} is not the "
+                f"board of its bus {item['value']}")
+    return {"product": product, "slot": board_slot}
+
+
+def check_board_requirements(topology: dict) -> None:
+    """Refuse a slot that needs a board its topology cannot fit: the named
+    board slot takes the product, or the topology already builds it there."""
+    fitted = {(slot["name"], item["product"])
+              for slot in topology.get("board-slots", [])
+              for item in slot["products"]}
+    fitted |= {(board.get("label"), board.get("preset"))
+               for board in topology.get("io-boards", [])}
+    for slot in (topology.get("graphics") or {}).get("slots", []):
+        need = slot.get("requires-board")
+        if need and (need["slot"], need["product"]) not in fitted:
+            raise ValueError(
+                f"topology '{topology['name']}' graphics slot "
+                f"'{slot['name']}' requires board {need['product']}@"
+                f"{need['slot']}, which the topology neither fits nor "
+                "takes")
+
+
 def resolve_graphics(product_id: str, section: Any,
                      families: dict[str, dict]) -> dict:
     """The topology's graphics record from a product's `graphics` section."""
@@ -399,6 +437,9 @@ def resolve_graphics(product_id: str, section: Any,
                 "changeable": False,
                 "families": [],
             }
+            if "requires_board" in raw:
+                slot["requires_board"] = _requires_board(
+                    raw["requires_board"], slot, where)
             raw_families = raw.get("families", [])
             if not isinstance(raw_families, list):
                 raise ResolutionError(f"{where} families must be a list")

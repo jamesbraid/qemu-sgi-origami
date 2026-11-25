@@ -1880,6 +1880,21 @@
   'data': { '*min-nodes': 'uint32' } }
 
 ##
+# @SGIModelBoardRequirement:
+#
+# A board a slot needs fitted before it exists, named as a launcher
+# names it: a board product at a board slot.
+#
+# @product: the board's @SGIModelBoardProduct @product (pci-carrier)
+#
+# @slot: the @SGIModelBoardSlot @name it is fitted in (io2)
+#
+# Since: 11.2
+##
+{ 'struct': 'SGIModelBoardRequirement',
+  'data': { 'product': 'str', 'slot': 'str' } }
+
+##
 # @SGIModelGraphicsSlot:
 #
 # One place a graphics pipe can go.
@@ -1901,6 +1916,11 @@
 # @requires: the conditions under which the slot exists; absent when
 #     it always does
 #
+# @requires-board: the board the slot sits on; a launcher lists and
+#     accepts the slot only with that board fitted, and fits the board
+#     first.  QEMU itself refuses a pipe on the board's bus until the
+#     board exists.  Absent when the slot needs none
+#
 # @families: the families the slot takes, with what each offers
 #
 # @refusals: the combinations the slot does not take, with reasons
@@ -1914,6 +1934,7 @@
             '*default': 'SGIModelGraphicsPipe',
             'changeable': 'bool',
             '*requires': 'SGIModelGraphicsRequirement',
+            '*requires-board': 'SGIModelBoardRequirement',
             'families': ['SGIModelGraphicsFamily'],
             '*refusals': ['SGIModelGraphicsRefusal'] } }
 

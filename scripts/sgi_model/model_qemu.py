@@ -18,7 +18,7 @@ import json
 import pathlib
 
 from .model_compile import compile_model
-from .model_graphics import check_catalogue
+from .model_graphics import check_board_requirements, check_catalogue
 from .model_emit import default_topology, render_catalogue_json, render_manifest
 from .model_shared import install_generated_outputs
 
@@ -170,6 +170,8 @@ def render_qemu_inputs(model_root: pathlib.Path, *,
     catalogue = render_catalogue_json(
         list(source_models.values()), product_models=product_models,
         references=references)
+    for topology in json.loads(catalogue)["topologies"]:
+        check_board_requirements(topology)
     manifest_models = {**source_models, **reference_models}
     manifest = render_manifest(manifest_models, {SGI_MACHINES_JSON: catalogue})
     return {SGI_MACHINES_JSON: catalogue, SN_MODEL_JSON: manifest}

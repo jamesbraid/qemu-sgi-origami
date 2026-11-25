@@ -400,6 +400,33 @@ class GraphicsPipeTests(unittest.TestCase):
         self.assertNotIn("requires", slots["io3"])
         self.assertEqual(slots["io12"]["requires"], {"min-nodes": 2})
 
+    def test_requires_board_is_checked(self):
+        pci = {"bus": "io2.0", "addr": "0"}
+        section = self.section([{"product": "si", "fidelity": "implemented"}],
+                               placement=pci,
+                               requires_board={"product": "pci-carrier",
+                                               "slot": "io2"})
+        self.assertEqual(self.resolve(section)["slots"][0]["requires_board"],
+                         {"product": "pci-carrier", "slot": "io2"})
+        section["slots"][0]["requires_board"]["slot"] = "io3"
+        with self.assertRaisesRegex(ResolutionError, "not the board of"):
+            self.resolve(section)
+        section["slots"][0]["requires_board"] = {"product": "pci-carrier"}
+        with self.assertRaisesRegex(ResolutionError, "product and a slot"):
+            self.resolve(section)
+        topology = {"name": "t", "board-slots": [
+            {"name": "io2", "products": [{"product": "menet"}]}],
+            "graphics": {"slots": [
+                {"name": "a", "requires-board": {"product": "pci-carrier",
+                                                 "slot": "io2"}}]}}
+        with self.assertRaisesRegex(ValueError, "pci-carrier@io2"):
+            model_graphics.check_board_requirements(topology)
+        topology["board-slots"][0]["products"][0]["product"] = "pci-carrier"
+        model_graphics.check_board_requirements(topology)
+        topology["board-slots"] = []
+        topology["io-boards"] = [{"label": "io2", "preset": "pci-carrier"}]
+        model_graphics.check_board_requirements(topology)
+
     def test_pipe_limits(self):
         limits = {topology["name"]: topology["graphics"]["max-pipes"]
                   for topology in self.catalogue["topologies"]
