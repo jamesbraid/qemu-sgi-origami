@@ -3,6 +3,7 @@
 """Tests for the standalone SGI machine-model generator."""
 
 import copy
+import functools
 import hashlib
 import json
 import os
@@ -42,6 +43,13 @@ from sgi_model.registry import (
 )
 
 
+@functools.cache
+def _rendered():
+    """The catalogue export, rendered once: a render parses every model
+    file, and the tests only read it."""
+    return render_qemu_inputs(INPUTS)
+
+
 def _is_ip35_offering(offering):
     """Whether @offering runs on an IP35 C-brick node board, which the
     Origin 3900's IP53 and IP59 Cx-bricks are not."""
@@ -52,7 +60,7 @@ def _is_ip35_offering(offering):
 class GeneratorTests(unittest.TestCase):
     def test_onyx4_builds_only_the_ip59(self):
         catalogue = json.loads(
-            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
+            _rendered()["hw/mips/sgi/sgi-machines.json"])
         [topology] = [item for item in catalogue["topologies"]
                       if item["name"] == "onyx4"]
 
@@ -75,7 +83,7 @@ class GeneratorTests(unittest.TestCase):
 
     def test_reference_models_are_public_without_runtime_offerings(self):
         catalogue = json.loads(
-            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
+            _rendered()["hw/mips/sgi/sgi-machines.json"])
         references = catalogue["references"]
         self.assertEqual(
             {item["name"] for item in references}, set(REFERENCE_TOPOLOGIES))
@@ -93,7 +101,7 @@ class GeneratorTests(unittest.TestCase):
         # guide 1073 printed page 3), so every offering defaults to 256 MiB
         # per node while the 64 MiB DIMM pair stays selectable
         # (007-3439-002 printed page 35).
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         offerings = [item for item in catalogue["offerings"]
                      if item["product"] in ("origin2000", "onyx2")]
@@ -106,7 +114,7 @@ class GeneratorTests(unittest.TestCase):
                 self.assertIn(256, memory["accepted"])
 
     def test_default_export_is_complete_and_compatible(self):
-        outputs = render_qemu_inputs(INPUTS)
+        outputs = _rendered()
         catalogue_text = outputs["hw/mips/sgi/sgi-machines.json"]
         catalogue = json.loads(catalogue_text)
         manifest = json.loads(outputs["hw/mips/sgi/sn-model.json"])
@@ -217,7 +225,7 @@ class GeneratorTests(unittest.TestCase):
                 cwd=ROOT, text=True, capture_output=True, check=False,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
             self.assertEqual(result.returncode, 0, result.stderr)
-            expected = render_qemu_inputs(INPUTS)
+            expected = _rendered()
             for path, contents in expected.items():
                 self.assertEqual((tree / path).read_text(), contents)
             self.assertEqual(
@@ -244,7 +252,7 @@ class GeneratorTests(unittest.TestCase):
                 cwd=ROOT, text=True, capture_output=True, check=False,
                 env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"})
             self.assertEqual(result.returncode, 0, result.stderr)
-            for path, contents in render_qemu_inputs(INPUTS).items():
+            for path, contents in _rendered().items():
                 self.assertEqual((output / path).read_text(), contents)
 
     def test_generation_uses_explicit_inputs_and_writes_only_catalogue_files(self):
@@ -267,7 +275,7 @@ class GraphicsPipeTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.catalogue = json.loads(
-            render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"])
+            _rendered()["hw/mips/sgi/sgi-machines.json"])
         cls.families = model_graphics.load_graphics_products(INPUTS)
 
     def section(self, products, name="io3", **slot):
@@ -575,7 +583,7 @@ class StorageTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        cls.catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
 
     def default_processor(self, name):
@@ -754,7 +762,7 @@ class StorageTests(unittest.TestCase):
         clock may be set, the devices it takes and the serial lines a
         launch backs, with no two lines at one -serial position. The O2
         counts instructions at shift 3 only."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         for row in catalogue["offerings"]:
             with self.subTest(offering=row["id"]):
@@ -775,7 +783,7 @@ class StorageTests(unittest.TestCase):
         """Both Octane products fit IOC3 serial port B and the machine
         reads it from the second -serial, so the catalogue lists it as a
         line a launch backs, with its transcript after port A's."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         rows = [row for row in catalogue["offerings"]
                 if row["product"] in ("octane", "octane2")]
@@ -797,7 +805,7 @@ class StorageTests(unittest.TestCase):
         module-owned L1 has none. The link names the l2-controller
         setting, so no line lacks one: a launch can always say whether it
         starts the L2."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {item["name"]: item for item in catalogue["topologies"]}
         for row in catalogue["offerings"]:
@@ -857,7 +865,7 @@ class StorageTests(unittest.TestCase):
         and names the l1-controller setting, behavioural by default,
         on those lines and on each console line; no other offering lists
         a line of these kinds or the setting."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {item["name"]: item for item in catalogue["topologies"]}
         kinds = {"l1-node-link", "l1-signals", "l1-cable"}
@@ -963,7 +971,7 @@ class StorageTests(unittest.TestCase):
         rated approximated, since starting it is a launch choice backed
         by model runs. Every other offering with an L2 link starts without
         it, and one with no link lists no setting."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         for row in catalogue["offerings"]:
             found = [item for item in row["settings"]
@@ -989,7 +997,7 @@ class StorageTests(unittest.TestCase):
         card a machine property picks (a plain BaseIO may be built as the
         BaseIO-G, a BaseIO-G only as itself), and each empty XIO slot with
         the five cards it takes by -device. Other topologies list none."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         with_slots = {item["name"] for item in catalogue["topologies"]
                       if "board-slots" in item}
@@ -1026,7 +1034,7 @@ class StorageTests(unittest.TestCase):
         shoehorn carries the part and revision Octane inventories print, the
         one slot at device 1 and a flash window that reads high; the module
         has no properties of its own."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         for topology in catalogue["topologies"]:
             if topology["generation"] != "ip30":
@@ -1142,7 +1150,7 @@ class Ip27FirmwareTests(unittest.TestCase):
     values, and no other generation carries any."""
 
     def test_sn0_topologies_carry_product_values(self):
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         expected = {
             "origin200": {"machine-type": 1, "flash-read-cycles": 15,
@@ -1163,7 +1171,7 @@ class Ip27FirmwareTests(unittest.TestCase):
 
 class Origin300TimekeeperTests(unittest.TestCase):
     def test_origin300_export_has_per_node_timekeeper_policy(self):
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {row["name"]: row for row in catalogue["topologies"]
                       if row["product"] == "origin300"}
@@ -1245,7 +1253,7 @@ class FuelTests(unittest.TestCase):
     def test_fuel_offerings_keep_all_console_ports(self):
         """A fresh Fuel flash answers on L1, and IOC3 serial A and B
         follow it in the machine's serial-line order (A on line 1)."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         offerings = [row for row in catalogue["offerings"]
                      if row["product"] == "fuel"]
@@ -1273,7 +1281,7 @@ class FuelTests(unittest.TestCase):
         self.assertIn("node_index * SGI_SN1_SERIAL_LINES_PER_NODE + line",
                       header)
         offsets = {"l1": 0, "ioc3_a": 1, "ioc3_b": 2}
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         seen = 0
         for row in catalogue["offerings"]:
@@ -1299,7 +1307,7 @@ class FuelTests(unittest.TestCase):
         """Every board fits its processor's values itself, so the
         catalogue names no CPU property a launcher must set, and offers
         no override of a reset-mode word the board drives."""
-        text = render_qemu_inputs(INPUTS)["hw/mips/sgi/sgi-machines.json"]
+        text = _rendered()["hw/mips/sgi/sgi-machines.json"]
         self.assertNotIn("required-properties", text)
         catalogue = json.loads(text)
         for offering in catalogue["offerings"]:
@@ -1310,7 +1318,7 @@ class FuelTests(unittest.TestCase):
     def test_ip35_firmware_names_each_product_machine_type(self):
         """Origin 300 and Fuel keep reset-mode words; the IP53-family
         profiles use type zero and full firmware words, one per board."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         ip53_words = {
             "origin350-ip53": 0x589bad85,
@@ -1400,7 +1408,7 @@ class FuelTests(unittest.TestCase):
         """The Cx-brick sells a zero-processor node board (007-4572-001
         page 13), and the catalogue offers one brick that mixes three
         compute boards with one such board, as its own topology."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         [offering] = [item for item in catalogue["offerings"]
                       if item["topology"] == "origin3900-memory-node"]
@@ -1421,7 +1429,7 @@ class FuelTests(unittest.TestCase):
         product authors one cable bus per router pair, so each router-to-
         router cable joins the two routers at equal port numbers and each
         router's port appears on one cable only."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         [topology] = [item for item in catalogue["topologies"]
                       if item["name"] == "origin3400-two-routers"]
@@ -1449,7 +1457,7 @@ class FuelTests(unittest.TestCase):
         C-bricks on R-brick ports 2 and 3, an I-brick on each, partition
         IDs 1 and 2 held by the C-brick controllers and none by the I/O or
         router controllers."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topology = next(item for item in catalogue["topologies"]
                         if item["name"] == "origin3400-two-partitions")
@@ -1476,7 +1484,7 @@ class FuelTests(unittest.TestCase):
                 self.assertNotIn("partition", controller.get("l1") or {})
 
     def _origin3800_cables(self, name):
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         [topology] = [item for item in catalogue["topologies"]
                       if item["name"] == name]
@@ -1525,7 +1533,7 @@ class FuelTests(unittest.TestCase):
         """An I-brick on each C-brick is in no source, so the offering says
         so, keeps widgets 14 and 15 on each I-brick, and names the I-bricks
         by their host C-bricks (datasheet: a second I-brick)."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         [offering] = [item for item in catalogue["offerings"]
                       if item["topology"] == "origin3200-two-ibricks"]
@@ -1548,7 +1556,7 @@ class FuelTests(unittest.TestCase):
     def test_gpu_setting_follows_the_boards_that_name_a_property(self):
         """gpu is one setting, off by default, offered where a graphics
         family names a gpu-property; VPro and InfiniteReality do."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         definition = next(item for item in catalogue["setting-definitions"]
                           if item["name"] == "gpu")
@@ -1582,7 +1590,7 @@ class FuelTests(unittest.TestCase):
         BaseIO is a board slot rather than a setting, the processor
         part's registers are one prid and one fpu-id, and the O2 requires
         the inputs whose fitted values nobody knows."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         definitions = {item["name"] for item in
                        catalogue["setting-definitions"]}
@@ -1674,7 +1682,7 @@ class FuelTests(unittest.TestCase):
         """A default is shown with how well it is known and where it is
         read from; a setting with no default shows neither."""
         from sgi_model.settings import DEFAULT_BASIS
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         seen = set()
         for row in catalogue["offerings"]:
@@ -1693,7 +1701,7 @@ class FuelTests(unittest.TestCase):
         """The Origin 3000's C-brick processor options bring their own
         board identity word, which the machine applies; the default shown
         is that word, not the unfitted topology's."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {item["name"]: item for item in catalogue["topologies"]}
         checked = 0
@@ -1716,7 +1724,7 @@ class FuelTests(unittest.TestCase):
         """An Origin 2000's plain BaseIO has no keyboard or mouse port, so
         its graphics record asks a launch with a pipe for the BaseIO-G;
         no other topology's record asks for anything."""
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         for topology in catalogue["topologies"]:
             graphics = topology.get("graphics") or {}
@@ -1731,7 +1739,7 @@ class FuelTests(unittest.TestCase):
                     self.assertNotIn("machine-properties", graphics)
 
     def test_fuel_export_has_system_timekeeper(self):
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         topologies = {row["name"]: row for row in catalogue["topologies"]}
         self.assertIn("fuel", topologies)
@@ -1788,7 +1796,7 @@ class FuelTests(unittest.TestCase):
 
 class Origin350ClockPolicyTests(unittest.TestCase):
     def test_ip53_catalogue_selects_backed_ds1744_timekeepers(self):
-        catalogue = json.loads(render_qemu_inputs(INPUTS)[
+        catalogue = json.loads(_rendered()[
             "hw/mips/sgi/sgi-machines.json"])
         names = {"origin350-ip53", "origin350-ip59", "onyx350-ip53",
                  "onyx350-ip59", "onyx4", "tezro-one-processor",
