@@ -1709,6 +1709,7 @@ F: hw/display/g364fb.c
 F: hw/display/jazz_led.c
 F: hw/dma/rc4030.c
 F: hw/nvram/ds1225y.c
+F: tests/qtest/rc4030-reset-test.c
 
 Malta
 M: Philippe Mathieu-Daudé <philmd@oss.qualcomm.com>

@@ -442,6 +442,9 @@ qtests_mips = \
 
 qtests_mipsel = qtests_mips
 
+# The Magnum and Pica machines need a 64-bit target.
+qtests_jazz = config_all_devices.has_key('CONFIG_JAZZ') ? ['rc4030-reset-test'] : []
+
 # Origin 200 normally selects Lucent OHCI, but a minimal device configuration
 # can disable the controller while retaining the machine.
 sn0_ohci_qtests = \
@@ -800,7 +803,7 @@ if sgi_register_reset_missing.length() > 0 and \
           ', '.join(sgi_register_reset_missing) + ' is off')
 endif
 
-qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
+qtests_mips64 = qtests_mips + qtests_jazz + sgi_qtests + ['qtest-debug-test',
                                               'r10k-cache-index-ops-test'] + \
   (config_all_devices.has_key('CONFIG_SGI_TEST_FIXTURES') ?
     ['qtest-irq-test'] : []) + \
@@ -834,7 +837,7 @@ qtests_mips64 = qtests_mips + sgi_qtests + ['qtest-debug-test',
     ['sgi-mace-dma-test'] : []) + \
   sgi_register_reset_qtests
 
-qtests_mips64el = qtests_mips
+qtests_mips64el = qtests_mips + qtests_jazz
 
 qtests_ppc = \
   qtests_filter + \

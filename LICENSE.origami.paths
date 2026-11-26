@@ -963,6 +963,7 @@ tests/qtest/psitech-rad4-test.c
 tests/qtest/qlogic-isp-test.c
 tests/qtest/qtest-irq-test.c
 tests/qtest/r10000-identity-test.c
+tests/qtest/rc4030-reset-test.c
 tests/qtest/scsi-tape-test.c
 tests/qtest/sgi-altix350-test.c
 tests/qtest/sgi-bic-board-interface-test.c
