@@ -14,6 +14,7 @@
 #include "qobject/qlist.h"
 #include "qemu/error-report.h"
 #include "qemu/main-loop.h"
+#include "qemu/log.h"
 #include "hw/core/boards.h"
 #include "hw/core/clock.h"
 #include "hw/core/loader.h"
@@ -358,6 +359,12 @@ static const VMStateDescription vmstate_sn0_promdata = {
     }
 };
 
+static int sn0_node_post_load(void *opaque, int version_id)
+{
+    sn0_node_sync_flash_order(opaque);
+    return 0;
+}
+
 /*
  * Named "sn0-flash" for wire compatibility: the pflash device migrates its
  * state and the back doors migrate with their RAM blocks, so this carries
@@ -368,6 +375,7 @@ static const VMStateDescription vmstate_sn0_flash = {
     .name = "sn0-flash",
     .version_id = 4,
     .minimum_version_id = 4,
+    .post_load = sn0_node_post_load,
     .fields = (const VMStateField[]) {
         VMSTATE_END_OF_LIST()
     },
@@ -685,21 +693,78 @@ static unsigned int sn0_node_cpu_slots(void)
     return SN0_HUB_CPU_SLOTS_PER_NODE;
 }
 
-/* The mode word this node's boot flash replays to its processors. */
+/* A little-endian CPU sees byte X as image byte X ^ 7 (inferred). */
+static uint64_t sn0_flash_le_read(void *opaque, hwaddr addr, unsigned size)
+{
+    SN0FlashLe *le = opaque;
+    MemoryRegion *chip =
+        sysbus_mmio_get_region(SYS_BUS_DEVICE(le->node->flash), 0);
+    uint64_t value = 0;
+    unsigned int i;
+
+    for (i = 0; i < size; i++) {
+        uint64_t byte = 0;
+
+        memory_region_dispatch_read(chip, (addr + i) ^ 7, &byte, MO_8,
+                                    MEMTXATTRS_UNSPECIFIED);
+        value = (value << 8) | (byte & 0xff);
+    }
+    return value;
+}
+
+static void sn0_flash_le_write(void *opaque, hwaddr addr, uint64_t val,
+                               unsigned size)
+{
+    SN0FlashLe *le = opaque;
+
+    qemu_log_mask(LOG_GUEST_ERROR, "sn0: node %u: write to the boot flash "
+                  "through a little-endian processor's view dropped at 0x%"
+                  HWADDR_PRIx "\n", le->node->nasid, addr);
+}
+
+static const MemoryRegionOps sn0_flash_le_ops = {
+    .read = sn0_flash_le_read,
+    .write = sn0_flash_le_write,
+    .endianness = DEVICE_BIG_ENDIAN,
+    .valid.min_access_size = 1,
+    .valid.max_access_size = 8,
+    .impl.min_access_size = 1,
+    .impl.max_access_size = 8,
+};
+
+static void sn0_flash_le_enable(SN0FlashLe *le, bool little)
+{
+    for (unsigned int i = 0; i < le->nr_views; i++) {
+        memory_region_set_enabled(&le->view[i], little);
+    }
+}
+
+/* Follow each processor's byte order, which a restart sets after the reset. */
+void sn0_node_sync_flash_order(SN0NodeState *node)
+{
+    for (unsigned int slice = 0; slice < node->nr_cpus; slice++) {
+        sn0_flash_le_enable(&node->flash_le[slice],
+                            !extract32(node->cpu[slice]->env.CP0_Config0,
+                                       CP0C0_BE, 1));
+    }
+}
+
+/* The flash's mode word, which also picks the CPU's flash view. */
 static bool sn0_node_mode_word(void *opaque, uint32_t *word)
 {
-    SN0NodeState *node = opaque;
+    SN0FlashLe *le = opaque;
+    SN0NodeState *node = le->node;
     MemoryRegion *chip;
+    bool ok = false;
 
-    if (!node->flash) {
-        return false;
+    if (node->flash) {
+        chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+        ok = chip->ram_block &&
+             sgi_cpu_flash_mode_word(memory_region_get_ram_ptr(chip),
+                                     node->flash_size, word);
     }
-    chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
-    if (!chip->ram_block) {
-        return false;
-    }
-    return sgi_cpu_flash_mode_word(memory_region_get_ram_ptr(chip),
-                                   node->flash_size, word);
+    sn0_flash_le_enable(le, ok && !extract32(*word, CP0C0_BE, 1));
+    return ok;
 }
 
 static void sn0_node_create_cpus(SN0NodeState *node)
@@ -888,8 +953,9 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                     sn0_node_processor(node), &error_fatal);
         }
         qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
+        node->flash_le[slice].node = node;
         r10k_cpu_set_mode_word_source(node->cpu[slice], sn0_node_mode_word,
-                                      node);
+                                      &node->flash_le[slice]);
         cpu_mips_irq_init_cpu(node->cpu[slice]);
         cpu_mips_clock_init(node->cpu[slice]);
     }
@@ -1039,6 +1105,41 @@ static void sn0_node_map_flash_reset_uncached(SN0NodeState *node,
     }
 }
 
+/* Each CPU's little-endian reset window, on only while it is little-endian. */
+static void sn0_node_map_flash_le(SN0NodeState *node)
+{
+    const SN0ModelAddressMap *map = sn0_node_address_map();
+    const SN0ModelRegion *flash_reset = &map->flash_reset;
+    hwaddr own = sn0_model_node_address(map, &map->memory, node->nasid,
+                                        flash_reset->offset);
+    hwaddr nodeless = sn0_model_node_address(map, &map->memory, 0,
+                                             flash_reset->offset);
+    bool uncached = sn0_node_bank0_reaches_flash(node);
+
+    for (unsigned int slice = 0; slice < node->nr_cpus; slice++) {
+        SN0FlashLe *le = &node->flash_le[slice];
+
+        for (unsigned int view = 0; view < 2; view++) {
+            hwaddr addr = view ? own : nodeless;
+            g_autofree char *name = g_strdup_printf(
+                "sn0.node%u.cpu%u.flash.le%u", node->nasid, slice, view);
+
+            if (view && own == nodeless) {
+                break;
+            }
+            memory_region_init_io(&le->view[view], OBJECT(node),
+                                  &sn0_flash_le_ops, le, name,
+                                  flash_reset->size);
+            memory_region_add_subregion_overlap(
+                uncached ? &node->cpu_uncached[slice] :
+                           &node->cpu_sysmem[slice],
+                addr, &le->view[view], 2);
+            memory_region_set_enabled(&le->view[view], false);
+            le->nr_views++;
+        }
+    }
+}
+
 static void sn0_node_map_boot_storage(SN0NodeState *node)
 {
     const SN0ModelAddressMap *map = sn0_node_address_map();
@@ -1140,6 +1241,8 @@ static void sn0_node_map_boot_storage(SN0NodeState *node)
                                             node_base + flash_reset->offset,
                                             &node->flash_reset_view, 1);
     }
+
+    sn0_node_map_flash_le(node);
 
     /* RBOOT is a maintenance path, never a fetch path: no romd overlay. */
     memory_region_init_io(&node->flash_rboot_view, OBJECT(node),

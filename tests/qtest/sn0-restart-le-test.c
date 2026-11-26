@@ -19,7 +19,6 @@
 #define NI_PORT_RESET   0x600008
 #define BE_ENTRY        0x4000
 #define LE_FLASH_ENTRY  0x400
-#define LE_DISPATCH     0x8444
 /* The configuration block's signature and mode word, in flash. */
 #define CONFIG_MODE     0x64
 #define CONFIG_MAGIC    0x68
@@ -29,23 +28,39 @@
 #include "sgi-restart-le.h"
 
 /*
- * The reset vector must run under either byte order. Word 0 reads as
- * "beq $1,$1,+0x10" big-endian and "beq $0,$0,+0x2110" little-endian, so
- * each order branches to its own stub and no wrong-order instruction runs.
+ * A little-endian CPU runs each flash doubleword's words swapped, so every
+ * doubleword here holds one instruction and a nop and the dispatch runs once.
  */
+static void put_dword(uint8_t *img, unsigned int off, uint32_t first,
+                      uint32_t second)
+{
+    stl_be_p(img + off, first);
+    stl_be_p(img + off + 4, second);
+}
+
+static void put_dispatch(uint8_t *img)
+{
+    const uint32_t nop = mips_nop();
+
+    put_dword(img, 0x00, mips_mfc0(R_T0, 16), nop);
+    put_dword(img, 0x08, nop, mips_andi(R_T0, R_T0, CONFIG0_BE));
+    put_dword(img, 0x10, mips_branch(MIPS_OPC_BNE, R_T0, R_ZERO,
+                                     (BE_ENTRY - 0x14) / 4), nop);
+    put_dword(img, 0x18, nop, nop);
+    put_dword(img, 0x20, 0x08000000 | ((0x0fc00000 | LE_FLASH_ENTRY) >> 2),
+              nop);
+    put_dword(img, 0x28, nop, nop);
+}
+
 static void build_image(uint8_t *img, bool le_in_flash)
 {
     Code c = { .b = img, .pos = BE_ENTRY, .be = true };
 
     memset(img, 0, IMAGE_SIZE);
-    stl_be_p(img, 0x10210010);
-    stl_be_p(img + 0x44, 0x10000000 | (uint16_t)((BE_ENTRY - 0x44 - 4) / 4));
-    stl_le_p(img + LE_DISPATCH, 0x10000000 |
-             (uint16_t)((LE_FLASH_ENTRY - LE_DISPATCH - 4) / 4));
+    put_dispatch(img);
     emit_stub(&c, BE_BASE, BE_DONE, 0);
     if (le_in_flash) {
-        c.pos = LE_FLASH_ENTRY;
-        c.be = false;
+        c = (Code) { .b = img, .pos = LE_FLASH_ENTRY, .dword = true };
         emit_stub(&c, LE_BASE, LE_DONE, STUB_COUNT);
     }
 }
@@ -68,28 +83,40 @@ static QTestState *start(unsigned int smp, bool le_in_flash, const char *extra)
 }
 
 /* A bound flash is left as written; a -bios image's mode word is replaced. */
-static QTestState *start_flash(uint32_t word, bool signed_block,
-                               const char *extra)
+static void flash_image(uint8_t *img, uint32_t word, bool signed_block)
 {
-    g_autofree uint8_t *img = g_malloc(FLASH_SIZE);
+    memset(img, 0, FLASH_SIZE);
+    build_image(img, true);
+    stl_be_p(img + CONFIG_MODE, word);
+    if (signed_block) {
+        stq_be_p(img + CONFIG_MAGIC, 0x69703237636f6e66ULL);
+    }
+}
+
+static QTestState *start_flash_image(const uint8_t *img, const char *mem,
+                                     const char *extra)
+{
     g_autofree char *flash = NULL;
     QTestState *qts;
     int fd = g_file_open_tmp("sn0-restart-le-XXXXXX", &flash, NULL);
 
     g_assert_cmpint(fd, >=, 0);
-    build_image(img, true);
-    memset(img + IMAGE_SIZE, 0, FLASH_SIZE - IMAGE_SIZE);
-    stl_be_p(img + CONFIG_MODE, word);
-    if (signed_block) {
-        stq_be_p(img + CONFIG_MAGIC, 0x69703237636f6e66ULL);
-    }
     g_assert_cmpint(write(fd, img, FLASH_SIZE), ==, FLASH_SIZE);
     close(fd);
-    qts = qtest_initf("-M origin200 -m 128M -smp 1 -accel tcg %s "
-                      "-drive if=pflash,index=0,file=%s,format=raw", extra,
-                      flash);
+    qts = qtest_initf("-M origin200 -m %s -smp 1 -accel tcg %s "
+                      "-drive if=pflash,index=0,file=%s,format=raw", mem,
+                      extra, flash);
     unlink(flash);
     return qts;
+}
+
+static QTestState *start_flash(uint32_t word, bool signed_block,
+                               const char *extra)
+{
+    g_autofree uint8_t *img = g_malloc(FLASH_SIZE);
+
+    flash_image(img, word, signed_block);
+    return start_flash_image(img, "128M", extra);
 }
 
 #define check_big_endian(qts)       check_order(qts, true, 0)
@@ -302,6 +329,70 @@ static void test_flash_word_only_bit15(void)
     g_assert_cmpint(seen, ==, 1);
 }
 
+/* The flash doubleword the stubs read back, bytes 01 23 45 67 89 ab cd ef. */
+#define READ_OFF        0x800
+#define READ_MARKER     0x10
+#define READ_DONE       0x600d0001u
+#define R_S5            21
+#define OP_LBU          0x24
+
+/* Load the word at each half of the doubleword and the bytes at its ends. */
+static void emit_read_stub(Code *c, unsigned int base)
+{
+    const struct {
+        unsigned int op;
+        uint16_t off;
+    } reads[] = {
+        { 0x23, READ_OFF }, { 0x23, READ_OFF + 4 },
+        { OP_LBU, READ_OFF }, { OP_LBU, READ_OFF + 7 },
+    };
+
+    emit(c, mips_lui(R_S6, MAILBOX_KSEG_HI));
+    emit(c, mips_lui(R_S5, 0xbfc0));
+    for (int i = 0; i < ARRAY_SIZE(reads); i++) {
+        emit(c, mips_itype(reads[i].op, R_S5, R_T0, reads[i].off));
+        emit(c, mips_sw(R_T0, R_S6, MAILBOX_OFF + base + 4 * i));
+    }
+    li32(c, R_T0, READ_DONE);
+    emit(c, mips_sw(R_T0, R_S6, MAILBOX_OFF + base + READ_MARKER));
+    emit(c, mips_branch(MIPS_OPC_BEQ, R_ZERO, R_ZERO, -1));
+    emit(c, mips_nop());
+}
+
+/* Big-endian reads the image as stored; little-endian byte X is X ^ 7. */
+static void test_flash_reading(const void *data)
+{
+    const char *mem = data;
+    g_autofree uint8_t *img = g_malloc(FLASH_SIZE);
+    QTestState *qts;
+    Code be = { .b = img, .pos = BE_ENTRY, .be = true };
+    Code le = { .b = img, .pos = LE_FLASH_ENTRY, .dword = true };
+
+    flash_image(img, MODE_WORD_BE, true);
+    memset(img + BE_ENTRY, 0, 0x100);
+    memset(img + LE_FLASH_ENTRY, 0, 0x100);
+    emit_read_stub(&be, BE_BASE);
+    emit_read_stub(&le, LE_BASE);
+    stq_be_p(img + READ_OFF, 0x0123456789abcdefULL);
+
+    qts = start_flash_image(img, mem, "");
+    wait_mailbox(qts, BE_BASE + READ_MARKER, READ_DONE, true);
+    g_assert_cmphex(mailbox(qts, BE_BASE, true), ==, 0x01234567);
+    g_assert_cmphex(mailbox(qts, BE_BASE + 4, true), ==, 0x89abcdef);
+    g_assert_cmphex(mailbox(qts, BE_BASE + 8, true), ==, 0x01);
+    g_assert_cmphex(mailbox(qts, BE_BASE + 12, true), ==, 0xef);
+    qtest_quit(qts);
+
+    stl_be_p(img + CONFIG_MODE, MODE_WORD_LE);
+    qts = start_flash_image(img, mem, "");
+    wait_mailbox(qts, LE_BASE + READ_MARKER, READ_DONE, false);
+    g_assert_cmphex(mailbox(qts, LE_BASE, false), ==, 0x89abcdef);
+    g_assert_cmphex(mailbox(qts, LE_BASE + 4, false), ==, 0x01234567);
+    g_assert_cmphex(mailbox(qts, LE_BASE + 8, false), ==, 0xef);
+    g_assert_cmphex(mailbox(qts, LE_BASE + 12, false), ==, 0x01);
+    qtest_quit(qts);
+}
+
 /* A soft reset keeps the order; the cold reset that follows reloads it. */
 static void test_soft_reset_keeps_order(void)
 {
@@ -352,6 +443,11 @@ int main(int argc, char **argv)
                    test_flash_word_default_big);
     qtest_add_func("/mips64/sn0/restart-le/flash-word-only-bit15",
                    test_flash_word_only_bit15);
+    /* 2 GiB is four 512 MiB banks: only an uncached reference reaches flash. */
+    qtest_add_data_func("/mips64/sn0/restart-le/flash-reading",
+                        "128M", test_flash_reading);
+    qtest_add_data_func("/mips64/sn0/restart-le/flash-reading-bank0-512m",
+                        "2048M", test_flash_reading);
     qtest_add_func("/mips64/sn0/restart-le/flash-word-restart",
                    test_flash_word_restart);
     qtest_add_func("/mips64/sn0/restart-le/soft-reset",

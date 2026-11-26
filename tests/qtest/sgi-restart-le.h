@@ -50,6 +50,8 @@ typedef struct Code {
     uint8_t *b;
     unsigned int pos;
     bool be;
+    /* Little-endian code stored as a doubleword-invariant flash image. */
+    bool dword;
     /* Run first by a big-endian stub, for a machine that needs setting up. */
     void (*prologue)(struct Code *c);
     uint64_t md_config;
@@ -57,7 +59,9 @@ typedef struct Code {
 
 static void emit(Code *c, uint32_t w)
 {
-    if (c->be) {
+    if (c->dword) {
+        stl_be_p(c->b + (c->pos ^ 4), w);
+    } else if (c->be) {
         stl_be_p(c->b + c->pos, w);
     } else {
         stl_le_p(c->b + c->pos, w);

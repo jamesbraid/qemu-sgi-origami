@@ -880,6 +880,65 @@ passes; if the bits are strapped, the PROM stops with ``0xb4``
 (*inferred*, :src:`108-0161-002 p. A-30`). Which is true is *unknown*. The
 model does the first, and its tests show only what the model does.
 
+.. _sgi-ip27-flash-lanes:
+
+How a little-endian processor reads the node flash
+--------------------------------------------------
+
+A big-endian R10000 takes the first word of a 64-bit system-interface
+transfer from the high half and the second from the low half; a
+little-endian one takes them the other way round (*inferred* from
+:src:`r10000-users-manual-2.0 p. 104`, which gives the rule for a byte; the
+general rule is the manual's lane figure). What the Hub puts on those
+lanes for a flash read is described by no source held, so a flash
+doubleword has two readings for a little-endian processor. Either the Hub
+returns the doubleword unchanged whatever the processor's order, and the
+processor sees byte *X* of the window as image byte *X* ^ 7 (the word at
+*A* is the image word at *A* ^ 4, its bytes reversed), or the Hub follows
+the processor's order and it sees the image at *A* at *A*.
+
+The model implements the first, rated *inferred*. No :term:`Hub` or
+:term:`Bedrock` register held names a byte order, swap or lane, so a Hub
+that follows the processor would need an input nothing found supplies. The
+reverse-engineering notes on the lane question (chips
+``platforms/ip35/dual-boot.md`` and ``platforms/ip27/dual-boot.md``, commit
+``dd2ac81f42da``) rank this reading first and take the lane rule from the
+manual's byte example. The Hub itself is not described, and the second
+reading is not excluded.
+
+What the model does: a processor whose order is little-endian (bit 15 of the
+flash mode word clear, or after a restart, :ref:`sgi-ip27-mode-word-replay`)
+reads the reset window through a view that returns image byte *X* ^ 7 at *X*,
+for fetches and loads of any size. A big-endian processor reads the image as
+stored. The view follows the processor's order at every cold reset, at a
+restart and on loading a snapshot. It covers the reset window in the
+processor's own address space: the node-less and the node's own reset
+address, where a 512 MiB bank 0 leaves the flash to an uncached reference
+only. These limits are the model's choice, with the hardware *unknown*:
+
+- Writes through the little-endian view are dropped and logged. Which
+  address a little-endian processor's command writes reach is unknown.
+- The Hub's boot windows (``0x10000000`` and ``0x30000000``) and the Hub's
+  fast reset-window alias keep the byte reading for a little-endian
+  processor, so a processor that read flash through them would see
+  different bytes from the reset window. No test reads them that way.
+- Fetches through the view are one instruction a block, as for any device
+  region; only the first words of a little-endian stage run from flash.
+
+What would settle the reading: an instruction fetch from the reset vector
+by a little-endian processor on an Origin 200 or 2000 whose flash carries
+the neutral entry words (each executes once under either reading), or the
+Hub specification. Until then a guest image that runs only under one
+reading is relying on the model.
+
+The test is ``tests/qtest/sn0-restart-le-test.c``. A flash whose first
+doublewords run under either order, with Config bit 15 choosing the stage,
+brings up a little-endian stub only if instruction fetch follows the
+reading. The stubs then load the same flash doubleword as words and
+bytes: big-endian reads it as written, little-endian reads the words
+swapped and the bytes reversed, which the byte reading would not give.
+Both run with a 128 MiB and a 512 MiB bank 0.
+
 .. _sgi-sn-family-origin2000-xpress:
 
 Two-module racks and Xpress links
@@ -1956,6 +2015,8 @@ Origin 200 and Origin 2000:
 - Which chip loads the flash word into the processor at a cold reset, and
   whether a board strap can override it
   (:ref:`sgi-ip27-mode-word-replay`).
+- Whether the Hub returns a flash doubleword unchanged to a little-endian
+  processor (:ref:`sgi-ip27-flash-lanes`).
 - What ``rst`` reaches and which processor entry it gives.
 
 .. _sgi-onyx2-unknowns:
@@ -2019,7 +2080,9 @@ qtests:
   change of the processors, its entry address, its refusals and the
   resets that undo it, and the flash mode word: bit 15 clear comes up
   little-endian and stays so across cold resets, the stock word and an
-  unsigned block stay big-endian, a soft reset keeps the order.
+  unsigned block stay big-endian, a soft reset keeps the order. It also
+  pins how each order reads the flash reset window
+  (:ref:`sgi-ip27-flash-lanes`).
 - ``tests/qtest/sgi-graphics-pipes-test.c``: the graphics-pipe placement
   and refusals.
 

@@ -2030,12 +2030,12 @@ static void test_local_flash_words(gconstpointer data)
 {
     QTestState *qts;
     g_autoptr(GString) args = g_string_new(NULL);
-    const uint32_t words[] = { 0x13579bdf, 0x2468ace0, 0x5aa53cc3, 0xc33ca55a };
+    const uint32_t words[] = { 0x13579bdf, 0x2468ace0, 0x5aa5bcc3, 0xc33ca55a };
     const uint64_t views[] = { LOCAL_FLASH_VIEW, RESET_FLASH_VIEW };
 
     g_string_printf(args, "-M %s -smp 8 -m 256M "
                     "-d unimp,guest_errors", (const char *)data);
-    /* Mapping fixtures only: these words do not define CPU reset modes. */
+    /* Bit 15 set in each: a clear one makes its CPUs little-endian. */
     for (unsigned int node = 0; node < G_N_ELEMENTS(words); node++) {
         g_string_append_printf(args, " -device sgi-sn0-node-flash-test,"
                                "node=%u,word=%u", node, words[node]);

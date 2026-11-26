@@ -11992,6 +11992,7 @@ static void sgi_machine_restart_resync(void *opaque)
             sn1_node_resync_cpus(SN1_NODE(s->bedrock_nodes[n]));
         } else {
             sgi_hub_resync_cpus(&s->nodes[n]->hub);
+            sn0_node_sync_flash_order(s->nodes[n]);
         }
     }
 }

@@ -155,6 +155,13 @@ typedef struct SN0BackdoorState {
     uint64_t writes;            /* through the callback, for tracing */
 } SN0BackdoorState;
 
+/* One processor's little-endian view of its node's flash reset window. */
+typedef struct SN0FlashLe {
+    struct SN0NodeState *node;
+    MemoryRegion view[2];
+    unsigned int nr_views;
+} SN0FlashLe;
+
 typedef struct SN0NodeState {
     SysBusDevice parent_obj;
 
@@ -255,6 +262,7 @@ typedef struct SN0NodeState {
      * vector fetches from, and at this node's own.
      */
     MemoryRegion flash_reset_uncached[SN0_MAX_CPUS_PER_NODE][2];
+    SN0FlashLe flash_le[SN0_MAX_CPUS_PER_NODE];
     MemoryRegion flash_hub_view;
     MemoryRegion flash_rboot_view;
     MemoryRegion flash_hub_fast;
@@ -285,6 +293,7 @@ DECLARE_INSTANCE_CHECKER(SN0NodeState, SN0_NODE, TYPE_SGI_SN0_NODE)
  * be reached through.
  */
 void sn0_node_set_power(SN0NodeState *node, bool on);
+void sn0_node_sync_flash_order(SN0NodeState *node);
 
 /*
  * Builds node's onboard base I/O (a Bridge and an sgi-baseio behind it,
