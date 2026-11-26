@@ -10,14 +10,21 @@
 #include "sgi-test.h"
 
 #define IMAGE_SIZE      0x10000
+#define FLASH_SIZE      0x100000
 #define MAILBOX_PHYS    0x200c00u
 #define MAILBOX_KSEG_HI 0x8020
 #define LE_RAM_ENTRY    0x300000u
 #define PI_CPU_ENABLE_B 0x58
+#define PI_SOFT_RESET   0x80
 #define NI_PORT_RESET   0x600008
 #define BE_ENTRY        0x4000
 #define LE_FLASH_ENTRY  0x400
 #define LE_DISPATCH     0x8444
+/* The configuration block's signature and mode word, in flash. */
+#define CONFIG_MODE     0x64
+#define CONFIG_MAGIC    0x68
+#define MODE_WORD_BE    0x1211a785u
+#define MODE_WORD_LE    0x12112785u
 
 #include "sgi-restart-le.h"
 
@@ -57,6 +64,31 @@ static QTestState *start(unsigned int smp, bool le_in_flash, const char *extra)
     qts = qtest_initf("-M origin200 -m 128M -smp %u -bios %s -accel tcg %s",
                       smp, bios, extra);
     unlink(bios);
+    return qts;
+}
+
+/* A bound flash is left as written; a -bios image's mode word is replaced. */
+static QTestState *start_flash(uint32_t word, bool signed_block,
+                               const char *extra)
+{
+    g_autofree uint8_t *img = g_malloc(FLASH_SIZE);
+    g_autofree char *flash = NULL;
+    QTestState *qts;
+    int fd = g_file_open_tmp("sn0-restart-le-XXXXXX", &flash, NULL);
+
+    g_assert_cmpint(fd, >=, 0);
+    build_image(img, true);
+    memset(img + IMAGE_SIZE, 0, FLASH_SIZE - IMAGE_SIZE);
+    stl_be_p(img + CONFIG_MODE, word);
+    if (signed_block) {
+        stq_be_p(img + CONFIG_MAGIC, 0x69703237636f6e66ULL);
+    }
+    g_assert_cmpint(write(fd, img, FLASH_SIZE), ==, FLASH_SIZE);
+    close(fd);
+    qts = qtest_initf("-M origin200 -m 128M -smp 1 -accel tcg %s "
+                      "-drive if=pflash,index=0,file=%s,format=raw", extra,
+                      flash);
+    unlink(flash);
     return qts;
 }
 
@@ -114,6 +146,15 @@ static void reset_to_big(QTestState *qts, bool hub)
     g_assert_true(order_is(qts, "big"));
 }
 
+/* A cold reset loads the flash word, here with bit 15 clear. */
+static void reset_to_little(QTestState *qts)
+{
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    check_little_endian(qts, 1);
+    g_assert_true(order_is(qts, "little"));
+}
+
 /* With no entry the CPU takes the reset vector, in either order. */
 static void test_reset_vector(void)
 {
@@ -166,6 +207,117 @@ static void test_snapshot_load(void)
     qtest_quit(qts);
 }
 
+/*
+ * Bit 15 clear in the flash word comes up little-endian with no harness
+ * restart, and both cold resets load it again.
+ */
+static void test_flash_word_little(void)
+{
+    QTestState *qts = start_flash(MODE_WORD_LE, true, "");
+
+    check_little_endian(qts, 1);
+    g_assert_true(order_is(qts, "little"));
+    for (int hub = 1; hub >= 0; hub--) {
+        qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+        if (hub) {
+            qtest_writeq(qts, HUB_LOCAL + NI_PORT_RESET, 0x81);
+        } else {
+            qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+        }
+        check_little_endian(qts, 1);
+        g_assert_true(order_is(qts, "little"));
+    }
+    qtest_quit(qts);
+}
+
+/* The stock word stays big-endian, as does a clear bit in an unsigned block. */
+static void test_flash_word_default_big(void)
+{
+    QTestState *qts = start_flash(MODE_WORD_BE, true, "");
+
+    check_big_endian(qts);
+    g_assert_true(order_is(qts, "big"));
+    qtest_quit(qts);
+
+    qts = start_flash(MODE_WORD_LE, false, "");
+    check_big_endian(qts);
+    g_assert_true(order_is(qts, "big"));
+    qtest_quit(qts);
+}
+
+/* The restart overrides the flash word until the next cold reset. */
+static void test_flash_word_restart(void)
+{
+    QTestState *qts = start_flash(MODE_WORD_LE, true, "");
+
+    check_little_endian(qts, 1);
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    set_order(qts, "big");
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    qtest_qmp_assert_success(qts, "{'execute': 'cont'}");
+    check_big_endian(qts);
+    g_assert_true(order_is(qts, "big"));
+
+    reset_to_little(qts);
+    qtest_quit(qts);
+}
+
+/*
+ * Only bit 15 is applied: a word whose cache and other fields differ from the
+ * processor's runs with the same Config0 as one that does not, and is logged
+ * once however many cold resets follow.
+ */
+static void test_flash_word_only_bit15(void)
+{
+    const uint32_t odd = MODE_WORD_LE ^ (2u << 16) ^ (1u << 24);
+    const char *note = "names another secondary cache";
+    g_autofree char *log = NULL;
+    g_autofree char *args = NULL;
+    g_autofree char *text = NULL;
+    QTestState *qts = start_flash(MODE_WORD_LE, true, "");
+    uint32_t config0;
+    int fd = g_file_open_tmp("sn0-restart-le-log-XXXXXX", &log, NULL);
+    int seen = 0;
+
+    check_little_endian(qts, 1);
+    config0 = mailbox(qts, LE_BASE + W_CONFIG0, false);
+    qtest_quit(qts);
+
+    g_assert_cmpint(fd, >=, 0);
+    close(fd);
+    args = g_strdup_printf("-d unimp -D %s", log);
+    qts = start_flash(odd, true, args);
+    check_little_endian(qts, 1);
+    g_assert_cmphex(mailbox(qts, LE_BASE + W_CONFIG0, false), ==, config0);
+    reset_to_little(qts);
+    g_assert_cmphex(mailbox(qts, LE_BASE + W_CONFIG0, false), ==, config0);
+    qtest_quit(qts);
+
+    g_assert_true(g_file_get_contents(log, &text, NULL, NULL));
+    unlink(log);
+    for (const char *at = strstr(text, note); at;
+         at = strstr(at + strlen(note), note)) {
+        seen++;
+    }
+    g_assert_cmpint(seen, ==, 1);
+}
+
+/* A soft reset keeps the order; the cold reset that follows reloads it. */
+static void test_soft_reset_keeps_order(void)
+{
+    QTestState *qts = start(1, true, "");
+
+    check_big_endian(qts);
+    restart(qts, 0);
+    check_little_endian(qts, 1);
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    qtest_writeq(qts, HUB_LOCAL + PI_SOFT_RESET, 1);
+    check_little_endian(qts, 1);
+    g_assert_true(order_is(qts, "little"));
+    reset_to_big(qts, true);
+    qtest_quit(qts);
+}
+
 static void test_refusals(void)
 {
     QTestState *qts = start(1, false, "");
@@ -194,6 +346,16 @@ int main(int argc, char **argv)
                         GUINT_TO_POINTER(2), test_entry);
     qtest_add_func("/mips64/sn0/restart-le/reset-vector", test_reset_vector);
     qtest_add_func("/mips64/sn0/restart-le/snapshot-load", test_snapshot_load);
+    qtest_add_func("/mips64/sn0/restart-le/flash-word-little",
+                   test_flash_word_little);
+    qtest_add_func("/mips64/sn0/restart-le/flash-word-default-big",
+                   test_flash_word_default_big);
+    qtest_add_func("/mips64/sn0/restart-le/flash-word-only-bit15",
+                   test_flash_word_only_bit15);
+    qtest_add_func("/mips64/sn0/restart-le/flash-word-restart",
+                   test_flash_word_restart);
+    qtest_add_func("/mips64/sn0/restart-le/soft-reset",
+                   test_soft_reset_keeps_order);
     qtest_add_func("/mips64/sn0/restart-le/refusals", test_refusals);
     return g_test_run();
 }

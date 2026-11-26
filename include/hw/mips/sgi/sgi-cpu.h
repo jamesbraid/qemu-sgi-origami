@@ -37,6 +37,13 @@ bool sgi_cpu_apply_processor(DeviceState *dev,
                              const SGIModelProcessor *processor,
                              Error **errp);
 
+/*
+ * The mode word in the configuration block of the @size bytes of boot flash
+ * at @flash; false when the block's signature is absent.
+ */
+bool sgi_cpu_flash_mode_word(const uint8_t *flash, size_t size,
+                             uint32_t *word);
+
 /* The emulator-only restart behind x-cpu-byte-order and x-restart-entry. */
 
 /* "big" or "little", from @cpu's Config0.BE; "big" with no CPU yet. */

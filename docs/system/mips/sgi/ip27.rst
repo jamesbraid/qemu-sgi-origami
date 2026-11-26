@@ -823,6 +823,63 @@ the processors' Config stops every processor with boot-progress code
 configuration must therefore equal the flash word, and a stock PROM boot
 is the discriminating test.
 
+.. _sgi-ip27-mode-word-replay:
+
+Where a cold reset gets the mode word
+-------------------------------------
+
+A processor loads its mode word again at power-on and at every cold reset,
+and a soft reset or an NMI keeps what it loaded (*established*,
+:src:`r10000-users-manual-2.0 p. 160-165`,
+:src:`r10000-users-manual-2.0 p. 336-339`). The stock PROM reads the node's
+flash word back at every cold start to compare it with Config
+(*software expectation*, :src:`ip27-prom-6.156 0x1fc00c80`), and the PROM
+manual ties a node's cache size and clock speed to its flash image
+(*established*, :src:`108-0170-001 p. 4-34`). That the flash word is what
+the processor loads is therefore *inferred*, since no Hub register holds a
+mode word that software could write before the first instruction fetch.
+Which chip reads the flash and drives the word onto the processor's system
+interface, and whether a board strap can override it, are *unknown*.
+
+The resets that load the word again are power-on and a power cycle
+(*established*) and the whole-Hub reset that the PROM's ``reset`` command
+and IRIX's restart make by storing ``0x81`` to the network interface's port
+reset register (*software expectation*,
+:src:`ip27-prom-6.156 0x1fc00ee0`; the reload itself is *inferred*). Which
+processor entry the controller's reset gives is *unknown*; the PROM's
+two-pass reset expects the cold path (*software expectation*), and the model
+gives it a cold reset, so it reloads the word, an *approximation*. The Hub's
+soft-reset register and an NMI do not reload it (*software expectation* and
+*established*).
+
+The model reads the word whenever it cold-resets a processor. Each
+processor takes bit 15 of the word at offset ``0x64`` of its own node's
+boot flash as its byte order, so a machine reset, a whole-Hub reset, a
+module reset and a module power-off come up in the order the flash says. A
+module's processors are reset as the power goes, so the word is read then.
+The soft-reset and NMI triggers are exceptions, not resets, and leave the
+order alone. The reader belongs to the processor model: no Hub register
+carries the word and the Hub does not drive it. That a reader exists at all
+is an *approximation*, as are these limits:
+
+- Only bit 15 reaches the processor. The other fields of Config are fixed
+  when the processor is built, because they size the secondary cache and
+  the catalogue's word is also what the machine writes to a node's flash.
+  A word that names another secondary-cache size is logged once and not
+  applied.
+- A flash with no ``ip27conf`` magic at offset ``0x68`` supplies no word,
+  and the processor comes up big-endian. What an unformatted part would
+  load is *unknown*.
+- A node's flash that the machine builds from ``-bios`` carries the
+  processor module's word, bit 15 set. A bound ``node<N>-flash`` keeps the
+  block it was written with.
+
+No word with bit 15 clear has been run on hardware. If the word is
+replayed, such a node comes up little-endian and the stock PROM's check
+passes; if the bits are strapped, the PROM stops with ``0xb4``
+(*inferred*, :src:`108-0161-002 p. A-30`). Which is true is *unknown*. The
+model does the first, and its tests show only what the model does.
+
 .. _sgi-sn-family-origin2000-xpress:
 
 Two-module racks and Xpress links
@@ -1699,8 +1756,11 @@ RAM runs without patching the PROM image; the choice of entry is an
 *approximation* with no hardware counterpart. With the default, 0, the
 processors take the reset vector and run the flash image in the new order.
 
-A machine reset or a Hub port reset brings the processors back big-endian,
-as the mode bits set them. Both flush the translated blocks. A restarted
+A machine reset or a Hub port reset loads the node's flash word again
+(:ref:`sgi-ip27-mode-word-replay`), which brings the processors back
+big-endian unless that word has bit 15 clear. Both flush the translated
+blocks. The restart is the secondary route: it overrides the order the
+flash word gave, until the next cold reset. A restarted
 machine can be saved: the byte order travels in Config, so a loaded
 snapshot runs in the order it saved, and a load starts with a machine reset.
 
@@ -1893,6 +1953,9 @@ Origin 200 and Origin 2000:
   part (:ref:`sgi-origin2000-module-management`).
 - Which midplane record an IP27-era module carried.
 - How the firmware compares the flash mode word with Config.
+- Which chip loads the flash word into the processor at a cold reset, and
+  whether a board strap can override it
+  (:ref:`sgi-ip27-mode-word-replay`).
 - What ``rst`` reaches and which processor entry it gives.
 
 .. _sgi-onyx2-unknowns:
@@ -1954,7 +2017,9 @@ qtests:
   doors, and the per-node bank layouts, including the 512 MiB bank 0.
 - ``tests/qtest/sn0-restart-le-test.c``: the emulator-only byte-order
   change of the processors, its entry address, its refusals and the
-  resets that undo it.
+  resets that undo it, and the flash mode word: bit 15 clear comes up
+  little-endian and stays so across cold resets, the stock word and an
+  unsigned block stay big-endian, a soft reset keeps the order.
 - ``tests/qtest/sgi-graphics-pipes-test.c``: the graphics-pipe placement
   and refusals.
 

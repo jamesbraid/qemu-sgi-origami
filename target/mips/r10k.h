@@ -173,6 +173,9 @@ typedef struct R10KCPUProfile {
     bool valid;
 } R10KCPUProfile;
 
+/* The board's mode word for a cold reset: true and @word, or false if none. */
+typedef bool (*R10KModeWordFn)(void *opaque, uint32_t *word);
+
 typedef struct R10KState {
     /*
      * Writable-bit masks, copied from the CPU definition at reset. Not
@@ -278,6 +281,10 @@ typedef struct R10KState {
     R10KBusSystemRequestFn bus_request;
     void *bus_request_opaque;
     uint16_t requester_id;
+    R10KModeWordFn mode_word;
+    void *mode_word_opaque;
+    bool mode_word_default_big;
+    bool mode_word_logged;
 
     /*
      * Secondary-cache storage, allocated at realize to the fitted capacity
@@ -324,6 +331,8 @@ void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
                               R10KBusSystemRequestFn handler,
                               void *opaque);
 void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id);
+void r10k_cpu_set_mode_word_source(MIPSCPU *cpu, R10KModeWordFn source,
+                                   void *opaque);
 bool mips_r12000a_enabled(const MIPSCPU *cpu);
 bool mips_r10k_has_syndrome(const MIPSCPU *cpu);
 #ifndef CONFIG_USER_ONLY

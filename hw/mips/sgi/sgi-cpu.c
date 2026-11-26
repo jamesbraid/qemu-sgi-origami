@@ -13,6 +13,7 @@
 #include "hw/core/qdev.h"
 #include "hw/core/qdev-properties.h"
 #include "hw/mips/sgi/sgi-cpu.h"
+#include "hw/mips/sgi/initial-flash.h"
 #include "cpu.h"
 #include "exec/tb-flush.h"
 
@@ -100,6 +101,19 @@ bool sgi_cpu_apply_processor(DeviceState *dev,
            sgi_cpu_set_prid(dev, processor->prid, errp);
 }
 
+bool sgi_cpu_flash_mode_word(const uint8_t *flash, size_t size,
+                             uint32_t *word)
+{
+    if (!flash || size < SGI_IP27_CONFIG_OFFSET + SGI_IP27_CONFIG_SIZE ||
+        ldq_be_p(flash + SGI_IP27_CONFIG_OFFSET +
+                 SGI_IP27_CONFIG_MAGIC_OFFSET) != SGI_IP27_CONFIG_MAGIC) {
+        return false;
+    }
+    *word = ldl_be_p(flash + SGI_IP27_CONFIG_OFFSET +
+                     SGI_IP27_CONFIG_MODE_WORD_OFFSET);
+    return true;
+}
+
 typedef struct SGICpuRestart {
     bool big;
     uint64_t entry;
@@ -136,7 +150,10 @@ static void sgi_cpu_restart_work(CPUState *first, run_on_cpu_data data)
 
         cpu->is_big_endian = r->big;
         cpu_reset(cs);
-        /* A later machine reset comes back big-endian. */
+        /* A board's mode word set the order at reset; the restart wins. */
+        cpu->env.CP0_Config0 = deposit32(cpu->env.CP0_Config0, CP0C0_BE, 1,
+                                         r->big);
+        /* A later cold reset loads the board's word, or big-endian. */
         cpu->is_big_endian = true;
         if (r->entry) {
             cpu_set_pc(cs, (uint64_t)(int32_t)0x80000000 + r->entry);

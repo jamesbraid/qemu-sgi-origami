@@ -1193,14 +1193,31 @@ Changing the processors' byte order
 The mode words of the Origin 300, Fuel and Origin 3000 processor boards come
 from the stock PROM's table, with bit 15 set, so the processors start
 big-endian (*software expectation*). The IP53 boards' words carry bit 15
-set by the same reading, *inferred*, since no capture of them is held. What
-drives the mode bits at reset is *unknown*, so no route from the stock PROM
-to a little-endian processor is known. The two machine properties of
+set by the same reading, *inferred*, since no capture of them is held. The
+IP35 PROM reads the same flash word at the same offset and compares it with
+Config at every cold start (*software expectation*,
+:src:`ip35-prom-6.210 0x1fc006a8`), so a cold reset is taken to load the
+processors' mode word from the node's boot flash as on the Origin 200 and
+2000 (*inferred*; :ref:`sgi-ip27-mode-word-replay` gives the reading and
+what is *unknown*). The model reads the word the same way at every cold
+reset of a processor; that a reader exists at all is an *approximation*,
+as on that page.
+
+The machine writes the topology's mode word over the loaded flash's at
+every start, on every board except the IP53 profiles
+(:ref:`sgi-prom-image-ip35-values`), so the processors see an image's own
+bit 15 only on those. The overwrite stands in for the board's node EEPROM
+record, which the stock PROM compares with the flash record after
+diagnostics (*software expectation*) and which the model does not carry,
+an *approximation*. A word programmed into the part at run time is read at
+the next cold reset on every board.
+
+The two machine properties of
 :ref:`sgi-ip27-cpu-byte-order`, ``x-cpu-byte-order`` and
-``x-restart-entry``, give the emulator one on every machine of this page
-and of :doc:`ip53`. Neither is hardware, and no register, memory window or
-device of the guest can set them. The IP27 page describes what they do;
-the parts specific to the Bedrock follow.
+``x-restart-entry``, give the emulator a second route on every machine of
+this page and of :doc:`ip53`. Neither is hardware, and no register, memory
+window or device of the guest can set them. The IP27 page describes what
+they do; the parts specific to the Bedrock follow.
 
 Setting ``x-cpu-byte-order`` restarts every processor of every node at once
 with the CPU model's cold reset, in one exclusive section, and flushes the
@@ -1228,8 +1245,22 @@ reversed doubleword.
 A machine reset, a Bedrock port reset or soft reset that resets every
 powered node, and the restart of a single node by a port reset
 (:ref:`sgi-bedrock-node-restart`) all bring the processors back
-big-endian, as the mode bits set them, and flush the translated blocks. A
-node's power loss and return do the same. The discriminating test is
+big-endian unless the flash word says otherwise, and flush the translated
+blocks. A node's power loss and return do the same.
+
+The local block's soft reset, bit 0 of its soft reset register, restarts the
+node as a local reset does (:ref:`sgi-bedrock-reset`), which cold-resets
+each processor, so it reloads the flash word too. That is an *approximation*.
+A processor's own soft reset keeps its mode bits (*established*,
+:src:`r10000-users-manual-2.0 p. 160-165`), and the stock PROM's
+``softreset`` command stores 1 to a register at the same low offset and says
+it sends a soft reset to the CPUs (*software expectation*,
+:src:`ip35-prom-6.210 0x1fc1c3c0`), so hardware may keep the order. No IP35
+source grades whether it does; the grade that exists is for the Hub's soft
+reset on the IP27. An NMI from a processor interface's NMI register or the
+L1 is not a reset and keeps the order.
+
+The discriminating test for all of this is
 ``tests/qtest/sn1-restart-le-test.c``. A big-endian stub in flash and a
 little-endian stub at the entry or the reset vector each record Config bit
 15, the Cause register and a non-palindromic word read back as raw RAM
@@ -1237,7 +1268,11 @@ bytes, and count the processors that ran. It restarts an Origin 300 and an
 Origin 350, checks that the interrupt line held before the restart reaches
 Cause after it, that a machine reset and a node's port reset both return
 the processors to big-endian, and that a restart of one node of a two-node
-machine does too.
+machine does too. It also starts an Origin 350 from a flash word with bit
+15 clear, which runs every processor little-endian before and after a
+machine reset, and shows an Origin 300's image word replaced at start. An
+NMI leaves a restarted Origin 300 little-endian, and the local block's soft
+reset returns it to big-endian, the approximation above.
 
 .. _sgi-ip35-running:
 

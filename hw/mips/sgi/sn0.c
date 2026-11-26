@@ -685,6 +685,23 @@ static unsigned int sn0_node_cpu_slots(void)
     return SN0_HUB_CPU_SLOTS_PER_NODE;
 }
 
+/* The mode word this node's boot flash replays to its processors. */
+static bool sn0_node_mode_word(void *opaque, uint32_t *word)
+{
+    SN0NodeState *node = opaque;
+    MemoryRegion *chip;
+
+    if (!node->flash) {
+        return false;
+    }
+    chip = sysbus_mmio_get_region(SYS_BUS_DEVICE(node->flash), 0);
+    if (!chip->ram_block) {
+        return false;
+    }
+    return sgi_cpu_flash_mode_word(memory_region_get_ram_ptr(chip),
+                                   node->flash_size, word);
+}
+
 static void sn0_node_create_cpus(SN0NodeState *node)
 {
     MemoryRegion *system = get_system_memory();
@@ -871,6 +888,8 @@ static void sn0_node_create_cpus(SN0NodeState *node)
                                     sn0_node_processor(node), &error_fatal);
         }
         qdev_realize(DEVICE(node->cpu[slice]), NULL, &error_abort);
+        r10k_cpu_set_mode_word_source(node->cpu[slice], sn0_node_mode_word,
+                                      node);
         cpu_mips_irq_init_cpu(node->cpu[slice]);
         cpu_mips_clock_init(node->cpu[slice]);
     }

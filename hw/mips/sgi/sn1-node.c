@@ -854,6 +854,21 @@ static void sn1_apply_cpu_config(SN1NodeState *node, uint8_t *payload)
     sgi_ip35_flash_configure(payload, &values);
 }
 
+/* The mode word this node's flash replays, after sn1_apply_cpu_config(). */
+static bool sn1_node_mode_word(void *opaque, uint32_t *word)
+{
+    SN1NodeState *node = opaque;
+    MemoryRegion *flash = node->boot_flash ?
+        SGI_BEDROCK_FLASH(node->boot_flash)->flash_mmio[0] : &node->prom;
+
+    /* A flash part is a ROM device and the immutable image plain RAM. */
+    if (!flash || !flash->ram_block) {
+        return false;
+    }
+    return sgi_cpu_flash_mode_word(memory_region_get_ram_ptr(flash),
+                                   memory_region_size(flash), word);
+}
+
 static void sn1_flash_reject_write(hwaddr offset, uint64_t value)
 {
     qemu_log_mask(LOG_UNIMP,
@@ -2462,6 +2477,7 @@ static bool sn1_node_create_cpus(SN1NodeState *node, MachineState *machine,
         }
         qdev_realize(cpu_dev, NULL, &error_fatal);
         r10k_cpu_set_bus_handler(cpu, sn1_node_bus_request, node);
+        r10k_cpu_set_mode_word_source(cpu, sn1_node_mode_word, node);
         cpu_mips_irq_init_cpu(cpu);
         cpu_mips_clock_init(cpu);
         node->cpu[i] = cpu;

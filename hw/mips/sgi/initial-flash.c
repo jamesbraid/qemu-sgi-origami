@@ -47,7 +47,7 @@ static void sgi_ip27_flash_template(uint8_t *flash, size_t flash_size,
 
     /* The field order and widths are the IP27 firmware's. */
     stl_be_p(config + 0x00, 0xb);                  /* timing constant */
-    stl_be_p(config + 0x04, values->cpu_mode_bits);
+    stl_be_p(config + SGI_IP27_CONFIG_MODE_WORD_OFFSET, values->cpu_mode_bits);
     stq_be_p(config + SGI_IP27_CONFIG_MAGIC_OFFSET, SGI_IP27_CONFIG_MAGIC);
     stq_be_p(config + 0x10, values->cpu_clock_hz);
     stq_be_p(config + 0x18, SN0_HUB_CLOCK_HZ);
@@ -106,7 +106,7 @@ static void sgi_ip27_flash_configure(uint8_t *flash,
 
     old_sum = sgi_ip27_config_byte_sum(config);
     stl_be_p(config + SGI_IP27_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + 0x04, values->cpu_mode_bits);
+    stl_be_p(config + SGI_IP27_CONFIG_MODE_WORD_OFFSET, values->cpu_mode_bits);
     stq_be_p(config + 0x10, values->cpu_clock_hz);
     stl_be_p(config + SGI_IP27_CONFIG_FPROM_CYC_OFFSET, values->read_cycles);
     stl_be_p(config + SGI_IP27_CONFIG_MACHINE_TYPE_OFFSET,
@@ -131,7 +131,7 @@ void sgi_ip35_flash_configure(uint8_t *flash,
     uint8_t new_sum;
 
     stl_be_p(config + SGI_IP27_CONFIG_CHECKSUM_OFFSET, 0);
-    stl_be_p(config + 0x04, values->cpu_mode_word);
+    stl_be_p(config + SGI_IP27_CONFIG_MODE_WORD_OFFSET, values->cpu_mode_word);
     /* The low word of the 64-bit processor frequency. */
     stl_be_p(config + 0x14, values->cpu_clock_hz);
     stl_be_p(config + SGI_IP27_CONFIG_MACHINE_TYPE_OFFSET,

@@ -5,6 +5,7 @@
 #include "qemu/osdep.h"
 #include "qemu/units.h"
 #include "qemu/cutils.h"
+#include "qemu/log.h"
 #include "qapi/error.h"
 #include "qapi/visitor.h"
 #include "cpu.h"
@@ -504,6 +505,27 @@ static void r10k_clear(void *buf, size_t len)
     }
 }
 
+/* A cold reset reloads the board's mode word; only bit 15 is applied. */
+static void mips_r10k_latch_mode_word(MIPSCPU *cpu)
+{
+    R10KState *r10k = cpu->env.r10k;
+    const uint32_t geometry = (7u << CP0C0_R10K_SS) | (1u << CP0C0_R10K_SB);
+    uint32_t word, differs;
+
+    if (!r10k->mode_word(r10k->mode_word_opaque, &word)) {
+        cpu->is_big_endian = r10k->mode_word_default_big;
+        return;
+    }
+    cpu->is_big_endian = extract32(word, CP0C0_BE, 1);
+    differs = geometry & (word ^ cpu->env.cpu_model->CP0_Config0);
+    if (differs && !r10k->mode_word_logged) {
+        r10k->mode_word_logged = true;
+        qemu_log_mask(LOG_UNIMP, "r10k: mode word 0x%08x names another "
+                      "secondary cache than the CPU's; kept as built\n",
+                      word);
+    }
+}
+
 void mips_r10k_cpu_reset(MIPSCPU *cpu)
 {
     CPUMIPSState *env = &cpu->env;
@@ -538,6 +560,9 @@ void mips_r10k_cpu_reset(MIPSCPU *cpu)
         r10k->CP0_EntryLo_extra_rw_bitmask =
             env->cpu_model->CP0_EntryLo_extra_rw_bitmask;
         r10k->xkseg_limit = env->cpu_model->xkseg_limit;
+        if (r10k->mode_word) {
+            mips_r10k_latch_mode_word(cpu);
+        }
     }
 
     if (mips_r10k_prid_property(env->cpu_model->name)) {
@@ -596,6 +621,16 @@ void r10k_cpu_set_bus_handler(MIPSCPU *cpu,
         qemu_add_machine_init_done_notifier(&r10k_bus_handler_notifier);
     }
 #endif
+}
+
+void r10k_cpu_set_mode_word_source(MIPSCPU *cpu, R10KModeWordFn source,
+                                   void *opaque)
+{
+    if (cpu->env.r10k) {
+        cpu->env.r10k->mode_word = source;
+        cpu->env.r10k->mode_word_opaque = opaque;
+        cpu->env.r10k->mode_word_default_big = cpu->is_big_endian;
+    }
 }
 
 void r10k_cpu_set_requester_id(MIPSCPU *cpu, uint16_t requester_id)

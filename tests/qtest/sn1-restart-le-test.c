@@ -16,6 +16,10 @@
 #define BE_ENTRY        0x4000
 #define LE_FLASH_ENTRY  0x400
 #define LE_DISPATCH     0x8444
+/* The configuration block's signature and mode word, in flash. */
+#define CONFIG_MODE     0x64
+#define CONFIG_MAGIC    0x68
+#define MODE_WORD_LE    0x549a2985u
 
 #define BEDROCK_LOCAL   (SPACE_IO + UINT64_C(0x01000000))
 #define MD_MEMORY_CONFIG UINT64_C(0x780008)
@@ -23,6 +27,9 @@
 #define PI_PENDING_MODIFY UINT64_C(0x90)
 #define PI_MASK_0_A     UINT64_C(0xa8)
 #define PI_MASK_0_B     UINT64_C(0xb8)
+#define PI_NMI_A        UINT64_C(0x70)
+#define PI_NMI_B        UINT64_C(0x78)
+#define LB_SOFT_RESET   UINT64_C(0x604018)
 #define PI1             UINT64_C(0x200000)
 #define CAUSE_IP_MASK   0xff00u
 #define PORT_RESET_LOCAL 4
@@ -74,12 +81,17 @@ static const Machine origin350 = {
 };
 
 /* Word 0 branches to a different stub in each byte order. */
-static void build_image(uint8_t *img, const Machine *m, bool le_in_flash)
+static void build_image(uint8_t *img, const Machine *m, bool le_in_flash,
+                        uint32_t mode_word)
 {
     Code c = { .b = img, .pos = BE_ENTRY, .be = true,
                .prologue = emit_configure_memory, .md_config = m->md_config };
 
     memset(img, 0, m->prom_size);
+    if (mode_word) {
+        stl_be_p(img + CONFIG_MODE, mode_word);
+        stq_be_p(img + CONFIG_MAGIC, 0x69703237636f6e66ULL);
+    }
     stl_be_p(img, 0x10210010);
     stl_be_p(img + 0x44, 0x10000000 | (uint16_t)((BE_ENTRY - 0x44 - 4) / 4));
     stl_le_p(img + LE_DISPATCH, 0x10000000 |
@@ -106,7 +118,8 @@ static char *temp_file(const uint8_t *data, size_t size)
 }
 
 /* Stopped, with the installed banks enabled, so a stub can be placed. */
-static QTestState *start(const Machine *m, bool le_in_flash)
+static QTestState *start_word(const Machine *m, bool le_in_flash,
+                              uint32_t mode_word)
 {
     g_autofree uint8_t *img = g_malloc(m->prom_size);
     g_autofree char *bios = NULL;
@@ -115,7 +128,7 @@ static QTestState *start(const Machine *m, bool le_in_flash)
     g_autofree char *drives = NULL;
     QTestState *qts;
 
-    build_image(img, m, le_in_flash);
+    build_image(img, m, le_in_flash, mode_word);
     bios = temp_file(img, m->prom_size);
     if (m->ip53) {
         stores = temp_file(NULL, 0x8000);
@@ -136,6 +149,11 @@ static QTestState *start(const Machine *m, bool le_in_flash)
     }
     qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, m->md_config);
     return qts;
+}
+
+static QTestState *start(const Machine *m, bool le_in_flash)
+{
+    return start_word(m, le_in_flash, 0);
 }
 
 static void cont(QTestState *qts)
@@ -247,6 +265,70 @@ static void test_node_restart(void)
     qtest_quit(qts);
 }
 
+/*
+ * An NMI keeps the order. The local block's soft reset restarts the node as a
+ * local reset does, so it loads the word again: an approximation.
+ */
+static void test_nmi_and_soft_reset(void)
+{
+    QTestState *qts = start(&origin300, true);
+
+    cont(qts);
+    check_big_endian(qts);
+    restart(qts, 0);
+    check_little_endian(qts, 2);
+
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    for (uint64_t pi = 0; pi <= PI1; pi += PI1) {
+        qtest_writeq(qts, BEDROCK_LOCAL + pi + PI_NMI_A, 1);
+        qtest_writeq(qts, BEDROCK_LOCAL + pi + PI_NMI_B, 1);
+    }
+    check_little_endian(qts, 2);
+    g_assert_true(order_is(qts, "little"));
+
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    qtest_writeq(qts, BEDROCK_LOCAL + LB_SOFT_RESET, 1);
+    check_big_endian(qts);
+    g_assert_true(order_is(qts, "big"));
+    qtest_quit(qts);
+}
+
+/* An IP53 flash keeps its block: bit 15 clear runs every CPU little-endian. */
+static void test_flash_word_ip53(void)
+{
+    QTestState *qts = start_word(&origin350, true, MODE_WORD_LE);
+
+    cont(qts);
+    check_order(qts, false, 0);
+    g_assert_true(order_is(qts, "little"));
+    for (unsigned int cpu = 0; cpu < origin350.cpus; cpu++) {
+        g_assert_false(cpu_is_big(qts, cpu));
+    }
+
+    /* A little-endian CPU cannot set the banks, and a reset clears them. */
+    qtest_qmp_assert_success(qts, "{'execute': 'stop'}");
+    qtest_qmp_assert_success(qts, "{'execute': 'system_reset'}");
+    qtest_writeq(qts, BEDROCK_LOCAL + MD_MEMORY_CONFIG, origin350.md_config);
+    qtest_memset(qts, MAILBOX_PHYS, 0, 0x40);
+    cont(qts);
+    check_order(qts, false, 0);
+    for (unsigned int cpu = 0; cpu < origin350.cpus; cpu++) {
+        g_assert_false(cpu_is_big(qts, cpu));
+    }
+    qtest_quit(qts);
+}
+
+/* Other IP35 boards get the machine's mode word over the image's at start. */
+static void test_flash_word_overwritten(void)
+{
+    QTestState *qts = start_word(&origin300, true, MODE_WORD_LE);
+
+    cont(qts);
+    check_big_endian(qts);
+    g_assert_true(order_is(qts, "big"));
+    qtest_quit(qts);
+}
+
 static void test_refusals(void)
 {
     QTestState *qts = start(&origin300, false);
@@ -275,6 +357,12 @@ int main(int argc, char **argv)
                         test_entry);
     qtest_add_func("/mips64/sn1/restart-le/reset-vector", test_reset_vector);
     qtest_add_func("/mips64/sn1/restart-le/node-restart", test_node_restart);
+    qtest_add_func("/mips64/sn1/restart-le/nmi-and-soft-reset",
+                   test_nmi_and_soft_reset);
+    qtest_add_func("/mips64/sn1/restart-le/flash-word-ip53",
+                   test_flash_word_ip53);
+    qtest_add_func("/mips64/sn1/restart-le/flash-word-overwritten",
+                   test_flash_word_overwritten);
     qtest_add_func("/mips64/sn1/restart-le/refusals", test_refusals);
     return g_test_run();
 }

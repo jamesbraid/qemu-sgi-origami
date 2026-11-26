@@ -585,6 +585,8 @@ recomputes the checksum adjustment:
 The machine applies them to the ``-bios`` payload, and to a bound store's
 loaded copy at every start. It does not rewrite the store file. It skips
 a bound store on an IP53 profile, whose block is authored with the store.
+The mode word the machine leaves in a block is the one the processors load
+at a cold reset (:ref:`sgi-ip27-mode-word-replay`).
 ``qemu-sgi-machine-init`` writes the same fields into a new store.
 
 - Machine type 2 for Fuel: a published Fuel ``flash -f`` session prompts
