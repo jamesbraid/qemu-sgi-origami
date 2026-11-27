@@ -1364,13 +1364,22 @@ at the overlay's; a frame table holds one word per line pointing at a run
 list of 16-bit entries, starting column in bits 15:5 and window ID in
 bits 4:0. The layout follows MAME's Newport VC2 model and matches every
 table the IRIX X server builds, *inferred*. The window ID indexes the
-XMAP main mode, whose bits 9:5 pick a 256-entry colour map; low field 3
-shows a 12-bit index, any other an 8-bit one, *inferred* from the X
-server's visuals. A nonzero overlay index covers the main planes when the
-window's overlay mode has bit 0 set, through the map in bits 7:3. A
-window ID whose bit is set in the XMAP buffer select under index 0 shows
-bank 1 instead of bank 0, an *approximation* of what the X server
-writes. The hardware rule is *unknown*.
+XMAP main mode, whose bits 9:5 pick a 256-entry colour map. Low fields 1
+and 3 are index modes: every word under them resolves through the map,
+the low 8 bits for field 1 and 12 bits for field 3, whatever paint
+stored it. Under any other mode each pixel shows by the model's
+per-pixel format tag, an *approximation*, and a CI8-tagged pixel there
+shows its low 8 bits. The index modes override the tag because a 4-byte
+copy, such as the X server's move of a window holding a GL drawable,
+stores every pixel as direct colour. Both are *inferred* from the X
+server's mode words: ``0x601`` to ``0x6e1`` (field 1) for its 8-bit
+windows, ``0x403`` (field 3) for its 12-bit window, and fields of 4 and
+more for its direct-colour visuals; fields 0 and 2 are *unknown*. A
+nonzero overlay index covers the main planes when the window's overlay
+mode has bit 0 set, through the map in bits 7:3. A window ID whose bit
+is set in the XMAP buffer select under index 0 shows bank 1 instead of
+bank 0, an *approximation* of what the X server writes. The hardware
+rule is *unknown*.
 
 The CMAP selector at ``0x070c30`` names a map in bits 4:0 and a first
 entry in bits 15:8; each 32-bit write to ``0x070d18`` stores the next

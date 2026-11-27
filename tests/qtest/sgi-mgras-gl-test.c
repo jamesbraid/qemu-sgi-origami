@@ -1889,6 +1889,26 @@ static void test_gl_deep_swap_shows_the_drawn_buffer_si(void)
     gl_deep_swap_shows_the_drawn_buffer(MACHINE_ARGS);
 }
 
+/* An index-mode window shows bank 1 through its map, never a deep slot. */
+static void test_gl_index_mode_ignores_the_deep_slot(void)
+{
+    QTestState *s = qtest_init(MACHINE_ARGS);
+
+    gl_deep_scene(s);
+    mgras_tag_wid(s, 256, 256, 383, 383, 14);
+    gl_draw_buffer(s, 4);
+    gl_clear_color(s, 1, 0, 1, 1);
+    gl_word(s, GL_CLEAR_COLOR_BUFFER);
+    gl_swap(s, 0, 1u << 14);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0xff00ff);
+
+    qtest_writeb(s, REG_XMAP_INDEX, 14 << 2);
+    qtest_writel(s, REG_XMAP_MAIN_MODE, 0x601);
+    mgras_write_cmap_entry(s, 16, 0, 0x11223300);
+    g_assert_cmphex(mgras_test_display_pixel(s, 300, 300), ==, 0x112233);
+    qtest_quit(s);
+}
+
 /*
  * A clear of the 128x128 window is large enough to draw in bands of rows,
  * and MGRAS's GL target lets it: the clear starts the rasterizer's band
@@ -2685,6 +2705,9 @@ int main(int argc, char **argv)
         "sn0/origin2000/mgras/"
         "gl-deep-swap-shows-the-drawn-buffer-si",
         test_gl_deep_swap_shows_the_drawn_buffer_si, false);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/gl-index-mode-ignores-the-deep-slot",
+        test_gl_index_mode_ignores_the_deep_slot, false);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/"
         "gl-shallow-swap-still-shows-bank-one-ssi",

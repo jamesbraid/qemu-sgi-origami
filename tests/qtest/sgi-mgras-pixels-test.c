@@ -1155,6 +1155,64 @@ static void test_dma_image_transfer_draws_ci8_indices(void)
 }
 
 /*
+ * The X server moves a window holding a GL drawable with 4-byte reads and
+ * draws; its index frame must still show through the window's map.
+ */
+static void dma_copy_keeps_index_colours(uint32_t mode, unsigned int map)
+{
+    static const uint8_t index[2] = { 0x14, 0x14 };
+    uint8_t got[8];
+
+    mgras_reset();
+    mgras_enter_context(qts);
+    qtest_writel(qts, REG_VC3_INDEXDATA, VC3_INDEXDATA(0x1e, 0x4));
+    qtest_writeb(qts, REG_XMAP_INDEX, 0);
+    qtest_writel(qts, REG_XMAP_MAIN_MODE, mode);
+    mgras_write_cmap_entry(qts, map, 0x14, 0xaaaaaa00);
+    dma_rules_seed(90, 93, 70);
+    dma_rules_draw(90, 70, 2, index, sizeof(index), MGRAS_LOGIC_OP_COPY,
+                   0xff);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 90, 70), ==, 0x00aaaaaa);
+
+    /* Read the two pixels to the page, hardware row 1023 - 70. */
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_PP1FILLMODE, 0x00002200));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND(REG_BLOCK_START, (90u << 16) | 953u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 MGRAS_COMMAND_EXEC(REG_BLOCK_END, (91u << 16) | 953u));
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080404 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080504 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080604 << 32) | 0);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080704 << 32) | 1);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND, ((uint64_t)0x00080804 << 32) | 8);
+    qtest_writeq(qts, REG_CONTEXT_COMMAND,
+                 ((uint64_t)0x00080b04 << 32) | 0x08);
+    qtest_memread(qts, DMA_RULES_PAGE, got, sizeof(got));
+    g_assert_cmphex(got[1], ==, 0x14);
+
+    dma_rules_draw(92, 70, 2, got, sizeof(got), MGRAS_LOGIC_OP_COPY,
+                   0x00ffffff);
+    g_assert_cmphex(mgras_test_pixel(qts, 92, 70), ==,
+                    mgras_test_pixel(qts, 90, 70));
+    g_assert_cmphex(mgras_test_display_pixel(qts, 92, 70), ==, 0x00aaaaaa);
+    g_assert_cmphex(mgras_test_display_pixel(qts, 93, 70), ==, 0x00aaaaaa);
+}
+
+static void test_dma_copy_keeps_ci8_window_colours(void)
+{
+    /* WIDs 0 and 1 as the X server programs its 8-bit windows. */
+    dma_copy_keeps_index_colours(0x601, 16);
+    dma_copy_keeps_index_colours(0x621, 17);
+}
+
+static void test_dma_copy_keeps_ci12_window_colours(void)
+{
+    /* WID 8, the 12-bit window: map 0 on, so the seeded 0xf14 is map 15. */
+    dma_copy_keeps_index_colours(0x403, 15);
+}
+
+/*
  * A DMA draw is clipped like any other paint: of a six-pixel CI8 row at
  * x 80-85, only the columns of the box (82-83) take the bytes and the CI8
  * tag; the rest keep the RGB seed. A row outside the box takes nothing.
@@ -7579,6 +7637,12 @@ int main(int argc, char **argv)
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-image-transfer-draws-ci8-indices",
         test_dma_image_transfer_draws_ci8_indices, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-copy-keeps-ci8-window-colours",
+        test_dma_copy_keeps_ci8_window_colours, true);
+    mgras_qtest_add_func(
+        "sn0/origin2000/mgras/dma-copy-keeps-ci12-window-colours",
+        test_dma_copy_keeps_ci12_window_colours, true);
     mgras_qtest_add_func(
         "sn0/origin2000/mgras/dma-image-transfer-honours-clip-rectangle",
         test_dma_image_transfer_honours_clip_rectangle, true);

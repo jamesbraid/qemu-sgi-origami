@@ -46,17 +46,20 @@ void sgi_mgras_display_cursor_report(SGIMgrasState *s)
 
 
 /*
- * An XMAP main mode whose low field is 3 shows a 12-bit colour index; every
- * other indexed mode shows the pixel's low eight bits. The IRIX 6.5.30 X server
+ * An XMAP main mode whose low field is 1 or 3 is an index mode, showing the
+ * pixel's low 8 or 12 bits whatever its tag. Under any other mode a CI8-tagged
+ * pixel shows its low eight bits. The IRIX 6.5.30 X server
  * offers 12-plane PseudoColor visuals with 4096 colour-map entries (xdpyinfo,
  * as on a real Indigo2 IMPACT's server). It gives such a window display ID 8
  * and that ID's mode 0x403, places the ID's colour map at CMAP entries 0 to
  * 4095 (the colour-map group table in the IMPACT X driver module), and loads
  * the window's map there one selector an entry (a captured run). Its 8-bit IDs
- * 0 to 7 have modes 0x601 to 0x6e1, low field 1. That the low field names the
- * depth is inferred; its width is unknown.
+ * 0 to 7 have modes 0x601 to 0x6e1, low field 1, and its direct-colour visuals
+ * fields 4 and up. That the low field names the depth is inferred; its width
+ * and its values 0 and 2 are unknown.
  */
 #define MGRAS_XMAP_MODE_FORMAT 0x1f
+#define MGRAS_XMAP_MODE_CI8    0x01
 #define MGRAS_XMAP_MODE_CI12   0x03
 
 /*
@@ -259,7 +262,7 @@ static void mgras_gamma_sync(SGIMgrasState *s)
 
 typedef struct MgrasSpan {
     const uint32_t *omap;
-    bool back;
+    bool back, indexed;
     uint32_t base, bits;
     const uint8_t *overlay, *format, *back_format;
     const uint32_t *front, *bank1, *slot;
@@ -301,7 +304,7 @@ static inline QEMU_ALWAYS_INLINE void mgras_resolve_pixels(SGIMgrasState *s,
     const uint64_t all_rgb = SGI_MGRAS_PIXEL_FORMAT_RGB * 0x0101010101010101ull;
     unsigned int k = 0;
 
-    if (!p->omap && !p->back) {
+    if (!p->omap && !p->back && !p->indexed) {
         while (k < n) {
             /* Eight direct-colour pixels need no per-pixel format test. */
             if (k + 8 <= n && ldq_he_p(p->format + k) == all_rgb) {
@@ -333,13 +336,16 @@ static inline QEMU_ALWAYS_INLINE void mgras_resolve_pixels(SGIMgrasState *s,
             continue;
         }
         if (p->back) {
-            if (p->slot[k] & SGI_MGRAS_SLOT_WRITTEN) {
+            if (!p->indexed && (p->slot[k] & SGI_MGRAS_SLOT_WRITTEN)) {
                 word = p->slot[k];
                 format = SGI_MGRAS_PIXEL_FORMAT_RGB;
             } else {
                 word = p->bank1[k];
                 format = p->back_format[k];
             }
+        }
+        if (p->indexed) {
+            format = SGI_MGRAS_PIXEL_FORMAT_CI8;
         }
         dst[k] = format == SGI_MGRAS_PIXEL_FORMAT_RGB ?
                  mgras_gamma_word(p, identity, word) :
@@ -356,12 +362,14 @@ static void mgras_resolve_span(SGIMgrasState *s, unsigned int first,
 {
     uint32_t omode = s->xmap[0].overlay_mode[overlay_did];
     uint32_t mode = s->xmap[0].mode[main_did & 0x1f];
+    uint32_t low = mode & MGRAS_XMAP_MODE_FORMAT;
     MgrasSpan p = {
         .omap = (omode & 1) ? &s->cmap[((omode >> 3) & 0x1f) * 256] : NULL,
         .back = (s->xmap[0].buf_select[0] >> (main_did & MGRAS_DID_MASK)) & 1,
+        /* An index mode overrides the per-pixel tag, which a copy loses. */
+        .indexed = low == MGRAS_XMAP_MODE_CI8 || low == MGRAS_XMAP_MODE_CI12,
         .base = ((mode >> 5) & 0x1f) * 256,
-        .bits = (mode & MGRAS_XMAP_MODE_FORMAT) == MGRAS_XMAP_MODE_CI12 ?
-                0xfff : 0xff,
+        .bits = low == MGRAS_XMAP_MODE_CI12 ? 0xfff : 0xff,
         .overlay = s->overlay + first,
         .format = s->format + first,
         .back_format = s->back_format + first,
@@ -382,9 +390,10 @@ static void mgras_resolve_span(SGIMgrasState *s, unsigned int first,
  * Display line y as the scanout presents it; blank while the VC3 has the
  * display disabled.
  *
- * A CI8 pixel resolves through the map its WID selects; an RGB pixel
- * bypasses the map. Either way the gamma table applies uniformly, so
- * every pixel reaches the display through the same final stage.
+ * A pixel under an index mode, or tagged CI8, resolves through the map its
+ * WID selects; an RGB pixel under a direct mode bypasses the map. Either way
+ * the gamma table applies uniformly, so every pixel reaches the display
+ * through the same final stage.
  */
 void sgi_mgras_display_resolve_row(void *opaque, unsigned y, uint32_t *dst)
 {
