@@ -253,7 +253,7 @@
 #define HUB_MD_MEM_DIMM_INIT    0x200090
 #define HUB_MD_DIR_DIMM_INIT    0x200098
 
-#define HUB_MD_PERF_CNT0        0x210010
+#define HUB_MD_PERF_CNT0        0x210010  /* then 1 to 5, eight bytes on */
 #define MD_PERF_CNT_MASK        0x00000000000fffffULL  /* 20-bit counter */
 
 /* The PCF8584 (hw/i2c/pcf8584.c) is mapped over this window in realize. */
@@ -3843,11 +3843,15 @@ static const SGIHubRegDef sgi_hub_registers[] = {
       .field = offsetof(SGIHubState, md_onewire), .width = 8,
       .flags = HUB_REG_DIAG, .read = sgi_hub_read_onewire,
       .peek = sgi_hub_onewire_value, .write = sgi_hub_write_onewire },
-    /* Storage that never counts: nothing here tracks an event to count. */
-    { .offset = HUB_MD_PERF_CNT0,
-      .field = offsetof(SGIHubState, md_perf_cnt0), .width = 8,
-      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD,
-      .wmask = MD_PERF_CNT_MASK },
+    /* Never counts. The IP27 PROM passes boot status from A to B in 2-5. */
+#define HUB_MD_PERF_CNT_ROW(n) \
+    { .offset = HUB_MD_PERF_CNT0 + 8 * (n), \
+      .field = offsetof(SGIHubState, md_perf_cnt[n]), .width = 8, \
+      .flags = HUB_REG_STORE | HUB_REG_DIAG | HUB_REG_TRACE_COORD, \
+      .wmask = MD_PERF_CNT_MASK }
+    HUB_MD_PERF_CNT_ROW(0), HUB_MD_PERF_CNT_ROW(1), HUB_MD_PERF_CNT_ROW(2),
+    HUB_MD_PERF_CNT_ROW(3), HUB_MD_PERF_CNT_ROW(4), HUB_MD_PERF_CNT_ROW(5),
+#undef HUB_MD_PERF_CNT_ROW
     { .offset = HUB_MD_SLOT_ID_USTAT, .read = sgi_hub_read_slot_id },
     { .offset = HUB_MD_INDICATOR_0, .arg = 0,
       .write = sgi_hub_write_indicator },
@@ -4674,7 +4678,7 @@ static void sgi_hub_reset_enter(Object *obj, ResetType type)
     memset(s->bte_control, 0, sizeof(s->bte_control));
     memset(s->bte_notify, 0, sizeof(s->bte_notify));
     memset(s->bte_interrupt, 0, sizeof(s->bte_interrupt));
-    s->md_perf_cnt0 = 0;
+    memset(s->md_perf_cnt, 0, sizeof(s->md_perf_cnt));
     s->md_config = MD_CONFIG_RESET;
     s->md_onewire = MD_ONEWIRE_RESET;
     /* A slot started before reset must not complete after it. */
@@ -5707,8 +5711,8 @@ static int sgi_hub_pre_save(void *opaque)
 
 static const VMStateDescription vmstate_sgi_hub = {
     .name = "sgi-hub",
-    .version_id = 32,
-    .minimum_version_id = 32,
+    .version_id = 33,
+    .minimum_version_id = 33,
     .pre_save = sgi_hub_pre_save,
     .post_load = sgi_hub_post_load,
     .fields = (const VMStateField[]) {
@@ -5750,7 +5754,7 @@ static const VMStateDescription vmstate_sgi_hub = {
         VMSTATE_UINT64(io_xtalk_prescale, SGIHubState),
         VMSTATE_UINT32_ARRAY(io_bwin, SGIHubState, SGI_HUB_BWIN_ENTRIES),
         VMSTATE_UINT64_ARRAY(io_scratch, SGIHubState, 2),
-        VMSTATE_UINT64(md_perf_cnt0, SGIHubState),
+        VMSTATE_UINT64_ARRAY(md_perf_cnt, SGIHubState, SGI_HUB_MD_PERF_CNTS),
         VMSTATE_UINT64(md_config, SGIHubState),
         VMSTATE_UINT64(md_onewire, SGIHubState),
         VMSTATE_INT64(md_onewire_deadline_ns, SGIHubState),

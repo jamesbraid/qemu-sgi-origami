@@ -371,6 +371,13 @@ that clears, W1C writing ones clears.
      - 0
      - RW
      - Stored; never counts.
+   * - ``0x21_0018`` to ``0x21_0038``
+     - ``MD_PERF_CNT1`` to ``MD_PERF_CNT5``
+     - 20
+     - 0
+     - RW
+     - Stored; never count. The stock PROM hands boot status from processor
+       A to processor B through counters 2 to 5.
    * - ``0x22_0000``, ``0x22_0008``
      - PCF8584 S0, S1
      - 8
@@ -659,9 +666,9 @@ Every other offset reads zero and logs ``LOG_UNIMP`` on a read or a
 write, as does a read of a write-only register above. The unimplemented
 set includes the cross-call registers, the processor-bus checking and
 negative-acknowledge registers, the refresh and page-migration
-registers, the other five performance counters and their selector, the
-processor and memory protection registers, the global link parameters,
-the I/O request-buffer tables and the I/O performance counter.
+registers, the performance-counter selector, the processor and memory
+protection registers, the global link parameters, the I/O request-buffer
+tables and the I/O performance counter.
 
 .. _sgi-hub-access-width:
 
@@ -1020,9 +1027,18 @@ or changes error reporting.
 The eight directory, protocol, memory and miscellaneous error registers
 and their clear aliases read zero; the model never latches a memory
 error. Writes log ``LOG_UNIMP``. The two DIMM mode-initialisation
-registers are write-only and log their writes. ``MD_PERF_CNT0`` stores
-20 bits and never counts, since the model tracks no event to count; its
-event selector is not decoded.
+registers are write-only and log their writes. ``MD_PERF_CNT0`` to
+``MD_PERF_CNT5`` each store 20 bits and never count, because the event
+selector ``MD_PERF_SEL`` is not decoded: an *approximation*. The 20-bit
+width is *inferred* from the ``perf_cnt`` field of Linux ``hubmd.h``'s
+``md_perf_cnt_t``, which chips ``devices/hub_md/registers-extra.toml``
+(commit ``7ecf244b``) also grades *inferred*. The reset value is
+*unknown*; the model clears the counters. The stock IP27 PROM needs
+counters 2 to 5 to hold what is written, a *software expectation*
+(:src:`ip27-prom-6.156 0x1fc57474`): processor A stores its boot-status
+word shifted right by 60, 40, 20 and 0 bits, one shift to each counter,
+and processor B keeps the low 20 bits of each and merges the bits its
+caller names.
 
 Slot identity and indicators
 ----------------------------

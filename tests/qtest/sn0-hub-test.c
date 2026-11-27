@@ -6215,6 +6215,26 @@ static void test_md_perf_cnt0(const void *data)
                     MD_PERF_CNT_MASK);
 }
 
+/*
+ * Counters 1 to 5 hold a write each, apart from one another: the stock PROM
+ * passes slice A's boot status to slice B through 2 to 5, twenty bits apiece.
+ */
+static void test_md_perf_counters_hold_their_writes(const void *data)
+{
+    hub_reset();
+
+    for (unsigned int n = 1; n < 6; n++) {
+        qtest_writeq(qts, HUB_LOCAL + MD_PERF_CNT0 + 8 * n,
+                     0xfff00000ULL | (0x11111 * n));
+    }
+    for (unsigned int n = 1; n < 6; n++) {
+        g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0 + 8 * n),
+                        ==, 0x11111 * n);
+    }
+    hub_reset();
+    g_assert_cmphex(qtest_readq(qts, HUB_LOCAL + MD_PERF_CNT0 + 8 * 5), ==, 0);
+}
+
 static void test_md_config(const void *data)
 {
     hub_reset();
@@ -7207,6 +7227,8 @@ int main(int argc, char **argv)
         "sn0/hub/hub-special-window-stays-reader-local", NULL,
         test_the_hub_special_window_stays_reader_local);
     qtest_add_data_func("sn0/hub/md-perf-cnt0", NULL, test_md_perf_cnt0);
+    qtest_add_data_func("sn0/hub/md-perf-counters-hold-their-writes", NULL,
+                        test_md_perf_counters_hold_their_writes);
     qtest_add_data_func("sn0/hub/md-config", NULL, test_md_config);
     qtest_add_data_func("sn0/hub/md-error-cluster", NULL, test_md_error_cluster);
     qtest_add_data_func("sn0/hub/md-dimm-init", NULL, test_md_dimm_init);

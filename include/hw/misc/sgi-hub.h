@@ -88,6 +88,9 @@ typedef struct SGIHubCounterLine {
 /* The two identical block transfer engines in the Hub's I/O section. */
 #define SGI_HUB_BTES 2
 
+/* The memory/directory section's performance counters, 0 to 5. */
+#define SGI_HUB_MD_PERF_CNTS 6
+
 #define SGI_HUB_BWIN_ENTRIES 7
 #define SGI_HUB_BWIN_SIZE    (512 * MiB)
 #define SGI_HUB_BWIN_TOTAL   (SGI_HUB_BWIN_ENTRIES * SGI_HUB_BWIN_SIZE)
@@ -502,8 +505,8 @@ struct SGIHubState {
     /* The I/O interface's two general-purpose scratch registers. */
     uint64_t io_scratch[2];
 
-    /* Memory/directory performance counter 0. */
-    uint64_t md_perf_cnt0;
+    /* Memory/directory performance counters 0 to 5. */
+    uint64_t md_perf_cnt[SGI_HUB_MD_PERF_CNTS];
 
     /* Memory/directory configuration register. Reset value is not zero. */
     uint64_t md_config;
