@@ -30,6 +30,15 @@ reap_orphans() {
   done <<< "$children"
 }
 
+# A builder's `docker image prune -a` removes any image no container uses, so
+# hold the job's image with a created one. reap_orphans removes it after the job.
+pin_image() {
+  local parent
+  parent=$(docker inspect "$(hostname)" --format '{{.Id}}')
+  docker create --label "ci.parent=$parent" \
+    --name "qemu-ci-pin-${parent:0:12}-$$" "$1" true >/dev/null
+}
+
 case "${1-}" in
   docker)
     # Install Docker only if absent and fail before build steps if its
@@ -62,6 +71,7 @@ case "${1-}" in
     image_id=$(docker build -q -f tests/docker/dockerfiles/debian-sgi.docker \
         tests/docker/dockerfiles)
     test -n "$image_id"
+    pin_image "$image_id"
     echo "IMAGE_ID=$image_id" >> "$GITHUB_ENV"
     ;;
   assets)
@@ -191,6 +201,7 @@ case "${1-}" in
         -f tests/docker/dockerfiles/fedora-win64-cross.docker \
         tests/docker/dockerfiles)
     test -n "$windows_image"
+    pin_image "$windows_image"
     IMAGE_ID=$windows_image bash "$0" run -v "$WORKSPACE_VOLUME:/src" \
         -w /src "$windows_image" python3 scripts/ci/sgi-check windows ${WINDOWS_ARGS-}
     ;;

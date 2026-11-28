@@ -991,5 +991,34 @@ class WindowsMode(unittest.TestCase):
                          sgi_check.SOURCE / 'build-windows')
 
 
+class PinImageScript(unittest.TestCase):
+    """runner-setup image and windows hold their image with a container."""
+
+    def pinned(self, mode):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            docker = tmp / 'docker'
+            docker.write_text(
+                '#!/bin/sh\nprintf "%s\\n" "$*" >> ' f'{tmp}/calls\n'
+                'case "$1" in build) echo sha256:img;; '
+                'inspect) echo parentid;; esac\n')
+            docker.chmod(0o755)
+            env = dict(os.environ, PATH=f'{tmp}:{os.environ["PATH"]}',
+                       GITHUB_ENV=str(tmp / 'env'), WORKSPACE_VOLUME='v')
+            subprocess.run(['bash', str(SOURCE / 'scripts/ci/runner-setup'),
+                            mode], cwd=SOURCE, env=env,
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL)
+            return [c for c in (tmp / 'calls').read_text().splitlines()
+                    if c.startswith('create')]
+
+    def test_the_image_is_pinned_to_the_job(self):
+        for mode in ('image', 'windows'):
+            with self.subTest(mode=mode):
+                [create] = self.pinned(mode)
+                self.assertIn('--label ci.parent=parentid', create)
+                self.assertTrue(create.endswith('sha256:img true'))
+
+
 if __name__ == '__main__':
     unittest.main()
