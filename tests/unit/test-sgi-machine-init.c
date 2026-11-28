@@ -604,22 +604,57 @@ static void test_origin300(void)
     remove_tree(dir);
 }
 
+typedef struct OfferingCase {
+    const char *machine;
+    uint32_t mode_word;
+    uint32_t clock_hz;
+} OfferingCase;
+
+/*
+ * Run @fn(case number + 1, @cases) for each of @count cases at once. A case
+ * is a tool run that mostly waits on file writes and syncs, and on a loaded
+ * host the waits dominate, so overlapping them cuts the wall time several
+ * times.
+ */
+static void run_cases(GFunc fn, const OfferingCase *cases, size_t count)
+{
+    GThreadPool *pool = g_thread_pool_new(fn, (gpointer)cases, 8, FALSE,
+                                          NULL);
+
+    for (size_t i = 0; i < count; i++) {
+        g_assert_true(g_thread_pool_push(pool, GSIZE_TO_POINTER(i + 1),
+                                         NULL));
+    }
+    g_thread_pool_free(pool, FALSE, TRUE);
+}
+
 /*
  * Every IP53 and IP59 offering's flash carries the mode word and clock of
  * the processor it fits, not those of its topology's own part or of
  * another board: a topology name is unique, so it names the board too.
  */
-static void test_ip53_offerings(void)
+static void check_ip53_case(gpointer data, gpointer cases)
 {
     static const StoreSize stores[] = {
         { "node0-flash", 16777216 }, { "nvram0", 32768 },
         { "nvram0-clock", 16 },
     };
-    static const struct {
-        const char *machine;
-        uint32_t mode_word;
-        uint32_t clock_hz;
-    } cases[] = {
+    size_t i = GPOINTER_TO_SIZE(data) - 1;
+    const OfferingCase *c = (const OfferingCase *)cases + i;
+    g_autofree char *stem = g_strdup_printf("ip53-%zu", i);
+    g_autofree char *dir = create_and_check(stem, c->machine, false, stores,
+                                            ARRAY_SIZE(stores));
+    uint8_t flash[IP27_CONFIG + 0x18];
+
+    read_store_head(dir, "node0-flash", flash, sizeof(flash));
+    g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==, c->mode_word);
+    g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==, c->clock_hz);
+    remove_tree(dir);
+}
+
+static void test_ip53_offerings(void)
+{
+    static const OfferingCase cases[] = {
         { "origin350,topology=origin350-ip53,nodes=1", 0x589bad85,
           700000000 },
         { "origin350,topology=origin350-ip53,nodes=1,"
@@ -646,18 +681,7 @@ static void test_ip53_offerings(void)
           1000000000 },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
-        g_autofree char *dir = create_and_check(
-            "ip53", cases[i].machine, false, stores, ARRAY_SIZE(stores));
-        uint8_t flash[IP27_CONFIG + 0x18];
-
-        read_store_head(dir, "node0-flash", flash, sizeof(flash));
-        g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==,
-                        cases[i].mode_word);
-        g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==,
-                         cases[i].clock_hz);
-        remove_tree(dir);
-    }
+    run_cases(check_ip53_case, cases, ARRAY_SIZE(cases));
 }
 
 /*
@@ -665,7 +689,7 @@ static void test_ip53_offerings(void)
  * from the processor option the offering selects, and the Cx-brick's from
  * its IP53 or IP59 board. Every node's flash carries them.
  */
-static void test_origin3000_offerings(void)
+static void check_origin3000_case(gpointer data, gpointer cases)
 {
     static const StoreSize two_nodes[] = {
         { "node0-flash", 16777216 }, { "node1-flash", 16777216 },
@@ -676,11 +700,31 @@ static void test_origin3000_offerings(void)
         { "node2-flash", 16777216 }, { "node3-flash", 16777216 },
         { "nvram0", 32768 }, { "nvram0-clock", 16 },
     };
-    static const struct {
-        const char *machine;
-        uint32_t mode_word;
-        uint32_t clock_hz;
-    } cases[] = {
+    size_t i = GPOINTER_TO_SIZE(data) - 1;
+    const OfferingCase *c = (const OfferingCase *)cases + i;
+    bool four = strstr(c->machine, "nodes=4") != NULL;
+    const StoreSize *stores = four ? four_nodes : two_nodes;
+    size_t count = four ? ARRAY_SIZE(four_nodes) : ARRAY_SIZE(two_nodes);
+    g_autofree char *stem = g_strdup_printf("o3000-%zu", i);
+    g_autofree char *dir = create_and_check(stem, c->machine, false, stores,
+                                            count);
+
+    for (int node = 0; node < (four ? 4 : 2); node++) {
+        g_autofree char *name = g_strdup_printf("node%d-flash", node);
+        uint8_t flash[IP27_CONFIG + 0x18];
+
+        read_store_head(dir, name, flash, sizeof(flash));
+        g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==,
+                        c->mode_word);
+        g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==,
+                         c->clock_hz);
+    }
+    remove_tree(dir);
+}
+
+static void test_origin3000_offerings(void)
+{
+    static const OfferingCase cases[] = {
         { "origin3000,topology=origin3200,nodes=2", 0x5414a785, 400000000 },
         { "origin3000,topology=origin3200,nodes=2,"
           "processor=r14000-500mhz-8mb", 0x549ca985, 500000000 },
@@ -710,25 +754,7 @@ static void test_origin3000_offerings(void)
           1000000000 },
     };
 
-    for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
-        bool four = strstr(cases[i].machine, "nodes=4") != NULL;
-        const StoreSize *stores = four ? four_nodes : two_nodes;
-        size_t count = four ? ARRAY_SIZE(four_nodes) : ARRAY_SIZE(two_nodes);
-        g_autofree char *dir = create_and_check("o3000", cases[i].machine,
-                                                false, stores, count);
-
-        for (int node = 0; node < (four ? 4 : 2); node++) {
-            g_autofree char *name = g_strdup_printf("node%d-flash", node);
-            uint8_t flash[IP27_CONFIG + 0x18];
-
-            read_store_head(dir, name, flash, sizeof(flash));
-            g_assert_cmphex(ldl_be_p(flash + IP27_CONFIG + 0x04), ==,
-                            cases[i].mode_word);
-            g_assert_cmpuint(ldl_be_p(flash + IP27_CONFIG + 0x14), ==,
-                             cases[i].clock_hz);
-        }
-        remove_tree(dir);
-    }
+    run_cases(check_origin3000_case, cases, ARRAY_SIZE(cases));
 }
 
 /*
