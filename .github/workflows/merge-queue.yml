@@ -28,8 +28,33 @@ jobs:
     # runner job.
     timeout-minutes: 30
     steps:
+      # Newest wins. The concurrency group keeps every queued tick rather than
+      # only the newest, so a backlog of ticks each took a runner slot in turn
+      # to do what the last of them would do anyway. A run that finds a newer
+      # run of this workflow waiting or running stops here, successfully; a
+      # run already past this step is never cut short. If the forge cannot
+      # list the runs, the run goes ahead as before.
+      - name: step aside for a newer run
+        id: newest
+        env:
+          RUNS: ${{ github.server_url }}/api/v1/repos/${{ github.repository }}/actions/runs?workflow_id=merge-queue.yml&limit=50&status=
+          JOB_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          newer=
+          for status in waiting running; do
+            ids=$(curl -sSf -H "Authorization: token $JOB_TOKEN" "$RUNS$status" | python3 -c 'import json, sys; print(" ".join(str(r["id"]) for r in json.load(sys.stdin).get("workflow_runs") or []))') || { echo "could not list the runs of this workflow; going ahead"; exit 0; }
+            for id in $ids; do
+              if [ "$id" -gt "$RUN_ID" ]; then newer=$id; fi
+            done
+          done
+          if [ -n "$newer" ]; then
+            echo "run $newer is newer and will do this run's work; stopping here"
+            echo superseded=true >> "$GITHUB_OUTPUT"
+          fi
       # Fetch the configured queue driver and reject an empty response.
       - name: fetch the queue driver
+        if: ${{ steps.newest.outputs.superseded != 'true' }}
         env:
           CI_QUEUE_URL: ${{ vars.CI_QUEUE_URL }}
         run: |
@@ -41,6 +66,7 @@ jobs:
           test -s .merge-queue/merge-queue
 
       - name: process the queue
+        if: ${{ steps.newest.outputs.superseded != 'true' }}
         env:
           FORGE: ${{ github.server_url }}
           REPO: ${{ github.repository }}
